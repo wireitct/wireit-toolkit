@@ -1,19 +1,19 @@
 {
- "version": "1.2.0",
+ "version": "1.3.0",
  "released": "2026-11-02",
- "commit": "a711a1a7e5ed717a8f30bd9603921b4d02dee2b2",
- "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/a711a1a7e5ed717a8f30bd9603921b4d02dee2b2/",
- "notes": "New button 8 \"Save camera pictures\": one picture of every camera (read-only) goes to the site page, so a camera that goes down shows where it is. Fix NVR and Snapshot take them too when the Site box is filled. \"Set upload key.cmd\" saves the upload key on a new PC.",
+ "commit": "d567625bd61e7c4cd36b7e00276cf0d5f5a26120",
+ "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/d567625bd61e7c4cd36b7e00276cf0d5f5a26120/",
+ "notes": "Recorder health: 9 Recording check (every camera recording, days kept vs. the site target - YKW 45, others 30 - and drive health), 10 Clock check, 11 Fix clock (NTP: shows the plan, changes only after you type YES), 12 Firmware check (newest firmware + known security holes; reports only). All read-only except 11.",
  "files": [
   {
    "path": "Toolkit/WireItToolkit.ps1",
-   "sha256": "78ddc6124579e4d447ce5fe913b000fda32da80469f3c2a658e7b5c186772cbb",
-   "size": 81994
+   "sha256": "efef1ed1574c6574272ba82015227cf42d085e005fbbf2e9844f9828d0140345",
+   "size": 88157
   },
   {
    "path": "Toolkit/ToolkitCore.ps1",
-   "sha256": "b92f13a0c839725b69643beb39df3fd4fd78dbf048423fc94fd698a715341a84",
-   "size": 22291
+   "sha256": "bc6f9c6b2c27e4f169272a5b53b015e9617358d24a2badd8512299b761910caf",
+   "size": 24943
   },
   {
    "path": "Toolkit/WireIt Toolkit.cmd",
@@ -22,13 +22,13 @@
   },
   {
    "path": "Toolkit/Install-Toolkit.ps1",
-   "sha256": "a8c9ad704b1f52d2099a1a376e6a027351c6956d5e4b8bd0fa39b34bffbb496a",
-   "size": 4197
+   "sha256": "2993d2fe86402d8f3302ebd8e39cf4bc5523ea01c5adcc0b09047e72f76bda38",
+   "size": 4280
   },
   {
    "path": "Toolkit/README.txt",
-   "sha256": "45a78b61c67e7f9abff9ba93ad41acce5270fc58e1028578a4fabcc92d84660b",
-   "size": 4869
+   "sha256": "d8daf38ef295d2bf2a335e678ea06a08379e34d962036fff029c82bb81d70d05",
+   "size": 6179
   },
   {
    "path": "Toolkit/wireit.ico",
@@ -42,8 +42,8 @@
   },
   {
    "path": "Toolkit/tests/Test-Toolkit.ps1",
-   "sha256": "373ae8058f7b09856539f267fb6f82eee5ad44ea1f214deb0fdd66a7af6df90a",
-   "size": 17147
+   "sha256": "66ab1febdba1fbbadebfad279e4144d4c468947a8d624fbea6666804043c5b35",
+   "size": 23577
   },
   {
    "path": "Toolkit/CamViews.ps1",
@@ -119,6 +119,31 @@
    "path": "NetCheck/README.txt",
    "sha256": "7814cdb8561f4f517f7b727512b78a0c43534e372d472282f0a873f6d9560ec6",
    "size": 2042
+  },
+  {
+   "path": "Toolkit/NvrCheck.ps1",
+   "sha256": "34e847ca0f2cb81f5446552e0dbd64e70472c9793d616f80ef73014f62126c8b",
+   "size": 5316
+  },
+  {
+   "path": "Toolkit/modules/NvrHealth/NvrHealth.psm1",
+   "sha256": "62f98f98a4682b2fb15c88a0baf4bf0cb7766b954873c1531efc001bc9211789",
+   "size": 70707
+  },
+  {
+   "path": "Toolkit/modules/NvrHealth/firmware-latest.json",
+   "sha256": "24172bf5ba951dc7e3695cd9f3750689d2cad970916aa2eefbebd65f9426b967",
+   "size": 22130
+  },
+  {
+   "path": "Toolkit/modules/NvrHealth/tests/Test-NvrHealth.ps1",
+   "sha256": "fae53bf842db1f710dc87990a2538e65d0dc48f620d8e89afc18e0c7b84511de",
+   "size": 12056
+  },
+  {
+   "path": "Toolkit/modules/NvrHealth/tests/mock_devices.py",
+   "sha256": "205c6c825d0551b654ddd9bb2963364258025c626bc877577baf82fe600a53e8",
+   "size": 24779
   }
  ]
 }
