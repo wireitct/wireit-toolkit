@@ -46,3 +46,9 @@ A `SiteCheck-reports` folder next to the .cmd: `SiteCheck-<time>.txt` (readable)
     powershell -ExecutionPolicy Bypass -File tests\Test-SiteCheck.ps1         # 32 mock tests
 
 Posting results to the WireIt site page is built in but **off** until the site page side is ready.
+
+## Put the result on the site page (v1.1.0)
+1. A WireIt tech opens the site page (QR + PIN) -> Cameras -> "Remote check" -> **Get upload code** (6 letters, good 2 hours, 5 uploads).
+2. In Site Check type the **Site ID** (e.g. WI-061) and the **upload code**, then press Start check.
+3. When it finishes, the status line says "Results posted to the site page." The tech sees it under "Last checks".
+Only channel numbers, IPs and states are sent: never the NVR password, user name or camera names. Without the two boxes nothing is sent.
