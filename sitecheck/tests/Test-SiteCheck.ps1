@@ -54,6 +54,8 @@ $R5 = New-ScMock; $R5.channels = @($R5.channels | ForEach-Object { $_.Online = $
 $D5 = Get-ScDiagnosis $R5
 Check 'all good -> green headline' { $D5.Headline -eq 'All 6 cameras on the NVR are online.' -and $D5.Bad -eq 0 -and $D5.Findings[0].Level -eq 'ok' }
 
+$R7 = New-ScMock; $R7.channels = @(); $R7.duplicates = @(); $R7.devices += [pscustomobject]@{ Ip = '192.0.2.77'; Mac = '02-00-00-00-00-77'; Vendor = 'random/private MAC'; Model = ''; Kind = ''; Sent = 20; Ok = 8; LossPct = 60; Median = 80; Max = 300; Ports = @(); InArp = $true; DiffSubnet = $false; Firmware = ''; Source = '' }
+Check 'phones/laptops with ping loss are not flagged' { -not ((((Get-ScDiagnosis $R7).Findings | ForEach-Object { $_.Text }) -join ' ') -match '192\.0\.2\.77') }
 $tmp = Join-Path $env:TEMP ('sctest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $s = Save-ScReport $R $D $tmp
 Check 'report txt + json + last-scan saved' { (Test-Path $s.Txt) -and (Test-Path $s.Json) -and (Test-Path (Join-Path $tmp 'last-scan.json')) }
