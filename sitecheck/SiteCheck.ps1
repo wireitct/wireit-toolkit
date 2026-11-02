@@ -205,9 +205,10 @@ function Get-ScNvrChannels([string]$nvr, $cred, [int[]]$openPorts) {
   $r = [pscustomobject]@{ Brand = ''; Model = ''; Ok = $false; Msg = ''; Channels = @(); Scheme = '' }
   $schemes = @(); if ($openPorts -contains 80 -or -not $openPorts) { $schemes += 'http' }; if ($openPorts -contains 443) { $schemes += 'https' }; if (-not $schemes) { $schemes = @('http') }
   [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+  $dahuaFirst = ($openPorts -contains 37777) -and -not ($openPorts -contains 8000)
   foreach ($sc in $schemes) {
     $base = $sc + '://' + $nvr
-    $di = Invoke-ScHttpGet ($base + '/ISAPI/System/deviceInfo') $cred
+    if ($dahuaFirst) { $di = [pscustomobject]@{ Code = 404; Body = '' } } else { $di = Invoke-ScHttpGet ($base + '/ISAPI/System/deviceInfo') $cred }
     if ($di.Code -eq 401) { $r.Msg = 'The NVR said the user name or password is wrong. (Only one try was made, so it will not lock.)'; $r.Brand = 'Hikvision?'; return $r }
     if ($di.Code -eq 200 -and $di.Body -match '<DeviceInfo') {
       $r.Brand = 'Hikvision'; $r.Model = Get-ScXml $di.Body 'model'; $r.Scheme = $sc
@@ -373,7 +374,7 @@ function Get-ScDiagnosis($R) {
   foreach ($d in $devs) {
     if ($chIps.ContainsKey([string]$d.Ip) -or $d.Ip -eq $nvr) { continue }
     $cam = ($d.Kind -match 'camera|NVR') -or ($d.Vendor -match 'Hikvision|Dahua|Uniview')
-    if ($d.Ok -gt 0 -and $d.LossPct -ge 10) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($d.Ip + ' ' + $(if ($d.Vendor) { '(' + $d.Vendor + ') ' } else { '' }) + 'drops ' + $d.LossPct + '% of pings - flaky cable/port.') } }
+    if (($cam -or $d.Vendor -match 'Ubiquiti|DrayTek') -and $d.Sent -ge 10 -and $d.Ok -gt 0 -and $d.LossPct -ge 10) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($d.Ip + ' ' + $(if ($d.Vendor) { '(' + $d.Vendor + ') ' } else { '' }) + 'drops ' + $d.LossPct + '% of pings - flaky cable/port.') } }
     if ($cam -and $d.DiffSubnet) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($d.Ip + ' ' + $d.Model + ' is on a DIFFERENT IP scheme than the NVR (' + $nvr + '), so the NVR can''t reach it. Change its address to the NVR''s scheme.') } }
   }
   foreach ($x in $dups) { if (-not ($chs | Where-Object { $_.Ip -eq $x.ip -and -not $_.Online })) { $find += [pscustomobject]@{ Level = 'bad'; Text = ('IP CONFLICT at ' + $x.ip + ': answered from ' + (@($x.macs) -join ' and ') + '. Two devices share this address.') } } }
@@ -561,7 +562,7 @@ $timer.Add_Tick({
     $script:ps = $null; $script:rs = $null
     $bGo.Enabled = $true; $bGo.Text = 'Run again'
     if ($sync.Err) { $st.Text = 'The check stopped: ' + $sync.Err; return }
-    $R = $sync.R; $dir = Get-ScReportDir; Read-ScPrevious $R $dir; $D = Get-ScDiagnosis $R; $saved = $null
+    $R = $sync.R; if ($R.nvr -and -not $tNvr.Text.Trim()) { $tNvr.Text = [string]$R.nvr }; $dir = Get-ScReportDir; Read-ScPrevious $R $dir; $D = Get-ScDiagnosis $R; $saved = $null
     try { $saved = Save-ScReport $R $D $dir } catch { $st.Text = 'Could not save the report: ' + $_.Exception.Message }
     $script:last = [pscustomobject]@{ R = $R; D = $D; Saved = $saved; Dir = $dir }
     Show-ScResult $R $D $saved; $st.Text = 'Done in ' + $R.seconds + ' s. Nothing was changed on any device.'
