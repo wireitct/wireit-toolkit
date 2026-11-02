@@ -1,0 +1,333 @@
+# CamViews.ps1 - WireIt Toolkit: "Save camera pictures" (Nov 2 2026, Moshe: "a picture of the camera before it went down")
+# Takes one picture of every camera on an NVR (or one lone camera), READ-ONLY, and sends it to the WireIt service log
+# (the site's Drive folder "Camera views": current + previous picture per camera, with the date). Techs see them on the
+# site page (QR + PIN, that site only) and a camera that goes down shows its last picture there.
+#   Hikvision: ISAPI /ISAPI/Streaming/channels/<ch>02/picture (sub stream, small), else <ch>01.
+#   Uniview:   LAPI /LAPI/V1.0/Channels/<id>/Media/Video/Streams/<1|0>/Snapshot (from Uniview's LiteAPI docs; NOT yet tried on a real unit).
+# A camera that does not answer is NOT re-pictured, so its last good picture stays.
+# Also sends a tiny signature of each view (64x36 gray + sharpness) so the service log can flag "View changed?"
+# (turned / covered / blurry) and "Missing" cameras. Nothing on the NVR or cameras is changed. No password is stored or logged.
+# Upload key: secrets\upload-key.bin (this PC only, Windows DPAPI) - make it with "Set upload key.cmd"; or the Vendor Monitor's
+# key on the same PC. No key / no internet: pictures wait in outbox\ and go next time (and stay in pictures\ on this PC).
+# Usage:  CamViews.ps1 -Nvr 192.168.1.20 -Site "WI-061"        (asks for the NVR password, hidden)
+#         CamViews.ps1 -SendOutbox                              (send what is waiting)
+#         . .\CamViews.ps1 -Lib ; Save-CameraViews ...          (used by Fix NVR at the end of Snapshot / Fix)
+#         CamViews.ps1 -Nvr 192.168.1.20 -Site WI-061 -Remember   (a PC that stays on the site's network: keep this NVR + its login,
+#                                                                encrypted for this PC only) then  CamViews.ps1 -InstallTask
+#                                                                = a daily 12:30 refresh, hidden, only cameras that answer
+#         CamViews.ps1 -PrepDir <folder>                         (Vendor Monitor's DW pictures: shrink + signature, one JSON line per .jpg)
+param(
+  [string]$Nvr = '', [string]$Site = '', [string]$User = 'admin', [string]$CredFile = '', [ValidateSet('auto','hik','uniview')][string]$Vendor = 'auto',
+  [int]$RecorderNo = 1, [string]$ApiUrl = '', [switch]$NoUpload, [switch]$SendOutbox, [switch]$SetKey, [string]$PrepDir = '', [switch]$Remember, [switch]$Auto, [switch]$InstallTask, [switch]$RemoveTask, [string]$Mock = '', [switch]$Lib
+)
+$ErrorActionPreference = 'Stop'
+$script:CvHere = $PSScriptRoot
+if (-not $script:CvHere) { $script:CvHere = Split-Path -Parent $MyInvocation.MyCommand.Path }
+$script:CvMock = $Mock
+$script:CvIsPs5 = $PSVersionTable.PSVersion.Major -le 5
+$script:CvApi = 'https://wireit-api.wireitct.workers.dev/'
+try { $c = Get-Content (Join-Path $script:CvHere 'config.json') -Raw -ErrorAction Stop | ConvertFrom-Json; if ($c.camviews -and $c.camviews.api_url) { $script:CvApi = [string]$c.camviews.api_url } } catch {}
+if ($ApiUrl) { $script:CvApi = $ApiUrl }
+$script:CvLogDir = Join-Path $script:CvHere 'logs'
+$script:CvOutbox = Join-Path $script:CvHere 'outbox'
+$script:CvPics = Join-Path $script:CvHere 'pictures'
+$script:CvMaxW = 640; $script:CvQuality = 70; $script:CvBatch = 8
+function CvLog([string]$s) { try { New-Item -ItemType Directory -Force -Path $script:CvLogDir | Out-Null; Add-Content -Path (Join-Path $script:CvLogDir ('camviews-' + (Get-Date -Format 'yyyy-MM-dd') + '.log')) -Value ((Get-Date -Format 'HH:mm:ss') + ' ' + $s) } catch {} }
+function CvSay([string]$s, [string]$color = '') { if (Get-Command -Name 'Say' -CommandType Function -ErrorAction SilentlyContinue) { Say $s $color; return }; if ($color) { Write-Host $s -ForegroundColor $color } else { Write-Host $s }; CvLog ('SAY ' + $s) }
+function CvXVal([string]$xml, [string]$name) { $m = [regex]::Match($xml, '<(?:\w+:)?' + $name + '(?:\s[^>]*)?>([^<]*)</(?:\w+:)?' + $name + '>'); if ($m.Success) { return $m.Groups[1].Value.Trim() } else { return '' } }
+function CvBase([string]$ip) { if ($script:CvMock) { return ($script:CvMock + '/dev/' + $ip) }; return ('http://' + $ip) }
+
+# ---- HTTP (digest / basic through -Credential; bytes kept as bytes) ----
+function CvGet([string]$url, $cred, [int]$timeout = 12) {
+  $tmp = [IO.Path]::GetTempFileName()
+  try {
+    $a = @{ Uri = $url; Method = 'GET'; UseBasicParsing = $true; TimeoutSec = $timeout; OutFile = $tmp; PassThru = $true }
+    if ($cred) { $a.Credential = $cred }
+    if (-not $script:CvIsPs5) { $a.SkipCertificateCheck = $true; if ($cred) { $a.AllowUnencryptedAuthentication = $true } }
+    $r = Invoke-WebRequest @a
+    $b = [IO.File]::ReadAllBytes($tmp)
+    return @{ code = [int]$r.StatusCode; bytes = $b; text = [Text.Encoding]::UTF8.GetString($b) }
+  } catch {
+    $code = 0; try { $code = [int]$_.Exception.Response.StatusCode } catch {}
+    CvLog ('GET ' + ($url -replace '//[^/@]*@', '//') + ' -> ' + $code + ' ' + $_.Exception.Message)
+    return @{ code = $code; bytes = $null; text = ''; err = $_.Exception.Message }
+  } finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+}
+function CvIsJpeg($b) { return ($b -and $b.Length -gt 200 -and $b[0] -eq 0xFF -and $b[1] -eq 0xD8) }
+
+# ---- what is on the recorder ----
+function Get-CvChannels([string]$ip, $cred, [string]$vendor) {
+  $out = New-Object System.Collections.Generic.List[object]
+  if ($vendor -ne 'uniview') {
+    $d = CvGet ((CvBase $ip) + '/ISAPI/System/deviceInfo') $cred
+    if ($d.code -eq 200) {
+      $script:CvVendor = 'hik'
+      $dt = CvXVal $d.text 'deviceType'
+      if ($dt -and $dt -notmatch '(?i)NVR|DVR|HVR|recorder') { $out.Add([pscustomobject]@{ id = '1'; ip = $ip; online = $true; lone = $true }); return ,$out }
+      $chs = CvGet ((CvBase $ip) + '/ISAPI/ContentMgmt/InputProxy/channels') $cred
+      $st = CvGet ((CvBase $ip) + '/ISAPI/ContentMgmt/InputProxy/channels/status') $cred
+      $on = @{}; foreach ($mm in [regex]::Matches($st.text, '(?s)<InputProxyChannelStatus[ >].*?</InputProxyChannelStatus>')) { $on[(CvXVal $mm.Value 'id')] = ((CvXVal $mm.Value 'online') -eq 'true') }
+      foreach ($mm in [regex]::Matches($chs.text, '(?s)<InputProxyChannel[ >].*?</InputProxyChannel>')) {
+        $id = CvXVal $mm.Value 'id'; if (-not $id) { continue }
+        $out.Add([pscustomobject]@{ id = $id; ip = (CvXVal $mm.Value 'ipAddress'); online = $(if ($on.ContainsKey($id)) { $on[$id] } else { $true }); lone = $false })
+      }
+      return ,$out
+    }
+    if ($d.code -eq 401) { $script:CvLoginRefused = $true; return ,$out }
+  }
+  if ($vendor -ne 'hik') {
+    $u = CvGet ((CvBase $ip) + '/LAPI/V1.0/Channels/System/ChannelDetailInfos') $cred
+    if ($u.code -eq 200) {
+      $script:CvVendor = 'uniview'
+      try { $j = $u.text | ConvertFrom-Json; $data = $j.Response.Data; if (-not $data) { $data = $j } } catch { $data = $null }
+      $arr = @(); if ($data) { foreach ($p in $data.PSObject.Properties) { if ($p.Value -is [array]) { $arr = $p.Value } } }
+      foreach ($ch in $arr) {
+        $cip = ''; foreach ($n in 'IPAddress', 'Address', 'IP') { if ($ch.$n) { $cip = [string]$ch.$n; break } }
+        $st = $null; foreach ($n in 'Status', 'Online', 'OnlineStatus') { if ($null -ne $ch.$n) { $st = ([string]$ch.$n -match '^(1|true|online)$'); break } }
+        $out.Add([pscustomobject]@{ id = [string]$ch.ID; ip = $cip; online = $(if ($null -eq $st) { $true } else { $st }); lone = $false })
+      }
+    } elseif ($u.code -eq 401) { $script:CvLoginRefused = $true }
+  }
+  return ,$out
+}
+function Get-CvPicture([string]$ip, $cred, $ch) {
+  if ($script:CvVendor -eq 'uniview') { $paths = @(('/LAPI/V1.0/Channels/' + $ch.id + '/Media/Video/Streams/1/Snapshot'), ('/LAPI/V1.0/Channels/' + $ch.id + '/Media/Video/Streams/0/Snapshot')) }
+  elseif ($ch.lone) { $paths = @('/ISAPI/Streaming/channels/102/picture', '/ISAPI/Streaming/channels/101/picture') }
+  else { $paths = @(('/ISAPI/Streaming/channels/' + $ch.id + '02/picture'), ('/ISAPI/Streaming/channels/' + $ch.id + '01/picture')) }
+  foreach ($pp in $paths) { $r = CvGet ((CvBase $ip) + $pp) $cred 20; if ($r.code -eq 200 -and (CvIsJpeg $r.bytes)) { return $r.bytes } }
+  return $null
+}
+
+# ---- picture: shrink to 640 px + view signature (Windows System.Drawing; on other systems the picture goes as is, no signature) ----
+function CvDrawingOk { if ($null -ne $script:CvDraw) { return $script:CvDraw }; try { Add-Type -AssemblyName System.Drawing; $b = New-Object System.Drawing.Bitmap 2, 2; $b.Dispose(); $script:CvDraw = $true } catch { $script:CvDraw = $false }; return $script:CvDraw }
+function CvGrayBytes($img, [int]$w, [int]$h) {
+  $bmp = New-Object System.Drawing.Bitmap $w, $h, ([System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+  $g = [System.Drawing.Graphics]::FromImage($bmp); $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBilinear
+  $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::Half; $g.DrawImage($img, 0, 0, $w, $h); $g.Dispose()
+  $rect = New-Object System.Drawing.Rectangle 0, 0, $w, $h
+  $bd = $bmp.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+  $raw = New-Object byte[] ($bd.Stride * $h); [Runtime.InteropServices.Marshal]::Copy($bd.Scan0, $raw, 0, $raw.Length); $st = $bd.Stride
+  $bmp.UnlockBits($bd); $bmp.Dispose()
+  $out = New-Object double[] ($w * $h)
+  for ($y = 0; $y -lt $h; $y++) { $o = $y * $st; for ($x = 0; $x -lt $w; $x++) { $i = $o + $x * 3; $out[$y * $w + $x] = 0.114 * $raw[$i] + 0.587 * $raw[$i + 1] + 0.299 * $raw[$i + 2] } }
+  return ,$out
+}
+function Get-CvPrepared($bytes) {
+  # -> @{ jpg = bytes (<= 640 px wide); sig = base64 64x36 gray; sh = sharpness }
+  $res = @{ jpg = $bytes; sig = ''; sh = $null }
+  if (-not (CvDrawingOk)) { return $res }
+  $ms = New-Object IO.MemoryStream (, $bytes); $img = $null
+  try {
+    $img = [System.Drawing.Image]::FromStream($ms)
+    if ($img.Width -gt $script:CvMaxW -or $bytes.Length -gt 250000) {
+      $w = [Math]::Min($script:CvMaxW, $img.Width); $h = [int][Math]::Round($img.Height * $w / $img.Width)
+      $bmp = New-Object System.Drawing.Bitmap $w, $h
+      $g = [System.Drawing.Graphics]::FromImage($bmp); $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic; $g.DrawImage($img, 0, 0, $w, $h); $g.Dispose()
+      $enc = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' } | Select-Object -First 1
+      $ep = New-Object System.Drawing.Imaging.EncoderParameters 1; $ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality), ([long]$script:CvQuality)
+      $o = New-Object IO.MemoryStream; $bmp.Save($o, $enc, $ep); $bmp.Dispose(); $res.jpg = $o.ToArray()
+    }
+    $g64 = CvGrayBytes $img 64 36
+    $sb = New-Object byte[] 2304; for ($i = 0; $i -lt 2304; $i++) { $sb[$i] = [byte][Math]::Max(0, [Math]::Min(255, [Math]::Round($g64[$i]))) }
+    $res.sig = [Convert]::ToBase64String($sb)
+    $s = CvGrayBytes $img 320 180
+    $sum = 0.0; $sq = 0.0; foreach ($v in $s) { $sum += $v; $sq += $v * $v }; $n = $s.Length; $mean = $sum / $n; $std = [Math]::Sqrt([Math]::Max(0, $sq / $n - $mean * $mean))
+    $lap = 0.0; $cnt = 0
+    for ($y = 1; $y -lt 179; $y++) { for ($x = 1; $x -lt 319; $x++) { $i = $y * 320 + $x; $lap += [Math]::Abs(4 * $s[$i] - $s[$i - 320] - $s[$i + 320] - $s[$i - 1] - $s[$i + 1]); $cnt++ } }
+    $res.sh = [Math]::Round(($lap / $cnt) / ($std + 1), 4)
+  } catch { CvLog ('picture prep: ' + $_.Exception.Message) }
+  finally { if ($img) { $img.Dispose() }; $ms.Dispose() }
+  return $res
+}
+
+# ---- upload key (DPAPI, this PC only) ----
+function CvUnprotect([string]$path, [string]$entropy) {
+  Add-Type -AssemblyName System.Security
+  $raw = [IO.File]::ReadAllBytes($path)
+  $b = [Security.Cryptography.ProtectedData]::Unprotect($raw, [Text.Encoding]::ASCII.GetBytes($entropy), [Security.Cryptography.DataProtectionScope]::LocalMachine)
+  return ([Text.Encoding]::UTF8.GetString($b) | ConvertFrom-Json).key
+}
+function Get-CvKey {
+  if ($env:WIREIT_UPLOAD_KEY) { return $env:WIREIT_UPLOAD_KEY }   # tests
+  $own = Join-Path $script:CvHere 'secrets\upload-key.bin'
+  try { if (Test-Path $own) { return (CvUnprotect $own 'WireIt-Toolkit-v1') } } catch { CvLog ('own key: ' + $_.Exception.Message) }
+  foreach ($vm in @((Join-Path (Split-Path -Parent $script:CvHere) 'VendorMonitor\secrets\ingest.bin'))) {
+    try { if (Test-Path $vm) { return (CvUnprotect $vm 'WireIt-VendorMonitor-v1') } } catch { CvLog ('vendor monitor key: ' + $_.Exception.Message) }
+  }
+  return ''
+}
+function Set-CvKey {
+  $sec = Read-Host 'Paste the upload key (the service log "push key"; hidden)' -AsSecureString
+  $k = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+  if ($k -notmatch '^[A-Za-z0-9_-]{24,}$') { CvSay 'That does not look like the key (24+ letters/digits). Nothing saved.' 'Red'; return }
+  Add-Type -AssemblyName System.Security
+  $dir = Join-Path $script:CvHere 'secrets'; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $b = [Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes((@{ key = $k } | ConvertTo-Json -Compress)), [Text.Encoding]::ASCII.GetBytes('WireIt-Toolkit-v1'), [Security.Cryptography.DataProtectionScope]::LocalMachine)
+  [IO.File]::WriteAllBytes((Join-Path $dir 'upload-key.bin'), $b)
+  try { & icacls.exe $dir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' ($env:USERNAME + ':(OI)(CI)F') | Out-Null } catch {}
+  CvSay 'Upload key saved on this PC (encrypted, this PC only).' 'Green'
+}
+
+# ---- send (outbox when it can't) ----
+function Send-CvBody($body) {
+  $json = $body | ConvertTo-Json -Depth 6 -Compress
+  try {
+    $a = @{ Uri = $script:CvApi; Method = 'POST'; Body = [Text.Encoding]::UTF8.GetBytes($json); ContentType = 'text/plain;charset=utf-8'; UseBasicParsing = $true; TimeoutSec = 90 }
+    $r = Invoke-WebRequest @a
+    return ($r.Content | ConvertFrom-Json)
+  } catch { CvLog ('send: ' + $_.Exception.Message); return $null }
+}
+function Save-CvOutbox($body) {
+  New-Item -ItemType Directory -Force -Path $script:CvOutbox | Out-Null
+  $tot = 0; Get-ChildItem $script:CvOutbox -Filter *.json -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | ForEach-Object { $tot += $_.Length }
+  if ($tot -gt 60MB) { CvSay 'Outbox is full (60 MB): these pictures were not kept for later.' 'Yellow'; return }
+  $b2 = $body.Clone(); $b2.Remove('key')   # the key is never written to disk
+  ($b2 | ConvertTo-Json -Depth 6 -Compress) | Set-Content -Path (Join-Path $script:CvOutbox ('camviews-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.json')) -Encoding UTF8
+}
+function Send-CvOutbox {
+  if (-not (Test-Path $script:CvOutbox)) { return 0 }
+  $key = Get-CvKey; if (-not $key) { return 0 }
+  $sent = 0
+  foreach ($f in @(Get-ChildItem $script:CvOutbox -Filter *.json | Sort-Object Name)) {
+    try { $o = Get-Content $f.FullName -Raw | ConvertFrom-Json } catch { Remove-Item $f.FullName -Force; continue }
+    $body = @{}; foreach ($p in $o.PSObject.Properties) { $body[$p.Name] = $p.Value }; $body.key = $key
+    $r = Send-CvBody $body
+    if ($r -and $r.ok) { Remove-Item $f.FullName -Force; $sent++ } elseif ($r -and -not $r.ok -and $r.msg -notmatch '(?i)busy|too many') { CvSay ('Waiting pictures refused: ' + $r.msg) 'Yellow'; Remove-Item $f.FullName -Force } else { break }
+  }
+  if ($sent) { CvSay ('Sent ' + $sent + ' waiting batch(es) of camera pictures.') 'Green' }
+  return $sent
+}
+function Save-CvLocal([string]$site, [string]$key, [string]$ip, [string]$stamp, $bytes) {
+  try {
+    $safe = ($site -replace '[^A-Za-z0-9 ._-]', '_').Trim(); if (-not $safe) { $safe = 'no-site' }
+    $dir = Join-Path $script:CvPics $safe; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $dir ($key + '_' + $(if ($ip) { $ip } else { '-' }) + '_' + $stamp + '.jpg')), $bytes)
+    Get-ChildItem $dir -Filter ($key + '_*.jpg') | Sort-Object Name -Descending | Select-Object -Skip 2 | Remove-Item -Force
+  } catch { CvLog ('local copy: ' + $_.Exception.Message) }
+}
+
+# ---- the job ----
+function Save-CameraViews {
+  param([string]$Nvr, $Cred, [string]$Site, [string]$Vendor = 'auto', [int]$RecorderNo = 1, [switch]$NoUpload, $Channels = $null)
+  $cvr = [ordered]@{ ok = $false; pictures = 0; offline = @(); failed = @(); sent = $false; queued = $false; changed = @(); missing = @(); site = $Site }
+  CvSay ''; CvSay '----- Camera pictures (last known view of each camera) -----' 'Cyan'
+  if (-not $Nvr) { CvSay 'No NVR / camera address given.' 'Red'; return $cvr }
+  if (-not $NoUpload) { try { [void](Send-CvOutbox) } catch { CvLog ('outbox: ' + $_.Exception.Message) } }
+  if (-not $Site) { CvSay 'No site given (type the Site ID like WI-061 or the site folder name). Pictures are kept on this PC only.' 'Yellow' }
+  $script:CvVendor = $(if ($Vendor -eq 'auto') { '' } else { $Vendor }); $script:CvLoginRefused = $false
+  $chs = Get-CvChannels $Nvr $Cred $Vendor
+  if ($script:CvLoginRefused) { CvSay ('The NVR at ' + $Nvr + ' refused the login. No pictures taken (and not retried, so nothing gets locked).') 'Red'; return $cvr }
+  if (-not $chs.Count) { CvSay ('Could not read the camera list from ' + $Nvr + '.') 'Red'; return $cvr }
+  CvSay ('Found ' + $chs.Count + ' camera' + $(if ($chs.Count -eq 1) { '' } else { 's' }) + ' on ' + $Nvr + ' (' + $script:CvVendor + '). Taking pictures...')
+  $pics = New-Object System.Collections.Generic.List[object]
+  $stampNow = Get-Date
+  foreach ($ch in $chs) {
+    $n = 0; [void][int]::TryParse(($ch.id -replace '\D', ''), [ref]$n); if ($n -lt 1) { continue }
+    $key = $(if ($RecorderNo -gt 1) { 'R' + $RecorderNo + '-' } else { '' }) + 'CH' + $n.ToString('00')
+    $label = 'CH ' + $n + $(if ($ch.ip) { ' (' + $ch.ip + ')' } else { '' })
+    if ($ch.online -eq $false) { $cvr.offline += $label; CvSay ('  ' + $label + ': not answering - its last picture stays') 'Yellow'; $pics.Add(@{ key = $key; ip = $ch.ip; online = $false }); continue }
+    $raw = Get-CvPicture $Nvr $Cred $ch
+    if (-not $raw) { $cvr.failed += $label; CvSay ('  ' + $label + ': no picture came back') 'Yellow'; $pics.Add(@{ key = $key; ip = $ch.ip; online = $false }); continue }
+    $p = Get-CvPrepared $raw
+    if ($p.jpg.Length -gt 590000) { $cvr.failed += $label; CvSay ('  ' + $label + ': picture too big to send') 'Yellow'; continue }
+    $taken = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
+    Save-CvLocal $Site $key $ch.ip ((Get-Date -Format 'yyyyMMdd-HHmm')) $p.jpg
+    $e = @{ key = $key; ip = $ch.ip; taken = $taken; jpg = [Convert]::ToBase64String($p.jpg) }
+    if ($p.sig) { $e.sig = $p.sig; $e.sh = $p.sh }
+    $pics.Add($e); $cvr.pictures++
+    CvSay ('  ' + $label + ': picture ok (' + [int]($p.jpg.Length / 1024) + ' KB)')
+  }
+  if ($NoUpload -or -not $Site) { CvSay ('Pictures saved on this PC: ' + $script:CvPics) ; $cvr.ok = $cvr.pictures -gt 0; return $cvr }
+  $key = Get-CvKey
+  $withJpg = @($pics | Where-Object { $_.jpg }); $rest = @($pics | Where-Object { -not $_.jpg })
+  $batches = New-Object System.Collections.Generic.List[object]
+  for ($i = 0; $i -lt $withJpg.Count; $i += $script:CvBatch) { $batches.Add(@($withJpg[$i..([Math]::Min($i + $script:CvBatch, $withJpg.Count) - 1)])) }
+  # last: the whole list (no pictures) marked complete, so the service log can tell a camera that is gone from the NVR
+  $list = @($chs | ForEach-Object { $n = 0; [void][int]::TryParse(($_.id -replace '\D', ''), [ref]$n); if ($n -ge 1) { $k = $(if ($RecorderNo -gt 1) { 'R' + $RecorderNo + '-' } else { '' }) + 'CH' + $n.ToString('00'); $o = @{ key = $k; ip = $_.ip }; if ($_.online -eq $false) { $o.online = $false }; $o } })
+  $okAll = $true
+  $bodies = New-Object System.Collections.Generic.List[object]
+  foreach ($b in $batches) { $bodies.Add(@{ op = 'camPush'; site = $Site; source = 'toolkit'; pc = $env:COMPUTERNAME; pics = $b }) }
+  $bodies.Add(@{ op = 'camPush'; site = $Site; source = 'toolkit'; pc = $env:COMPUTERNAME; pics = $list; complete = $true })
+  foreach ($body in $bodies) {
+    if (-not $key) { Save-CvOutbox $body; $okAll = $false; continue }
+    $body.key = $key
+    $r = $(if ($okAll) { Send-CvBody $body } else { $null })
+    if ($r -and $r.ok) {
+      if ($r.site) { $cvr.site = $r.site }
+      foreach ($x in @($r.results)) { if ($x.changed) { $cvr.changed += ('CH ' + [int](($x.k -replace '^.*CH', '')) + ': looks ' + $x.changed) } }
+      if ($body.complete) { $cvr.missing = @($r.missingKeys) }
+    } elseif ($r -and -not $r.ok) { CvSay ('The service log refused the pictures: ' + $r.msg) 'Red'; $okAll = $false; if ($r.msg -match '(?i)site not found') { break }; Save-CvOutbox $body }
+    else { $okAll = $false; Save-CvOutbox $body }
+  }
+  if (-not $key) { CvSay 'No upload key on this PC yet ("Set upload key.cmd"). Pictures wait in the outbox and go once the key is set.' 'Yellow'; $cvr.queued = $true }
+  elseif ($okAll) { $cvr.sent = $true; CvSay ('Sent ' + $cvr.pictures + ' picture' + $(if ($cvr.pictures -eq 1) { '' } else { 's' }) + ' to the site page' + $(if ($cvr.site) { ' (' + $cvr.site + ')' } else { '' }) + '.') 'Green' }
+  else { $cvr.queued = $true; CvSay 'No internet / service log not reachable: pictures wait in the outbox and go next time the Toolkit runs.' 'Yellow' }
+  foreach ($c in $cvr.changed) { CvSay ('  VIEW CHANGED? ' + $c) 'Yellow' }
+  if ($cvr.missing.Count) { CvSay ('  MISSING compared with before: ' + ((@($cvr.missing) | ForEach-Object { $_ -replace '^CH0?', 'CH ' }) -join ', ')) 'Yellow' }
+  $cvr.ok = $cvr.pictures -gt 0
+  return $cvr
+}
+
+# ---- automatic refresh on a PC that stays on the site's network (daily task, hidden) ----
+function Get-CvSites { $p = Join-Path $script:CvHere 'camviews-sites.json'; if (Test-Path $p) { return @(Get-Content $p -Raw | ConvertFrom-Json) } else { return @() } }
+function Save-CvSite([string]$nvr, [string]$site, [string]$user, [string]$vendor, [int]$rec, $pw) {
+  Add-Type -AssemblyName System.Security
+  $dir = Join-Path $script:CvHere 'secrets'; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($pw))
+  $b = [Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes((@{ user = $user; pw = $plain } | ConvertTo-Json -Compress)), [Text.Encoding]::ASCII.GetBytes('WireIt-Toolkit-nvr-v1'), [Security.Cryptography.DataProtectionScope]::LocalMachine)
+  $plain = $null
+  [IO.File]::WriteAllBytes((Join-Path $dir ('nvr-' + ($nvr -replace '[^0-9A-Za-z.]', '_') + '.bin')), $b)
+  $list = @(Get-CvSites | Where-Object { $_.nvr -ne $nvr }) + @([pscustomobject]@{ nvr = $nvr; site = $site; vendor = $vendor; recorder = $rec })
+  ConvertTo-Json @($list) -Depth 3 | Set-Content -Path (Join-Path $script:CvHere 'camviews-sites.json') -Encoding UTF8
+}
+function Get-CvSiteCred([string]$nvr) {
+  Add-Type -AssemblyName System.Security
+  $f = Join-Path $script:CvHere ('secrets\nvr-' + ($nvr -replace '[^0-9A-Za-z.]', '_') + '.bin')
+  if (-not (Test-Path $f)) { return $null }
+  $o = [Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect([IO.File]::ReadAllBytes($f), [Text.Encoding]::ASCII.GetBytes('WireIt-Toolkit-nvr-v1'), [Security.Cryptography.DataProtectionScope]::LocalMachine)) | ConvertFrom-Json
+  return New-Object System.Management.Automation.PSCredential ($o.user, (ConvertTo-SecureString $o.pw -AsPlainText -Force))
+}
+function Invoke-CvAuto {
+  $sites = @(Get-CvSites)
+  if (-not $sites.Count) { CvSay 'No NVR remembered on this PC (CamViews.ps1 -Nvr <ip> -Site <WI-###> -Remember).'; return }
+  foreach ($s in $sites) {
+    $cred = Get-CvSiteCred $s.nvr
+    if (-not $cred) { CvSay ('No saved login for ' + $s.nvr); continue }
+    [void](Save-CameraViews -Nvr $s.nvr -Cred $cred -Site $s.site -Vendor $(if ($s.vendor) { $s.vendor } else { 'auto' }) -RecorderNo $(if ($s.recorder) { [int]$s.recorder } else { 1 }))
+    $cred = $null
+  }
+}
+function Install-CvTask {
+  $ps = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  $a = New-ScheduledTaskAction -Execute $ps -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + (Join-Path $script:CvHere 'CamViews.ps1') + '" -Auto')
+  $t = New-ScheduledTaskTrigger -Daily -At '12:30'
+  $st = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1) -MultipleInstances IgnoreNew
+  Register-ScheduledTask -TaskName 'WireIt Camera Pictures' -Action $a -Trigger $t -Settings $st -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+  CvSay 'Daily camera pictures set up (12:30, hidden, task "WireIt Camera Pictures"). Remove with CamViews.ps1 -RemoveTask.' 'Green'
+}
+
+if ($Lib) { return }
+if ($SetKey) { Set-CvKey; exit 0 }
+if ($Auto) { Invoke-CvAuto; exit 0 }
+if ($InstallTask) { Install-CvTask; exit 0 }
+if ($RemoveTask) { Unregister-ScheduledTask -TaskName 'WireIt Camera Pictures' -Confirm:$false -ErrorAction SilentlyContinue; CvSay 'Daily camera pictures task removed.'; exit 0 }
+if ($PrepDir) {
+  foreach ($f in @(Get-ChildItem -LiteralPath $PrepDir -Filter *.jpg -File)) {
+    try {
+      $b = [IO.File]::ReadAllBytes($f.FullName); $p = Get-CvPrepared $b
+      if ($p.jpg.Length -ne $b.Length) { [IO.File]::WriteAllBytes($f.FullName, $p.jpg) }
+      Write-Output (@{ name = $f.Name; sig = $p.sig; sh = $p.sh; bytes = $p.jpg.Length } | ConvertTo-Json -Compress)
+    } catch { Write-Output (@{ name = $f.Name; err = $_.Exception.Message } | ConvertTo-Json -Compress) }
+  }
+  exit 0
+}
+if ($SendOutbox) { [void](Send-CvOutbox); exit 0 }
+if (-not $Nvr) { $Nvr = Read-Host 'NVR (or camera) address, e.g. 192.168.1.20' }
+if (-not $Site) { $Site = Read-Host 'Site ID (WI-###) or the site folder name' }
+$cred = $null
+if ($CredFile) { $l = Get-Content $CredFile; $cred = New-Object System.Management.Automation.PSCredential ($l[0], (ConvertTo-SecureString $l[1] -AsPlainText -Force)) }
+else { $pw = Read-Host ('Password for ' + $User + ' on ' + $Nvr + ' (hidden, not saved)') -AsSecureString; $cred = New-Object System.Management.Automation.PSCredential ($User, $pw) }
+if ($Remember) { Save-CvSite $Nvr $Site $cred.UserName $Vendor $RecorderNo $cred.Password; CvSay ('Remembered ' + $Nvr + ' for ' + $Site + ' (login encrypted for this PC only). Run CamViews.ps1 -InstallTask for a daily refresh.') 'Green' }
+$res = Save-CameraViews -Nvr $Nvr -Cred $cred -Site $Site -Vendor $Vendor -RecorderNo $RecorderNo -NoUpload:$NoUpload
+$cred = $null
+if ($res.ok) { exit 0 } else { exit 3 }

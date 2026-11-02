@@ -552,7 +552,7 @@ function Ask-Fields([string]$title, [string]$intro, $fields) {
 }
 function Q([string]$s) { return '"' + ($s -replace '"', '') + '"' }
 
-# ---------------- the 7 jobs ----------------
+# ---------------- the 8 jobs ----------------
 function Do-Find {
   [void](Start-Hidden 'Find cameras' (Join-Path $TK.P.CamReset 'Find-Cameras.ps1') '' {
     param($code)
@@ -584,6 +584,13 @@ function Do-Snapshot {
   if (-not $a) { return }
   $e = @(); if ($a.site) { $e += '-Site ' + (Q $a.site); $TK.site.Text = $a.site }; if ($a.router) { $e += '-RouterModel ' + (Q $a.router) }; if ($a.range) { $e += '-DhcpRange ' + (Q $a.range) }
   Start-Fix 'Install snapshot' 'Snapshot' $e $null
+}
+function Do-Pics {
+  $a = Ask-Fields 'Save camera pictures' 'Takes one picture of every camera on the NVR (read-only) and puts it on the site page, so a camera that goes down shows where it is. Type the Site ID (e.g. WI-061) or the site folder name.' @(@('site', 'Site:', $TK.site.Text))
+  if (-not $a) { return }
+  if (-not $a.site) { $TK.out.Clear(); Add-Out 'Type the site (Site ID like WI-061, or the site folder name) so the pictures go to the right site page.'; return }
+  $TK.site.Text = $a.site
+  Start-Fix 'Camera pictures' 'Pictures' @('-Site ' + (Q $a.site)) $null
 }
 function Do-Undo {
   if (-not (Test-Path (Join-Path $TK.P.FixNVR 'FixNVR.ps1'))) { $TK.out.Clear(); Add-Out 'Fix NVR is not on this PC.'; return }
@@ -833,10 +840,10 @@ $body.Padding = New-Object Windows.Forms.Padding((Px 16), (Px 14), (Px 16), (Px 
 [void]$body.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
 $root.Controls.Add($body, 0, 1)
 
-# left: the 7 jobs, in job order
-$left = New-Object Windows.Forms.TableLayoutPanel; $left.Dock = 'Fill'; $left.ColumnCount = 1; $left.RowCount = 8; $left.Margin = New-Object Windows.Forms.Padding(0, 0, (Px 8), 0)
+# left: the 8 jobs, in job order
+$left = New-Object Windows.Forms.TableLayoutPanel; $left.Dock = 'Fill'; $left.ColumnCount = 1; $left.RowCount = 9; $left.Margin = New-Object Windows.Forms.Padding(0, 0, (Px 8), 0)
 [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
-for ($i = 0; $i -lt 7; $i++) { [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 14.28))) }
+for ($i = 0; $i -lt 8; $i++) { [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 12.5))) }
 $left.Controls.Add((New-Caps 'Jobs  -  usual order 1, 2, 3, 6'), 0, 0)
 $jobs = @(
   @('1   Find cameras', 'Read-only. Lists every Hikvision / Uniview camera and NVR, even on another IP scheme.', { Do-Find }, $cBlue, 0xE721, 'Every camera and NVR, even on another IP scheme.'),
@@ -845,7 +852,8 @@ $jobs = @(
   @('4   Reset passwords (Hikvision)', 'Unknown password: reset file, Hikvision form, new password.', { Show-ResetWindow }, $cBrand, 0xE8D7, 'Unknown password: reset file, Hikvision form, new password.'),
   @('5   Network check', 'Read-only. Cable speed, errors, ping every device.', { Do-Net }, $cIndigo, 0xE839, 'Cable speed, errors, ping every device.'),
   @('6   Save install snapshot', 'Install day: saves a known-good record (no passwords).', { Do-Snapshot }, $cGreen, 0xE74E, 'Install day: a known-good record (no passwords).'),
-  @('7   Undo last fix', 'Puts the NVR and cameras back the way the last Fix found them.', { Do-Undo }, $cSlate, 0xE7A7, 'Puts everything back the way the last Fix found it.')
+  @('7   Undo last fix', 'Puts the NVR and cameras back the way the last Fix found them.', { Do-Undo }, $cSlate, 0xE7A7, 'Puts everything back the way the last Fix found it.'),
+  @('8   Save camera pictures', 'Read-only. One picture of every camera for the site page, so a camera that goes down shows where it is. Also runs at the end of 3 and 6.', { Do-Pics }, $cTeal, 0xE722, 'One picture per camera for the site page.')
 )
 $tips = New-Object Windows.Forms.ToolTip
 $TK.buttons = @()
@@ -932,6 +940,7 @@ Add-Out ''
 Add-Out 'Usual order on a site:' $cInk
 Add-Out '  1 Find cameras  >  2 Check NVR  >  3 Fix NVR (type YES)  >  6 Save install snapshot' $cBlue
 Add-Out '  Unknown password?  4 Reset passwords.   Slow or dropping video?  5 Network check.   Fix went wrong?  7 Undo last fix.' $cMuted
+Add-Out '  8 Save camera pictures: the site page shows each camera''s last picture (3 and 6 take them too when the Site box is filled).' $cMuted
 Add-Out ''
 Add-Out 'Plug this PC into the same switch as the NVR and cameras first. Cable is better than Wi-Fi.' $cInk
 Add-Out 'Hikvision reply email arrived? Drag its file onto this window.' $cInk

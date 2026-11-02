@@ -8,6 +8,8 @@
    Snapshot install-time "known-good" record (MAC/IP/serial/channel map, no passwords) + install-standard check.
    Rollback put devices back exactly as a Fix run found them (-RollbackFile).
    Cleanup  remove any temporary PC address a crashed run left behind (also runs at every start).
+   Pictures read-only: one picture of every camera on the NVR(s) for the site page (Toolkit CamViews.ps1).
+            Snapshot and a finished Fix also take the pictures at the end (needs -Site; skipped with a note otherwise).
  Devices are only READ until you type YES. The PC gets a temporary extra address on the old scheme while the
  tool runs (memory-only, removed at the end, even on error; a reboot also clears it).
  Official interfaces only: Hikvision ISAPI, Hikvision SADP discovery (read), ONVIF (standard), Uniview LAPI.
@@ -15,7 +17,7 @@
  other WireIt gear .10-.19, DNS 8.8.8.8 / 1.1.1.1. Each address is checked free before use.
 #>
 param(
-  [ValidateSet('Check','Fix','Snapshot','Rollback','Cleanup')][string]$Mode = 'Check',
+  [ValidateSet('Check','Fix','Snapshot','Rollback','Cleanup','Pictures')][string]$Mode = 'Check',
   [string]$Site = '',               # site name: finds/saves the snapshot in the site's Drive folder
   [string]$User = 'admin',          # device login user
   [string]$BitwardenExport = '',    # optional: unencrypted Bitwarden .json export (delete it after!)
@@ -37,7 +39,7 @@ param(
 )
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$Version = '1.1 (2026-11-02)'
+$Version = '1.2 (2026-11-02)'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $ConfigPath) { $ConfigPath = Join-Path $here 'config.json' }
 $cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
@@ -600,6 +602,22 @@ if ($Mode -ne 'Rollback') {
 $plan = New-Object System.Collections.Generic.List[object]
 $applied = New-Object System.Collections.Generic.List[object]
 $script:exitCode = 0
+function Invoke-CamViews($list) {
+  # last known view of each camera (Toolkit CamViews.ps1, read-only). Never fails the run.
+  $site0 = $Site; $mock0 = $Mock
+  $cv = Join-Path (Split-Path -Parent $here) 'Toolkit\CamViews.ps1'
+  if ($mock0) { if (-not $mock0.camviews) { return }; $cv = [string]$mock0.camviews }
+  if (-not (Test-Path $cv)) { Say ''; Say 'Camera pictures: skipped (the Toolkit''s CamViews.ps1 is not on this PC).' 'Yellow'; return }
+  if (-not $site0) { Say ''; Say 'Camera pictures: skipped - no site given (type the Site ID, e.g. WI-061, in the Toolkit''s Site box).' 'Yellow'; return }
+  $ok = @($list | Where-Object { $_.login -eq 'ok' -and $_.brand -in @('hik', 'unv') })
+  if (-not $ok.Count) { Say ''; Say 'Camera pictures: skipped - no NVR login.' 'Yellow'; return }
+  try {
+    . $cv -Lib
+    if ($mock0) { $script:CvApi = $mock0.url + '/api'; $script:CvMock = $mock0.url }
+    $i = 0
+    foreach ($n in $ok) { $i++; [void](Save-CameraViews -Nvr $n.ip -Cred $script:credNvr -Site $site0 -Vendor $(if ($n.brand -eq 'unv') { 'uniview' } else { 'hik' }) -RecorderNo $i) }
+  } catch { Say ('Camera pictures: did not work (' + $_.Exception.Message + '). Nothing else is affected.') 'Yellow'; Log $_.ScriptStackTrace }
+}
 function Invoke-Main {
   Open-Firewall
   # ---------- 1. find devices on ANY scheme ----------
@@ -686,6 +704,8 @@ function Invoke-Main {
   if ($loose.Count) { Say ('  Also on an old scheme but NOT on the NVR''s camera list' + $(if ($MoveUnlisted) { ' (will be moved: -MoveUnlisted)' } else { ' (left alone; add -MoveUnlisted to move them)' }) + ': ' + (($loose | ForEach-Object { $_.ip + $(if ($_.vendor) { ' ' + $_.vendor } else { '' }) }) -join ', ')) }
   $ref = @($script:devs | Where-Object { $_.login -like 'REFUSED*' }); if ($ref.Count) { Say ('  Login refused (not retried, so nothing gets locked): ' + (($ref | ForEach-Object { $_.ip }) -join ', ')) 'Yellow' }
 
+  # ---------- PICTURES mode: last known view of each camera (read-only) ----------
+  if ($Mode -eq 'Pictures') { Invoke-CamViews $nvrs; return }
   # ---------- SNAPSHOT mode: record known-good + install standard check ----------
   if ($Mode -eq 'Snapshot') {
     $chk = New-Object System.Collections.Generic.List[string]
@@ -723,6 +743,7 @@ function Invoke-Main {
     if ($sf) { $dd = Join-Path $sf $cfg.snapshot_subfolder; New-Item -ItemType Directory -Force -Path $dd | Out-Null; Copy-Item (Join-Path $localDir $name) (Join-Path $dd $name); Say ('Also saved to the site''s Drive folder: ' + (Join-Path $dd $name)) 'Green' }
     elseif ($Site) { Say ('Site folder "' + $Site + '" not found in Google Drive on this PC. Copy the file above into the site''s Drive folder (Docs).') 'Yellow' }
     else { Say 'Tip: run with -Site "<site folder name>" to save it straight into the site''s Drive folder.' }
+    Invoke-CamViews $nvrs
     return
   }
 
@@ -905,6 +926,7 @@ function Invoke-Main {
   }
   $fails = @($applied | Where-Object { -not $_.done }); if ($fails.Count) { $script:exitCode = 4 }
   Say ''; Say $(if ($fails.Count) { 'Finished with ' + $fails.Count + ' step(s) that did not work (see above). Undo everything with: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { 'Done.' + $(if (-not $rev) { ' Undo if needed: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { '' }) }) $(if ($fails.Count) { 'Yellow' } else { 'Green' })
+  if (-not $rev -and $Mode -eq 'Fix' -and -not $fails.Count) { Invoke-CamViews $nvrs }
   if (-not $rev) { Say 'Tip: run "NVR Snapshot.cmd" now so the site has a known-good record.' }
 }
 try { Invoke-Main }

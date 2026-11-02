@@ -127,16 +127,54 @@ Check 'hidden run exit code' ($pr.ExitCode -eq 3) ([string]$pr.ExitCode)
 Check 'plain end text' ((Get-TkPlainEnd 'Fix NVR' 4) -like '*Undo*')
 $lp = Write-TkLog (Join-Path $tmp 'logs') 'Find cameras' 'x'; Check 'log written' ((Test-Path $lp) -and $lp -like '*_Find-cameras.txt')
 
+# 9 camera pictures (CamViews.ps1): shrink + view signature on Windows' own System.Drawing; key handling
+. (Join-Path $tkDir 'CamViews.ps1') -Lib
+Add-Type -AssemblyName System.Drawing
+function New-TestJpeg([int]$w, [int]$h, [bool]$flat) {
+  $bmp = New-Object System.Drawing.Bitmap $w, $h; $g = [System.Drawing.Graphics]::FromImage($bmp); $g.Clear([System.Drawing.Color]::FromArgb(90, 110, 130))
+  if (-not $flat) { $rnd = New-Object Random 7; for ($i = 0; $i -lt 60; $i++) { $br = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb($rnd.Next(256), $rnd.Next(256), $rnd.Next(256))); $g.FillRectangle($br, $rnd.Next($w), $rnd.Next($h), $rnd.Next(40, 300), $rnd.Next(20, 200)); $br.Dispose() } }
+  $g.Dispose(); $ms = New-Object IO.MemoryStream; $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Jpeg); $bmp.Dispose(); return ,$ms.ToArray()
+}
+$big = New-TestJpeg 1920 1080 $false
+$pp = Get-CvPrepared $big
+$im = [System.Drawing.Image]::FromStream((New-Object IO.MemoryStream (, $pp.jpg)))
+Check 'pictures: 1080p shrunk to 640 wide JPEG' ($im.Width -eq 640 -and $im.Height -eq 360 -and $pp.jpg[0] -eq 0xFF -and $pp.jpg[1] -eq 0xD8 -and $pp.jpg.Length -lt 150000) ([string]$im.Width + 'x' + $im.Height + ' ' + $pp.jpg.Length)
+$im.Dispose()
+Check 'pictures: signature 64x36 gray (2304 bytes)' ([Convert]::FromBase64String($pp.sig).Length -eq 2304)
+$flat = Get-CvPrepared (New-TestJpeg 1280 720 $true)
+Check 'pictures: sharpness measured (busy scene > flat covered scene)' ($pp.sh -gt 0 -and $flat.sh -lt $pp.sh) ([string]$pp.sh + ' / ' + [string]$flat.sh)
+$again = Get-CvPrepared $big
+Check 'pictures: same picture -> same signature' ($again.sig -eq $pp.sig)
+$small = New-TestJpeg 320 180 $false; $ps2 = Get-CvPrepared $small
+Check 'pictures: small picture left as is' ($ps2.jpg.Length -eq $small.Length)
+Check 'pictures: not a JPEG refused' (-not (CvIsJpeg ([Text.Encoding]::ASCII.GetBytes('<html>not a picture</html>' + (' ' * 300)))))
+# key: DPAPI round trip, this PC only; outbox never stores it
+$script:CvHere = $tmp; New-Item -ItemType Directory -Force -Path (Join-Path $tmp 'secrets') | Out-Null
+Add-Type -AssemblyName System.Security
+$kb = [Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes('{"key":"abcdefghijklmnopqrstuvwxyz012345"}'), [Text.Encoding]::ASCII.GetBytes('WireIt-Toolkit-v1'), [Security.Cryptography.DataProtectionScope]::LocalMachine)
+[IO.File]::WriteAllBytes((Join-Path $tmp 'secrets\upload-key.bin'), $kb)
+$envk = $env:WIREIT_UPLOAD_KEY; $env:WIREIT_UPLOAD_KEY = ''
+Check 'pictures: upload key read back (DPAPI, this PC)' ((Get-CvKey) -eq 'abcdefghijklmnopqrstuvwxyz012345')
+Check 'pictures: key file is not plain text' (-not ([Text.Encoding]::UTF8.GetString($kb) -match 'abcdefghij'))
+$env:WIREIT_UPLOAD_KEY = $envk
+$script:CvOutbox = Join-Path $tmp 'outbox'
+Save-CvOutbox @{ op = 'camPush'; key = 'abcdefghijklmnopqrstuvwxyz012345'; site = 'WI-TEST'; pics = @(@{ key = 'CH01'; ip = '10.0.0.21' }) }
+$of = @(Get-ChildItem $script:CvOutbox -Filter *.json)
+Save-CvSite '10.9.9.20' 'WI-TEST' 'admin' 'hik' 1 (ConvertTo-SecureString 'NvrPw#123' -AsPlainText -Force)
+$sc = Get-CvSiteCred '10.9.9.20'
+Check 'pictures: remembered NVR login round trip (DPAPI), not in the list file' ($sc.UserName -eq 'admin' -and $sc.GetNetworkCredential().Password -eq 'NvrPw#123' -and (Get-Content (Join-Path $tmp 'camviews-sites.json') -Raw) -notmatch 'NvrPw' -and @(Get-CvSites).Count -eq 1 -and (Get-CvSites)[0].site -eq 'WI-TEST')
+Check 'pictures: outbox file written without the key' ($of.Count -eq 1 -and (Get-Content $of[0].FullName -Raw) -notmatch 'abcdefghij' -and (Get-Content $of[0].FullName -Raw) -match 'WI-TEST')
+
 # 8 the window itself, drawn off-screen to PNG (no window on the desktop)
 if ($Screens) {
   $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tkDir 'WireItToolkit.ps1') -Screenshot $Screens -DemoCamReset $cr 2>&1 | Out-String
-  Check 'window builds (7 buttons)' ($o -match 'buttons=7') $o
+  Check 'window builds (8 buttons)' ($o -match 'buttons=8') $o
   Check 'screenshots saved' ((Test-Path (Join-Path $Screens 'toolkit-main.png')) -and (Test-Path (Join-Path $Screens 'toolkit-reset.png'))) $o
   Check 'new look built (rounded cards, header)' ($o -match 'look=new') $o
   Check 'icon font found' ($o -match 'icons=Segoe') $o
   $s150 = Join-Path $Screens 'at150'
   $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tkDir 'WireItToolkit.ps1') -Screenshot $s150 -SimScale 1.5 -DemoCamReset $cr 2>&1 | Out-String
-  Check 'window builds at 150% (the Dell screen)' (($o -match 'buttons=7') -and ($o -match 'scale=1.5') -and (Test-Path (Join-Path $s150 'toolkit-main.png'))) $o
+  Check 'window builds at 150% (the Dell screen)' (($o -match 'buttons=8') -and ($o -match 'scale=1.5') -and (Test-Path (Join-Path $s150 'toolkit-main.png'))) $o
 }
 Check 'logo file present' (Test-Path (Join-Path $tkDir 'wireit-logo.png'))
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
