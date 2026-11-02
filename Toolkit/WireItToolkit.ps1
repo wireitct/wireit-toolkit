@@ -4,16 +4,322 @@
    C:\WireIt\CamReset (Find Cameras, Make-Request), C:\WireIt\FixNVR (Check / Fix / Snapshot / Rollback), C:\WireIt\NetCheck.
  Every run is logged to C:\WireIt\Toolkit\logs. Passwords are only typed into hidden prompts and are never saved or logged.
  Start: double-click "WireIt Toolkit" on the desktop (or "WireIt Toolkit.cmd").
- Switches: -NoUpdate (skip the update check)   -Screenshot <folder> (tests: draw the windows to PNG, no screen)
+ Switches: -NoUpdate (skip the update check)   -Screenshot <folder> (tests: draw the windows to PNG, no screen)   -SimScale 1.5 (with -Screenshot: draw as a 150% screen)
 #>
-param([string]$Screenshot = '', [switch]$NoUpdate, [string]$DemoCamReset = '', [string]$UpdatedFrom = '')
+param([string]$Screenshot = '', [switch]$NoUpdate, [string]$DemoCamReset = '', [string]$UpdatedFrom = '', [double]$SimScale = 0)
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'ToolkitCore.ps1')
+$script:WireItUiCode = @'
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Text;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+
+namespace WireItUi {
+  public static class Gfx {
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    public static float S = 1f;
+    public static Color Line = Color.FromArgb(222, 227, 233);
+    public static GraphicsPath Round(RectangleF r, float rad) {
+      GraphicsPath p = new GraphicsPath(); float d = Math.Min(rad * 2, Math.Min(r.Width, r.Height));
+      if (d <= 1) { p.AddRectangle(r); return p; }
+      p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+      p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90); p.CloseFigure(); return p;
+    }
+    public static Color Mix(Color a, Color b, float t) {
+      return Color.FromArgb((int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t));
+    }
+    public static void Smooth(Graphics g) {
+      g.SmoothingMode = SmoothingMode.AntiAlias; g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+      g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit; g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+    }
+    public static void Glyph(Graphics g, string glyph, Font f, Color c, RectangleF r) {
+      if (f == null || String.IsNullOrEmpty(glyph)) return;
+      using (StringFormat sf = new StringFormat()) using (SolidBrush b = new SolidBrush(c)) {
+        sf.Alignment = StringAlignment.Center; sf.LineAlignment = StringAlignment.Center;
+        g.DrawString(glyph, f, b, r, sf);
+      }
+    }
+    public static Color ParentBack(Control c) {
+      Control p = c.Parent;
+      while (p != null && p.BackColor.A < 255) p = p.Parent;
+      return p != null ? p.BackColor : SystemColors.Control;
+    }
+    public static void Card(Graphics g, Control c, Color fill, Color border, float radius, bool shadow) {
+      Smooth(g); g.Clear(ParentBack(c)); float s = S;
+      float sh = shadow ? 2 * s : 0;
+      RectangleF r = new RectangleF(0.5f, 0.5f, c.Width - 1.5f, c.Height - 1.5f - sh);
+      if (shadow) {
+        using (GraphicsPath p = Round(new RectangleF(r.X, r.Y + sh, r.Width, r.Height), radius * s))
+        using (SolidBrush b = new SolidBrush(Color.FromArgb(16, 20, 30, 45))) g.FillPath(b, p);
+      }
+      using (GraphicsPath p = Round(r, radius * s)) {
+        using (SolidBrush b = new SolidBrush(fill)) g.FillPath(b, p);
+        using (Pen pen = new Pen(border, 1f)) g.DrawPath(pen, p);
+      }
+    }
+    // a RichTextBox draws blank in DrawToBitmap; this prints it into the picture (screenshots only)
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
+    [StructLayout(LayoutKind.Sequential)] struct CHARRANGE { public int Min, Max; }
+    [StructLayout(LayoutKind.Sequential)] struct FORMATRANGE { public IntPtr hdc, hdcTarget; public RECT rc, rcPage; public CHARRANGE chrg; }
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, ref FORMATRANGE l);
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);
+    public static void PrintRtb(RichTextBox rtb, Bitmap bmp, Rectangle r) {
+      using (Graphics g = Graphics.FromImage(bmp)) {
+        using (SolidBrush b = new SolidBrush(rtb.BackColor)) g.FillRectangle(b, r);
+        float tw = 1440f / g.DpiX;
+        IntPtr hdc = g.GetHdc();
+        try {
+          FORMATRANGE fr = new FORMATRANGE(); fr.hdc = hdc; fr.hdcTarget = hdc;
+          fr.rc.L = (int)(r.Left * tw); fr.rc.T = (int)(r.Top * tw); fr.rc.R = (int)(r.Right * tw); fr.rc.B = (int)(r.Bottom * tw);
+          fr.rcPage = fr.rc; fr.chrg.Min = 0; fr.chrg.Max = -1;
+          SendMessage(rtb.Handle, 0x439, (IntPtr)1, ref fr);
+          SendMessage(rtb.Handle, 0x439, IntPtr.Zero, IntPtr.Zero);
+        } finally { g.ReleaseHdc(hdc); }
+      }
+    }
+  }
+
+  // dark top bar: logo chip, title, subtitle, version
+  public class Header : Control {
+    public Image Logo; public string Title = "", Sub = "", Badge = "", Note = "";
+    public Font TitleFont, SubFont, BadgeFont;
+    public Color Back = Color.FromArgb(31, 36, 43), Strip = Color.FromArgb(200, 16, 46);
+    public Header() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true); }
+    protected override void OnPaint(PaintEventArgs e) {
+      Graphics g = e.Graphics; Gfx.Smooth(g); float s = Gfx.S;
+      int strip = Math.Max(3, (int)(4 * s)); int h = Height - strip;
+      using (LinearGradientBrush br = new LinearGradientBrush(new Rectangle(0, 0, Math.Max(1, Width), h + 1), Gfx.Mix(Back, Color.White, 0.06f), Gfx.Mix(Back, Color.Black, 0.30f), LinearGradientMode.Horizontal)) g.FillRectangle(br, 0, 0, Width, h);
+      using (SolidBrush br = new SolidBrush(Strip)) g.FillRectangle(br, 0, h, Width, strip);
+      float x = 16 * s;
+      if (Logo != null) {
+        float ch = h - 18 * s; float lh = ch - 10 * s; float lw = lh * Logo.Width / Logo.Height;
+        RectangleF chip = new RectangleF(x, (h - ch) / 2f, lw + 20 * s, ch);
+        using (GraphicsPath p = Gfx.Round(chip, 8 * s)) g.FillPath(Brushes.White, p);
+        g.DrawImage(Logo, new RectangleF(chip.X + 10 * s, chip.Y + 5 * s, lw, lh));
+        x = chip.Right + 18 * s;
+      }
+      Size ts = TextRenderer.MeasureText(g, Title, TitleFont, new Size(9999, 9999), TextFormatFlags.NoPadding);
+      Size ss = String.IsNullOrEmpty(Sub) ? Size.Empty : TextRenderer.MeasureText(g, Sub, SubFont, new Size(9999, 9999), TextFormatFlags.NoPadding);
+      float gap = ss.Height > 0 ? 3 * s : 0; float y = (h - ts.Height - gap - ss.Height) / 2f;
+      TextRenderer.DrawText(g, Title, TitleFont, new Point((int)x, (int)y), Color.White, TextFormatFlags.NoPadding);
+      if (ss.Height > 0) TextRenderer.DrawText(g, Sub, SubFont, new Point((int)x + (int)(1 * s), (int)(y + ts.Height + gap)), Color.FromArgb(170, 180, 192), TextFormatFlags.NoPadding);
+      float rx = Width - 16 * s;
+      if (!String.IsNullOrEmpty(Badge)) {
+        Size bs = TextRenderer.MeasureText(g, Badge, BadgeFont, new Size(9999, 9999), TextFormatFlags.NoPadding);
+        RectangleF pill = new RectangleF(rx - bs.Width - 20 * s, (h - bs.Height - 10 * s) / 2f, bs.Width + 20 * s, bs.Height + 10 * s);
+        using (GraphicsPath p = Gfx.Round(pill, pill.Height / 2f)) {
+          using (SolidBrush b = new SolidBrush(Color.FromArgb(40, 255, 255, 255))) g.FillPath(b, p);
+          using (Pen pen = new Pen(Color.FromArgb(70, 255, 255, 255))) g.DrawPath(pen, p);
+        }
+        TextRenderer.DrawText(g, Badge, BadgeFont, new Point((int)(pill.X + 10 * s), (int)(pill.Y + 5 * s)), Color.White, TextFormatFlags.NoPadding);
+        rx = pill.X - 12 * s;
+      }
+      if (!String.IsNullOrEmpty(Note)) {
+        int w = (int)Math.Max(10, rx - x - TextRenderer.MeasureText(Title, TitleFont).Width - 30 * s);
+        Size ns = TextRenderer.MeasureText(g, Note, SubFont, new Size(w, 9999), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+        Rectangle nr = new Rectangle((int)(rx - Math.Min(ns.Width, w)), (int)((h - ns.Height) / 2f), Math.Min(ns.Width, w) + 2, ns.Height + 2);
+        TextRenderer.DrawText(g, Note, SubFont, nr, Color.FromArgb(200, 208, 218), TextFormatFlags.WordBreak | TextFormatFlags.Right | TextFormatFlags.NoPadding);
+      }
+    }
+  }
+
+  // one big job button: colored icon tile with its number, title, one-line explanation
+  public class Card : Button {
+    public Color Accent = Color.FromArgb(37, 99, 235);
+    public string Title = "", Sub = "", Glyph = "", Num = "", Tag2 = "";
+    public Font TitleFont, SubFont, GlyphFont, NumFont, TagFont, ChevFont;
+    bool hover, down;
+    public Card() {
+      SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+      FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0; Cursor = Cursors.Hand;
+    }
+    protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { hover = false; down = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { down = true; Invalidate(); base.OnMouseDown(e); }
+    protected override void OnMouseUp(MouseEventArgs e) { down = false; Invalidate(); base.OnMouseUp(e); }
+    protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+    protected override void OnPaint(PaintEventArgs e) {
+      Graphics g = e.Graphics; float s = Gfx.S; bool on = Enabled;
+      Color acc = on ? Accent : Color.FromArgb(176, 183, 192);
+      Color fill = !on ? Color.FromArgb(246, 247, 249) : down ? Gfx.Mix(Accent, Color.White, 0.80f) : hover ? Gfx.Mix(Accent, Color.White, 0.93f) : Color.White;
+      Color border = on && (hover || Focused) ? Gfx.Mix(Accent, Color.White, 0.35f) : Gfx.Line;
+      Gfx.Card(g, this, fill, border, 10, true);
+      float sh = 2 * s; RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f - sh);
+      // accent edge
+      using (GraphicsPath clip = Gfx.Round(r, 10 * s)) {
+        Region old = g.Clip; g.SetClip(clip);
+        using (SolidBrush b = new SolidBrush(acc)) g.FillRectangle(b, r.X, r.Y, 4 * s, r.Height);
+        g.Clip = old;
+      }
+      float ts = Math.Min(r.Height - 14 * s, 42 * s); if (ts < 24 * s) ts = Math.Min(r.Height - 8 * s, 24 * s);
+      RectangleF tile = new RectangleF(r.X + 18 * s, r.Y + (r.Height - ts) / 2f, ts, ts);
+      using (GraphicsPath p = Gfx.Round(tile, 9 * s))
+      using (LinearGradientBrush b = new LinearGradientBrush(tile, Gfx.Mix(acc, Color.White, 0.15f), Gfx.Mix(acc, Color.Black, 0.12f), 45f)) g.FillPath(b, p);
+      bool glyph = GlyphFont != null && !String.IsNullOrEmpty(Glyph);
+      if (glyph) Gfx.Glyph(g, Glyph, GlyphFont, Color.White, new RectangleF(tile.X, tile.Y + 1 * s, tile.Width, tile.Height));
+      else Gfx.Glyph(g, Num, TitleFont, Color.White, tile);
+      if (glyph && !String.IsNullOrEmpty(Num)) {
+        float bs = 18 * s; RectangleF bc = new RectangleF(tile.X - 7 * s, tile.Y - 6 * s, bs, bs);
+        using (SolidBrush b = new SolidBrush(fill)) g.FillEllipse(b, bc.X - 2 * s, bc.Y - 2 * s, bs + 4 * s, bs + 4 * s);
+        using (SolidBrush b = new SolidBrush(Gfx.Mix(acc, Color.Black, 0.25f))) g.FillEllipse(b, bc);
+        Gfx.Glyph(g, Num, NumFont, Color.White, new RectangleF(bc.X, bc.Y + 0.5f * s, bc.Width, bc.Height));
+      }
+      float x0 = tile.Right + 16 * s; float right = r.Right - 30 * s; int w = (int)Math.Max(20, right - x0);
+      Color ink = on ? Color.FromArgb(28, 33, 40) : Color.FromArgb(150, 156, 165);
+      Color muted = on ? Color.FromArgb(98, 107, 118) : Color.FromArgb(170, 176, 184);
+      TextFormatFlags one = TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
+      Size tsz = TextRenderer.MeasureText(g, Title, TitleFont, new Size(w, 9999), one);
+      int lineH = TextRenderer.MeasureText(g, "Ag", SubFont, new Size(9999, 9999), TextFormatFlags.NoPadding).Height;
+      int maxLines = (int)((r.Height - 12 * s - tsz.Height - 2 * s) / lineH); if (maxLines > 2) maxLines = 2; if (maxLines < 0) maxLines = 0;
+      int subH = 0;
+      if (maxLines > 0 && !String.IsNullOrEmpty(Sub)) {
+        Size full = TextRenderer.MeasureText(g, Sub, SubFont, new Size(w, 9999), TextFormatFlags.NoPadding | TextFormatFlags.WordBreak);
+        subH = Math.Min(full.Height, lineH * maxLines);
+      }
+      float gap = subH > 0 ? 2 * s : 0; float y = r.Y + (r.Height - tsz.Height - gap - subH) / 2f;
+      TextRenderer.DrawText(g, Title, TitleFont, new Rectangle((int)x0, (int)y, w, tsz.Height + 2), ink, one);
+      if (!String.IsNullOrEmpty(Tag2) && TagFont != null) {
+        Size tg = TextRenderer.MeasureText(g, Tag2, TagFont, new Size(9999, 9999), TextFormatFlags.NoPadding);
+        RectangleF pill = new RectangleF(x0 + tsz.Width + 10 * s, y + (tsz.Height - tg.Height - 6 * s) / 2f + 1 * s, tg.Width + 12 * s, tg.Height + 6 * s);
+        if (pill.Right < right) {
+          using (GraphicsPath p = Gfx.Round(pill, pill.Height / 2f)) using (SolidBrush b = new SolidBrush(Gfx.Mix(acc, Color.White, 0.88f))) g.FillPath(b, p);
+          TextRenderer.DrawText(g, Tag2, TagFont, new Point((int)(pill.X + 6 * s), (int)(pill.Y + 3 * s)), Gfx.Mix(acc, Color.Black, 0.25f), TextFormatFlags.NoPadding);
+        }
+      }
+      if (subH > 0) {
+        if (maxLines == 1) TextRenderer.DrawText(g, Sub, SubFont, new Rectangle((int)x0, (int)(y + tsz.Height + gap), w, subH + 2), muted, one);
+        else using (StringFormat sf = new StringFormat()) using (SolidBrush b = new SolidBrush(muted)) {
+          sf.Trimming = StringTrimming.EllipsisWord; sf.FormatFlags = StringFormatFlags.LineLimit;
+          g.DrawString(Sub, SubFont, b, new RectangleF(x0 - 1 * s, y + tsz.Height + gap, w, subH + 4 * s), sf);
+        }
+      }
+      if (ChevFont != null) Gfx.Glyph(g, "\uE76C", ChevFont, on && hover ? acc : Color.FromArgb(180, 187, 196), new RectangleF(r.Right - 30 * s, r.Y, 22 * s, r.Height));
+    }
+  }
+
+  public class RoundPanel : Panel {
+    public Color Fill = Color.White; public Color Border = Gfx.Line; public float Radius = 10; public bool Shadow = true;
+    public RoundPanel() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true); BackColor = Color.White; }
+    protected override void OnPaint(PaintEventArgs e) { Gfx.Card(e.Graphics, this, Fill, Border, Radius, Shadow); }
+  }
+  public class RoundFlow : FlowLayoutPanel {
+    public Color Fill = Color.White; public Color Border = Gfx.Line; public float Radius = 10; public bool Shadow = true;
+    public RoundFlow() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true); BackColor = Color.White; }
+    protected override void OnPaint(PaintEventArgs e) { Gfx.Card(e.Graphics, this, Fill, Border, Radius, Shadow); }
+  }
+
+  // flat rounded button; Filled = main action
+  public class FlatBtn : Button {
+    public Color Accent = Color.FromArgb(37, 99, 235); public bool Filled; public string Glyph = ""; public Font GlyphFont;
+    public Color TextColor = Color.Empty;
+    bool hover, down;
+    public FlatBtn() {
+      SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+      FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0; Cursor = Cursors.Hand;
+    }
+    int GW { get { return (GlyphFont != null && !String.IsNullOrEmpty(Glyph)) ? (int)(22 * Gfx.S) : 0; } }
+    public override Size GetPreferredSize(Size proposed) {
+      Size t = TextRenderer.MeasureText(Text, Font, new Size(9999, 9999), TextFormatFlags.NoPadding); float s = Gfx.S;
+      return new Size(t.Width + GW + (int)(30 * s), Math.Max(t.Height + (int)(16 * s), (int)(34 * s)));
+    }
+    protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { hover = false; down = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { down = true; Invalidate(); base.OnMouseDown(e); }
+    protected override void OnMouseUp(MouseEventArgs e) { down = false; Invalidate(); base.OnMouseUp(e); }
+    protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+    protected override void OnPaint(PaintEventArgs e) {
+      Graphics g = e.Graphics; Gfx.Smooth(g); float s = Gfx.S; g.Clear(Gfx.ParentBack(this));
+      RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+      Color fill, border, text;
+      if (!Enabled) { fill = Color.FromArgb(240, 242, 245); border = Gfx.Line; text = Color.FromArgb(160, 166, 175); }
+      else if (Filled) { fill = down ? Gfx.Mix(Accent, Color.Black, 0.25f) : hover ? Gfx.Mix(Accent, Color.Black, 0.12f) : Accent; border = fill; text = Color.White; }
+      else { fill = down ? Gfx.Mix(Accent, Color.White, 0.80f) : hover ? Gfx.Mix(Accent, Color.White, 0.92f) : Color.White; border = hover ? Gfx.Mix(Accent, Color.White, 0.40f) : Color.FromArgb(206, 212, 220); text = TextColor.IsEmpty ? Gfx.Mix(Accent, Color.Black, 0.15f) : TextColor; }
+      using (GraphicsPath p = Gfx.Round(r, 7 * s)) {
+        using (SolidBrush b = new SolidBrush(fill)) g.FillPath(b, p);
+        using (Pen pen = new Pen(border)) g.DrawPath(pen, p);
+      }
+      Size t = TextRenderer.MeasureText(g, Text, Font, new Size(9999, 9999), TextFormatFlags.NoPadding);
+      int gw = GW; int tw = Math.Min(t.Width, Width - gw - (int)(20 * s));
+      float x = (Width - tw - gw) / 2f;
+      if (gw > 0) Gfx.Glyph(g, Glyph, GlyphFont, Filled || !Enabled ? text : Accent, new RectangleF(x - 2 * s, 0, gw, Height));
+      TextRenderer.DrawText(g, Text, Font, new Rectangle((int)(x + gw), (Height - t.Height) / 2, tw + 2, t.Height + 2), text, TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+    }
+  }
+
+  // small rounded status pill with a dot
+  public class Pill : Control {
+    public Color Accent = Color.FromArgb(100, 116, 139);
+    public Pill() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true); }
+    public void SetState(string text, Color c) {
+      Text = text; Accent = c; Size t = TextRenderer.MeasureText(text, Font, new Size(9999, 9999), TextFormatFlags.NoPadding); float s = Gfx.S;
+      Size = new Size(t.Width + (int)(34 * s), t.Height + (int)(10 * s)); Invalidate();
+    }
+    protected override void OnPaint(PaintEventArgs e) {
+      Graphics g = e.Graphics; Gfx.Smooth(g); float s = Gfx.S; g.Clear(Gfx.ParentBack(this));
+      RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+      using (GraphicsPath p = Gfx.Round(r, r.Height / 2f)) using (SolidBrush b = new SolidBrush(Gfx.Mix(Accent, Color.White, 0.87f))) g.FillPath(b, p);
+      float d = 8 * s; using (SolidBrush b = new SolidBrush(Accent)) g.FillEllipse(b, 11 * s, (Height - d) / 2f, d, d);
+      Size t = TextRenderer.MeasureText(g, Text, Font, new Size(9999, 9999), TextFormatFlags.NoPadding);
+      TextRenderer.DrawText(g, Text, Font, new Point((int)(25 * s), (Height - t.Height) / 2), Gfx.Mix(Accent, Color.Black, 0.30f), TextFormatFlags.NoPadding);
+    }
+  }
+
+  // numbered step title for the reset screen
+  public class StepHead : Control {
+    public Color Accent = Color.FromArgb(200, 16, 46); public string Num = ""; public Font NumFont, GlyphFont; public string Glyph = "";
+    public StepHead() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true); }
+    protected override void OnPaint(PaintEventArgs e) {
+      Graphics g = e.Graphics; Gfx.Smooth(g); float s = Gfx.S; g.Clear(Gfx.ParentBack(this));
+      float d = Math.Min(Height - 4 * s, 30 * s); RectangleF c = new RectangleF(0, (Height - d) / 2f, d, d);
+      using (SolidBrush b = new SolidBrush(Accent)) g.FillEllipse(b, c);
+      if (!String.IsNullOrEmpty(Num)) Gfx.Glyph(g, Num, NumFont, Color.White, new RectangleF(c.X, c.Y + 0.5f * s, c.Width, c.Height));
+      else if (GlyphFont != null) Gfx.Glyph(g, Glyph, GlyphFont, Color.White, new RectangleF(c.X, c.Y + 1 * s, c.Width, c.Height));
+      Size t = TextRenderer.MeasureText(g, Text, Font, new Size(9999, 9999), TextFormatFlags.NoPadding);
+      TextRenderer.DrawText(g, Text, Font, new Rectangle((int)(d + 12 * s), (Height - t.Height) / 2, Width - (int)(d + 12 * s), t.Height + 2), Color.FromArgb(28, 33, 40), TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+    }
+  }
+
+  // dashed drop box for the Hikvision reply file
+  public class DropZone : Label {
+    public Color Accent = Color.FromArgb(37, 99, 235); public string Glyph = ""; public Font GlyphFont, SmallFont; public string Small = "";
+    bool over;
+    public DropZone() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true); }
+    public bool Over { get { return over; } set { over = value; Invalidate(); } }
+    protected override void OnPaint(PaintEventArgs e) {
+      Graphics g = e.Graphics; Gfx.Smooth(g); float s = Gfx.S; g.Clear(Gfx.ParentBack(this));
+      RectangleF r = new RectangleF(1, 1, Width - 3, Height - 3);
+      using (GraphicsPath p = Gfx.Round(r, 10 * s)) {
+        using (SolidBrush b = new SolidBrush(Gfx.Mix(Accent, Color.White, over ? 0.82f : 0.95f))) g.FillPath(b, p);
+        using (Pen pen = new Pen(Gfx.Mix(Accent, Color.White, 0.25f), 1.5f * s)) { pen.DashStyle = DashStyle.Dash; g.DrawPath(pen, p); }
+      }
+      Size t = TextRenderer.MeasureText(g, Text, Font, new Size(Width - (int)(20 * s), 9999), TextFormatFlags.NoPadding | TextFormatFlags.WordBreak);
+      Size sm = String.IsNullOrEmpty(Small) ? Size.Empty : TextRenderer.MeasureText(g, Small, SmallFont, new Size(Width - (int)(20 * s), 9999), TextFormatFlags.NoPadding | TextFormatFlags.WordBreak);
+      float gh = (GlyphFont != null && !String.IsNullOrEmpty(Glyph)) ? 30 * s : 0;
+      float y = (Height - gh - t.Height - sm.Height - 4 * s) / 2f;
+      if (gh > 0) Gfx.Glyph(g, Glyph, GlyphFont, Accent, new RectangleF(0, y, Width, gh));
+      TextRenderer.DrawText(g, Text, Font, new Rectangle((int)(10 * s), (int)(y + gh), Width - (int)(20 * s), t.Height + 2), Gfx.Mix(Accent, Color.Black, 0.35f), TextFormatFlags.NoPadding | TextFormatFlags.WordBreak | TextFormatFlags.HorizontalCenter);
+      if (sm.Height > 0) TextRenderer.DrawText(g, Small, SmallFont, new Rectangle((int)(10 * s), (int)(y + gh + t.Height + 4 * s), Width - (int)(20 * s), sm.Height + 2), Color.FromArgb(98, 107, 118), TextFormatFlags.NoPadding | TextFormatFlags.WordBreak | TextFormatFlags.HorizontalCenter);
+    }
+  }
+}
+'@
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+# the look (rounded cards, header, colored results) is drawn by a small built-in C# part; if Windows cannot build it, plain buttons are used
+$TK_UI = $false
+try {
+  if (-not ('WireItUi.Card' -as [type])) { Add-Type -TypeDefinition $script:WireItUiCode -ReferencedAssemblies System.Windows.Forms, System.Drawing -ErrorAction Stop }
+  $TK_UI = $true
+} catch { $TK_UI = $false }
 if (-not $Screenshot) {
-  try { Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public static class WireItDpi{[DllImport("user32.dll")]public static extern bool SetProcessDPIAware();}' -ErrorAction Stop; [void][WireItDpi]::SetProcessDPIAware() } catch {}
+  # sharp text on high-DPI screens (the Dell runs at 150%): the window sizes itself with Px() below
+  try { if ($TK_UI) { [void][WireItUi.Gfx]::SetProcessDPIAware() } else { Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public static class WireItDpi{[DllImport("user32.dll")]public static extern bool SetProcessDPIAware();}' -ErrorAction Stop; [void][WireItDpi]::SetProcessDPIAware() } } catch {}
 }
 [Windows.Forms.Application]::EnableVisualStyles()
 
@@ -54,20 +360,85 @@ if ($UpdatedFrom) { $TK.updateMsg = 'Updated itself from v' + $UpdatedFrom + '.'
 
 # ---------------- look ----------------
 $g = [Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $TK.scale = [math]::Max(1.0, $g.DpiX / 96.0); $g.Dispose()
+$TK.fmul = 1.0
+if ($Screenshot -and $SimScale -gt 0) { $TK.fmul = $SimScale / $TK.scale; $TK.scale = $SimScale }   # tests: draw like a 150% screen
+function Get-WorkArea { if ($Screenshot) { return (New-Object Drawing.Rectangle(0, 0, 1920, 1032)) }; return [Windows.Forms.Screen]::PrimaryScreen.WorkingArea }
 function Px([double]$n) { return [int]([math]::Round($n * $TK.scale)) }
-$fBig = New-Object Drawing.Font('Segoe UI', 13, [Drawing.FontStyle]::Bold)
-$fBtn = New-Object Drawing.Font('Segoe UI', 12.5, [Drawing.FontStyle]::Bold)
-$fNorm = New-Object Drawing.Font('Segoe UI', 10.5)
-$fBold = New-Object Drawing.Font('Segoe UI', 10.5, [Drawing.FontStyle]::Bold)
-$fMono = New-Object Drawing.Font('Consolas', 10.5)
-$cBlue = [Drawing.Color]::FromArgb(0, 84, 166); $cRed = [Drawing.Color]::FromArgb(176, 32, 32); $cGrey = [Drawing.Color]::FromArgb(240, 242, 245)
+function Fnt([double]$pt, [string]$face = 'Segoe UI', $style = 'Regular') { return (New-Object Drawing.Font($face, [single]($pt * $TK.fmul), [Drawing.FontStyle]$style)) }
+$fams = @((New-Object Drawing.Text.InstalledFontCollection).Families | ForEach-Object { $_.Name })
+$semi = $(if ($fams -contains 'Segoe UI Semibold') { 'Segoe UI Semibold' } else { 'Segoe UI' })
+$TK.icons = $(if ($fams -contains 'Segoe Fluent Icons') { 'Segoe Fluent Icons' } elseif ($fams -contains 'Segoe MDL2 Assets') { 'Segoe MDL2 Assets' } else { '' })
+function Ico([double]$pt) { if ($TK.icons) { return (Fnt $pt $TK.icons) }; return $null }
+$fBig = Fnt 12.5 $semi
+$fBtn = Fnt 11.5 $semi
+$fNorm = Fnt 10
+$fSmall = Fnt 9
+$fBold = Fnt 10 $semi
+$monoFace = 'Consolas'
+$fMono = Fnt 9.5 $monoFace
+$fCaps = Fnt 8.5 $semi
+# WireIt colors: charcoal + the logo red, one accent color per job
+$cInk = [Drawing.Color]::FromArgb(28, 33, 40); $cMuted = [Drawing.Color]::FromArgb(98, 107, 118); $cBg = [Drawing.Color]::FromArgb(241, 243, 246)
+$cBrand = [Drawing.Color]::FromArgb(200, 16, 46); $cBlue = [Drawing.Color]::FromArgb(37, 99, 235); $cTeal = [Drawing.Color]::FromArgb(13, 148, 136)
+$cAmber = [Drawing.Color]::FromArgb(217, 119, 6); $cIndigo = [Drawing.Color]::FromArgb(79, 70, 229); $cGreen = [Drawing.Color]::FromArgb(22, 163, 74); $cSlate = [Drawing.Color]::FromArgb(100, 116, 139)
+$cOk = [Drawing.Color]::FromArgb(21, 128, 61); $cWarn = [Drawing.Color]::FromArgb(180, 83, 9); $cRed = [Drawing.Color]::FromArgb(200, 30, 30)
+$cGrey = [Drawing.Color]::FromArgb(240, 242, 245)
+if ($TK_UI) { [WireItUi.Gfx]::S = [single]$TK.scale }
+$TK.logo = $null; $lp = Join-Path $here 'wireit-logo.png'; if (Test-Path $lp) { try { $TK.logo = [Drawing.Image]::FromStream((New-Object IO.MemoryStream(, [IO.File]::ReadAllBytes($lp)))) } catch {} }
+
+# ---------------- building blocks (fancy when the C# part built, plain otherwise) ----------------
+function New-Header([string]$title, [string]$sub, [string]$badge, [int]$h) {
+  if ($TK_UI) {
+    $x = New-Object WireItUi.Header; $x.Logo = $TK.logo; $x.Title = $title; $x.Sub = $sub; $x.Badge = $badge
+    $x.TitleFont = Fnt 17 $semi; $x.SubFont = Fnt 9.5; $x.BadgeFont = Fnt 8.5 $semi
+  } else {
+    $x = New-Object Windows.Forms.Label; $x.Text = '  WireIt ' + $title + '   ' + $badge; $x.Font = Fnt 16 'Segoe UI' 'Bold'; $x.ForeColor = [Drawing.Color]::White; $x.BackColor = [Drawing.Color]::FromArgb(31, 36, 43); $x.TextAlign = 'MiddleLeft'
+  }
+  $x.Height = $h; $x.Margin = New-Object Windows.Forms.Padding 0; return $x
+}
+function New-Round([switch]$Flow) {
+  if ($TK_UI) { if ($Flow) { $p = New-Object WireItUi.RoundFlow } else { $p = New-Object WireItUi.RoundPanel } }
+  else { if ($Flow) { $p = New-Object Windows.Forms.FlowLayoutPanel } else { $p = New-Object Windows.Forms.Panel }; $p.BackColor = [Drawing.Color]::White; $p.BorderStyle = 'FixedSingle' }
+  return $p
+}
+function New-Pill {
+  if ($TK_UI) { $p = New-Object WireItUi.Pill } else { $p = New-Object Windows.Forms.Label; $p.AutoSize = $true }
+  $p.Font = $fCaps; return $p
+}
+function Set-Pill([string]$text, $color) {
+  if (-not $TK.pill) { return }
+  if ($TK_UI) { $TK.pill.SetState($text, $color) } else { $TK.pill.Text = $text; $TK.pill.ForeColor = $color }
+}
+function Set-Primary($b, $color = $null) { if ($TK_UI -and $b -is [WireItUi.FlatBtn]) { $b.Filled = $true; if ($color) { $b.Accent = $color } }; return $b }
+function Set-Glyph($b, [string]$glyph) { if ($TK_UI -and $TK.icons -and $b -is [WireItUi.FlatBtn]) { $b.Glyph = $glyph; $b.GlyphFont = Ico 10 }; return $b }
+function New-Caps([string]$text) {
+  $l = New-Object Windows.Forms.Label; $l.Text = $text.ToUpper(); $l.Font = $fCaps; $l.ForeColor = $cMuted; $l.AutoSize = $true; $l.BackColor = [Drawing.Color]::Transparent
+  $l.Margin = New-Object Windows.Forms.Padding((Px 2), 0, 0, (Px 6)); return $l
+}
 
 # ---------------- results pane helpers ----------------
-function Add-Out([string]$text) {
+function Get-LineColor([string]$l) {
+  if ($l -match '^\s*===') { return $cBlue }
+  if ($l -match '(?i)\b(error|failed|fail|could not|cannot|can''t|not found|problem|denied|refused|wrong|missing|no answer|unreachable|not given|nothing ran)\b') {
+    if ($l -match '(?i)did not work|finished, but') { return $cWarn }; return $cRed }
+  if ($l -match '(?i)\b(warning|warn|router step needed|different ip scheme|did not work|old:|not on this pc|heads up|note:|unknown|reboot)\b') { return $cWarn }
+  if ($l -match '(?i)\b(ok|done|fixed|finished|success|saved|ready|in short|all good|passed|online|moved|updated)\b') { return $cOk }
+  return $cInk
+}
+function Add-Out([string]$text, $color = $null) {
   if ($null -eq $text) { return }
   $t = $text -replace "`r?`n", "`r`n"
   if (-not $t.EndsWith("`r`n")) { $t += "`r`n" }
-  $TK.out.AppendText($t)
+  $box = $TK.out
+  if ($box -is [Windows.Forms.RichTextBox]) {
+    foreach ($ln in ($t.Substring(0, $t.Length - 2) -split "`r`n")) {
+      $box.SelectionStart = $box.TextLength; $box.SelectionLength = 0
+      $box.SelectionColor = $(if ($color) { $color } else { Get-LineColor $ln })
+      $box.SelectionFont = $(if ($ln -match '^\s*===' -or $ln -match '^(In short|Usual order)') { $TK.fMonoB } else { $box.Font })
+      $box.AppendText($ln + "`n")
+    }
+    $box.SelectionStart = $box.TextLength; $box.ScrollToCaret()
+  } else { $box.AppendText($t) }
   if ($TK.run -and $TK.run.Log) { [void]$TK.run.Log.Append($t) }
 }
 function Set-Status([string]$s) { $TK.status.Text = $s }
@@ -80,11 +451,12 @@ function Begin-Run([string]$name) {
   $TK.out.Clear()
   $TK.run = @{ Name = $name; Log = (New-Object Text.StringBuilder); Started = Get-Date }
   Add-Out ('=== ' + $name + ' - ' + (Get-Date -Format 'ddd MMM d, h:mm tt') + ' ===')
-  Set-Busy $true; Set-Status ($name + ' is running...')
+  Set-Busy $true; Set-Status ($name + ' is running...'); Set-Pill ($name + ' - running') $cAmber
 }
 function End-Run([int]$code, [string]$plain) {
   $r = $TK.run; if (-not $r) { return }
   if ($plain) { Add-Out ''; Add-Out $plain }
+  switch ($code) { 0 { Set-Pill ($r.Name + ' - done') $cOk } 4 { Set-Pill ($r.Name + ' - done, check the warnings') $cWarn } default { Set-Pill ($r.Name + ' - problem') $cRed } }
   $logPath = Write-TkLog $TK.P.Logs $r.Name $r.Log.ToString()
   $TK.run = $null
   Set-Busy $false; Set-Status ($r.Name + ' done. Saved to the logs folder.')
@@ -162,18 +534,18 @@ function Poll-Run {
 
 # ---------------- small input dialog ----------------
 function Ask-Fields([string]$title, [string]$intro, $fields) {
-  $f = New-Object Windows.Forms.Form; $f.Text = $title; $f.Font = $fNorm; $f.StartPosition = 'CenterParent'; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false
-  $f.AutoSize = $true; $f.AutoSizeMode = 'GrowAndShrink'; $f.Padding = New-Object Windows.Forms.Padding (Px 12)
+  $f = New-Object Windows.Forms.Form; $f.Text = $title; $f.Font = $fNorm; $f.BackColor = [Drawing.Color]::White; if ($TK.form -and $TK.form.Icon) { $f.Icon = $TK.form.Icon }; $f.StartPosition = 'CenterParent'; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false
+  $f.AutoSize = $true; $f.AutoSizeMode = 'GrowAndShrink'; $f.Padding = New-Object Windows.Forms.Padding (Px 18)
   $t = New-Object Windows.Forms.TableLayoutPanel; $t.ColumnCount = 2; $t.AutoSize = $true; $t.Dock = 'Fill'
   $l0 = New-Object Windows.Forms.Label; $l0.Text = $intro; $l0.AutoSize = $true; $l0.MaximumSize = New-Object Drawing.Size((Px 520), 0); $t.Controls.Add($l0); $t.SetColumnSpan($l0, 2)
   $boxes = @{}
   foreach ($fd in $fields) {
     $l = New-Object Windows.Forms.Label; $l.Text = $fd[1]; $l.AutoSize = $true; $l.Anchor = 'Left'; $t.Controls.Add($l)
-    $b = New-Object Windows.Forms.TextBox; $b.Width = Px 300; $b.Text = [string]$fd[2]; $t.Controls.Add($b); $boxes[$fd[0]] = $b
+    $b = New-Object Windows.Forms.TextBox; $b.Width = Px 320; $b.Margin = New-Object Windows.Forms.Padding((Px 3), (Px 5), (Px 3), (Px 5)); $b.Text = [string]$fd[2]; $t.Controls.Add($b); $boxes[$fd[0]] = $b
   }
-  $ok = New-Object Windows.Forms.Button; $ok.Text = 'OK'; $ok.DialogResult = 'OK'; $ok.AutoSize = $true; $ok.Height = Px 34
-  $cn = New-Object Windows.Forms.Button; $cn.Text = 'Cancel'; $cn.DialogResult = 'Cancel'; $cn.AutoSize = $true; $cn.Height = Px 34
-  $fl = New-Object Windows.Forms.FlowLayoutPanel; $fl.AutoSize = $true; $fl.Controls.AddRange(@($ok, $cn)); $t.Controls.Add($fl); $t.SetColumnSpan($fl, 2)
+  $ok = Set-Primary (New-Btn 'OK' $null) $cBlue; $ok.DialogResult = 'OK'
+  $cn = New-Btn 'Cancel' $null; $cn.DialogResult = 'Cancel'
+  $fl = New-Object Windows.Forms.FlowLayoutPanel; $fl.AutoSize = $true; $fl.Margin = New-Object Windows.Forms.Padding(0, (Px 10), 0, 0); $fl.Controls.AddRange(@($ok, $cn)); $t.Controls.Add($fl); $t.SetColumnSpan($fl, 2)
   $f.Controls.Add($t); $f.AcceptButton = $ok; $f.CancelButton = $cn
   if ($f.ShowDialog($TK.form) -ne 'OK') { return $null }
   $res = @{}; foreach ($k in $boxes.Keys) { $res[$k] = $boxes[$k].Text.Trim() }; return $res
@@ -226,19 +598,32 @@ function Do-Undo {
 
 # ---------------- 4 Reset passwords (Hikvision) ----------------
 function New-Btn([string]$text, [scriptblock]$click, $tag = $null) {
-  $b = New-Object Windows.Forms.Button; $b.Text = $text; $b.AutoSize = $true; $b.MinimumSize = New-Object Drawing.Size((Px 90), (Px 36)); $b.Font = $fNorm; $b.Tag = $tag
-  $b.Margin = New-Object Windows.Forms.Padding (Px 3); if ($click) { $b.Add_Click($click) }; return $b
+  if ($TK_UI) { $b = New-Object WireItUi.FlatBtn; $b.Accent = $cBlue } else { $b = New-Object Windows.Forms.Button; $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderColor = $cBlue; $b.ForeColor = $cBlue; $b.BackColor = [Drawing.Color]::White }
+  $b.Text = $text; $b.AutoSize = $true; $b.MinimumSize = New-Object Drawing.Size((Px 90), (Px 36)); $b.Font = $fBold; $b.Tag = $tag
+  $b.Margin = New-Object Windows.Forms.Padding((Px 0), (Px 4), (Px 8), (Px 4)); if ($click) { $b.Add_Click($click) }; return $b
 }
 function New-Lbl([string]$text, $font = $null, [int]$width = 0) {
   $l = New-Object Windows.Forms.Label; $l.Text = $text; $l.AutoSize = $true; if ($font) { $l.Font = $font } else { $l.Font = $fNorm }
-  if ($width -gt 0) { $l.MaximumSize = New-Object Drawing.Size($width, 0) }; $l.Margin = New-Object Windows.Forms.Padding (Px 3); return $l
+  $l.ForeColor = $cInk; $l.BackColor = [Drawing.Color]::Transparent
+  if ($width -gt 0) { $l.MaximumSize = New-Object Drawing.Size($width, 0) }; $l.Margin = New-Object Windows.Forms.Padding((Px 0), (Px 4), (Px 3), (Px 4)); return $l
 }
-function New-Step([string]$title) {
+function New-Step([string]$title, [string]$num = '', $accent = $null) {
+  # one white rounded card per step: a numbered circle + title, then the step's buttons and words
   $W = $TK.rs.W
-  $hdr = New-Lbl $title $fBig $W; $hdr.ForeColor = $cBlue; $hdr.Margin = New-Object Windows.Forms.Padding((Px 3), (Px 14), (Px 3), (Px 2))
-  $TK.rs.flow.Controls.Add($hdr)
+  if (-not $accent) { $accent = $cBrand }
+  $card = New-Round -Flow; $card.FlowDirection = 'TopDown'; $card.WrapContents = $false; $card.AutoSize = $true; $card.AutoSizeMode = 'GrowAndShrink'
+  $card.Padding = New-Object Windows.Forms.Padding((Px 20), (Px 14), (Px 20), (Px 16)); $card.Margin = New-Object Windows.Forms.Padding(0, 0, 0, (Px 12))
+  if ($TK_UI) {
+    $hdr = New-Object WireItUi.StepHead; $hdr.Text = $title; $hdr.Num = $num; $hdr.Accent = $accent; $hdr.Font = $fBig; $hdr.NumFont = Fnt 10.5 $semi
+    if (-not $num) { $hdr.GlyphFont = Ico 10.5; $hdr.Glyph = [string][char]0xE8B1 }
+    $hdr.Size = New-Object Drawing.Size($W, (Px 36))
+  } else { $hdr = New-Lbl ($(if ($num) { $num + '  ' } else { '' }) + $title) $fBig $W; $hdr.ForeColor = $accent }
+  $hdr.Margin = New-Object Windows.Forms.Padding(0, 0, 0, (Px 6))
+  $card.Controls.Add($hdr)
   $fl = New-Object Windows.Forms.FlowLayoutPanel; $fl.AutoSize = $true; $fl.WrapContents = $true; $fl.MaximumSize = New-Object Drawing.Size($W, 0); $fl.MinimumSize = New-Object Drawing.Size($W, 0)
-  $TK.rs.flow.Controls.Add($fl); $TK.rs.flow.SetFlowBreak($fl, $true)
+  $fl.BackColor = [Drawing.Color]::White; $fl.Margin = New-Object Windows.Forms.Padding(0)
+  $card.Controls.Add($fl)
+  $TK.rs.flow.Controls.Add($card)
   return $fl
 }
 function Find-HiTools { foreach ($h in @($TK.cfg.hiTools)) { if ($h -and (Test-Path -LiteralPath $h)) { return $h } }; return '' }
@@ -269,7 +654,7 @@ function Show-Selected {
   $rs = $TK.rs; $d = $rs.dev
   foreach ($b in $rs.fieldBtns) { $b.Dispose() }; $rs.fieldBtns = @()
   foreach ($f in (Get-TkFormFields $TK.cfg $d)) {
-    $b = New-Btn ($f.Label + ':  ' + $f.Value) { Set-Clip $this.Tag.Value $this.Tag.Label } $f
+    $b = Set-Glyph (New-Btn ($f.Label + ':  ' + $f.Value) { Set-Clip $this.Tag.Value $this.Tag.Label } $f) ([string][char]0xE8C8); if ($TK_UI) { $b.TextColor = $cInk; $b.Font = $fNorm }
     $rs.fields.Controls.Add($b); $rs.fieldBtns += $b
   }
   $note = ''
@@ -278,7 +663,7 @@ function Show-Selected {
   if ($d.Activated -eq 'false') { $note = 'This one is factory fresh: NO reset needed. In HiTools, tick it > Activate, and use a password from step 5.' }
   elseif ($d.Brand -eq 'Uniview') { $note = $(if ($d.DefaultLoginWorks -eq 'YES') { 'Uniview with the factory password (admin/123456): NO reset needed. Log in and set a password from step 5.' } else { 'Uniview: this screen is for Hikvision. Locked Uniview cameras use the Uniview bulk form (CamReset README, step U).' }) }
   elseif ($d.Brand -notlike 'Hikvision*') { $note = 'Not a Hikvision device.' }
-  $rs.noteLbl.Text = $note
+  $rs.noteLbl.Text = $note; $rs.noteLbl.Visible = [bool]$note
   $q = Get-Req $d; $rs.req = $q; Show-Req
 }
 function Show-Req {
@@ -286,10 +671,10 @@ function Show-Req {
   if ($q) {
     $hl = Get-TkHoursLeft $q
     $rs.xmlLbl.Text = 'Reset file ready: ' + $q.xmlFile + '. ' + $(if ($hl -ge 0) { 'Good for about ' + $hl + ' more hours.' } else { 'OLD: the 48 hours are over, export a new one.' }) + ' Do NOT unplug or reboot the device until the reset is done.'
-    $rs.xmlLbl.ForeColor = $(if ($hl -ge 0) { [Drawing.Color]::DarkGreen } else { $cRed })
-    if ($q.replyFile) { $rs.replyLbl.Text = 'Reply file in: ' + $q.replyFile; $rs.replyLbl.ForeColor = [Drawing.Color]::DarkGreen }
+    $rs.xmlLbl.ForeColor = $(if ($hl -ge 0) { $cOk } else { $cRed })
+    if ($q.replyFile) { $rs.replyLbl.Text = 'Reply file in: ' + $q.replyFile; $rs.replyLbl.ForeColor = $cOk }
   } else {
-    $rs.xmlLbl.Text = 'Waiting for the exported file (the Toolkit watches the save folder and Downloads).'; $rs.xmlLbl.ForeColor = [Drawing.Color]::Black
+    $rs.xmlLbl.Text = 'Waiting for the exported file (the Toolkit watches the save folder and Downloads).'; $rs.xmlLbl.ForeColor = $cMuted
   }
 }
 function Get-XmlPath { $q = $TK.rs.req; if ($q) { return (Join-Path $q.folder ([string]$q.xmlFile)) }; return '' }
@@ -309,77 +694,91 @@ function Use-Xml([string]$path) {
 function Take-Reply([string]$path) {
   $rs = $TK.rs; $pref = ''; if ($rs.dev) { $pref = $rs.dev.ShortSerial }
   $r = Import-TkReply $path $TK.P.CamReset $pref
-  $rs.replyLbl.Text = $r.message; $rs.replyLbl.ForeColor = $(if ($r.ok -and $r.request) { [Drawing.Color]::DarkGreen } else { $cRed })
+  $rs.replyLbl.Text = $r.message; $rs.replyLbl.ForeColor = $(if ($r.ok -and $r.request) { $cOk } else { $cRed })
   if ($r.ok) { $rs.replyFile = $r.file; if ($r.request) { $rs.req = Get-TkRequests $TK.P.CamReset | Where-Object { $_.serial -eq $r.request.serial } | Select-Object -First 1 }; Rs-Log ('reply file filed: ' + $r.file) }
 }
 function Show-ResetWindow([string]$dropFile = '') {
   $rs = @{ fieldBtns = @(); dev = $null; req = $null; watch = $false; watchSince = (Get-Date); replyFile = ''; pw = ''; lastWatch = (Get-Date) }
   $TK.rs = $rs
   $f = New-Object Windows.Forms.Form; $rs.form = $f
-  $f.Text = 'WireIt Toolkit - Reset passwords (Hikvision, official method)'; $f.Font = $fNorm; $f.BackColor = [Drawing.Color]::White
-  $wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
-  $f.Size = New-Object Drawing.Size([math]::Min((Px 1060), [int]($wa.Width * 0.95)), [math]::Min((Px 900), [int]($wa.Height * 0.95))); $f.StartPosition = 'CenterScreen'
+  $f.Text = 'WireIt Toolkit - Reset passwords (Hikvision, official method)'; $f.Font = $fNorm; $f.BackColor = $cBg; if ($TK.form -and $TK.form.Icon) { $f.Icon = $TK.form.Icon }
+  $wa = Get-WorkArea
+  $want = New-Object Drawing.Size([math]::Min((Px 1060), [int]($wa.Width * 0.95)), [math]::Min((Px 900), [int]($wa.Height * 0.95)))
+  $f.Size = $want; $f.StartPosition = 'CenterScreen'
   $f.AllowDrop = $true
-  $rs.W = $f.ClientSize.Width - (Px 50)
-  $flow = New-Object Windows.Forms.FlowLayoutPanel; $flow.Dock = 'Fill'; $flow.FlowDirection = 'TopDown'; $flow.WrapContents = $false; $flow.AutoScroll = $true; $flow.Padding = New-Object Windows.Forms.Padding (Px 10)
-  $rs.flow = $flow; $f.Controls.Add($flow)
+  $rs.client = New-Object Drawing.Size(($want.Width - ($f.Width - $f.ClientSize.Width)), ($want.Height - ($f.Height - $f.ClientSize.Height)))
+  $padX = Px 22
+  $rs.CW = $rs.client.Width - 2 * $padX - [Windows.Forms.SystemInformation]::VerticalScrollBarWidth - (Px 4)   # card width
+  $rs.W = $rs.CW - (Px 40)                                                                                         # inside a card
+  $flow = New-Object Windows.Forms.FlowLayoutPanel; $flow.Dock = 'Fill'; $flow.FlowDirection = 'TopDown'; $flow.WrapContents = $false; $flow.AutoScroll = $true
+  $flow.Padding = New-Object Windows.Forms.Padding($padX, (Px 16), $padX, (Px 16)); $flow.BackColor = $cBg
+  $hostP = New-Object Windows.Forms.Panel; $hostP.Dock = 'Fill'; $hostP.BackColor = $cBg; $rs.host = $hostP; $f.Controls.Add($hostP)
+  $rs.flow = $flow; $hostP.Controls.Add($flow)
+  $hd = New-Header 'Reset passwords' ('Hikvision camera or NVR   ' + [char]0x00B7 + '   official Hikvision method') ('v' + $TK.ver) (Px 72); $hd.Dock = 'Top'; $hostP.Controls.Add($hd); $flow.BringToFront(); $rs.head = $hd
   $W = $rs.W
-  $flow.Controls.Add((New-Lbl 'Unknown password on a Hikvision camera or NVR: Hikvision unlocks it with a reset file. You type the picture code on their form; the Toolkit does the rest. Go top to bottom.' $fNorm $W))
+  $intro = New-Lbl 'Unknown password on a Hikvision camera or NVR: Hikvision unlocks it with a reset file. You type the picture code on their form; the Toolkit does the rest. Go top to bottom.' $fNorm $rs.CW
+  $intro.ForeColor = $cMuted; $intro.Margin = New-Object Windows.Forms.Padding((Px 2), 0, 0, (Px 12)); $flow.Controls.Add($intro)
 
-  $s1 = New-Step '1  Pick the device'
-  $lv = New-Object Windows.Forms.ListView; $lv.View = 'Details'; $lv.FullRowSelect = $true; $lv.HideSelection = $false; $lv.MultiSelect = $false; $lv.Font = $fNorm
+  $s1 = New-Step 'Pick the device' '1'
+  $lv = New-Object Windows.Forms.ListView; $lv.View = 'Details'; $lv.FullRowSelect = $true; $lv.HideSelection = $false; $lv.MultiSelect = $false; $lv.Font = $fNorm; $lv.BorderStyle = 'FixedSingle'; $lv.ForeColor = $cInk; $lv.Margin = New-Object Windows.Forms.Padding(0, (Px 2), 0, (Px 6))
   $lv.Size = New-Object Drawing.Size($W, (Px 150))
-  foreach ($c in @(@('Brand', 110), @('Model', 210), @('Serial (9)', 120), @('IP', 130), @('Status', 400))) { [void]$lv.Columns.Add($c[0], (Px $c[1])) }
+  foreach ($c in @(@('Brand', 110), @('Model', 200), @('Serial (9)', 110), @('IP', 130), @('Status', [math]::Max(200, ($W / $TK.scale) - 560)))) { [void]$lv.Columns.Add($c[0], (Px $c[1])) }
   $lv.Add_SelectedIndexChanged({ if ($TK.rs.list.SelectedItems.Count) { $TK.rs.dev = $TK.rs.list.SelectedItems[0].Tag } else { $TK.rs.dev = $null }; Show-Selected })
   $rs.list = $lv; $s1.Controls.Add($lv)
-  $rs.scanLbl = New-Lbl '' $null ($W - (Px 200)); $s1.Controls.Add((New-Btn 'Scan now' { Do-Find })); $s1.Controls.Add($rs.scanLbl)
+  $rs.scanLbl = New-Lbl '' $null ($W - (Px 200)); $rs.scanLbl.ForeColor = $cMuted; $rs.scanLbl.Margin = New-Object Windows.Forms.Padding(0, (Px 11), 0, 0); $s1.Controls.Add((Set-Glyph (New-Btn 'Scan now' { Do-Find }) ([string][char]0xE72C))); $s1.Controls.Add($rs.scanLbl)
   $rs.devLbl = New-Lbl '' $fBold $W; $s1.Controls.Add($rs.devLbl); $s1.SetFlowBreak($rs.devLbl, $true)
-  $rs.noteLbl = New-Lbl '' $fBold $W; $rs.noteLbl.ForeColor = $cRed; $s1.Controls.Add($rs.noteLbl)
+  $rs.noteLbl = New-Lbl '' $fBold $W; $rs.noteLbl.ForeColor = $cRed; $rs.noteLbl.Visible = $false; $s1.Controls.Add($rs.noteLbl)
 
-  $s2 = New-Step '2  Make the reset file in HiTools (about 30 seconds)'
+  $s2 = New-Step 'Make the reset file in HiTools (about 30 seconds)' '2'
   $exportDir = Join-Path $TK.P.CamReset 'requests\export'
   $s2.Controls.Add((New-Lbl ('Open HiTools > tick the device > Reset Password > Import/Export Key > Export XML File > save it in ' + $exportDir + '  (click "Copy save folder", paste it in the save box). NVR: one file also covers its cameras if you tick them too.') $null $W))
-  $s2.Controls.Add((New-Btn 'Open HiTools' { Open-HiTools }))
-  $s2.Controls.Add((New-Btn 'Copy save folder' { New-Item -ItemType Directory -Force -Path $this.Tag | Out-Null; Set-Clip $this.Tag 'the save folder' } $exportDir))
+  $s2.Controls.Add((Set-Glyph (Set-Primary (New-Btn 'Open HiTools' { Open-HiTools })) ([string][char]0xE8A7)))
+  $s2.Controls.Add((Set-Glyph (New-Btn 'Copy save folder' { New-Item -ItemType Directory -Force -Path $this.Tag | Out-Null; Set-Clip $this.Tag 'the save folder' } $exportDir) ([string][char]0xE8C8)))
   $s2.Controls.Add((New-Btn 'I saved it somewhere else - pick the file' {
     $o = New-Object Windows.Forms.OpenFileDialog; $o.Filter = 'Hikvision export (*.xml)|*.xml|All files|*.*'; $o.Title = 'Pick the XML file HiTools exported'
     if ($o.ShowDialog($TK.rs.form) -eq 'OK') { Use-Xml $o.FileName } }))
   $rs.xmlLbl = New-Lbl '' $fBold $W; $s2.Controls.Add($rs.xmlLbl)
 
-  $s3 = New-Step '3  Send it to Hikvision (their US form)'
+  $s3 = New-Step 'Send it to Hikvision (their US form)' '3'
   $s3.Controls.Add((New-Lbl 'Click "Open the Hikvision form", then click each button below and paste (Ctrl+V) into the matching box. Upload: click "Copy XML file path", paste it into the File name box and press Enter. Tick the owner/authorized statement, type the picture code, Submit.' $null $W))
-  $s3.Controls.Add((New-Btn 'Open the Hikvision form' { try { Start-Process ([string]$TK.cfg.hikvisionForm) } catch { Set-Status 'Could not open the browser.' } }))
-  $s3.Controls.Add((New-Btn 'Copy XML file path' { Set-Clip (Get-XmlPath) 'the XML file path' }))
+  $s3.Controls.Add((Set-Glyph (Set-Primary (New-Btn 'Open the Hikvision form' { try { Start-Process ([string]$TK.cfg.hikvisionForm) } catch { Set-Status 'Could not open the browser.' } })) ([string][char]0xE774)))
+  $s3.Controls.Add((Set-Glyph (New-Btn 'Copy XML file path' { Set-Clip (Get-XmlPath) 'the XML file path' }) ([string][char]0xE8C8)))
   $s3.Controls.Add((New-Btn 'Show XML file' { $x = Get-XmlPath; if ($x -and (Test-Path -LiteralPath $x)) { Start-Process explorer.exe ('/select,"' + $x + '"') } else { Set-Status 'No XML file yet (step 2).' } }))
-  $fields = New-Object Windows.Forms.FlowLayoutPanel; $fields.AutoSize = $true; $fields.MaximumSize = New-Object Drawing.Size($W, 0); $fields.MinimumSize = New-Object Drawing.Size($W, 0); $rs.fields = $fields; $s3.Controls.Add($fields)
+  $fields = New-Object Windows.Forms.FlowLayoutPanel; $fields.AutoSize = $true; $fields.BackColor = [Drawing.Color]::FromArgb(248, 249, 251); $fields.Padding = New-Object Windows.Forms.Padding((Px 8)); $fields.Margin = New-Object Windows.Forms.Padding(0, (Px 6), 0, (Px 6)); $fields.MaximumSize = New-Object Drawing.Size($W, 0); $fields.MinimumSize = New-Object Drawing.Size($W, 0); $rs.fields = $fields; $s3.Controls.Add($fields)
   $s3.Controls.Add((New-Lbl ('The answer goes to ' + $TK.cfg.form.email + ' (usually a few hours). It is only good for 48 hours and only if the device has NOT rebooted.') $null $W))
 
-  $s4 = New-Step '4  When Hikvision emails back: drag the attached file here'
-  $drop = New-Object Windows.Forms.Label; $drop.Text = 'Drag the file from Hikvision''s email here' + "`r`n" + '(save the attachment first, then drag it onto this box, or onto the Toolkit window)'
-  $drop.TextAlign = 'MiddleCenter'; $drop.BorderStyle = 'FixedSingle'; $drop.BackColor = $cGrey; $drop.Font = $fBold; $drop.Size = New-Object Drawing.Size(($W - (Px 220)), (Px 80)); $drop.AllowDrop = $true
+  $s4 = New-Step 'When Hikvision emails back: drag the attached file here' '4'
+  if ($TK_UI) {
+    $drop = New-Object WireItUi.DropZone; $drop.Text = 'Drag the file from Hikvision''s email here'; $drop.Small = 'Save the attachment first, then drag it onto this box (or onto the Toolkit window).'
+    $drop.Accent = $cBlue; $drop.Font = $fBold; $drop.SmallFont = $fSmall; $drop.GlyphFont = Ico 18; $drop.Glyph = [string][char]0xE896
+  } else {
+    $drop = New-Object Windows.Forms.Label; $drop.Text = 'Drag the file from Hikvision''s email here' + "`r`n" + '(save the attachment first, then drag it onto this box, or onto the Toolkit window)'
+    $drop.TextAlign = 'MiddleCenter'; $drop.BorderStyle = 'FixedSingle'; $drop.BackColor = $cGrey; $drop.Font = $fBold
+  }
+  $drop.Size = New-Object Drawing.Size(($W - (Px 190)), (Px 104)); $drop.AllowDrop = $true; $drop.Margin = New-Object Windows.Forms.Padding(0, (Px 4), (Px 12), (Px 4))
   $s4.Controls.Add($drop)
-  $s4.Controls.Add((New-Btn 'Pick the file' { $o = New-Object Windows.Forms.OpenFileDialog; $o.Filter = 'Hikvision reply (*.xml;*.zip;*.txt)|*.xml;*.zip;*.txt|All files|*.*'; if ($o.ShowDialog($TK.rs.form) -eq 'OK') { Take-Reply $o.FileName } }))
+  $s4.Controls.Add((Set-Glyph (New-Btn 'Pick the file' { $o = New-Object Windows.Forms.OpenFileDialog; $o.Filter = 'Hikvision reply (*.xml;*.zip;*.txt)|*.xml;*.zip;*.txt|All files|*.*'; if ($o.ShowDialog($TK.rs.form) -eq 'OK') { Take-Reply $o.FileName } }) ([string][char]0xE8E5)))
   $rs.replyLbl = New-Lbl '' $fBold $W; $s4.Controls.Add($rs.replyLbl)
-  $dragEnter = { if ($_.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $_.Effect = 'Copy' } }
-  $dragDrop = { $files = $_.Data.GetData([Windows.Forms.DataFormats]::FileDrop); if ($files) { Take-Reply ([string]$files[0]) } }
-  $drop.Add_DragEnter($dragEnter); $drop.Add_DragDrop($dragDrop); $f.Add_DragEnter($dragEnter); $f.Add_DragDrop($dragDrop)
+  $dragEnter = { if ($_.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $_.Effect = 'Copy'; if ($TK_UI -and $TK.rs.drop) { $TK.rs.drop.Over = $true } } }
+  $dragDrop = { if ($TK_UI -and $TK.rs.drop) { $TK.rs.drop.Over = $false }; $files = $_.Data.GetData([Windows.Forms.DataFormats]::FileDrop); if ($files) { Take-Reply ([string]$files[0]) } }
+  $rs.drop = $drop; $drop.Add_DragEnter($dragEnter); $drop.Add_DragDrop($dragDrop); $drop.Add_DragLeave({ if ($TK_UI -and $TK.rs.drop) { $TK.rs.drop.Over = $false } }); $f.Add_DragEnter($dragEnter); $f.Add_DragDrop($dragDrop)
 
-  $s5 = New-Step '5  Put it in and set the new password'
+  $s5 = New-Step 'Put it in and set the new password' '5'
   $s5.Controls.Add((New-Lbl 'HiTools > tick the device > Reset Password > Reset via XML File (or Import Key) > pick the reply file (click "Copy reply file path", paste, Enter) > paste the new password in both boxes > OK. NVR: tick "also reset the connected cameras".' $null $W))
-  $s5.Controls.Add((New-Btn 'Make a new password' {
+  $s5.Controls.Add((Set-Glyph (Set-Primary (New-Btn 'Make a new password' {
     $TK.rs.pw = New-TkPassword ([int]$TK.cfg.passwordLength); $TK.rs.pwBox.Text = $TK.rs.pw; $TK.rs.pwBox.Visible = $true
-    Rs-Log 'new password made (not logged)'; Set-Status 'New password made. Copy it into HiTools, then save it in Bitwarden.' }))
-  $pwBox = New-Object Windows.Forms.TextBox; $pwBox.ReadOnly = $true; $pwBox.Font = New-Object Drawing.Font('Consolas', 16, [Drawing.FontStyle]::Bold); $pwBox.Width = Px 260; $pwBox.Visible = $false; $rs.pwBox = $pwBox
+    Rs-Log 'new password made (not logged)'; Set-Status 'New password made. Copy it into HiTools, then save it in Bitwarden.' }) $cGreen) ([string][char]0xE8D7)))
+  $pwBox = New-Object Windows.Forms.TextBox; $pwBox.ReadOnly = $true; $pwBox.Font = Fnt 16 'Consolas' 'Bold'; $pwBox.Width = Px 280; $pwBox.BackColor = [Drawing.Color]::FromArgb(236, 253, 243); $pwBox.ForeColor = $cOk; $pwBox.BorderStyle = 'FixedSingle'; $pwBox.Margin = New-Object Windows.Forms.Padding(0, (Px 4), (Px 8), (Px 4)); $pwBox.Visible = $false; $rs.pwBox = $pwBox
   $s5.Controls.Add($pwBox)
-  $s5.Controls.Add((New-Btn 'Copy password' { Set-Clip $TK.rs.pw 'the new password' }))
-  $s5.Controls.Add((New-Btn 'Copy reply file path' { $r = $TK.rs.replyFile; if (-not $r -and $TK.rs.req -and $TK.rs.req.replyFile) { $r = [string]$TK.rs.req.replyFile }; Set-Clip $r 'the reply file path' }))
-  $s5.Controls.Add((New-Btn 'Open HiTools' { Open-HiTools }))
-  $s5.Controls.Add((New-Lbl 'Save it in Bitwarden right away (WireIt CT > Sites): name = site + model + serial, user admin, the new password.' $fBold $W))
-  $s5.Controls.Add((New-Btn 'Copy Bitwarden name' { $d = $TK.rs.dev; $n = ''; if ($TK.site.Text.Trim()) { $n = $TK.site.Text.Trim() + ' - ' }; if ($d) { $n += $d.Model + ' ' + $d.ShortSerial }; Set-Clip $n 'the Bitwarden item name' }))
-  $s5.Controls.Add((New-Btn 'Open Bitwarden' { try { Start-Process ([string]$TK.cfg.bitwardenUrl) } catch {} }))
-  $s5.Controls.Add((New-Btn 'Saved in Bitwarden - hide it' { Clear-Pw; Set-Status 'Password hidden and cleared from the clipboard.' }))
+  $s5.Controls.Add((Set-Glyph (New-Btn 'Copy password' { Set-Clip $TK.rs.pw 'the new password' }) ([string][char]0xE8C8)))
+  $s5.Controls.Add((Set-Glyph (New-Btn 'Copy reply file path' { $r = $TK.rs.replyFile; if (-not $r -and $TK.rs.req -and $TK.rs.req.replyFile) { $r = [string]$TK.rs.req.replyFile }; Set-Clip $r 'the reply file path' }) ([string][char]0xE8C8)))
+  $s5.Controls.Add((Set-Glyph (New-Btn 'Open HiTools' { Open-HiTools }) ([string][char]0xE8A7)))
+  $bwl = New-Lbl 'Save it in Bitwarden right away (WireIt CT > Sites): name = site + model + serial, user admin, the new password.' $fBold $W; $bwl.MinimumSize = New-Object Drawing.Size($W, 0); $bwl.Margin = New-Object Windows.Forms.Padding(0, (Px 10), 0, (Px 2)); $s5.Controls.Add($bwl)
+  $s5.Controls.Add((Set-Glyph (New-Btn 'Copy Bitwarden name' { $d = $TK.rs.dev; $n = ''; if ($TK.site.Text.Trim()) { $n = $TK.site.Text.Trim() + ' - ' }; if ($d) { $n += $d.Model + ' ' + $d.ShortSerial }; Set-Clip $n 'the Bitwarden item name' }) ([string][char]0xE8C8)))
+  $s5.Controls.Add((Set-Glyph (New-Btn 'Open Bitwarden' { try { Start-Process ([string]$TK.cfg.bitwardenUrl) } catch {} }) ([string][char]0xE774)))
+  $s5.Controls.Add((Set-Glyph (New-Btn 'Saved in Bitwarden - hide it' { Clear-Pw; Set-Status 'Password hidden and cleared from the clipboard.' }) ([string][char]0xE73E)))
 
-  $s6 = New-Step 'Other way (no email wait): Reset via QR Code'
+  $s6 = New-Step 'Other way (no email wait): Reset via QR Code' '' $cSlate
   $s6.Controls.Add((New-Lbl 'HiTools > tick the device > Reset Password > Reset via QR Code > scan the QR with the Hik-Partner Pro app (WireIt CT account) > open an online support case. The code comes back in the app; type it into HiTools with the new password from step 5.' $null $W))
 
   $f.Add_FormClosing({ Clear-Pw; $TK.rs.watch = $false })
@@ -407,51 +806,82 @@ function Watch-Export {
 
 # ---------------- main window ----------------
 $form = New-Object Windows.Forms.Form; $TK.form = $form
-$form.Text = 'WireIt Toolkit  v' + $TK.ver; $form.Font = $fNorm; $form.BackColor = [Drawing.Color]::White; $form.AllowDrop = $true
+$form.Text = 'WireIt Toolkit  v' + $TK.ver; $form.Font = $fNorm; $form.BackColor = $cBg; $form.ForeColor = $cInk; $form.AllowDrop = $true
 $ico = Join-Path $here 'wireit.ico'; if (Test-Path $ico) { try { $form.Icon = New-Object Drawing.Icon($ico) } catch {} }
-$wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
-$form.Size = New-Object Drawing.Size([math]::Min((Px 1180), [int]($wa.Width * 0.95)), [math]::Min((Px 800), [int]($wa.Height * 0.95))); $form.StartPosition = 'CenterScreen'
-$form.MinimumSize = New-Object Drawing.Size((Px 800), (Px 560))
+$wa = Get-WorkArea
+$TK.want = New-Object Drawing.Size([math]::Min((Px 1180), [int]($wa.Width * 0.95)), [math]::Min((Px 800), [int]($wa.Height * 0.95)))
+$form.Size = $TK.want; $form.StartPosition = 'CenterScreen'
+$form.MinimumSize = New-Object Drawing.Size([math]::Min((Px 800), $form.Width), [math]::Min((Px 560), $form.Height))
+$TK.fMonoB = Fnt 9.5 $monoFace 'Bold'
 
-$root = New-Object Windows.Forms.TableLayoutPanel; $root.Dock = 'Fill'; $root.ColumnCount = 2; $root.RowCount = 3; $root.Padding = New-Object Windows.Forms.Padding (Px 10)
-[void]$root.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 36))); [void]$root.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 64)))
-[void]$root.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))); [void]$root.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100))); [void]$root.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
+$root = New-Object Windows.Forms.TableLayoutPanel; $root.Dock = 'Fill'; $root.ColumnCount = 1; $root.RowCount = 3; $root.Margin = New-Object Windows.Forms.Padding 0
+[void]$root.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', (Px 74)))); [void]$root.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100))); [void]$root.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
 $form.Controls.Add($root)
 
-$title = New-Object Windows.Forms.Label; $title.Text = 'WireIt Toolkit'; $title.Font = New-Object Drawing.Font('Segoe UI', 18, [Drawing.FontStyle]::Bold); $title.ForeColor = $cBlue; $title.AutoSize = $true
-$root.Controls.Add($title, 0, 0)
-$upd = New-Object Windows.Forms.Label; $upd.AutoSize = $true; $upd.Anchor = 'Right'; $upd.ForeColor = [Drawing.Color]::DimGray
-$upd.Text = 'v' + $TK.ver + $(if ($TK.updateMsg) { '  -  ' + $TK.updateMsg } elseif ($NoUpdate) { '' } else { '' })
-$root.Controls.Add($upd, 1, 0)
+# header: WireIt logo, title, version
+$note = $(if ($TK.updateMsg) { $TK.updateMsg } else { '' })
+$dot = '   ' + [char]0x00B7 + '   '
+$hdr = New-Header 'Toolkit' (('Find cameras', 'Fix NVRs', 'Reset passwords', 'Check the network') -join $dot) ('v' + $TK.ver) (Px 74); $hdr.Dock = 'Fill'
+if ($TK_UI) { $hdr.Note = $note }
+$root.Controls.Add($hdr, 0, 0)
+$upd = New-Object Windows.Forms.Label; $upd.Visible = $false; $upd.Text = 'v' + $TK.ver + $(if ($note) { '  -  ' + $note } else { '' })   # (kept for the plain look)
+if (-not $TK_UI -and $note) { $hdr.Text += '    ' + $note }
 
-$left = New-Object Windows.Forms.TableLayoutPanel; $left.Dock = 'Fill'; $left.ColumnCount = 1; $left.RowCount = 8; $left.Margin = New-Object Windows.Forms.Padding 0
-for ($i = 0; $i -lt 7; $i++) { [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 14.28))) }
+$body = New-Object Windows.Forms.TableLayoutPanel; $body.Dock = 'Fill'; $body.ColumnCount = 2; $body.RowCount = 1; $body.Margin = New-Object Windows.Forms.Padding 0
+$body.Padding = New-Object Windows.Forms.Padding((Px 16), (Px 14), (Px 16), (Px 4))
+[void]$body.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 40))); [void]$body.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 60)))
+[void]$body.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
+$root.Controls.Add($body, 0, 1)
+
+# left: the 7 jobs, in job order
+$left = New-Object Windows.Forms.TableLayoutPanel; $left.Dock = 'Fill'; $left.ColumnCount = 1; $left.RowCount = 8; $left.Margin = New-Object Windows.Forms.Padding(0, 0, (Px 8), 0)
 [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
+for ($i = 0; $i -lt 7; $i++) { [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 14.28))) }
+$left.Controls.Add((New-Caps 'Jobs  -  usual order 1, 2, 3, 6'), 0, 0)
 $jobs = @(
-  @('1   Find cameras', 'Read-only. Lists every Hikvision / Uniview camera and NVR, even on another IP scheme.', { Do-Find }),
-  @('2   Check NVR', 'Read-only. Shows what is wrong (IP scheme, DNS, app access) and the fix plan.', { Do-Check }),
-  @('3   Fix NVR', 'Shows the plan, then fixes it after you type YES. Can be undone with 7.', { Do-Fix }),
-  @('4   Reset passwords (Hikvision)', 'Unknown password: reset file, Hikvision form, new password.', { Show-ResetWindow }),
-  @('5   Network check', 'Read-only. Cable speed, errors, ping every device.', { Do-Net }),
-  @('6   Save install snapshot', 'Install day: saves a known-good record (no passwords).', { Do-Snapshot }),
-  @('7   Undo last fix', 'Puts the NVR and cameras back the way the last Fix found them.', { Do-Undo })
+  @('1   Find cameras', 'Read-only. Lists every Hikvision / Uniview camera and NVR, even on another IP scheme.', { Do-Find }, $cBlue, 0xE721, 'Every camera and NVR, even on another IP scheme.'),
+  @('2   Check NVR', 'Read-only. Shows what is wrong (IP scheme, DNS, app access) and the fix plan.', { Do-Check }, $cTeal, 0xE9D9, 'Shows what is wrong and the fix plan.'),
+  @('3   Fix NVR', 'Shows the plan, then fixes it after you type YES. Can be undone with 7.', { Do-Fix }, $cAmber, 0xE90F, 'Shows the plan, fixes it after you type YES.'),
+  @('4   Reset passwords (Hikvision)', 'Unknown password: reset file, Hikvision form, new password.', { Show-ResetWindow }, $cBrand, 0xE8D7, 'Unknown password: reset file, Hikvision form, new password.'),
+  @('5   Network check', 'Read-only. Cable speed, errors, ping every device.', { Do-Net }, $cIndigo, 0xE839, 'Cable speed, errors, ping every device.'),
+  @('6   Save install snapshot', 'Install day: saves a known-good record (no passwords).', { Do-Snapshot }, $cGreen, 0xE74E, 'Install day: a known-good record (no passwords).'),
+  @('7   Undo last fix', 'Puts the NVR and cameras back the way the last Fix found them.', { Do-Undo }, $cSlate, 0xE7A7, 'Puts everything back the way the last Fix found it.')
 )
 $tips = New-Object Windows.Forms.ToolTip
 $TK.buttons = @()
-$row = 0
+$row = 1
 foreach ($j in $jobs) {
-  $b = New-Object Windows.Forms.Button; $b.Text = $j[0]; $b.Font = $fBtn; $b.Dock = 'Fill'; $b.TextAlign = 'MiddleLeft'; $b.Padding = New-Object Windows.Forms.Padding((Px 10), 0, 0, 0)
-  $b.Margin = New-Object Windows.Forms.Padding((Px 2), (Px 3), (Px 8), (Px 3)); $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderColor = $cBlue; $b.BackColor = $cGrey; $b.ForeColor = $cBlue
-  if ($row -eq 2) { $b.BackColor = [Drawing.Color]::FromArgb(255, 244, 229); $b.ForeColor = [Drawing.Color]::FromArgb(150, 70, 0); $b.FlatAppearance.BorderColor = $b.ForeColor }
+  $num = ($j[0] -split '\s+')[0]; $name = ($j[0] -replace '^\d+\s+', '')
+  if ($TK_UI) {
+    $b = New-Object WireItUi.Card; $b.Text = $j[0]; $b.Num = $num; $b.Title = $name; $b.Accent = $j[3]
+    if ([string]$j[1] -like 'Read-only. *') { $b.Tag2 = 'READ-ONLY' }; $b.Sub = [string]$j[5]
+    $b.TitleFont = $fBtn; $b.SubFont = $fSmall; $b.NumFont = Fnt 8 $semi; $b.TagFont = Fnt 7 $semi
+    if ($TK.icons) { $b.GlyphFont = Ico 15; $b.Glyph = [string][char]$j[4]; $b.ChevFont = Ico 9 }
+  } else {
+    $b = New-Object Windows.Forms.Button; $b.Text = $j[0]; $b.Font = $fBtn; $b.TextAlign = 'MiddleLeft'; $b.Padding = New-Object Windows.Forms.Padding((Px 10), 0, 0, 0)
+    $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderColor = $j[3]; $b.BackColor = [Drawing.Color]::White; $b.ForeColor = $j[3]
+  }
+  $b.Dock = 'Fill'; $b.Margin = New-Object Windows.Forms.Padding(0, (Px 3), 0, (Px 5))
   $b.Add_Click($j[2]); $tips.SetToolTip($b, $j[1])
   $left.Controls.Add($b, 0, $row); $TK.buttons += $b; $row++
 }
-$opt = New-Object Windows.Forms.TableLayoutPanel; $opt.ColumnCount = 2; $opt.AutoSize = $true; $opt.Dock = 'Fill'; $opt.Margin = New-Object Windows.Forms.Padding(0, (Px 8), 0, 0)
-$l1 = New-Object Windows.Forms.Label; $l1.Text = 'Site (optional):'; $l1.AutoSize = $true; $l1.Anchor = 'Left'; $opt.Controls.Add($l1, 0, 0)
-$site = New-Object Windows.Forms.TextBox; $site.Dock = 'Fill'; $TK.site = $site; $opt.Controls.Add($site, 1, 0); $tips.SetToolTip($site, 'Site folder name as in Google Drive (finds/saves the snapshot). Used by 2, 3 and 6.')
-$lone = New-Object Windows.Forms.CheckBox; $lone.Text = 'Also move lone cameras (not on an NVR list)'; $lone.AutoSize = $true; $TK.lone = $lone; $opt.Controls.Add($lone, 0, 1); $opt.SetColumnSpan($lone, 2)
-$pwType = New-Object Windows.Forms.RadioButton; $pwType.Text = 'Passwords: type them when asked (hidden)'; $pwType.AutoSize = $true; $pwType.Checked = $true; $opt.Controls.Add($pwType, 0, 2); $opt.SetColumnSpan($pwType, 2)
-$pwBw = New-Object Windows.Forms.RadioButton; $pwBw.Text = 'Passwords: from a Bitwarden export file...'; $pwBw.AutoSize = $true; $opt.Controls.Add($pwBw, 0, 3); $opt.SetColumnSpan($pwBw, 2)
+$body.Controls.Add($left, 0, 0)
+
+# right: job options on top, results below
+$right = New-Object Windows.Forms.TableLayoutPanel; $right.Dock = 'Fill'; $right.ColumnCount = 1; $right.RowCount = 3; $right.Margin = New-Object Windows.Forms.Padding((Px 8), 0, 0, 0)
+[void]$right.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))); [void]$right.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', (Px 110)))); [void]$right.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
+$right.Controls.Add((New-Caps 'Job options'), 0, 0)
+$optCard = New-Round; $optCard.Dock = 'Fill'; $optCard.Padding = New-Object Windows.Forms.Padding((Px 16), (Px 10), (Px 16), (Px 8)); $optCard.Margin = New-Object Windows.Forms.Padding(0, (Px 3), 0, (Px 12))
+$opt = New-Object Windows.Forms.TableLayoutPanel; $opt.ColumnCount = 2; $opt.RowCount = 2; $opt.Dock = 'Fill'; $opt.Margin = New-Object Windows.Forms.Padding 0
+[void]$opt.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))); [void]$opt.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
+[void]$opt.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('AutoSize'))); [void]$opt.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 100)))
+$l1 = New-Object Windows.Forms.Label; $l1.Text = 'Site (optional):'; $l1.AutoSize = $true; $l1.Anchor = 'Left'; $l1.Font = $fBold; $l1.ForeColor = $cInk; $l1.Margin = New-Object Windows.Forms.Padding(0, 0, (Px 4), 0); $opt.Controls.Add($l1, 0, 0)
+$site = New-Object Windows.Forms.TextBox; $site.Anchor = 'Left, Right'; $site.Font = Fnt 10.5; $site.BorderStyle = 'FixedSingle'; $site.Margin = New-Object Windows.Forms.Padding((Px 6), (Px 4), 0, (Px 4)); $TK.site = $site; $opt.Controls.Add($site, 1, 0); $tips.SetToolTip($site, 'Site folder name as in Google Drive (finds/saves the snapshot). Used by 2, 3 and 6.')
+$pwRow = New-Object Windows.Forms.FlowLayoutPanel; $pwRow.AutoSize = $true; $pwRow.WrapContents = $true; $pwRow.Dock = 'Fill'; $pwRow.Margin = New-Object Windows.Forms.Padding(0, (Px 6), 0, 0)
+$lone = New-Object Windows.Forms.CheckBox; $lone.Text = 'Also move lone cameras (not on an NVR list)'; $lone.AutoSize = $true; $lone.ForeColor = $cInk; $lone.Margin = New-Object Windows.Forms.Padding(0, (Px 2), (Px 18), (Px 2)); $TK.lone = $lone
+$pwType = New-Object Windows.Forms.RadioButton; $pwType.Text = 'Passwords: type them when asked (hidden)'; $pwType.AutoSize = $true; $pwType.Checked = $true; $pwType.ForeColor = $cInk; $pwType.Margin = New-Object Windows.Forms.Padding(0, (Px 2), (Px 18), (Px 2))
+$pwBw = New-Object Windows.Forms.RadioButton; $pwBw.Text = 'Passwords: from a Bitwarden export file...'; $pwBw.AutoSize = $true; $pwBw.ForeColor = $cInk; $pwBw.Margin = New-Object Windows.Forms.Padding(0, (Px 2), 0, (Px 2))
+$pwRow.Controls.AddRange(@($lone, $pwType, $pwBw)); $pwRow.SetFlowBreak($lone, $true); $opt.Controls.Add($pwRow, 0, 1); $opt.SetColumnSpan($pwRow, 2)
 $TK.pwType = $pwType; $TK.pwBw = $pwBw
 $pwBw.Add_Click({
   $o = New-Object Windows.Forms.OpenFileDialog; $o.Filter = 'Bitwarden export (*.json)|*.json'; $o.Title = 'Pick the Bitwarden export (.json, unencrypted)'
@@ -459,28 +889,53 @@ $pwBw.Add_Click({
   else { $TK.bw = ''; $TK.pwType.Checked = $true }
 })
 $pwType.Add_Click({ $TK.bw = ''; $TK.pwBw.Text = 'Passwords: from a Bitwarden export file...' })
-$left.Controls.Add($opt, 0, 7)
-$root.Controls.Add($left, 0, 1)
+$optCard.Controls.Add($opt)
+$right.Controls.Add($optCard, 0, 1)
 
-$out = New-Object Windows.Forms.TextBox; $out.Multiline = $true; $out.ReadOnly = $true; $out.ScrollBars = 'Vertical'; $out.WordWrap = $true; $out.Font = $fMono; $out.BackColor = [Drawing.Color]::FromArgb(250, 251, 252); $out.Dock = 'Fill'
-$TK.out = $out; $root.Controls.Add($out, 1, 1)
+$resCard = New-Round; $resCard.Dock = 'Fill'; $resCard.Padding = New-Object Windows.Forms.Padding((Px 16), (Px 12), (Px 16), (Px 12)); $resCard.Margin = New-Object Windows.Forms.Padding(0, 0, 0, (Px 4))
+$res = New-Object Windows.Forms.TableLayoutPanel; $res.Dock = 'Fill'; $res.ColumnCount = 2; $res.RowCount = 3; $res.Margin = New-Object Windows.Forms.Padding 0
+[void]$res.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('AutoSize'))); [void]$res.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 100)))
+[void]$res.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))); [void]$res.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100))); [void]$res.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
+$rt = New-Object Windows.Forms.Label; $rt.Text = 'Results'; $rt.Font = $fBig; $rt.ForeColor = $cInk; $rt.AutoSize = $true; $rt.Anchor = 'Left'; $rt.Margin = New-Object Windows.Forms.Padding(0, 0, (Px 12), (Px 6)); $res.Controls.Add($rt, 0, 0)
+$pill = New-Pill; $pill.Anchor = 'Left'; $pill.Margin = New-Object Windows.Forms.Padding(0, 0, 0, (Px 6)); $TK.pill = $pill; $res.Controls.Add($pill, 1, 0)
+$out = New-Object Windows.Forms.RichTextBox; $out.ReadOnly = $true; $out.ScrollBars = 'Vertical'; $out.WordWrap = $true; $out.Font = $fMono; $out.BorderStyle = 'None'; $out.DetectUrls = $false
+$out.BackColor = [Drawing.Color]::White; $out.ForeColor = $cInk; $out.Dock = 'Fill'; $out.Margin = New-Object Windows.Forms.Padding(0, (Px 2), 0, (Px 8))
+$TK.out = $out; $res.Controls.Add($out, 0, 1); $res.SetColumnSpan($out, 2)
+$rb = New-Object Windows.Forms.FlowLayoutPanel; $rb.AutoSize = $true; $rb.WrapContents = $false; $rb.Dock = 'Fill'; $rb.Margin = New-Object Windows.Forms.Padding 0
+$rb.Controls.Add((Set-Glyph (Set-Primary (New-Btn 'Copy results' { Set-Clip ($TK.out.Text -replace "\r?\n", "`r`n") 'the results' }) $cInk) ([string][char]0xE8C8)))
+$rb.Controls.Add((Set-Glyph (New-Btn 'Open logs folder' { New-Item -ItemType Directory -Force -Path $TK.P.Logs | Out-Null; Start-Process explorer.exe (Q $TK.P.Logs) }) ([string][char]0xE838)))
+$res.Controls.Add($rb, 0, 2); $res.SetColumnSpan($rb, 2)
+$resCard.Controls.Add($res)
+$right.Controls.Add($resCard, 0, 2)
+$body.Controls.Add($right, 1, 0)
+function Fit-Options { $line = [math]::Max($TK.lone.PreferredSize.Height, $TK.pwBw.PreferredSize.Height) + (Px 4); $h = $TK.site.PreferredHeight + $TK.site.Margin.Vertical + $TK.pwRow.Margin.Vertical + 2 * $line + $TK.optCard.Padding.Vertical + $TK.optCard.Margin.Vertical; $rsy = $TK.right.RowStyles[1]; if ([int]$rsy.Height -ne $h) { $rsy.Height = $h; $TK.right.PerformLayout() } }
+$TK.optCard = $optCard; $TK.opt = $opt; $TK.right = $right; $TK.pwRow = $pwRow
+$optCard.Add_SizeChanged({ Fit-Options })
 
-$foot = New-Object Windows.Forms.FlowLayoutPanel; $foot.AutoSize = $true; $foot.Dock = 'Fill'; $foot.WrapContents = $false
-$foot.Controls.Add((New-Btn 'Copy results' { Set-Clip $TK.out.Text 'the results' }))
-$foot.Controls.Add((New-Btn 'Open logs folder' { New-Item -ItemType Directory -Force -Path $TK.P.Logs | Out-Null; Start-Process explorer.exe (Q $TK.P.Logs) }))
-$foot.Controls.Add((New-Btn 'Go back to the previous version' {
+# footer: status line + going back to the previous version
+$foot = New-Object Windows.Forms.TableLayoutPanel; $foot.ColumnCount = 2; $foot.RowCount = 1; $foot.AutoSize = $true; $foot.Dock = 'Fill'; $foot.Margin = New-Object Windows.Forms.Padding 0
+$foot.Padding = New-Object Windows.Forms.Padding((Px 18), 0, (Px 16), (Px 8))
+[void]$foot.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 100))); [void]$foot.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('AutoSize')))
+$status = New-Object Windows.Forms.Label; $status.AutoSize = $true; $status.Anchor = 'Left'; $status.ForeColor = $cMuted; $status.Margin = New-Object Windows.Forms.Padding 0; $TK.status = $status
+$foot.Controls.Add($status, 0, 0)
+$back = New-Btn 'Go back to the previous version' {
   if ([Windows.Forms.MessageBox]::Show($TK.form, 'Go back to the Toolkit version that was installed before the last update?', 'WireIt Toolkit', 'YesNo', 'Question') -ne 'Yes') { return }
   try { $v = Undo-TkUpdate $here; [void][Windows.Forms.MessageBox]::Show($TK.form, ('Back on version ' + $v + '. The Toolkit will close; open it again.'), 'WireIt Toolkit'); $TK.form.Close() }
-  catch { [void][Windows.Forms.MessageBox]::Show($TK.form, $_.Exception.Message, 'WireIt Toolkit') } }))
-$status = New-Object Windows.Forms.Label; $status.AutoSize = $true; $status.Anchor = 'Left'; $status.ForeColor = [Drawing.Color]::DimGray; $status.Margin = New-Object Windows.Forms.Padding((Px 10), (Px 10), 0, 0); $TK.status = $status
-$foot.Controls.Add($status)
-$root.Controls.Add($foot, 0, 2); $root.SetColumnSpan($foot, 2)
+  catch { [void][Windows.Forms.MessageBox]::Show($TK.form, $_.Exception.Message, 'WireIt Toolkit') } }
+$back.Font = $fSmall; $back.MinimumSize = New-Object Drawing.Size((Px 60), (Px 30)); if ($TK_UI) { $back.TextColor = $cMuted; $back.Accent = $cSlate; $back = Set-Glyph $back ([string][char]0xE777); $back.GlyphFont = Ico 8.5 }
+$back.Margin = New-Object Windows.Forms.Padding 0; $foot.Controls.Add($back, 1, 0)
+$root.Controls.Add($foot, 0, 2)
+Fit-Options
 
-$out.Text = 'Pick a job on the left. Results show here in plain words, and every run is saved in the logs folder.' + "`r`n`r`n" +
-  'Usual order on a site:' + "`r`n" + '  1 Find cameras  >  2 Check NVR  >  3 Fix NVR (type YES)  >  6 Save install snapshot' + "`r`n" +
-  '  Unknown password?  4 Reset passwords.   Slow or dropping video?  5 Network check.   Fix went wrong?  7 Undo last fix.' + "`r`n`r`n" +
-  'Plug this PC into the same switch as the NVR and cameras first. Cable is better than Wi-Fi.' + "`r`n" +
-  'Hikvision reply email arrived? Drag its file onto this window.' + "`r`n"
+Add-Out 'Pick a job on the left. Results show here in plain words, and every run is saved in the logs folder.' $cInk
+Add-Out ''
+Add-Out 'Usual order on a site:' $cInk
+Add-Out '  1 Find cameras  >  2 Check NVR  >  3 Fix NVR (type YES)  >  6 Save install snapshot' $cBlue
+Add-Out '  Unknown password?  4 Reset passwords.   Slow or dropping video?  5 Network check.   Fix went wrong?  7 Undo last fix.' $cMuted
+Add-Out ''
+Add-Out 'Plug this PC into the same switch as the NVR and cameras first. Cable is better than Wi-Fi.' $cInk
+Add-Out 'Hikvision reply email arrived? Drag its file onto this window.' $cInk
+Set-Pill 'Ready' $cSlate
 Set-Status ('Ready. ' + $env:COMPUTERNAME)
 
 $form.Add_DragEnter({ if ($_.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $_.Effect = 'Copy' } })
@@ -495,23 +950,51 @@ $form.Add_FormClosing({
 })
 
 if ($Screenshot) {
+  # The SSH test session has a small virtual screen that would squeeze the window, so the window's
+  # contents are drawn at the size they get on the real screen (no window shows on the desktop).
   New-Item -ItemType Directory -Force -Path $Screenshot | Out-Null
+  function Save-Shot($ctl, [string]$path, $rtb = $null) {
+    $bmp = New-Object Drawing.Bitmap($ctl.Width, $ctl.Height)
+    $ctl.DrawToBitmap($bmp, (New-Object Drawing.Rectangle(0, 0, $ctl.Width, $ctl.Height)))
+    if ($TK_UI -and $rtb) {
+      # DrawToBitmap leaves a RichTextBox blank, so print its text into the picture
+      $o = $ctl.PointToScreen([Drawing.Point]::Empty); $p = $rtb.PointToScreen([Drawing.Point]::Empty)
+      [WireItUi.Gfx]::PrintRtb($rtb, $bmp, (New-Object Drawing.Rectangle(($p.X - $o.X), ($p.Y - $o.Y), ($rtb.ClientSize.Width - [Windows.Forms.SystemInformation]::VerticalScrollBarWidth), $rtb.ClientSize.Height)))
+    }
+    $bmp.Save($path, [Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
+  }
   $form.StartPosition = 'Manual'; $form.Location = New-Object Drawing.Point(-20000, -20000); $form.ShowInTaskbar = $false
   $form.Show(); [Windows.Forms.Application]::DoEvents()
-  Add-Out '=== Find cameras - demo ==='; Add-Out 'Hikvision DS-7616NI-Q2/16P  serial F12345678  192.168.1.250  (different IP scheme)'; Add-Out 'In short: 3 device(s) found - 3 Hikvision, 0 Uniview; 3 on a different IP scheme (button 3 Fix NVR moves them).'
-  [Windows.Forms.Application]::DoEvents()
-  $bmp = New-Object Drawing.Bitmap($form.Width, $form.Height); $form.DrawToBitmap($bmp, (New-Object Drawing.Rectangle(0, 0, $form.Width, $form.Height))); $bmp.Save((Join-Path $Screenshot 'toolkit-main.png'), [Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
+  $root.Dock = 'None'; $root.Location = New-Object Drawing.Point(0, 0)
+  $root.Size = New-Object Drawing.Size(($TK.want.Width - ($form.Width - $form.ClientSize.Width)), ($TK.want.Height - ($form.Height - $form.ClientSize.Height)))
+  $TK.out.Clear()
+  Add-Out ('=== Find cameras - ' + (Get-Date -Format 'ddd MMM d, h:mm tt') + ' (demo) ===')
+  Add-Out 'Looking for Hikvision and Uniview devices on every network this PC is plugged into (read-only)...'
+  Add-Out 'Hikvision  DS-7616NI-Q2/16P  NVR     serial F12345678  192.168.1.250  (different IP scheme)'
+  Add-Out 'Hikvision  DS-2CD2143G2-I    camera  serial J12345678  192.168.1.64   (different IP scheme)'
+  Add-Out 'Hikvision  DS-2CD2143G2-I    camera  serial J12345679  192.168.1.65   (different IP scheme)'
+  Add-Out ''
+  Add-Out 'In short: 3 device(s) found - 3 Hikvision, 0 Uniview; 3 on a different IP scheme (button 3 Fix NVR moves them).'
+  Add-Out 'Find cameras: finished.'
+  Set-Pill 'Find cameras - done' $cOk; Set-Status 'Find cameras done. Saved to the logs folder.'
+  [Windows.Forms.Application]::DoEvents(); Fit-Options; [Windows.Forms.Application]::DoEvents()
+  Save-Shot $root (Join-Path $Screenshot 'toolkit-main.png') $TK.out
   $rf = @(Show-ResetWindow)[-1]
-  $rf.StartPosition = 'Manual'; $rf.Location = New-Object Drawing.Point(-20000, -20000); $rf.ShowInTaskbar = $false; $rf.Height = Px 1750
+  $rf.StartPosition = 'Manual'; $rf.Location = New-Object Drawing.Point(-20000, -20000); $rf.ShowInTaskbar = $false
   $rf.Show(); [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 300; [Windows.Forms.Application]::DoEvents()
+  $hp = $TK.rs.host; $hp.Dock = 'None'; $hp.Location = New-Object Drawing.Point(0, 0); $hp.Size = $TK.rs.client; [Windows.Forms.Application]::DoEvents()
   if ($TK.rs.list.Items.Count) { $TK.rs.list.Items[0].Selected = $true; [Windows.Forms.Application]::DoEvents() }
-  $TK.rs.pw = New-TkPassword 14; $TK.rs.pwBox.Text = 'Xy7#demo-only'; $TK.rs.pwBox.Visible = $true; [Windows.Forms.Application]::DoEvents()
-  $bmp = New-Object Drawing.Bitmap($rf.Width, $rf.Height); $rf.DrawToBitmap($bmp, (New-Object Drawing.Rectangle(0, 0, $rf.Width, $rf.Height))); $bmp.Save((Join-Path $Screenshot 'toolkit-reset.png'), [Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
-  $TK.rs.replyLbl.Text = 'Reply file saved for DS-7608NI-K2/8P (serial J12345678), matched by serial. About 41.5 h left to use it.'; $TK.rs.replyLbl.ForeColor = [Drawing.Color]::DarkGreen
-  $TK.rs.flow.AutoScrollPosition = New-Object Drawing.Point(0, 5000); [Windows.Forms.Application]::DoEvents()
-  $bmp = New-Object Drawing.Bitmap($rf.Width, $rf.Height); $rf.DrawToBitmap($bmp, (New-Object Drawing.Rectangle(0, 0, $rf.Width, $rf.Height))); $bmp.Save((Join-Path $Screenshot 'toolkit-reset-2.png'), [Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
+  $TK.rs.pw = New-TkPassword 14; $TK.rs.pwBox.Text = 'Xy7#demo-only'; $TK.rs.pwBox.Visible = $true
+  $TK.rs.replyLbl.Text = 'Reply file saved for DS-7608NI-K2/8P (serial J12345678), matched by serial. About 41.5 h left to use it.'; $TK.rs.replyLbl.ForeColor = $cOk
+  [Windows.Forms.Application]::DoEvents()
+  # what the tech sees first (normal window size)
+  Save-Shot $hp (Join-Path $Screenshot 'toolkit-reset.png')
+  # the whole screen, top to bottom
+  $need = $TK.rs.flow.GetPreferredSize((New-Object Drawing.Size($TK.rs.flow.ClientSize.Width, 0))).Height + $TK.rs.head.Height
+  $hp.Size = New-Object Drawing.Size($TK.rs.client.Width, [math]::Max($TK.rs.client.Height, $need)); [Windows.Forms.Application]::DoEvents()
+  Save-Shot $hp (Join-Path $Screenshot 'toolkit-reset-2.png')
   $TK.rs.watch = $false; $rf.Close(); $form.Close()
-  Write-Output ('screenshots saved in ' + $Screenshot + '; buttons=' + $TK.buttons.Count + '; resetFields=' + $TK.rs.fieldBtns.Count)
+  Write-Output ('screenshots saved in ' + $Screenshot + '; buttons=' + $TK.buttons.Count + '; resetFields=' + $TK.rs.fieldBtns.Count + '; look=' + $(if ($TK_UI) { 'new' } else { 'plain' }) + '; icons=' + $TK.icons + '; scale=' + $TK.scale)
   exit 0
 }
 $timer.Start()

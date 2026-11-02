@@ -132,7 +132,13 @@ if ($Screens) {
   $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tkDir 'WireItToolkit.ps1') -Screenshot $Screens -DemoCamReset $cr 2>&1 | Out-String
   Check 'window builds (7 buttons)' ($o -match 'buttons=7') $o
   Check 'screenshots saved' ((Test-Path (Join-Path $Screens 'toolkit-main.png')) -and (Test-Path (Join-Path $Screens 'toolkit-reset.png'))) $o
+  Check 'new look built (rounded cards, header)' ($o -match 'look=new') $o
+  Check 'icon font found' ($o -match 'icons=Segoe') $o
+  $s150 = Join-Path $Screens 'at150'
+  $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tkDir 'WireItToolkit.ps1') -Screenshot $s150 -SimScale 1.5 -DemoCamReset $cr 2>&1 | Out-String
+  Check 'window builds at 150% (the Dell screen)' (($o -match 'buttons=7') -and ($o -match 'scale=1.5') -and (Test-Path (Join-Path $s150 'toolkit-main.png'))) $o
 }
+Check 'logo file present' (Test-Path (Join-Path $tkDir 'wireit-logo.png'))
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Write-Output ('RESULT ' + $script:pass + ' passed, ' + $script:fail + ' failed')
 if ($script:fail) { exit 1 }

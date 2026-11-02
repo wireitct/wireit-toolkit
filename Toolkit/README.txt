@@ -1,7 +1,9 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.0.0, 2026-11-02
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.1.0, 2026-11-02
 ==============================================================================
 One window for the site tools. Double-click "WireIt Toolkit" on the desktop.
 Works with no internet and without Tab. Windows PowerShell 5.1 only, nothing to install.
+1.1.0: new look (WireIt header, colored job cards with icons, color-coded results), sharp on 150% screens.
+  Same buttons and steps as before. If Windows cannot build the new look, the plain buttons are used.
 
 THE BUTTONS (usual order on a site)
   1 Find cameras            read-only. Every Hikvision / Uniview camera and NVR, even on another IP scheme.
@@ -42,8 +44,8 @@ UPDATES
 
 FILES
   WireItToolkit.ps1 (window)  ToolkitCore.ps1 (logic)  WireIt Toolkit.cmd (start)  Install-Toolkit.ps1
-  config.json (form details, update address - no passwords)  version.json  wireit.ico
-  logs\  previous\  tests\Test-Toolkit.ps1 (56 checks, no devices, no windows)
+  config.json (form details, update address - no passwords)  version.json  wireit.ico  wireit-logo.png
+  logs\  previous\  tests\Test-Toolkit.ps1 (60 checks, no devices, no windows)
   It runs: ..\CamReset (Find-Cameras.ps1, Make-Request.ps1), ..\FixNVR (FixNVR.ps1), ..\NetCheck (NetCheck.ps1)
 
 MOVE TO A NEW PC (e.g. the new EliteDesk)
