@@ -1,14 +1,14 @@
 {
- "version": "1.1.0",
+ "version": "1.2.0",
  "released": "2026-11-02",
- "commit": "6a600736ccf6a66d4ed47832fdf94069a41c743a",
- "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/6a600736ccf6a66d4ed47832fdf94069a41c743a/",
- "notes": "New look: WireIt header, colored job cards with icons and step numbers, color-coded results, matching reset-passwords screen, sharp on 150% screens. Same buttons and steps.",
+ "commit": "a711a1a7e5ed717a8f30bd9603921b4d02dee2b2",
+ "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/a711a1a7e5ed717a8f30bd9603921b4d02dee2b2/",
+ "notes": "New button 8 \"Save camera pictures\": one picture of every camera (read-only) goes to the site page, so a camera that goes down shows where it is. Fix NVR and Snapshot take them too when the Site box is filled. \"Set upload key.cmd\" saves the upload key on a new PC.",
  "files": [
   {
    "path": "Toolkit/WireItToolkit.ps1",
-   "sha256": "c48d176651a4e382784c679622b21abe3d448b22062819176156be20987d468a",
-   "size": 81025
+   "sha256": "78ddc6124579e4d447ce5fe913b000fda32da80469f3c2a658e7b5c186772cbb",
+   "size": 81994
   },
   {
    "path": "Toolkit/ToolkitCore.ps1",
@@ -42,13 +42,23 @@
   },
   {
    "path": "Toolkit/tests/Test-Toolkit.ps1",
-   "sha256": "0b0e60a4599e2569132f17ca53122498a48e4ce304dc57dae4c69b47b25d8db9",
-   "size": 13470
+   "sha256": "373ae8058f7b09856539f267fb6f82eee5ad44ea1f214deb0fdd66a7af6df90a",
+   "size": 17147
+  },
+  {
+   "path": "Toolkit/CamViews.ps1",
+   "sha256": "1ef7b655fe2e553a0988c195e9febc03e8af8588ef5aa12b00ad80618cef5e82",
+   "size": 26688
+  },
+  {
+   "path": "Toolkit/Set upload key.cmd",
+   "sha256": "35822aaba2b4f76b6293c4fdc3bc79a89067fc321f49882dc7eeae80ab739b44",
+   "size": 225
   },
   {
    "path": "FixNVR/FixNVR.ps1",
-   "sha256": "563511e719f2ac06d8f647856e0490e3f4575ccac44de64d81256c09f50a2506",
-   "size": 84404
+   "sha256": "82050991e97c96f9fdd8712e3506f1ed6bb099cafdcee3f1f9afa8ef64790daa",
+   "size": 85220
   },
   {
    "path": "FixNVR/Check NVR.cmd",
