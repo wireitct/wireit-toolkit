@@ -1,0 +1,109 @@
+{
+ "version": "1.0.0",
+ "released": "2026-11-02",
+ "commit": "ef6e3ee2980920aadc584b7204fd688876dd7212",
+ "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/ef6e3ee2980920aadc584b7204fd688876dd7212/",
+ "notes": "First release: WireIt Toolkit window + FixNVR 1.1, CamReset (NVR serial fix), NetCheck.",
+ "files": [
+  {
+   "path": "Toolkit/WireItToolkit.ps1",
+   "sha256": "0d460789345fa062131de9edfb8045b3241edfc829f7c3b33d07a05fbe5d967b",
+   "size": 40943
+  },
+  {
+   "path": "Toolkit/ToolkitCore.ps1",
+   "sha256": "b92f13a0c839725b69643beb39df3fd4fd78dbf048423fc94fd698a715341a84",
+   "size": 22291
+  },
+  {
+   "path": "Toolkit/WireIt Toolkit.cmd",
+   "sha256": "467a4616a12d06212176e10d49264eb1ce91a5ad54629f92a1a99eae1e57919a",
+   "size": 243
+  },
+  {
+   "path": "Toolkit/Install-Toolkit.ps1",
+   "sha256": "518e006fea5c2797c7ea73340eefaaa995e844fb885350aba509f2dbd24cbbd2",
+   "size": 4178
+  },
+  {
+   "path": "Toolkit/README.txt",
+   "sha256": "d9e0036a14af29fb66bc75d4a0819baa4fc558b59d03ba9087196b1ea502152f",
+   "size": 4641
+  },
+  {
+   "path": "Toolkit/wireit.ico",
+   "sha256": "a16601b75ef9816e23312bf53a97e10346f8faca90b603011eb402733ae5fcfb",
+   "size": 13016
+  },
+  {
+   "path": "Toolkit/tests/Test-Toolkit.ps1",
+   "sha256": "9c20ba63676b5635474b7ddc7b06c4eb08318b4238f849932f0f37a54329ee85",
+   "size": 12889
+  },
+  {
+   "path": "FixNVR/FixNVR.ps1",
+   "sha256": "563511e719f2ac06d8f647856e0490e3f4575ccac44de64d81256c09f50a2506",
+   "size": 84404
+  },
+  {
+   "path": "FixNVR/Check NVR.cmd",
+   "sha256": "cca4e7bc4959f9c4bced996570fde73bfa783422fdaaf8a0d1c4d7eb6cce4a1a",
+   "size": 357
+  },
+  {
+   "path": "FixNVR/Fix NVR.cmd",
+   "sha256": "c0992e3e524600fe6dc0f411a5a270c8fd64d3295471cfc161df363bb8b11c66",
+   "size": 353
+  },
+  {
+   "path": "FixNVR/NVR Snapshot.cmd",
+   "sha256": "378646da694552e2025ed69b6dd56fd16e8b03b176c3225f1cc09cc66c5543e1",
+   "size": 752
+  },
+  {
+   "path": "FixNVR/README.txt",
+   "sha256": "581f3c664d8a8250bff22f8d312709a6ca6b4cc5b6725318f49a39b075b2d0bf",
+   "size": 7688
+  },
+  {
+   "path": "CamReset/Find-Cameras.ps1",
+   "sha256": "dc6a804371ab682c456ad51a3e8f35fa3e60c15b9d7bc93882bc5716b240e930",
+   "size": 17551
+  },
+  {
+   "path": "CamReset/Make-Request.ps1",
+   "sha256": "3af37ab2e69d3346e99c892e22df5c44d50e2a796ea7ee3d84086aa87f33787e",
+   "size": 3833
+  },
+  {
+   "path": "CamReset/Install-CamReset.ps1",
+   "sha256": "666844b6592acea9815f78fa6a30e43a54c720ce8cbeefce28170fe5b3904d47",
+   "size": 1607
+  },
+  {
+   "path": "CamReset/Find Cameras.cmd",
+   "sha256": "8d72512d20a55e892b96765e26c2ee43da1320f509ae4a1db4932bad8cb8f297",
+   "size": 125
+  },
+  {
+   "path": "CamReset/README.txt",
+   "sha256": "41026c0cec34aed7d9455c849d8cba231b7281cf6dce89a5731a1ded5466f483",
+   "size": 4649
+  },
+  {
+   "path": "NetCheck/NetCheck.ps1",
+   "sha256": "6ed617007ea62f6a7e5f1c3960eb8d6da0d5947f60515ad95f9fcb7550258814",
+   "size": 15636
+  },
+  {
+   "path": "NetCheck/Network Check.cmd",
+   "sha256": "f6818feed516bfc141769f4db6fb4ed98589853f5200ee30cf44f45b6f92ed10",
+   "size": 196
+  },
+  {
+   "path": "NetCheck/README.txt",
+   "sha256": "7814cdb8561f4f517f7b727512b78a0c43534e372d472282f0a873f6d9560ec6",
+   "size": 2042
+  }
+ ]
+}
