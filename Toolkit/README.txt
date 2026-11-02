@@ -1,4 +1,4 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.1.0, 2026-11-02
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.3.0, 2026-11-02
 ==============================================================================
 One window for the site tools. Double-click "WireIt Toolkit" on the desktop.
 Works with no internet and without Tab. Windows PowerShell 5.1 only, nothing to install.
@@ -13,6 +13,19 @@ THE BUTTONS (usual order on a site)
   5 Network check           read-only. Cable speed and errors, pings every device.
   6 Save install snapshot   install day: known-good record of NVR + cameras (no passwords).
   7 Undo last fix           puts devices back the way the last Fix NVR found them.
+  8 Save camera pictures    read-only. One picture per camera for the site page.
+ RECORDER HEALTH (1.3.0) - type the recorder's IP; the password is typed hidden in the tool window
+  9 Recording check         read-only. Every camera recording? Days of footage kept vs. the site's target,
+                            hard drives + their health. Target: YKW sites 45 days, others 30
+                            (config.json "daysToKeep"; or type the days in the box when you run it).
+ 10 Clock check             read-only. Recorder (and camera) clocks vs. real time, time server, US Eastern + DST.
+ 11 Fix clock (NTP)         CHANGES the time settings (time.nist.gov + US Eastern with daylight saving).
+                            Shows the plan first; nothing changes unless you type YES (capitals) in its window.
+                            Do it on site, with the customer's OK.
+ 12 Firmware check         read-only (security check). Firmware vs. the newest published + known security holes.
+                            REPORTS ONLY - it never updates firmware. Updates are the boss's call.
+  Works with Hikvision, Uniview, DW Spectrum and other ONVIF recorders. The firmware list comes with the
+  Toolkit and is refreshed monthly by the daily NVR check (C:\WireIt\NvrHealth) when that PC has it.
   Results show in plain words on the right. "Copy results" copies them. Every run is saved in logs\.
   2, 3, 6, 7 open a blue tool window (Windows asks permission: Yes). Passwords are typed there, hidden.
   Passwords are never saved or logged. Optional: "Passwords: from a Bitwarden export file" (the Toolkit

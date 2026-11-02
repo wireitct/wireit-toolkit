@@ -12,7 +12,7 @@ function Check([string]$name, [bool]$ok, [string]$info = '') { if ($ok) { $scrip
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('wireit-tktest-' + (Get-Random)); New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
 # 1 parse every script (Toolkit + the tools it runs)
-$scripts = @(Get-ChildItem $tkDir -Filter *.ps1 -File -Recurse) + @(foreach ($t in 'FixNVR\FixNVR.ps1', 'CamReset\Find-Cameras.ps1', 'CamReset\Make-Request.ps1', 'CamReset\Install-CamReset.ps1', 'NetCheck\NetCheck.ps1') { $p = Join-Path $Root $t; if (Test-Path $p) { Get-Item $p } })
+$scripts = @(Get-ChildItem $tkDir -Include *.ps1, *.psm1 -File -Recurse) + @(foreach ($t in 'FixNVR\FixNVR.ps1', 'CamReset\Find-Cameras.ps1', 'CamReset\Make-Request.ps1', 'CamReset\Install-CamReset.ps1', 'NetCheck\NetCheck.ps1') { $p = Join-Path $Root $t; if (Test-Path $p) { Get-Item $p } })
 foreach ($s in $scripts) { $tok = $null; $err = $null; [void][Management.Automation.Language.Parser]::ParseFile($s.FullName, [ref]$tok, [ref]$err); Check ('parse ' + $s.Name) ($err.Count -eq 0) (($err | Select-Object -First 2 | ForEach-Object { $_.Message + ' line ' + $_.Extent.StartLineNumber }) -join '; ') }
 
 # 2 versions + manifest rules
@@ -165,16 +165,79 @@ $sc = Get-CvSiteCred '10.9.9.20'
 Check 'pictures: remembered NVR login round trip (DPAPI), not in the list file' ($sc.UserName -eq 'admin' -and $sc.GetNetworkCredential().Password -eq 'NvrPw#123' -and (Get-Content (Join-Path $tmp 'camviews-sites.json') -Raw) -notmatch 'NvrPw' -and @(Get-CvSites).Count -eq 1 -and (Get-CvSites)[0].site -eq 'WI-TEST')
 Check 'pictures: outbox file written without the key' ($of.Count -eq 1 -and (Get-Content $of[0].FullName -Raw) -notmatch 'abcdefghij' -and (Get-Content $of[0].FullName -Raw) -match 'WI-TEST')
 
+# 7b recorder health (buttons 9-12: NvrHealth module + NvrCheck.ps1) - mock recorders only, no real device
+$nm = Join-Path $tkDir 'modules\NvrHealth\NvrHealth.psm1'
+Check 'NvrHealth module present' (Test-Path $nm)
+Check 'NvrHealth firmware list present' (Test-Path (Join-Path $tkDir 'modules\NvrHealth\firmware-latest.json'))
+Check 'path modules/NvrHealth allowed' (Test-TkManifestPath 'Toolkit/modules/NvrHealth/NvrHealth.psm1')
+Check 'paths: NvrHealth folders' (((Get-TkPaths $tkDir).NvrHealth -like '*\modules\NvrHealth') -and ((Get-TkPaths $tkDir).NvrDaily -like '*\NvrHealth'))
+$cfgD = Get-TkConfig $tmp
+Check 'days: YKW 45 by default' ((Get-TkDaysToKeep $cfgD 'YKW S Elm Street') -eq 45)
+Check 'days: other sites 30' ((Get-TkDaysToKeep $cfgD 'Fairbridge Commons') -eq 30 -and (Get-TkDaysToKeep $cfgD '') -eq 30)
+Check 'days: not case sensitive, word inside' ((Get-TkDaysToKeep $cfgD 'ykw girls library') -eq 45 -and (Get-TkDaysToKeep $cfgD 'Library YKW') -eq 45 -and (Get-TkDaysToKeep $cfgD 'Bykwood') -eq 30)
+$cd = Join-Path $tmp 'cfgdays'; New-Item -ItemType Directory -Force -Path $cd | Out-Null
+Set-Content (Join-Path $cd 'config.json') '{"daysToKeep":{"default":21,"sites":{"YKW":45,"Fairbridge":60}}}'
+$cfgE = Get-TkConfig $cd
+Check 'days: config.json overrides' ((Get-TkDaysToKeep $cfgE 'Fairbridge Commons') -eq 60 -and (Get-TkDaysToKeep $cfgE 'Shteeble') -eq 21 -and (Get-TkDaysToKeep $cfgE 'YKW') -eq 45)
+$mc = Read-TkJson (Join-Path $tkDir 'config.json')
+Check 'days: master config.json has YKW 45 / 30' ($mc -and [int]$mc.daysToKeep.sites.YKW -eq 45 -and [int]$mc.daysToKeep.default -eq 30)
+$rw = Join-Path $tmp 'refw'; $rtk = Join-Path $rw 'Toolkit'; New-Item -ItemType Directory -Force -Path (Join-Path $rtk 'modules\NvrHealth'), (Join-Path $rw 'NvrHealth') | Out-Null
+Set-Content (Join-Path $rtk 'modules\NvrHealth\firmware-latest.json') '{"updated":"2026-11-02T10:00:00","models":{"x":{}}}'
+Check 'firmware list: own copy when no daily check' ((Get-TkNvrReference $rtk) -like '*modules\NvrHealth\firmware-latest.json')
+Set-Content (Join-Path $rw 'NvrHealth\firmware-latest.json') '{"updated":"2026-12-01T05:30:00","models":{"x":{}}}'
+Check 'firmware list: newer monthly refresh wins' ((Get-TkNvrReference $rtk) -like '*\NvrHealth\firmware-latest.json' -and (Get-TkNvrReference $rtk) -notlike '*modules*')
+Check 'plain end texts' ((Get-TkNvrPlainEnd 'Clock check' 2) -match 'Nothing was changed' -and (Get-TkNvrPlainEnd 'Clock check' 4) -match 'PROBLEM')
+$py = (Get-Command python -ErrorAction SilentlyContinue).Source
+$mockPy = Join-Path $tkDir 'modules\NvrHealth\tests\mock_devices.py'
+if ($py -and (Test-Path $mockPy) -and (Test-Path $nm)) {
+  $mp = 18191; $mbase = 'http://127.0.0.1:' + $mp
+  $nvrMock = Start-Process -FilePath $py -ArgumentList @($mockPy, $mp) -PassThru -WindowStyle Hidden
+  try {
+    for ($i = 0; $i -lt 50; $i++) { try { Invoke-WebRequest ($mbase + '/mockctl/writes') -UseBasicParsing -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep -Milliseconds 200 } }
+    $env:NVRCHECK_TEST_PW = 'NvrPass#2026'
+    $runs = Join-Path $tmp 'nvrruns'
+    $nc = Join-Path $tkDir 'NvrCheck.ps1'
+    function NcRun([string[]]$a) { $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $nc @a -RunsDir $runs -MockUrl $mbase -TestAnswer x -CloseAfter 0 2>&1 | Out-String; return @{ out = $o; code = $LASTEXITCODE } }
+    function NcLog([string]$mode) { $d = Get-ChildItem $runs -Directory -Filter ('Nvr' + $mode + '-*') | Sort-Object Name -Descending | Select-Object -First 1; if ($d) { return @(ConvertFrom-TkFixLog (Get-Content (Join-Path $d.FullName 'log.txt'))) }; return @() }
+    function MockWrites { return @((Invoke-WebRequest ($mbase + '/mockctl/writes') -UseBasicParsing).Content | ConvertFrom-Json) }
+    Invoke-WebRequest ($mbase + '/mockctl/reset') -Method Post -UseBasicParsing | Out-Null
+    $x = NcRun @('-Mode', 'Recording', '-Ip', '10.9.0.30', '-Vendor', 'Hikvision', '-Site', 'YKW Test', '-Days', '45')
+    $said = (NcLog 'Recording') -join "`n"
+    Check 'button 9: recording check runs, problems found' ($x.code -eq 4 -and $said -match 'only 20 of 45 days' -and $said -match 'Target: 45 days') ($x.out + $said)
+    Check 'button 9: drive health shown' ($said -match 'drive 1 failing') $said
+    Check 'button 9: read-only' ((MockWrites).Count -eq 0)
+    $x = NcRun @('-Mode', 'Clock', '-Ip', '10.9.0.30', '-Vendor', 'Hikvision')
+    $said = (NcLog 'Clock') -join "`n"
+    Check 'button 10: clock check flags the wrong clock' ($x.code -eq 4 -and $said -match '(?i)clock') ($x.out + $said)
+    Check 'button 10: read-only' ((MockWrites).Count -eq 0)
+    $x = NcRun @('-Mode', 'Firmware', '-Ip', '10.9.0.30', '-Vendor', 'Hikvision')
+    $said = (NcLog 'Firmware') -join "`n"
+    Check 'button 12: firmware check runs' ($x.code -in @(0, 4) -and $said -match '(?i)firmware') ($x.out + $said)
+    Check 'button 12: read-only (reports only)' ((MockWrites).Count -eq 0)
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $nc -Mode FixClock -Ip 10.9.0.30 -Vendor Hikvision -RunsDir $runs -MockUrl $mbase -TestAnswer 'yes' -CloseAfter 0 2>&1 | Out-String
+    $said = (NcLog 'FixClock') -join "`n"
+    Check 'button 11: plan shown, lower-case yes = NO change' ((MockWrites).Count -eq 0 -and $said -match 'WHAT-IF' -and $said -match 'Nothing was changed') ($o + $said)
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $nc -Mode FixClock -Ip 10.9.0.30 -Vendor Hikvision -RunsDir $runs -MockUrl $mbase -TestAnswer 'YES' -CloseAfter 0 2>&1 | Out-String
+    $said = (NcLog 'FixClock') -join "`n"
+    Check 'button 11: typed YES = time settings written' ((MockWrites).Count -gt 0 -and $said -match 'You typed YES' -and $said -match 'saved and read back') ($o + $said)
+    Check 'no password in any run log' (-not (Select-String -Path (Join-Path $runs '*\log.txt') -Pattern 'NvrPass#2026' -SimpleMatch -Quiet))
+  } finally {
+    Remove-Item Env:\NVRCHECK_TEST_PW -ErrorAction SilentlyContinue
+    try { if ($nvrMock -and -not $nvrMock.HasExited) { Stop-Process -Id $nvrMock.Id -Force } } catch {}
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*mock_devices.py*18191*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  }
+} else { Check 'python for the mock recorders' $false 'python or mock_devices.py missing' }
+
 # 8 the window itself, drawn off-screen to PNG (no window on the desktop)
 if ($Screens) {
   $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tkDir 'WireItToolkit.ps1') -Screenshot $Screens -DemoCamReset $cr 2>&1 | Out-String
-  Check 'window builds (8 buttons)' ($o -match 'buttons=8') $o
+  Check 'window builds (12 buttons)' ($o -match 'buttons=12') $o
   Check 'screenshots saved' ((Test-Path (Join-Path $Screens 'toolkit-main.png')) -and (Test-Path (Join-Path $Screens 'toolkit-reset.png'))) $o
   Check 'new look built (rounded cards, header)' ($o -match 'look=new') $o
   Check 'icon font found' ($o -match 'icons=Segoe') $o
   $s150 = Join-Path $Screens 'at150'
   $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tkDir 'WireItToolkit.ps1') -Screenshot $s150 -SimScale 1.5 -DemoCamReset $cr 2>&1 | Out-String
-  Check 'window builds at 150% (the Dell screen)' (($o -match 'buttons=8') -and ($o -match 'scale=1.5') -and (Test-Path (Join-Path $s150 'toolkit-main.png'))) $o
+  Check 'window builds at 150% (the Dell screen)' (($o -match 'buttons=12') -and ($o -match 'scale=1.5') -and (Test-Path (Join-Path $s150 'toolkit-main.png'))) $o
 }
 Check 'logo file present' (Test-Path (Join-Path $tkDir 'wireit-logo.png'))
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue

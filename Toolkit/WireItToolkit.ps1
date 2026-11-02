@@ -513,7 +513,7 @@ function Poll-Run {
       End-Run $code (Get-TkPlainEnd $r.Name $code)
     }
   } else {
-    if (-not $r.RunDir) { $d = Get-TkNewRunDir $TK.P.FixNVR $r.Mode $r.Since; if ($d) { $r.RunDir = $d.FullName } }
+    if (-not $r.RunDir) { $d = Get-TkNewRunDir $(if ($r.Root) { $r.Root } else { $TK.P.FixNVR }) $r.Mode $r.Since; if ($d) { $r.RunDir = $d.FullName } }
     if ($r.RunDir) {
       $x = Read-TkShared (Join-Path $r.RunDir 'log.txt') $r.Offset ([Text.Encoding]::UTF8); $r.Offset = $x.offset
       if ($x.text) { $said = ConvertFrom-TkFixLog ($x.text -split "`r?`n"); foreach ($l in $said) { Add-Out $l; $r.Shown++ } }
@@ -527,7 +527,7 @@ function Poll-Run {
         if ($r.Shown -eq 0 -and (Test-Path $s)) { Add-Out (Get-Content $s -Raw) }
         Add-Out ('(Full log: ' + $r.RunDir + ')')
       } elseif ($r.Shown -eq 0) { Add-Out 'The tool window closed before it started its work.' }
-      if ($code -eq -1) { End-Run 0 ($r.Name + ': the tool window closed. Results are above.') } else { End-Run $code (Get-TkPlainEnd $r.Name $code) }
+      if ($code -eq -1) { End-Run 0 ($r.Name + ': the tool window closed. Results are above.') } elseif ($r.Nvr) { End-Run $code (Get-TkNvrPlainEnd $r.Name $code) } else { End-Run $code (Get-TkPlainEnd $r.Name $code) }
     }
   }
 }
@@ -552,7 +552,7 @@ function Ask-Fields([string]$title, [string]$intro, $fields) {
 }
 function Q([string]$s) { return '"' + ($s -replace '"', '') + '"' }
 
-# ---------------- the 8 jobs ----------------
+# ---------------- the 12 jobs ----------------
 function Do-Find {
   [void](Start-Hidden 'Find cameras' (Join-Path $TK.P.CamReset 'Find-Cameras.ps1') '' {
     param($code)
@@ -592,6 +592,54 @@ function Do-Pics {
   $TK.site.Text = $a.site
   Start-Fix 'Camera pictures' 'Pictures' @('-Site ' + (Q $a.site)) $null
 }
+# ---------------- 9-12 Recorder health (NvrHealth module) ----------------
+# its own (not elevated) window: the recorder password is typed hidden there; the results come back here
+function Start-Nvr([string]$name, [string]$mode, [string[]]$extra) {
+  if ($TK.run) { Set-Status 'Wait for the running tool to finish.'; return }
+  Begin-Run $name
+  $file = Join-Path $TK.P.Toolkit 'NvrCheck.ps1'
+  if (-not (Test-Tool $file $name)) { End-Run 2 ''; return }
+  if (-not (Test-Path (Join-Path $TK.P.NvrHealth 'NvrHealth.psm1'))) { Add-Out 'The NvrHealth part of the Toolkit is missing. Use "Check for update".'; End-Run 2 ''; return }
+  $a = '-NoProfile -ExecutionPolicy Bypass -File "' + $file + '" -Mode ' + $mode
+  foreach ($e in $extra) { if ($e) { $a += ' ' + $e } }
+  Add-Out 'A tool window opens. Type the recorder''s user name and password there - hidden, never saved.'
+  Add-Out 'Results show up here as it works.'
+  Add-Out ''
+  $since = Get-Date
+  try { $proc = Start-Process -FilePath $TK.psexe -ArgumentList $a -PassThru -WorkingDirectory $TK.P.Toolkit -ErrorAction Stop }
+  catch { Add-Out ('Could not start: ' + $_.Exception.Message); End-Run 2 ''; return }
+  $TK.run.Kind = 'console'; $TK.run.Proc = $proc; $TK.run.Mode = ('Nvr' + $mode); $TK.run.Root = $TK.P.Toolkit; $TK.run.Nvr = $true
+  $TK.run.Since = $since; $TK.run.RunDir = $null; $TK.run.Offset = [long]0; $TK.run.Shown = 0; $TK.run.OnDone = $null
+}
+function Get-LastNvrIp { $f = Join-Path $TK.P.Logs 'last-nvr-ip.txt'; if (Test-Path $f) { return ([string](Get-Content $f -TotalCount 1)).Trim() }; return '' }
+function Do-Nvr([string]$mode) {
+  $names = @{ Recording = 'Recording check'; Clock = 'Clock check'; FixClock = 'Fix clock (NTP)'; Firmware = 'Firmware / security check' }
+  $intro = @{
+    Recording = 'Read-only. Is every camera recording? How many days of footage are kept vs. the site''s target? Hard drives and their health.'
+    Clock     = 'Read-only. Recorder (and camera) clocks vs. real time, time server on, US Eastern with daylight saving.'
+    FixClock  = 'CHANGES the recorder''s time settings (time server + US Eastern). It shows the plan first; nothing changes until you type YES in its window.'
+    Firmware  = 'Read-only. Firmware vs. the newest published and known security holes. Only REPORTS - it never updates anything.'
+  }
+  $fields = @(@('ip', 'Recorder IP address:', (Get-LastNvrIp)), @('site', 'Site (optional):', $TK.site.Text))
+  if ($mode -eq 'Recording') { $fields += ,@('days', 'Days to keep (blank = from the site):', '') }
+  else { $fields += ,@('cams', 'Cameras too? (yes / no):', 'yes') }
+  $a = Ask-Fields $names[$mode] $intro[$mode] $fields
+  if (-not $a) { return }
+  if ($a.ip -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { $TK.out.Clear(); Add-Out 'Type the recorder''s IP address, e.g. 192.168.1.20 (button 1 Find cameras lists it).'; return }
+  if ($mode -eq 'FixClock') {
+    $m = 'Fix clock changes the time settings on the recorder at ' + $a.ip + $(if ($a.cams -match '^(y|yes)$') { ' and its cameras' } else { '' }) + ' (time server time.nist.gov + US Eastern with daylight saving).' + "`r`n`r`n" + 'Step 1 only shows what would change. Nothing changes until you type YES in the tool window.' + "`r`n`r`n" + 'Do this on site, with the customer''s OK. Continue?'
+    if ([Windows.Forms.MessageBox]::Show($TK.form, $m, 'Fix clock (NTP)', 'YesNo', 'Warning') -ne 'Yes') { return }
+  }
+  try { New-Item -ItemType Directory -Force -Path $TK.P.Logs | Out-Null; Set-Content -Path (Join-Path $TK.P.Logs 'last-nvr-ip.txt') -Value $a.ip } catch {}
+  if ($a.site) { $TK.site.Text = $a.site }
+  $e = @('-Ip ' + $a.ip); if ($a.site) { $e += '-Site ' + (Q $a.site) }
+  if ($mode -eq 'Recording') {
+    $d = 0; if ($a.days -match '^\d+$') { $d = [int]$a.days } else { $d = Get-TkDaysToKeep $TK.cfg $a.site }
+    $e += '-Days ' + $d
+  } elseif ($a.cams -match '^(y|yes)$') { $e += '-Cameras' }
+  Start-Nvr $names[$mode] $mode $e
+}
+
 function Do-Undo {
   if (-not (Test-Path (Join-Path $TK.P.FixNVR 'FixNVR.ps1'))) { $TK.out.Clear(); Add-Out 'Fix NVR is not on this PC.'; return }
   $last = Get-TkLastFix $TK.P.FixNVR
@@ -840,10 +888,11 @@ $body.Padding = New-Object Windows.Forms.Padding((Px 16), (Px 14), (Px 16), (Px 
 [void]$body.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
 $root.Controls.Add($body, 0, 1)
 
-# left: the 8 jobs, in job order
-$left = New-Object Windows.Forms.TableLayoutPanel; $left.Dock = 'Fill'; $left.ColumnCount = 1; $left.RowCount = 9; $left.Margin = New-Object Windows.Forms.Padding(0, 0, (Px 8), 0)
+# left: the 8 jobs, in job order, then the 4 recorder-health checks (2 x 2)
+$left = New-Object Windows.Forms.TableLayoutPanel; $left.Dock = 'Fill'; $left.ColumnCount = 1; $left.RowCount = 11; $left.Margin = New-Object Windows.Forms.Padding(0, 0, (Px 8), 0)
 [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
-for ($i = 0; $i -lt 8; $i++) { [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 12.5))) }
+for ($i = 0; $i -lt 8; $i++) { [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 10))) }
+[void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))); [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 20)))
 $left.Controls.Add((New-Caps 'Jobs  -  usual order 1, 2, 3, 6'), 0, 0)
 $jobs = @(
   @('1   Find cameras', 'Read-only. Lists every Hikvision / Uniview camera and NVR, even on another IP scheme.', { Do-Find }, $cBlue, 0xE721, 'Every camera and NVR, even on another IP scheme.'),
@@ -855,10 +904,15 @@ $jobs = @(
   @('7   Undo last fix', 'Puts the NVR and cameras back the way the last Fix found them.', { Do-Undo }, $cSlate, 0xE7A7, 'Puts everything back the way the last Fix found it.'),
   @('8   Save camera pictures', 'Read-only. One picture of every camera for the site page, so a camera that goes down shows where it is. Also runs at the end of 3 and 6.', { Do-Pics }, $cTeal, 0xE722, 'One picture per camera for the site page.')
 )
+$health = @(
+  @('9   Recording check', 'Read-only. Every camera recording? Days of footage kept vs. the site''s target (YKW 45, others 30 - set in config.json). Hard drives and their health.', { Do-Nvr 'Recording' }, $cIndigo, 0xE714, 'Recording, days kept, drive health.'),
+  @('10   Clock check', 'Read-only. Recorder and camera clocks vs. real time, time server, US Eastern + daylight saving.', { Do-Nvr 'Clock' }, $cTeal, 0xE823, 'Clocks, time server, time zone.'),
+  @('11   Fix clock (NTP)', 'Sets the time server + US Eastern on the recorder (and cameras). Shows the plan first; changes nothing until you type YES.', { Do-Nvr 'FixClock' }, $cAmber, 0xE916, 'Plan first, changes after you type YES.'),
+  @('12   Firmware check', 'Read-only. Security check: firmware vs. the newest published and known security holes. Reports only, never updates.', { Do-Nvr 'Firmware' }, $cBrand, 0xEA18, 'Newest firmware + known holes. Reports only.')
+)
 $tips = New-Object Windows.Forms.ToolTip
 $TK.buttons = @()
-$row = 1
-foreach ($j in $jobs) {
+function New-JobCard($j) {
   $num = ($j[0] -split '\s+')[0]; $name = ($j[0] -replace '^\d+\s+', '')
   if ($TK_UI) {
     $b = New-Object WireItUi.Card; $b.Text = $j[0]; $b.Num = $num; $b.Title = $name; $b.Accent = $j[3]
@@ -871,8 +925,21 @@ foreach ($j in $jobs) {
   }
   $b.Dock = 'Fill'; $b.Margin = New-Object Windows.Forms.Padding(0, (Px 3), 0, (Px 5))
   $b.Add_Click($j[2]); $tips.SetToolTip($b, $j[1])
-  $left.Controls.Add($b, 0, $row); $TK.buttons += $b; $row++
+  $TK.buttons += $b
+  return $b
 }
+$row = 1
+foreach ($j in $jobs) { $left.Controls.Add((New-JobCard $j), 0, $row); $row++ }
+$left.Controls.Add((New-Caps 'Recorder health  -  only 11 changes anything, after you type YES'), 0, $row); $row++
+$hgrid = New-Object Windows.Forms.TableLayoutPanel; $hgrid.Dock = 'Fill'; $hgrid.ColumnCount = 2; $hgrid.RowCount = 2; $hgrid.Margin = New-Object Windows.Forms.Padding 0
+[void]$hgrid.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 50))); [void]$hgrid.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 50)))
+[void]$hgrid.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 50))); [void]$hgrid.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 50)))
+for ($k = 0; $k -lt $health.Count; $k++) {
+  $hb = New-JobCard $health[$k]
+  $hb.Margin = New-Object Windows.Forms.Padding($(if ($k % 2) { (Px 4) } else { 0 }), (Px 3), $(if ($k % 2) { 0 } else { (Px 4) }), (Px 5))
+  $hgrid.Controls.Add($hb, ($k % 2), [math]::Floor($k / 2))
+}
+$left.Controls.Add($hgrid, 0, $row)
 $body.Controls.Add($left, 0, 0)
 
 # right: job options on top, results below

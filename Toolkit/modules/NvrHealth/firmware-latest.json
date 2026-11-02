@@ -1,0 +1,603 @@
+{
+ "updated": "2026-11-02",
+ "generated_by": "refresh_firmware.py",
+ "log": [
+  "Hikvision rows parsed: 6767",
+  "CISA KEV: 1766 entries",
+  "DS-7208HQHI-K2: no published firmware found",
+  "DS-7332HGHI-SH: no published firmware found",
+  "NVR304-32E2-P16: no published firmware found",
+  "NVD since 2026-11-01: 0 new to review"
+ ],
+ "sources": {
+  "hikvision": [
+   "https://www.hikvision.com/us-en/support/download/firmware/",
+   "https://www.hikvision.com/en/support/download/firmware/"
+  ],
+  "dw": "https://digital-watchdog.com/DWSpectrum-Releasenote/DWSpectrum.html",
+  "uniview": [
+   "https://www.uniview.com/Support/Download_Center/Firmware/Network_Video_Recorders/"
+  ],
+  "cve": [
+   "https://services.nvd.nist.gov/rest/json/cves/2.0",
+   "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+  ]
+ },
+ "models": {
+  "DS-7732NI-M4/16P": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2025-66177",
+     "severity": "8.8 high",
+     "kev": false,
+     "affected_below_build": "250807",
+     "fixed": "builds dated 250807 or later",
+     "summary": "Buffer overflow in device search/discovery; someone on the same LAN can crash/disrupt the device. (Hikvision list: DS-77xxNI-Mx)",
+     "url": "https://www.hikvision.com/content/dam/hikvision/en/marketing/image/support/cybersecurity/security-advisory/Impact-scope-of-CVE-2025-66176-and-66177-20260325.pdf",
+     "source": "Hikvision impact-scope PDF 2026-03-25, read 2026-11-02"
+    },
+    {
+     "id": "CVE-2024-29949",
+     "severity": "7.2 high",
+     "kev": false,
+     "affected_from_version": "5.00.000",
+     "affected_below_version": "5.02.006",
+     "fixed": "V5.02.006 or later",
+     "summary": "Command injection for an already-logged-in admin.",
+     "url": "https://www.hikvision.com/en/support/cybersecurity/security-advisory/security-vulnerabilities-in-hikvision-nvr-devices/",
+     "source": "Hikvision advisory (2024 NVR), read 2026-11-02"
+    }
+   ],
+   "note": "V4.x units are older hardware; check the hardware version before moving to V5 firmware.",
+   "sites": [
+    "The Pawn Shop (V5.03.020 build 240904)",
+    "Incredible Newtown (V4.61.420 build 230217)"
+   ],
+   "latest": [
+    {
+     "version": "V5.04.088",
+     "build": "260903",
+     "file": "Firmware_V5.04.088_260903",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202609/Firmware__V5.04.088_260903_S3000754644.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-7732NI-M4": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2025-66177",
+     "severity": "8.8 high",
+     "kev": false,
+     "affected_below_build": "250807",
+     "fixed": "builds dated 250807 or later",
+     "summary": "Buffer overflow in device search/discovery; someone on the same LAN can crash/disrupt the device. (Hikvision list: DS-77xxNI-Mx)",
+     "url": "https://www.hikvision.com/content/dam/hikvision/en/marketing/image/support/cybersecurity/security-advisory/Impact-scope-of-CVE-2025-66176-and-66177-20260325.pdf",
+     "source": "Hikvision impact-scope PDF 2026-03-25, read 2026-11-02"
+    }
+   ],
+   "sites": [
+    "YKW Girls New (V4.63.005 build 230512)"
+   ],
+   "latest": [
+    {
+     "version": "V5.04.088",
+     "build": "260903",
+     "file": "Firmware_V5.04.088_260903",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202609/Firmware__V5.04.088_260903_S3000754644.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-7616NI-M2/16P": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2025-66177",
+     "severity": "8.8 high",
+     "kev": false,
+     "affected_below_build": "250807",
+     "fixed": "builds dated 250807 or later",
+     "summary": "Buffer overflow in device search/discovery; someone on the same LAN can crash/disrupt the device. (Hikvision list: DS-76xxNI-Mx)",
+     "url": "https://www.hikvision.com/content/dam/hikvision/en/marketing/image/support/cybersecurity/security-advisory/Impact-scope-of-CVE-2025-66176-and-66177-20260325.pdf",
+     "source": "Hikvision impact-scope PDF 2026-03-25, read 2026-11-02"
+    }
+   ],
+   "sites": [
+    "YeshivaAdmin (V4.61.405 build 220930)",
+    "Stonington (V4.61.405 build 220930)"
+   ],
+   "latest": [
+    {
+     "version": "V5.04.088",
+     "build": "260903",
+     "file": "Firmware_V5.04.088_260903",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202609/Firmware__V5.04.088_260903_S3000754644.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-7604NXI-K1/4P": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2025-66177",
+     "severity": "8.8 high",
+     "kev": false,
+     "affected_below_build": "250807",
+     "fixed": "builds dated 250807 or later",
+     "summary": "Buffer overflow in device search/discovery; someone on the same LAN can crash/disrupt the device. (Hikvision list: DS-76xxNXI-K1(/xP))",
+     "url": "https://www.hikvision.com/content/dam/hikvision/en/marketing/image/support/cybersecurity/security-advisory/Impact-scope-of-CVE-2025-66176-and-66177-20260325.pdf",
+     "source": "Hikvision impact-scope PDF 2026-03-25, read 2026-11-02"
+    },
+    {
+     "id": "CVE-2024-29948",
+     "severity": "3.8 low",
+     "kev": false,
+     "affected_below_build": "231013",
+     "fixed": "after V4.76.005 build 231012",
+     "summary": "Out-of-bounds read for a logged-in user (service hiccup).",
+     "url": "https://www.hikvision.com/en/support/cybersecurity/security-advisory/security-vulnerabilities-in-hikvision-nvr-devices/",
+     "source": "Hikvision advisory (2024 NVR), read 2026-11-02"
+    }
+   ],
+   "sites": [
+    "127 Park Rd / Emerest West Hartford (V4.83.006 build 240910)",
+    "Fenwoode Apartments (V4.83.006 build 240910)"
+   ],
+   "latest": [
+    {
+     "version": "V4.85.040",
+     "build": "260725",
+     "file": "Firmware_V4.85.040_260725",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202608/Firmware__V4.85.040_260725_S3000743586.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-7616NXI-K2/16P": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2025-66177",
+     "severity": "8.8 high",
+     "kev": false,
+     "affected_below_build": "250807",
+     "fixed": "builds dated 250807 or later",
+     "summary": "Buffer overflow in device search/discovery; someone on the same LAN can crash/disrupt the device. (Hikvision list: DS-76xxNXI-K2(/xP))",
+     "url": "https://www.hikvision.com/content/dam/hikvision/en/marketing/image/support/cybersecurity/security-advisory/Impact-scope-of-CVE-2025-66176-and-66177-20260325.pdf",
+     "source": "Hikvision impact-scope PDF 2026-03-25, read 2026-11-02"
+    }
+   ],
+   "sites": [
+    "Moorefield (V4.76.015 build 240108)"
+   ],
+   "latest": [
+    {
+     "version": "V4.85.040",
+     "build": "260725",
+     "file": "Firmware_V4.85.040_260725",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202608/Firmware__V4.85.040_260725_S3000743586.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-9664NI-M8": {
+   "vendor": "Hikvision",
+   "aliases": [
+    "NRA20-64"
+   ],
+   "advisories": [],
+   "note": "Not named in Hikvision's CVE-2025-66177 list (its 96xx entries are NI-H/NI-I/NXI). Winic NRA20-64 runs the same V4.63.010 firmware (OEM twin, unverified). Hikvision lists the shared M-series firmware V5.04.088 for it; confirm hardware version before updating.",
+   "sites": [
+    "Bais Yaakov of Waterbury (V4.63.010 build 230619)",
+    "Winic 40-cam NRA20-64 (V4.63.010)"
+   ],
+   "latest": [
+    {
+     "version": "V5.04.088",
+     "build": "260903",
+     "file": "Firmware_V5.04.088_260903",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202609/Firmware__V5.04.088_260903_S3000754644.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2CD2143G0-I": {
+   "vendor": "Hikvision",
+   "advisories": [],
+   "note": "No CVE found for the DS-2CD2xx3G0 line in the Hikvision tables read (CVE-2021-36260 lists G2, not G0). Firmware on site is 2018-2019, ~7 years behind.",
+   "sites": [
+    "The Pawn Shop: 19x V5.5.83 b190221, 2x V5.5.82 b181211, 3x V5.5.61 b180718",
+    "Durham Campus (DW): 44 cameras, firmware not read"
+   ],
+   "latest": [
+    {
+     "version": "V5.6.821",
+     "build": "260330",
+     "file": "Firmware_V5.6.821_260330",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202604/Firmware__V5.6.821_260330_S3000711149.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2CD2343G0-I": {
+   "vendor": "Hikvision",
+   "advisories": [],
+   "note": "Same G0 line as DS-2CD2143G0-I.",
+   "latest": [
+    {
+     "version": "V5.6.821",
+     "build": "260330",
+     "file": "Firmware_V5.6.821_260330",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202604/Firmware__V5.6.821_260330_S3000711149.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2CD2543G0-IS": {
+   "vendor": "Hikvision",
+   "advisories": [],
+   "latest": [
+    {
+     "version": "V5.6.821",
+     "build": "260330",
+     "file": "Firmware_V5.6.821_260330",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202604/Firmware__V5.6.821_260330_S3000711149.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2CD2345FWD-I": {
+   "vendor": "Hikvision",
+   "advisories": [],
+   "latest": [
+    {
+     "version": "V5.6.821",
+     "build": "260330",
+     "file": "Firmware_V5.6.821_260330",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202604/Firmware__V5.6.821_260330_S3000711149.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2CD1347G2-LUF": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2025-66177",
+     "severity": "8.8 high",
+     "kev": false,
+     "affected_below_build": "230823",
+     "fixed": "builds after 230823",
+     "summary": "Buffer overflow in device search/discovery; someone on the same LAN can crash/disrupt the device. (Hikvision list: DS-2CD1xxxG2, versions up to and including V5.7.13_230822)",
+     "url": "https://www.hikvision.com/content/dam/hikvision/en/marketing/image/support/cybersecurity/security-advisory/Impact-scope-of-CVE-2025-66176-and-66177-20260325.pdf",
+     "source": "Hikvision impact-scope PDF 2026-03-25, read 2026-11-02"
+    }
+   ],
+   "sites": [
+    "Austrian club: 12x V5.7.12 b230614 (affected), 3x V5.8.4 b240510"
+   ],
+   "latest": [
+    {
+     "version": "V5.8.42",
+     "build": "260827",
+     "file": "Firmware_V5.8.42_260827",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202609/Firmware__V5.8.42_260827_S3000751723.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2CD2343G2-I": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2021-36260",
+     "severity": "9.8 critical",
+     "kev": true,
+     "affected_below_build": "210625",
+     "fixed": "build 210625 or later",
+     "summary": "Unauthenticated command injection in the web server (on CISA KEV since 2022-01-10). Hikvision table lists DS-2CD2xx3G2.",
+     "url": "https://www.hikvision.com/en/support/cybersecurity/security-advisory/security-notification-command-injection-vulnerability-in-some-hikvision-products/",
+     "source": "Hikvision advisory v1.2 2021-09-24 (web.archive.org copy), read 2026-11-02"
+    }
+   ],
+   "latest": [
+    {
+     "version": "V5.7.23",
+     "build": "260320",
+     "file": "Firmware_V5.7.23_260320",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202603/Firmware__V5.7.23_260320_S3000708441.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2CD2343G2-IU": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2021-36260",
+     "severity": "9.8 critical",
+     "kev": true,
+     "affected_below_build": "210625",
+     "fixed": "build 210625 or later",
+     "summary": "Unauthenticated command injection in the web server (on CISA KEV since 2022-01-10). Hikvision table lists DS-2CD2xx3G2.",
+     "url": "https://www.hikvision.com/en/support/cybersecurity/security-advisory/security-notification-command-injection-vulnerability-in-some-hikvision-products/",
+     "source": "Hikvision advisory v1.2 2021-09-24 (web.archive.org copy), read 2026-11-02"
+    }
+   ],
+   "latest": [
+    {
+     "version": "V5.7.23",
+     "build": "260320",
+     "file": "Firmware_V5.7.23_260320",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202603/Firmware__V5.7.23_260320_S3000708441.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2CD2383G2-IU": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2021-36260",
+     "severity": "9.8 critical",
+     "kev": true,
+     "affected_below_build": "210625",
+     "fixed": "build 210625 or later",
+     "summary": "Unauthenticated command injection in the web server (on CISA KEV since 2022-01-10). Hikvision table lists DS-2CD2xx3G2.",
+     "url": "https://www.hikvision.com/en/support/cybersecurity/security-advisory/security-notification-command-injection-vulnerability-in-some-hikvision-products/",
+     "source": "Hikvision advisory v1.2 2021-09-24 (web.archive.org copy), read 2026-11-02"
+    }
+   ],
+   "latest": [
+    {
+     "version": "V5.7.6",
+     "build": "261020",
+     "file": "Firmware_V5.7.6_261020",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202610/Firmware__V5.7.6_261020_S3000760325.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2CD2183G2-IU": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2021-36260",
+     "severity": "9.8 critical",
+     "kev": true,
+     "affected_below_build": "210625",
+     "fixed": "build 210625 or later",
+     "summary": "Unauthenticated command injection in the web server (on CISA KEV since 2022-01-10). Hikvision table lists DS-2CD2xx3G2.",
+     "url": "https://www.hikvision.com/en/support/cybersecurity/security-advisory/security-notification-command-injection-vulnerability-in-some-hikvision-products/",
+     "source": "Hikvision advisory v1.2 2021-09-24 (web.archive.org copy), read 2026-11-02"
+    }
+   ],
+   "latest": [
+    {
+     "version": "V5.7.6",
+     "build": "261020",
+     "file": "Firmware_V5.7.6_261020",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202610/Firmware__V5.7.6_261020_S3000760325.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2CD2583G2-IS": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2021-36260",
+     "severity": "9.8 critical",
+     "kev": true,
+     "affected_below_build": "210625",
+     "fixed": "build 210625 or later",
+     "summary": "Unauthenticated command injection in the web server (on CISA KEV since 2022-01-10). Hikvision table lists DS-2CD2xx3G2.",
+     "url": "https://www.hikvision.com/en/support/cybersecurity/security-advisory/security-notification-command-injection-vulnerability-in-some-hikvision-products/",
+     "source": "Hikvision advisory v1.2 2021-09-24 (web.archive.org copy), read 2026-11-02"
+    }
+   ],
+   "latest": [
+    {
+     "version": "V5.7.23",
+     "build": "260320",
+     "file": "Firmware_V5.7.23_260320",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202603/Firmware__V5.7.23_260320_S3000708441.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2CD2367G2P-LSU/SL": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2021-36260",
+     "severity": "9.8 critical",
+     "kev": true,
+     "affected_below_build": "210625",
+     "fixed": "build 210625 or later",
+     "summary": "Unauthenticated command injection in the web server (on CISA KEV since 2022-01-10). Hikvision table lists DS-2CD2xx7G2.",
+     "url": "https://www.hikvision.com/en/support/cybersecurity/security-advisory/security-notification-command-injection-vulnerability-in-some-hikvision-products/",
+     "source": "Hikvision advisory v1.2 2021-09-24 (web.archive.org copy), read 2026-11-02"
+    }
+   ],
+   "latest": [
+    {
+     "version": "V5.7.20",
+     "build": "260320",
+     "file": "Firmware_V5.7.20_260320",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202604/Firmware__V5.7.20_260320_S3000708463.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2CD2387G2-LSU/SL": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2021-36260",
+     "severity": "9.8 critical",
+     "kev": true,
+     "affected_below_build": "210625",
+     "fixed": "build 210625 or later",
+     "summary": "Unauthenticated command injection in the web server (on CISA KEV since 2022-01-10). Hikvision table lists DS-2CD2xx7G2.",
+     "url": "https://www.hikvision.com/en/support/cybersecurity/security-advisory/security-notification-command-injection-vulnerability-in-some-hikvision-products/",
+     "source": "Hikvision advisory v1.2 2021-09-24 (web.archive.org copy), read 2026-11-02"
+    }
+   ],
+   "latest": [
+    {
+     "version": "V5.7.23",
+     "build": "260320",
+     "file": "Firmware_V5.7.23_260320",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202603/Firmware__V5.7.23_260320_S3000708441.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2CD2387G2-LU": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2021-36260",
+     "severity": "9.8 critical",
+     "kev": true,
+     "affected_below_build": "210625",
+     "fixed": "build 210625 or later",
+     "summary": "Unauthenticated command injection in the web server (on CISA KEV since 2022-01-10). Hikvision table lists DS-2CD2xx7G2.",
+     "url": "https://www.hikvision.com/en/support/cybersecurity/security-advisory/security-notification-command-injection-vulnerability-in-some-hikvision-products/",
+     "source": "Hikvision advisory v1.2 2021-09-24 (web.archive.org copy), read 2026-11-02"
+    }
+   ],
+   "latest": [
+    {
+     "version": "V5.7.23",
+     "build": "260320",
+     "file": "Firmware_V5.7.23_260320",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202603/Firmware__V5.7.23_260320_S3000708441.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-2DE2A404IW-DE3": {
+   "vendor": "Hikvision",
+   "advisories": [
+    {
+     "id": "CVE-2021-36260",
+     "severity": "9.8 critical",
+     "kev": true,
+     "affected_below_build": "210625",
+     "fixed": "build 210625 or later",
+     "summary": "Unauthenticated command injection in the web server (on CISA KEV since 2022-01-10). Hikvision table lists (i)DS-2DExxxx.",
+     "url": "https://www.hikvision.com/en/support/cybersecurity/security-advisory/security-notification-command-injection-vulnerability-in-some-hikvision-products/",
+     "source": "Hikvision advisory v1.2 2021-09-24 (web.archive.org copy), read 2026-11-02"
+    }
+   ],
+   "latest": [
+    {
+     "version": "V5.7.30",
+     "build": "260326",
+     "file": "Firmware_V5.7.30_260326",
+     "url": "https://assets.hikvision.com/prd/normal/all/files/202604/Firmware__V5.7.30_260326_S3000711197.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "iDS-7216HUHI-M2/S": {
+   "vendor": "Hikvision",
+   "advisories": [],
+   "note": "CVE-2025-66177 lists nearby iDS-72xxHUHI models but not M2/S exactly (unverified).",
+   "latest": [
+    {
+     "version": "V4.75.011",
+     "build": "240620",
+     "file": "Firmware_Europe_V4.75.011_240620",
+     "url": "https://assets.hikvision.com/prd/public/all/files/202406/1719605133403/Firmware_Europe_V4.75.011_240620_S3000583062.zip",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "DS-7208HQHI-K2": {
+   "vendor": "Hikvision",
+   "advisories": [],
+   "note": "Old Turbo DVR (2020 firmware). Not in the tables read.",
+   "latest": []
+  },
+  "DS-7332HGHI-SH": {
+   "vendor": "Hikvision",
+   "advisories": [],
+   "note": "2017 DVR firmware (V3.1.17). Likely end of life; no current firmware found on Hikvision's download page.",
+   "latest": []
+  },
+  "DW Spectrum": {
+   "vendor": "DW",
+   "advisories": [
+    {
+     "id": "CVE-2026-10056",
+     "severity": "7.5 high",
+     "kev": false,
+     "affected_below_version": "6.1.2",
+     "fixed": "6.1.2.43047 (DW); workaround: High security mode or Access-Control-Allow-Credentials=false",
+     "summary": "Admin account takeover if a logged-in admin opens a malicious web page (Standard security mode).",
+     "url": "https://support.networkoptix.com/hc/en-us/articles/39254208939159-How-to-Enable-CORS-Validation",
+     "source": "NVD (Network Optix Nx Witness = DW Spectrum OEM); DW 6.1.2 release notes list the matching CORS fix"
+    },
+    {
+     "id": "CVE-2026-78414",
+     "severity": "8.0 high",
+     "kev": false,
+     "affected_below_version": "6.1.3",
+     "fixed": "Nx 6.1.3; DW build not published yet (DW release notes read 2026-11-02 top out at 6.1.2.43047)",
+     "summary": "XSS in \"Merge with another site\" list; needs an attacker's server on the same LAN.",
+     "url": "https://support.networkoptix.com/hc/en-us/articles/42950508518679-Security-Advisory-Cross-Site-Scripting-XSS-in-Merge-with-Another-Site-Dropdown",
+     "source": "NVD"
+    }
+   ],
+   "sites": [
+    "YKW S Elm Street, 1069 Capitol, Blue Ridge Shul, Fairbridge Commons, Shteeble, YASW 359 Cooke St (6.1.0.42176)",
+    "DESKTOP-GB2OD44 (6.0.5.41290)",
+    "Durham Campus (6.0.2.40414)"
+   ],
+   "latest": [
+    {
+     "version": "6.1.2.43047",
+     "build": "",
+     "file": "",
+     "url": "https://digital-watchdog.com/DWSpectrum-Releasenote/DWSpectrum.html",
+     "checked": "2026-11-02"
+    }
+   ]
+  },
+  "NVR502-16B-P16": {
+   "vendor": "Uniview",
+   "aliases": [
+    "NVR502-08B-P8",
+    "NVR501-08B-P8"
+   ],
+   "advisories": [],
+   "note": "Uniview NVR firmware on site (B3613 build 260918) is newer than the product page build. No NVR advisory matched (CVE-2024-3850 is NVR301-04S2-P4 only).",
+   "fw_family": "B3613",
+   "latest": [
+    {
+     "version": "B3613.52.31",
+     "build": "260818",
+     "file": "NVR-B3613.52.31.260818.zip",
+     "url": "https://global.uniview.com/ (NVR502-08B-P8 product page, read 2026-11-02)",
+     "checked": "2026-11-02",
+     "source": "hand-checked"
+    }
+   ]
+  },
+  "NVR304-32E2-P16": {
+   "vendor": "Uniview",
+   "advisories": [],
+   "fw_family": "B3112",
+   "note": "No newer B3112 build found on Uniview's download center (2026-11-02); site runs NVR-B3112.39.48.250408. Unverified whether a newer build exists (Uniview US support / ubox.uniview.com).",
+   "latest": []
+  }
+ },
+ "new_cves_to_review": []
+}

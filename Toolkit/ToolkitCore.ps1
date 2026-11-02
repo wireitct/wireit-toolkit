@@ -10,6 +10,7 @@ function Get-TkPaths([string]$toolkitDir) {
   [pscustomobject]@{
     Root = $root; Toolkit = $toolkitDir
     FixNVR = Join-Path $root 'FixNVR'; CamReset = Join-Path $root 'CamReset'; NetCheck = Join-Path $root 'NetCheck'
+    NvrHealth = Join-Path $toolkitDir 'modules\NvrHealth'; NvrDaily = Join-Path $root 'NvrHealth'
     Logs = Join-Path $toolkitDir 'logs'; Previous = Join-Path $toolkitDir 'previous'; Staging = Join-Path $toolkitDir 'update-staging'
   }
 }
@@ -30,6 +31,7 @@ function Get-TkConfig([string]$toolkitDir) {
     hiTools = @('C:\Program Files (x86)\HiToolsDelivery\client\HiToolsDelivery.exe', 'C:\Program Files\HiToolsDelivery\client\HiToolsDelivery.exe')
     form = [ordered]@{ firstName = 'Moshe'; lastName = 'Reichman'; email = 'moshe@wireitct.com'; company = 'WireIt CT LLC'; state = 'Connecticut'; zip = '06710'; businessType = 'Installer' }
     passwordLength = 14
+    daysToKeep = [ordered]@{ default = 30; sites = [ordered]@{ YKW = 45 } }
   }
   if ($c) {
     foreach ($p in $c.PSObject.Properties) {
@@ -38,6 +40,47 @@ function Get-TkConfig([string]$toolkitDir) {
     }
   }
   return [pscustomobject]$d
+}
+
+function Get-TkDaysToKeep($cfg, [string]$site) {
+  # days of footage a site must keep: config.json "daysToKeep": { "default": 30, "sites": { "YKW": 45 } }
+  # a key matches when the site name starts with it or contains it as a word (not case sensitive)
+  $dk = $null; if ($cfg -and $cfg.PSObject.Properties['daysToKeep']) { $dk = $cfg.daysToKeep }
+  $def = 30; $sites = $null
+  if ($dk) {
+    if ($dk -is [Collections.IDictionary]) { if ($dk.Contains('default') -and [int]$dk['default'] -gt 0) { $def = [int]$dk['default'] }; $sites = $dk['sites'] }
+    else { if ($dk.PSObject.Properties['default'] -and [int]$dk.default -gt 0) { $def = [int]$dk.default }; if ($dk.PSObject.Properties['sites']) { $sites = $dk.sites } }
+  }
+  if (-not $site -or -not $sites) { return $def }
+  $pairs = @(); if ($sites -is [Collections.IDictionary]) { foreach ($k in $sites.Keys) { $pairs += [pscustomobject]@{ k = [string]$k; v = $sites[$k] } } } else { foreach ($p in $sites.PSObject.Properties) { $pairs += [pscustomobject]@{ k = [string]$p.Name; v = $p.Value } } }
+  $s = $site.Trim()
+  foreach ($p in @($pairs | Sort-Object { - $_.k.Length })) {
+    $k = $p.k; if (-not $k -or $k.StartsWith('_')) { continue }
+    if ($s.StartsWith($k, [StringComparison]::OrdinalIgnoreCase) -or $s -match ('(?i)\b' + [regex]::Escape($k) + '\b')) { if ([int]$p.v -gt 0) { return [int]$p.v } }
+  }
+  return $def
+}
+
+function Get-TkNvrReference([string]$toolkitDir) {
+  # the firmware list: the newer of the Toolkit's own copy and the daily check's monthly refresh (C:\WireIt\NvrHealth)
+  $P = Get-TkPaths $toolkitDir
+  $best = $null; $bestDate = ''
+  foreach ($f in @((Join-Path $P.NvrDaily 'firmware-latest.json'), (Join-Path $P.NvrHealth 'firmware-latest.json'))) {
+    if (-not (Test-Path -LiteralPath $f)) { continue }
+    $j = Read-TkJson $f; if (-not $j -or -not $j.models) { continue }
+    $d = [string]$j.updated
+    if (-not $best -or ($d -gt $bestDate)) { $best = $f; $bestDate = $d }
+  }
+  return $best
+}
+
+function Get-TkNvrPlainEnd([string]$tool, [int]$code) {
+  switch ($code) {
+    0 { return ($tool + ': finished. All good, or see the CHECK lines above.') }
+    2 { return ($tool + ': could not read the recorder (wrong password, wrong address, or not on its network). Nothing was changed.') }
+    4 { return ($tool + ': finished - PROBLEM lines above need a look.') }
+    default { return ($tool + ': stopped with a problem (code ' + $code + '). The full log is in the runs folder.') }
+  }
 }
 
 function Get-TkVersion([string]$toolkitDir) {
