@@ -63,7 +63,7 @@ Check 'json report is valid and has findings' { $j = Get-Content $s.Json -Raw | 
 $R6 = New-ScMock; Read-ScPrevious $R6 $tmp
 Check 'previous run read back' { @($R6.previous).Count -ge 4 }
 Check 'report text has channel table + device table' { $s.Text -match 'NVR CHANNELS' -and $s.Text -match 'DEVICES THAT ANSWERED' -and $s.Text -match 'Nothing was changed' }
-Check 'upload is off by default' { (Send-ScReport $R $D 'WI-TEST' 'x') -eq 'Upload is off.' }
+Check 'upload needs both Site ID and code' { (Send-ScReport $R $D '' 'ABC123') -like 'Upload is off*' }
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 
 # ---- local mock NVR on 127.0.0.1 (proves the HTTP read path and the one-login-try rule) ----
@@ -100,4 +100,22 @@ $m = Start-MockNvr 18732 'deny'
 $nv2 = Get-ScNvrChannels '127.0.0.1:18732' $cr @(80)
 Check 'wrong password -> plain message, stops after one login try' { $nv2.Msg -match 'wrong' -and -not $nv2.Ok -and $m.State.Count -le 2 -and @($m.State.Paths | Where-Object { $_ -like '*cgi-bin*' }).Count -eq 0 }
 $m.P.Stop(); $m.Rs.Close()
+# upload (Send-ScReport, v1.1.0) against a local mock on 127.0.0.1: Site ID + code sent, no password / user / camera names
+$upState = [hashtable]::Synchronized(@{ Body = '' })
+$upRs = [runspacefactory]::CreateRunspace(); $upRs.Open(); $upRs.SessionStateProxy.SetVariable('st', $upState)
+$upPs = [powershell]::Create(); $upPs.Runspace = $upRs
+[void]$upPs.AddScript({ $l = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 18741); $l.Start(); try { $c = $l.AcceptTcpClient(); $s = $c.GetStream(); $s.ReadTimeout = 5000; $buf = New-Object byte[] 262144; $got = 0; $txt = ''; $hi = -1; $len = 0
+  do { $n = $s.Read($buf, $got, $buf.Length - $got); $got += $n; $txt = [Text.Encoding]::UTF8.GetString($buf, 0, $got); $hi = $txt.IndexOf("`r`n`r`n"); if ($hi -ge 0 -and $txt -match 'Content-Length:\s*(\d+)') { $len = [int]$matches[1] } } while ($n -gt 0 -and ($hi -lt 0 -or ($got - [Text.Encoding]::UTF8.GetByteCount($txt.Substring(0, $hi + 4))) -lt $len))
+  $st.Body = $txt.Substring($hi + 4); $resp = '{"ok":true,"msg":"Posted"}'; $h = "HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: " + $resp.Length + "`r`nConnection: close`r`n`r`n" + $resp; $b = [Text.Encoding]::ASCII.GetBytes($h); $s.Write($b, 0, $b.Length); $s.Flush(); Start-Sleep -Milliseconds 200; $c.Close() } finally { $l.Stop() } })
+$upH = $upPs.BeginInvoke(); Start-Sleep -Milliseconds 500
+$mR = New-ScMock; $mD = Get-ScDiagnosis $mR
+$upOld = $script:SC_UPLOAD_URL; $script:SC_UPLOAD_URL = 'http://127.0.0.1:18741/'
+$upMsg = Send-ScReport $mR $mD 'wi-061' 'abc123'
+$script:SC_UPLOAD_URL = $upOld
+[void]$upH.AsyncWaitHandle.WaitOne(5000); $upPs.Dispose(); $upRs.Close()
+Check 'upload: posted, plain answer for the status bar' { $upMsg -eq 'Results posted to the site page.' }
+Check 'upload: siteCheckPush with Site ID + code (upper case)' { $upState.Body -match '"op":"siteCheckPush"' -and $upState.Body -match '"site":"WI-061"' -and $upState.Body -match '"code":"ABC123"' }
+Check 'upload: no password, no user, no camera names' { $b = $upState.Body; $b.Length -gt 100 -and $b -notmatch 'password' -and $b -notmatch '"name"' -and $b -notmatch '"user"' -and $b -cnotmatch 'Front door|Lobby|Back lot|Stairs|Gym|Hall' }
+Check 'upload off without a code' { (Send-ScReport $mR $mD 'WI-061' '') -like 'Upload is off*' }
+Check 'upload goes to the WireIt service log' { $upOld -eq 'https://wireit-api.wireitct.workers.dev/' }
 Write-Output ('RESULT ' + $pass + ' passed, ' + $fail + ' failed')
