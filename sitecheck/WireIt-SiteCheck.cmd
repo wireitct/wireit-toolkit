@@ -12,17 +12,20 @@ exit /b
  (official Hikvision ISAPI / Dahua HTTP API, GET requests only, one login try). Changes nothing on any device.
  The password is used once and never saved or logged.
  Run:  double-click WireIt-SiteCheck.cmd   (or:  powershell -ExecutionPolicy Bypass -File SiteCheck.ps1)
- Console: SiteCheck.ps1 -NoWindow [-Nvr 192.168.1.100 -AskPassword]
+ Console: SiteCheck.ps1 -NoWindow [-Nvr 192.168.1.100 -AskPassword] [-Site WI-061 -UploadCode ABC123]
+ Upload (optional): type the Site ID + the 2-hour upload code from the site page (Remote check card); the result then shows
+ on the site page. No camera names and no password are ever sent.
 #>
 param(
   [string]$Nvr = '', [string]$User = 'admin', [int]$Pings = 20, [string[]]$ExtraNet = @(),
   [switch]$NoWindow, [switch]$AskPassword, [string]$OutDir = '',
+  [string]$Site = '', [string]$UploadCode = '',
   [switch]$SelfTest, [switch]$LoadOnly, [switch]$GuiSmoke, [string]$Screenshot = '', [string]$Launcher = ''
 )
 $SC_CODE = @'
 
 # ======================= CORE (read-only checks) =======================
-$script:SC_VERSION = '1.0.0'
+$script:SC_VERSION = '1.1.0'
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
@@ -443,12 +446,25 @@ function Read-ScPrevious($R, [string]$dir) {
 }
 # Upload to the site page: OFF until the server side exists (see INTEGRATION.md). Never sends passwords.
 function Send-ScReport($R, $D, [string]$siteCode, [string]$uploadCode) {
+  # Posts the result to the site page (WireIt service log). Sends channel # + IP + state only: camera NAMES are taken out of the
+  # finding lines, and no password or user name is ever in the report. Returns one plain line for the status bar.
   $url = $script:SC_UPLOAD_URL
-  if (-not $url -or -not $siteCode -or -not $uploadCode) { return 'Upload is off.' }
-  $body = [ordered]@{ op = 'siteCheckPush'; site = $siteCode; code = $uploadCode; pc = $R.pc; version = $R.version; when = $R.started; headline = $D.Headline; findings = @($D.Findings | ForEach-Object { [ordered]@{ level = $_.Level; text = $_.Text } }); channels = @($R.channels | ForEach-Object { [ordered]@{ ch = $_.Ch; ip = $_.Ip; online = $_.Online; detail = $_.Detail } }); devices = @($R.devices | ForEach-Object { [ordered]@{ ip = $_.Ip; mac = $_.Mac; vendor = $_.Vendor; kind = $_.Kind; loss = $_.LossPct; ms = $_.Median; ports = @($_.Ports) } }) }
-  try { $r = Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json' -Body ($body | ConvertTo-Json -Depth 5) -TimeoutSec 20; if ($r.ok) { return 'Results posted to the site page.' } else { return 'Site page said: ' + $r.msg } } catch { return 'Could not post to the site page: ' + $_.Exception.Message }
+  $siteCode = ([string]$siteCode).Trim().ToUpper(); $uploadCode = (([string]$uploadCode).ToUpper() -replace '[^A-Z0-9]', '')
+  if (-not $url -or -not $siteCode -or -not $uploadCode) { return 'Upload is off (no Site ID / upload code).' }
+  if ($siteCode -match '^\d{3,4}$') { $siteCode = 'WI-' + $siteCode }
+  $names = @($R.channels | ForEach-Object { [string]$_.Name } | Where-Object { $_ })
+  $clean = { param($t) $t = [string]$t; foreach ($n in $names) { $t = $t.Replace('  "' + $n + '"', '').Replace('"' + $n + '"', '') }; $t }
+  $body = [ordered]@{ op = 'siteCheckPush'; site = $siteCode; code = $uploadCode; pc = $R.pc; version = $R.version; when = $R.started; headline = (& $clean $D.Headline)
+    findings = @($D.Findings | ForEach-Object { [ordered]@{ level = $_.Level; text = (& $clean $_.Text) } })
+    channels = @($R.channels | ForEach-Object { [ordered]@{ ch = $_.Ch; ip = $_.Ip; online = [bool]$_.Online; detail = $_.Detail } })
+    devices = @($R.devices | ForEach-Object { [ordered]@{ ip = $_.Ip; mac = $_.Mac; vendor = $_.Vendor; kind = $_.Kind; loss = $_.LossPct; ms = $_.Median; ports = @($_.Ports) } }) }
+  $json = $body | ConvertTo-Json -Depth 5 -Compress
+  try {
+    $r = Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($json)) -TimeoutSec 20 -UseBasicParsing
+    if ($r.ok) { return 'Results posted to the site page.' } else { return ('Not posted: ' + $r.msg) }
+  } catch { return ('Not posted (no internet or the site page did not answer): ' + $_.Exception.Message) }
 }
-$script:SC_UPLOAD_URL = ''   # e.g. https://<worker>/api  -- set only after INTEGRATION.md step 1 is deployed
+$script:SC_UPLOAD_URL = 'https://wireit-api.wireitct.workers.dev/'   # the WireIt service log (Cloudflare); op siteCheckPush + per-site upload code
 
 '@
 . ([scriptblock]::Create($SC_CODE))
@@ -500,6 +516,7 @@ function Invoke-ScConsole {
   $D = Get-ScDiagnosis $R
   $s = Save-ScReport $R $D $dir
   Write-Output ''; Write-Output $s.Text; Write-Output ''; Write-Output ('Report saved: ' + $s.Txt)
+  if ($Site -and $UploadCode) { Write-Output (Send-ScReport $R $D $Site $UploadCode) }
 }
 if ($NoWindow) { Invoke-ScConsole; if ($Launcher) { Read-Host 'Press Enter to close' | Out-Null }; return }
 
@@ -527,14 +544,17 @@ $t1 = New-Object Windows.Forms.Label; $t1.Text = 'WireIt Site Check'; $t1.ForeCo
 $t2 = New-Object Windows.Forms.Label; $t2.Text = 'Finds which cameras are down and why. Read-only: changes nothing.  v' + $script:SC_VERSION; $t2.ForeColor = [Drawing.Color]::FromArgb(200, 205, 212); $t2.AutoSize = $true; $t2.Location = New-Object Drawing.Point(280, 25)
 $stripe = New-Object Windows.Forms.Panel; $stripe.Dock = 'Top'; $stripe.Height = 4; $stripe.BackColor = $red
 $hdr.Controls.AddRange(@($t1, $t2))
-$in = New-Object Windows.Forms.Panel; $in.Dock = 'Top'; $in.Height = 96; $in.Padding = New-Object Windows.Forms.Padding(16, 10, 16, 4)
+$in = New-Object Windows.Forms.Panel; $in.Dock = 'Top'; $in.Height = 150; $in.Padding = New-Object Windows.Forms.Padding(16, 10, 16, 4)
 function New-L($txt, $x, $y) { $l = New-Object Windows.Forms.Label; $l.Text = $txt; $l.AutoSize = $true; $l.Location = New-Object Drawing.Point($x, $y); $l.ForeColor = [Drawing.Color]::FromArgb(70, 75, 85); return $l }
 $lNvr = New-L 'NVR address' 18 8; $tNvr = New-Object Windows.Forms.TextBox; $tNvr.Location = New-Object Drawing.Point(18, 30); $tNvr.Width = 170; $tNvr.Font = New-Object Drawing.Font($fontUi, 12); $tNvr.Text = $Nvr
 $lUser = New-L 'User' 200 8; $tUser = New-Object Windows.Forms.TextBox; $tUser.Location = New-Object Drawing.Point(200, 30); $tUser.Width = 110; $tUser.Font = New-Object Drawing.Font($fontUi, 12); $tUser.Text = $User
 $lPw = New-L 'NVR password (optional)' 322 8; $tPw = New-Object Windows.Forms.TextBox; $tPw.Location = New-Object Drawing.Point(322, 30); $tPw.Width = 200; $tPw.Font = New-Object Drawing.Font($fontUi, 12); $tPw.UseSystemPasswordChar = $true
 $bGo = New-Object Windows.Forms.Button; $bGo.Text = 'Start check'; $bGo.Location = New-Object Drawing.Point(540, 22); $bGo.Size = New-Object Drawing.Size(200, 46); $bGo.FlatStyle = 'Flat'; $bGo.FlatAppearance.BorderSize = 0; $bGo.BackColor = $green; $bGo.ForeColor = [Drawing.Color]::White; $bGo.Font = New-Object Drawing.Font($fontUi, 13, [Drawing.FontStyle]::Bold)
-$hint = New-L 'Leave the address blank to find the NVR automatically. The password is used once to read which channels are offline and is never saved.' 18 66
-$in.Controls.AddRange(@($lNvr, $tNvr, $lUser, $tUser, $lPw, $tPw, $bGo, $hint))
+$lSite = New-L 'Site ID (optional, e.g. WI-061)' 18 66; $tSite = New-Object Windows.Forms.TextBox; $tSite.Location = New-Object Drawing.Point(18, 88); $tSite.Width = 170; $tSite.Font = New-Object Drawing.Font($fontUi, 12); $tSite.Text = $Site
+$lCode = New-L 'Upload code (optional)' 200 66; $tCode = New-Object Windows.Forms.TextBox; $tCode.Location = New-Object Drawing.Point(200, 88); $tCode.Width = 110; $tCode.Font = New-Object Drawing.Font($fontUi, 12); $tCode.CharacterCasing = 'Upper'; $tCode.MaxLength = 6; $tCode.Text = $UploadCode
+$lUp = New-L 'Fill both to put the result on the site page (code from the Remote check card).' 322 92
+$hint = New-L 'Leave the address blank to find the NVR automatically. The password is used once to read which channels are offline and is never saved.' 18 124
+$in.Controls.AddRange(@($lNvr, $tNvr, $lUser, $tUser, $lPw, $tPw, $bGo, $lSite, $tSite, $lCode, $tCode, $lUp, $hint))
 $st = New-Object Windows.Forms.Label; $st.Dock = 'Top'; $st.Height = 34; $st.Padding = New-Object Windows.Forms.Padding(18, 6, 0, 0); $st.Font = New-Object Drawing.Font($fontUi, 11); $st.Text = 'Ready. Press Start check (takes about 1 minute).'; $st.ForeColor = [Drawing.Color]::FromArgb(60, 64, 72)
 $head = New-Object Windows.Forms.Label; $head.Dock = 'Top'; $head.Height = 58; $head.Padding = New-Object Windows.Forms.Padding(18, 4, 18, 0); $head.Font = New-Object Drawing.Font($fontUi, 17, [Drawing.FontStyle]::Bold); $head.Text = ''
 $rt = New-Object Windows.Forms.RichTextBox; $rt.Dock = 'Fill'; $rt.ReadOnly = $true; $rt.BorderStyle = 'None'; $rt.BackColor = [Drawing.Color]::White; $rt.Font = New-Object Drawing.Font($fontUi, 13); $rt.DetectUrls = $false
@@ -573,6 +593,7 @@ $timer.Add_Tick({
     try { $saved = Save-ScReport $R $D $dir } catch { $st.Text = 'Could not save the report: ' + $_.Exception.Message }
     $script:last = [pscustomobject]@{ R = $R; D = $D; Saved = $saved; Dir = $dir }
     Show-ScResult $R $D $saved; $st.Text = 'Done in ' + $R.seconds + ' s. Nothing was changed on any device.'
+    if ($tSite.Text.Trim() -and $tCode.Text.Trim()) { $st.Text = 'Posting the result to the site page...'; [Windows.Forms.Application]::DoEvents(); $st.Text = 'Done in ' + $R.seconds + ' s. ' + (Send-ScReport $R $D $tSite.Text $tCode.Text) }
     $bCopy.Enabled = $true; $bOpen.Enabled = $true; $bFull.Enabled = $true; $script:full = $false; $bFull.Text = 'Show full details'
   }
 })
