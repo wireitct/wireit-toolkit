@@ -1,14 +1,14 @@
 {
- "version": "1.0.0",
+ "version": "1.1.0",
  "released": "2026-11-02",
- "commit": "ef6e3ee2980920aadc584b7204fd688876dd7212",
- "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/ef6e3ee2980920aadc584b7204fd688876dd7212/",
- "notes": "First release: WireIt Toolkit window + FixNVR 1.1, CamReset (NVR serial fix), NetCheck.",
+ "commit": "6a600736ccf6a66d4ed47832fdf94069a41c743a",
+ "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/6a600736ccf6a66d4ed47832fdf94069a41c743a/",
+ "notes": "New look: WireIt header, colored job cards with icons and step numbers, color-coded results, matching reset-passwords screen, sharp on 150% screens. Same buttons and steps.",
  "files": [
   {
    "path": "Toolkit/WireItToolkit.ps1",
-   "sha256": "0d460789345fa062131de9edfb8045b3241edfc829f7c3b33d07a05fbe5d967b",
-   "size": 40943
+   "sha256": "c48d176651a4e382784c679622b21abe3d448b22062819176156be20987d468a",
+   "size": 81025
   },
   {
    "path": "Toolkit/ToolkitCore.ps1",
@@ -22,23 +22,28 @@
   },
   {
    "path": "Toolkit/Install-Toolkit.ps1",
-   "sha256": "518e006fea5c2797c7ea73340eefaaa995e844fb885350aba509f2dbd24cbbd2",
-   "size": 4178
+   "sha256": "a8c9ad704b1f52d2099a1a376e6a027351c6956d5e4b8bd0fa39b34bffbb496a",
+   "size": 4197
   },
   {
    "path": "Toolkit/README.txt",
-   "sha256": "d9e0036a14af29fb66bc75d4a0819baa4fc558b59d03ba9087196b1ea502152f",
-   "size": 4641
+   "sha256": "45a78b61c67e7f9abff9ba93ad41acce5270fc58e1028578a4fabcc92d84660b",
+   "size": 4869
   },
   {
    "path": "Toolkit/wireit.ico",
-   "sha256": "a16601b75ef9816e23312bf53a97e10346f8faca90b603011eb402733ae5fcfb",
-   "size": 13016
+   "sha256": "21f9b45d92577d82d23b53e0cca7471eb556edb100072ebd14211fb8c7c38909",
+   "size": 68202
+  },
+  {
+   "path": "Toolkit/wireit-logo.png",
+   "sha256": "dc00af083bfaf5b994f3a91940fa06a4ca33d173e8963944b382e3334757ea4f",
+   "size": 26683
   },
   {
    "path": "Toolkit/tests/Test-Toolkit.ps1",
-   "sha256": "9c20ba63676b5635474b7ddc7b06c4eb08318b4238f849932f0f37a54329ee85",
-   "size": 12889
+   "sha256": "0b0e60a4599e2569132f17ca53122498a48e4ce304dc57dae4c69b47b25d8db9",
+   "size": 13470
   },
   {
    "path": "FixNVR/FixNVR.ps1",
