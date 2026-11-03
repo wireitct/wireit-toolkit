@@ -1,9 +1,9 @@
 {
-  "version": "1.6.1",
+  "version": "1.6.2",
   "released": "2026-11-03",
-  "commit": "8d086613d4bfb116ebbb3dcf0e4c513fdd289240",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/8d086613d4bfb116ebbb3dcf0e4c513fdd289240/",
-  "notes": "Fixes after the YKW Elm live test: if the recorder / DW login fails or is skipped, \"Offline in DW\", recording, clock and firmware say NOT CHECKED in amber - never \"every camera online\". One login try per run; leave the password empty to skip the login (nothing is sent). A clock that cannot be read = \"not checked\" (no time fix offered). Check this site uses the camera list Find cameras just made on this PC even without a Site ID. DW servers: firmware is report only (no update fix). Buttons fit at 1024x768.",
+  "commit": "2185de0ec9b69e9cba0152f0971f2a400220c17d",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/2185de0ec9b69e9cba0152f0971f2a400220c17d/",
+  "notes": "Fix from the YKW Elm live re-test: with a working DW login, \"Check this site\" stopped half way (\"log.txt is being used by another process\") because the window reads the log while the check writes it. Logs are now written shared and can never stop a check. A check that stopped now says so instead of \"no answer or no login\". Includes all 1.6.1 fixes.",
   "files": [
     {
       "path": "Toolkit/WireItToolkit.ps1",
@@ -12,8 +12,8 @@
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
-      "sha256": "20208f9eef3f563ff52bcf6d029bea5c12ba612c45965d123a69c04ea9f5072c",
-      "size": 53568
+      "sha256": "f809dd8cd47932f2d8d97a108ec40eb944f8b9919bd799dfc2a1fa35395a72dc",
+      "size": 54508
     },
     {
       "path": "Toolkit/WireIt Toolkit.cmd",
@@ -27,8 +27,8 @@
     },
     {
       "path": "Toolkit/README.txt",
-      "sha256": "0e0456a1c01f9c5f96e70528b90d129fe0b61cb5d46b99d0730312c12c71144a",
-      "size": 10494
+      "sha256": "7de7dd199a0525dc6d14160b6108f9b9d4e680d94cce797302a44725abcbd610",
+      "size": 11021
     },
     {
       "path": "Toolkit/wireit.ico",
@@ -42,8 +42,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Toolkit.ps1",
-      "sha256": "3b7a49a6ca7bef6d9dd6b19017e58f1717d89934249371907529ce94b84309da",
-      "size": 53797
+      "sha256": "0ea0e65c856296d9bb67335dc7b3ddafeac90678e07c8cfca878167270d9a254",
+      "size": 54777
     },
     {
       "path": "Toolkit/CamViews.ps1",
@@ -122,13 +122,13 @@
     },
     {
       "path": "Toolkit/NvrCheck.ps1",
-      "sha256": "ed6152de0fc6ed3b8c7e212fd9b7c12119509715432cf5a42efc881af9ffe924",
-      "size": 15712
+      "sha256": "1d85abe8f136665591cb730be8471f2615f49d509473429747b0689a089ede05",
+      "size": 15759
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrHealth.psm1",
-      "sha256": "3cba48d7070e11b151251d2c5f1a9d8b4936fd4ee4df7124d5f9a00859beeee6",
-      "size": 91588
+      "sha256": "87373fc1a2fe19ad9d13ce8d4f2fc3e716356880f082702bd93d1b70ded66ce5",
+      "size": 92763
     },
     {
       "path": "Toolkit/modules/NvrHealth/firmware-latest.json",
@@ -137,8 +137,8 @@
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/Test-NvrHealth.ps1",
-      "sha256": "396cc575819cd9c0d202bc09b7a850cd07739d90eaa6f4026cee5ac8da1d5144",
-      "size": 15968
+      "sha256": "6febd78434a1b74eadb43526e586edcb1901a7384423d8d533f87074c2dfcb71",
+      "size": 18262
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/mock_devices.py",
@@ -157,8 +157,8 @@
     },
     {
       "path": "Toolkit/FixIt.ps1",
-      "sha256": "22f696c9c38285895919ffc76a9e0b0c9422927181e0aac4cb952eac4564c630",
-      "size": 5779
+      "sha256": "2623910caf8cddf40a39b54f273e20e85da953a5db8e786016d3b7cbe8d07cb1",
+      "size": 5767
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrFix.ps1",
