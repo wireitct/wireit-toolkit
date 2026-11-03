@@ -1,4 +1,4 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.4.0, 2026-11-03
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.5.0, 2026-11-03
 ==============================================================================
 One window for the site tools. Double-click "WireIt Toolkit" on the desktop.
 Works with no internet and without Tab. Windows PowerShell 5.1 only, nothing to install.
@@ -41,6 +41,20 @@ SITE CAMERA LIST (1.4.0)
     "Missing - not found in last scan" with ONE alert to the office; the office removes it there when it is gone for good.
   6 Save install snapshot also saves the known-good list (the baseline). No site typed = "Tip: type the site...".
   Uses the same upload key as 8 Save camera pictures ("Set upload key.cmd"). No internet: sent with the next scan.
+
+CHECK THIS SITE / CAMERA DOCTOR (1.5.0)
+  Check this site (read-only): Find cameras, saves the list to the site page, then checks the recorder
+    (NVR or DW Spectrum server) and prints one summary with what would fix each problem. Nothing is changed.
+  Recorder type box: auto / hikvision / uniview / dw. DW Spectrum: https on 7001, falls back to http.
+  DW servers: "Offline in DW" list - each camera offline, not recording, or nothing recorded for 24 h, with
+    its last recording and whether it still answers ping/ARP (cable/power vs camera/password problem).
+  Camera doctor: ONE camera - why is it offline? Ping, ARP/MAC, web page, the recorder's view, then at most
+    ONE login try (none if the camera already says it is locked). Saves logs\doctor-last.json.
+  Find cameras also sweeps the PC's own network (/24) so cameras that miss the discovery still show up;
+    Uniview shows "Not tried" when no login was tried. The installer adds the firewall rule so Windows
+    does not ask (run Install once as admin).
+  Window fits a 1024x768 screen (scrolls instead of cutting off).
+  New in 1.5.0 and NOT yet tested on real equipment: the network sweep, DW offline list, Camera doctor.
 
 4 RESET PASSWORDS (Hikvision, official method only)
   1 Pick the device (from the last Find cameras, or "Scan now").

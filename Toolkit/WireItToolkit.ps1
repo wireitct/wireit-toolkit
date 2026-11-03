@@ -6,7 +6,7 @@
  Start: double-click "WireIt Toolkit" on the desktop (or "WireIt Toolkit.cmd").
  Switches: -NoUpdate (skip the update check)   -Screenshot <folder> (tests: draw the windows to PNG, no screen)   -SimScale 1.5 (with -Screenshot: draw as a 150% screen)
 #>
-param([string]$Screenshot = '', [switch]$NoUpdate, [string]$DemoCamReset = '', [string]$UpdatedFrom = '', [double]$SimScale = 0)
+param([string]$Screenshot = '', [switch]$NoUpdate, [string]$DemoCamReset = '', [string]$UpdatedFrom = '', [double]$SimScale = 0, [string]$SimScreen = '')
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -362,7 +362,7 @@ if ($UpdatedFrom) { $TK.updateMsg = 'Updated itself from v' + $UpdatedFrom + '.'
 $g = [Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $TK.scale = [math]::Max(1.0, $g.DpiX / 96.0); $g.Dispose()
 $TK.fmul = 1.0
 if ($Screenshot -and $SimScale -gt 0) { $TK.fmul = $SimScale / $TK.scale; $TK.scale = $SimScale }   # tests: draw like a 150% screen
-function Get-WorkArea { if ($Screenshot) { return (New-Object Drawing.Rectangle(0, 0, 1920, 1032)) }; return [Windows.Forms.Screen]::PrimaryScreen.WorkingArea }
+function Get-WorkArea { if ($Screenshot) { if ($SimScreen -match '^(\d+)x(\d+)$') { return (New-Object Drawing.Rectangle(0, 0, [int]$Matches[1], ([int]$Matches[2] - 40))) }; return (New-Object Drawing.Rectangle(0, 0, 1920, 1032)) }; return [Windows.Forms.Screen]::PrimaryScreen.WorkingArea }
 function Px([double]$n) { return [int]([math]::Round($n * $TK.scale)) }
 function Fnt([double]$pt, [string]$face = 'Segoe UI', $style = 'Regular') { return (New-Object Drawing.Font($face, [single]($pt * $TK.fmul), [Drawing.FontStyle]$style)) }
 $fams = @((New-Object Drawing.Text.InstalledFontCollection).Families | ForEach-Object { $_.Name })
@@ -575,11 +575,13 @@ function Do-Find {
     if ($d.Count) {
       $hik = @($d | Where-Object { $_.Brand -like 'Hikvision*' }).Count; $unv = @($d | Where-Object { $_.Brand -eq 'Uniview' }).Count
       $other = @($d | Where-Object { $_.Status -like '*different IP scheme*' }).Count
-      Add-Out ('In short: ' + $d.Count + ' device(s) found - ' + $hik + ' Hikvision, ' + $unv + ' Uniview' + $(if ($other) { '; ' + $other + ' on a different IP scheme (button 3 Fix NVR moves them)' } else { '' }) + '.')
+      $swp = @($d | Where-Object { $_.PSObject.Properties['SweepOnly'] -and $_.SweepOnly }).Count
+      Add-Out ('In short: ' + $d.Count + ' device(s) found - ' + $hik + ' Hikvision, ' + $unv + ' Uniview' + $(if ($swp) { '; ' + $swp + ' found only by the network sweep' } else { '' }) + $(if ($other) { '; ' + $other + ' on a different IP scheme (button 3 Fix NVR moves them)' } else { '' }) + '.')
     }
     if ($TK.rs -and $TK.rs.form -and -not $TK.rs.form.IsDisposed) { Fill-ResetList }
     # Nov 3 2026: the list goes to the site's page (one list per site, compared with the last scan)
-    if ($d.Count) { if ($TK.site.Text.Trim()) { Start-ScanUpload '' } else { Add-Out ''; Add-Out 'Tip: type the site to save this list to the site page.' $cBlue } }
+    if ($d.Count -and $TK.site.Text.Trim()) { Start-ScanUpload '' }
+    else { if ($d.Count) { Add-Out ''; Add-Out 'Tip: type the site to save this list to the site page.' $cBlue }; Invoke-AfterScan }
   })
 }
 function Start-ScanUpload([string]$snapshotFile) {
@@ -589,8 +591,11 @@ function Start-ScanUpload([string]$snapshotFile) {
     param($code)
     $j = Read-TkJson (Join-Path $TK.P.Toolkit 'logs\scan-upload-last.json')
     if ($j -and @($j.red).Count) { Add-OutTop @($j.red) $cRed }
+    Invoke-AfterScan
   } $true)
 }
+# "Check this site" goes on after the camera list step (whatever happened there)
+function Invoke-AfterScan { if ($TK.afterScan) { $n = $TK.afterScan; $TK.afterScan = $null; & $n } }
 function Fix-Extras { $e = @(); if ($TK.site.Text.Trim()) { $e += '-Site ' + (Q $TK.site.Text.Trim()) }; if ($TK.lone.Checked) { $e += '-MoveUnlisted' }; return $e }
 function Do-Check { Start-Fix 'Check NVR' 'Check' (Fix-Extras) $null }
 function Do-Fix {
@@ -625,22 +630,42 @@ function Do-Pics {
 }
 # ---------------- 9-12 Recorder health (NvrHealth module) ----------------
 # its own (not elevated) window: the recorder password is typed hidden there; the results come back here
-function Start-Nvr([string]$name, [string]$mode, [string[]]$extra) {
+function Start-Nvr([string]$name, [string]$mode, [string[]]$extra, [scriptblock]$onDone = $null, [bool]$keep = $false, [string]$script = 'NvrCheck.ps1') {
   if ($TK.run) { Set-Status 'Wait for the running tool to finish.'; return }
-  Begin-Run $name
-  $file = Join-Path $TK.P.Toolkit 'NvrCheck.ps1'
+  Begin-Run $name $keep
+  $file = Join-Path $TK.P.Toolkit $script; $isFix = ($script -eq 'FixIt.ps1')
   if (-not (Test-Tool $file $name)) { End-Run 2 ''; return }
   if (-not (Test-Path (Join-Path $TK.P.NvrHealth 'NvrHealth.psm1'))) { Add-Out 'The NvrHealth part of the Toolkit is missing. Use "Check for update".'; End-Run 2 ''; return }
-  $a = '-NoProfile -ExecutionPolicy Bypass -File "' + $file + '" -Mode ' + $mode
+  $a = '-NoProfile -ExecutionPolicy Bypass -File "' + $file + '" ' + $(if ($isFix) { '-Fix ' } else { '-Mode ' }) + $mode
   foreach ($e in $extra) { if ($e) { $a += ' ' + $e } }
-  Add-Out 'A tool window opens. Type the recorder''s user name and password there - hidden, never saved.'
+  Add-Out $(if ($isFix) { 'A tool window opens. Type the passwords there - hidden, never saved. Nothing changes until you type YES there.' } else { 'A tool window opens. Type the recorder''s user name and password there - hidden, never saved.' })
   Add-Out 'Results show up here as it works.'
   Add-Out ''
   $since = Get-Date
   try { $proc = Start-Process -FilePath $TK.psexe -ArgumentList $a -PassThru -WorkingDirectory $TK.P.Toolkit -ErrorAction Stop }
   catch { Add-Out ('Could not start: ' + $_.Exception.Message); End-Run 2 ''; return }
-  $TK.run.Kind = 'console'; $TK.run.Proc = $proc; $TK.run.Mode = ('Nvr' + $mode); $TK.run.Root = $TK.P.Toolkit; $TK.run.Nvr = $true
-  $TK.run.Since = $since; $TK.run.RunDir = $null; $TK.run.Offset = [long]0; $TK.run.Shown = 0; $TK.run.OnDone = $null
+  $TK.run.Kind = 'console'; $TK.run.Proc = $proc; $TK.run.Mode = $(if ($isFix) { 'Fix-' + $mode } else { 'Nvr' + $mode }); $TK.run.Root = $TK.P.Toolkit; $TK.run.Nvr = $true
+  $TK.run.Since = $since; $TK.run.RunDir = $null; $TK.run.Offset = [long]0; $TK.run.Shown = 0; $TK.run.OnDone = $onDone
+}
+# ---------------- Camera doctor (Nov 3 2026): ONE camera, why is it offline? Read-only + ONE login try ----------------
+function Do-Doctor {
+  $a = Ask-Fields 'Camera doctor' 'One camera, step by step: ping, MAC, ports, web page, ONE login try with the site password (typed in the tool window, never saved), video port, and what DW says about it. Changes nothing - it tells you the fix.' @(
+    @('ip', 'Camera IP address:', ''), @('dw', 'DW server IP (blank = not a DW site):', ''), @('maker', 'Maker (auto / uniview / hikvision):', 'auto'))
+  if (-not $a) { return }
+  if ($a.ip -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { $TK.out.Clear(); Add-Out 'Type the camera''s IP address, e.g. 10.1.61.29.'; return }
+  $e = @('-Ip ' + $a.ip); if ($a.dw -match '^\d{1,3}(\.\d{1,3}){3}$') { $e += '-DwIp ' + $a.dw }
+  $mk = Get-TkVendorArg $a.maker; if ($mk -in @('Uniview', 'Hikvision')) { $e += '-Maker ' + $mk }
+  $mac = Get-TkSavedMac $a.ip; if ($mac) { $e += '-Mac ' + $mac }
+  Start-Nvr 'Camera doctor' 'Doctor' $e { param($code) Show-Doctor }
+}
+function Get-TkSavedMac([string]$ip) {
+  try { foreach ($d in @(Get-TkDevices $TK.P.CamReset)) { if ([string]$d.IP -eq $ip -and $d.MAC) { return ([string]$d.MAC).ToUpper().Replace('-', ':') } } } catch {}
+  return ''
+}
+function Show-Doctor {
+  $c = Read-TkJson (Join-Path $TK.P.Toolkit 'logs\doctor-last.json'); if (-not $c) { return }
+  Add-OutTop @('CAMERA DOCTOR ' + $c.ip + ': ' + $c.verdict) $(if (@($c.fixes).Count) { $cRed } else { $cOk })
+  Show-Fixes @($c.fixes)
 }
 function Get-LastNvrIp { $f = Join-Path $TK.P.Logs 'last-nvr-ip.txt'; if (Test-Path $f) { return ([string](Get-Content $f -TotalCount 1)).Trim() }; return '' }
 function Do-Nvr([string]$mode) {
@@ -651,7 +676,7 @@ function Do-Nvr([string]$mode) {
     FixClock  = 'CHANGES the recorder''s time settings (time server + US Eastern). It shows the plan first; nothing changes until you type YES in its window.'
     Firmware  = 'Read-only. Firmware vs. the newest published and known security holes. Only REPORTS - it never updates anything.'
   }
-  $fields = @(@('ip', 'Recorder IP address:', (Get-LastNvrIp)), @('site', 'Site ID or address (optional):', $TK.site.Text))
+  $fields = @(@('ip', 'Recorder IP address:', (Get-LastNvrIp)), @('site', 'Site ID or address (optional):', $TK.site.Text), @('vendor', 'Recorder type (auto / hikvision / uniview / dw):', 'auto'))
   if ($mode -eq 'Recording') { $fields += ,@('days', 'Days to keep (blank = from the site):', '') }
   else { $fields += ,@('cams', 'Cameras too? (yes / no):', 'yes') }
   $a = Ask-Fields $names[$mode] $intro[$mode] $fields
@@ -663,12 +688,89 @@ function Do-Nvr([string]$mode) {
   }
   try { New-Item -ItemType Directory -Force -Path $TK.P.Logs | Out-Null; Set-Content -Path (Join-Path $TK.P.Logs 'last-nvr-ip.txt') -Value $a.ip } catch {}
   if ($a.site) { $TK.site.Text = $a.site }
-  $e = @('-Ip ' + $a.ip); if ($a.site) { $e += '-Site ' + (Q $a.site) }
+  $e = @('-Ip ' + $a.ip); if ($a.site) { $e += '-Site ' + (Q $a.site) }; $vd = Get-TkVendorArg $a.vendor; if ($vd -ne 'Auto') { $e += '-Vendor ' + $vd }
   if ($mode -eq 'Recording') {
-    $d = 0; if ($a.days -match '^\d+$') { $d = [int]$a.days } else { $d = Get-TkDaysToKeep $TK.cfg $a.site }
+    $d = 0; if ($a.days -match '^\d+$') { $d = [int]$a.days } elseif ($a.site) { $d = Get-TkDaysToKeep $TK.cfg $a.site }   # 0 = NvrCheck asks the DW server's name
     $e += '-Days ' + $d
   } elseif ($a.cams -match '^(y|yes)$') { $e += '-Cameras' }
   Start-Nvr $names[$mode] $mode $e
+}
+
+# ---------------- Check this site (Nov 3 2026): ONE read-only button - find cameras + compare, router, recording, clocks, firmware ----------------
+# Never runs a fix. Writes ONE "Latest check" card on the site page (overwritten each time). Fix buttons appear only for what failed.
+function Do-SiteCheck {
+  $a = Ask-Fields 'Check this site' 'Read-only, about 2 minutes: finds the cameras and compares them with the site list, checks the router (UPnP / ports open to the internet), recording, streams, clocks and firmware. Changes nothing. The result goes to the site page as its "Latest check".' @(
+    @('ip', 'Recorder IP address:', (Get-LastNvrIp)), @('site', 'Site ID or address:', $TK.site.Text), @('vendor', 'Recorder type (auto / hikvision / uniview / dw):', 'auto'), @('cams', 'Cameras too? (yes / no):', 'yes'))
+  if (-not $a) { return }
+  if ($a.ip -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { $TK.out.Clear(); Add-Out 'Type the recorder''s IP address, e.g. 192.168.1.20 (button 1 Find cameras lists it).'; return }
+  try { New-Item -ItemType Directory -Force -Path $TK.P.Logs | Out-Null; Set-Content -Path (Join-Path $TK.P.Logs 'last-nvr-ip.txt') -Value $a.ip } catch {}
+  $TK.site.Text = [string]$a.site
+  $e = @('-Ip ' + $a.ip, '-Days ' + $(if ($a.site) { Get-TkDaysToKeep $TK.cfg $a.site } else { 0 })); if ($a.site) { $e += '-Site ' + (Q $a.site) }; if ($a.cams -match '^(y|yes)$') { $e += '-Cameras' }
+  $vd = Get-TkVendorArg $a.vendor; if ($vd -ne 'Auto') { $e += '-Vendor ' + $vd }
+  $TK.scArgs = $e; Hide-Fixes
+  $TK.afterScan = {
+    Add-Out ''; Add-Out 'Next: router, recording, clocks and firmware. A tool window opens - type the recorder''s user name and password there (hidden, never saved).' $cBlue
+    Start-Nvr 'Check this site' 'Site' $TK.scArgs { param($code) Show-SiteCheck } $true
+  }
+  Do-Find
+  if (-not $TK.run) { $TK.afterScan = $null }
+}
+function Show-SiteCheck {
+  $c = Read-TkJson (Join-Path $TK.P.Toolkit 'logs\check-site-last.json')
+  if (-not $c) { return }
+  $red = @($c.lines | Where-Object { $_.k -eq 'red' } | ForEach-Object { [string]$_.t })
+  if ($red.Count) { Add-OutTop (@('CHECK THIS SITE - needs attention:') + $red) $cRed } else { Add-OutTop @('CHECK THIS SITE: all OK.') $cOk }
+  Show-Fixes @($c.fixes)
+}
+# Release C fills these in; until then the row only says which fixes would apply
+function Hide-Fixes { if ($TK.fixRow) { $TK.fixRow.Controls.Clear(); $TK.fixRow.Visible = $false } }
+function Show-Fixes([string[]]$keys) {
+  if (-not $keys -or -not $keys.Count) { return }
+  $names = @(@(foreach ($k in $keys) { if ($TK.fixNames.Contains($k)) { $TK.fixNames[$k] } elseif ($k -eq 'replace') { 'replace the camera (by hand)' } }) | Select-Object -Unique)
+  if ($TK.fixOn) { Add-Out ''; Add-Out ('Nothing was changed. Press "Fix what failed" for: ' + ($names -join ', ') + '. Each fix shows its plan and asks for YES first.') $cWarn }
+  else { Add-Out ''; Add-Out ('Nothing was changed. What would fix it: ' + ($names -join ', ') + ' (fix buttons come in the next update).') $cWarn }
+}
+# ---------------- Release C (Nov 3 2026): fix buttons - only for what the last check / Camera doctor found. UNTESTED ON REAL GEAR ----------------
+$TK.fixNames = [ordered]@{ recording = 'Turn recording back on'; restart = 'Restart the camera'; poe = 'Restart the camera'; readd = 'Put the camera back on the NVR'; ntp = 'Set the time server'; firmware = 'Update firmware (one device)'; password = 'Set the site password'; dwpassword = 'Fix the camera password in DW' }
+function Get-TkFailedFixes {
+  $keys = @(); $now = Get-Date
+  foreach ($f in @('logs\check-site-last.json', 'logs\doctor-last.json')) {
+    $p = Join-Path $TK.P.Toolkit $f; if (-not (Test-Path $p)) { continue }
+    if (($now - (Get-Item $p).LastWriteTime).TotalHours -gt 24) { continue }   # only a recent check counts
+    $j = Read-TkJson $p; if ($j) { $keys += @($j.fixes | ForEach-Object { if ($_ -eq 'poe') { 'restart' } else { [string]$_ } }) }
+  }
+  return @($keys | Where-Object { $TK.fixNames.Contains($_) } | Select-Object -Unique)
+}
+function Do-FixMenu {
+  $keys = @(Get-TkFailedFixes)
+  if (-not $keys.Count) { $TK.out.Clear(); Add-Out 'Nothing to fix: run "Check this site" or "Camera doctor" first. Fix buttons show only for a check that failed (in the last 24 hours).'; return }
+  $f = New-Object Windows.Forms.Form; $f.Text = 'Fix what failed'; $f.Font = $fNorm; $f.StartPosition = 'CenterParent'; $f.AutoSize = $true; $f.AutoSizeMode = 'GrowAndShrink'; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false
+  $fl = New-Object Windows.Forms.FlowLayoutPanel; $fl.FlowDirection = 'TopDown'; $fl.AutoSize = $true; $fl.Padding = New-Object Windows.Forms.Padding((Px 12)); $f.Controls.Add($fl)
+  $fl.Controls.Add((New-Lbl 'Only fixes for what the last check found. Each one shows its plan, saves a backup, and changes nothing until you type YES. Not yet tested on real equipment.' $null (Px 420)))
+  foreach ($k in $keys) { $b = New-Btn $TK.fixNames[$k] $null $k; $b.Add_Click({ param($sender) $sender.FindForm().Tag = [string]$sender.Tag; $sender.FindForm().Close() }); $fl.Controls.Add($b) }
+  $c = New-Btn 'Cancel' { param($sender) $sender.FindForm().Close() }; $fl.Controls.Add($c)
+  [void]$f.ShowDialog($TK.form)
+  if ($f.Tag) { Do-Fix ([string]$f.Tag) }
+}
+function Do-Fix([string]$key) {
+  $doc = Read-TkJson (Join-Path $TK.P.Toolkit 'logs\doctor-last.json'); $camIp = $(if ($doc) { [string]$doc.ip } else { '' })
+  $rx = '^\d{1,3}(\.\d{1,3}){3}$'
+  switch ($key) {
+    'ntp' { Do-Nvr 'FixClock'; return }
+    'recording' { $a = Ask-Fields $TK.fixNames[$key] 'Turns recording back on for the cameras whose recording is switched off. Backup first; YES needed.' @(@('ip', 'Recorder IP address:', (Get-LastNvrIp)), @('vendor', 'Recorder type (auto / hikvision / dw):', 'auto')); if (-not $a -or $a.ip -notmatch $rx) { return }; $e = @('-Ip ' + $a.ip); $vd = Get-TkVendorArg $a.vendor; if ($vd -ne 'Auto') { $e += '-Vendor ' + $vd } }
+    'restart' { $a = Ask-Fields $TK.fixNames[$key] 'Reboots ONE camera through its own web page (Hikvision / Uniview). At most once an hour, twice a day. YES needed.' @(@('ip', 'Camera IP address:', $camIp)); if (-not $a -or $a.ip -notmatch $rx) { return }; $e = @('-Ip ' + $a.ip) }
+    'readd' { $a = Ask-Fields $TK.fixNames[$key] 'Puts a camera back on its NVR channel (Hikvision NVR). The camera password is typed in the tool window, never saved.' @(@('ip', 'NVR IP address:', (Get-LastNvrIp)), @('ch', 'Channel number:', ''), @('cam', 'Camera IP address:', $camIp)); if (-not $a -or $a.ip -notmatch $rx -or $a.ch -notmatch '^\d+$' -or $a.cam -notmatch $rx) { return }; $e = @('-Ip ' + $a.ip, '-Channel ' + $a.ch, '-CameraIp ' + $a.cam) }
+    'firmware' { $a = Ask-Fields $TK.fixNames[$key] 'ONE device. Download the file from the maker''s site and copy its SHA-256 from that page. Settings are exported first.' @(@('ip', 'Device IP address:', ''), @('file', 'Firmware file (full path):', ''), @('sha', 'SHA-256 from the maker''s page:', '')); if (-not $a -or $a.ip -notmatch $rx -or -not $a.file) { return }; $e = @('-Ip ' + $a.ip, '-File ' + (Q $a.file), '-Sha256 ' + $a.sha) }
+    'password' { $a = Ask-Fields $TK.fixNames[$key] 'Sets the site password on ONE device (Hikvision). You type it twice in the tool window; it is never saved.' @(@('ip', 'Device IP address:', $camIp)); if (-not $a -or $a.ip -notmatch $rx) { return }; $e = @('-Ip ' + $a.ip) }
+    'dwpassword' { $a = Ask-Fields $TK.fixNames[$key] 'Gives DW the camera''s right password so DW stops locking it. Type the DW login and the camera password in the tool window.' @(@('ip', 'DW server IP address:', (Get-LastNvrIp)), @('cam', 'Camera IP address:', $camIp)); if (-not $a -or $a.ip -notmatch $rx -or $a.cam -notmatch $rx) { return }; $e = @('-Ip ' + $a.ip, '-CameraIp ' + $a.cam) }
+    default { return }
+  }
+  if ($TK.site.Text) { $e += '-Site ' + (Q $TK.site.Text) }
+  Start-Nvr $TK.fixNames[$key] $key $e { param($code) Show-FixDone } $false 'FixIt.ps1'
+}
+function Show-FixDone {
+  $j = Read-TkJson (Join-Path $TK.P.Toolkit 'logs\fix-last.json'); if (-not $j) { return }
+  Add-OutTop @('FIX: ' + [string]$j.msg) $(if ($j.ok) { $cOk } elseif ($j.ran) { $cRed } else { $cWarn })
 }
 
 function Do-Undo {
@@ -902,7 +1004,9 @@ $TK.fMonoB = Fnt 9.5 $monoFace 'Bold'
 
 $root = New-Object Windows.Forms.TableLayoutPanel; $root.Dock = 'Fill'; $root.ColumnCount = 1; $root.RowCount = 3; $root.Margin = New-Object Windows.Forms.Padding 0
 [void]$root.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', (Px 74)))); [void]$root.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100))); [void]$root.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
-$form.Controls.Add($root)
+# Nov 3 2026 (YKW Elm, 1024x768 over AnyDesk: bottom row cut off): below this size the window scrolls instead of squeezing
+$hostP = New-Object Windows.Forms.Panel; $hostP.Dock = 'Fill'; $hostP.AutoScroll = $true; $hostP.AutoScrollMinSize = New-Object Drawing.Size((Px 900), (Px 600)); $TK.hostP = $hostP
+$hostP.Controls.Add($root); $form.Controls.Add($hostP)
 
 # header: WireIt logo, title, version
 $note = $(if ($TK.updateMsg) { $TK.updateMsg } else { '' })
@@ -924,7 +1028,24 @@ $left = New-Object Windows.Forms.TableLayoutPanel; $left.Dock = 'Fill'; $left.Co
 [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize')))
 for ($i = 0; $i -lt 8; $i++) { [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 10))) }
 [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))); [void]$left.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 20)))
-$left.Controls.Add((New-Caps 'Jobs  -  usual order 1, 2, 3, 6'), 0, 0)
+$TK.fixOn = (Test-Path (Join-Path $TK.P.Toolkit 'FixIt.ps1'))   # Release C (1.6.0) fix buttons; absent in 1.5.0
+# Nov 3 2026: caption, then "Check this site" full width, then Camera doctor + Fix what failed side by side (fits 1024x768)
+$topRow = New-Object Windows.Forms.TableLayoutPanel; $topRow.Dock = 'Fill'; $topRow.AutoSize = $true; $topRow.ColumnCount = 2; $topRow.RowCount = 3; $topRow.Margin = New-Object Windows.Forms.Padding 0
+foreach ($pc in 50, 50) { [void]$topRow.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', $pc))) }
+foreach ($r0 in 1..3) { [void]$topRow.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))) }
+$caps0 = New-Caps 'Jobs  -  usual order 1, 2, 3, 6'; $caps0.Anchor = 'Left, Bottom'; $topRow.Controls.Add($caps0, 0, 0); $topRow.SetColumnSpan($caps0, 2)
+$scBtn = Set-Glyph (Set-Primary (New-Btn 'Check this site (read-only)' { Do-SiteCheck }) $cBrand) ([string][char]0xE9D5)
+$scBtn.Dock = 'Fill'; $scBtn.Font = $fBtn; $scBtn.Margin = New-Object Windows.Forms.Padding(0, (Px 2), 0, (Px 2)); $TK.scBtn = $scBtn
+$topRow.Controls.Add($scBtn, 0, 1); $topRow.SetColumnSpan($scBtn, 2)
+$docBtn = Set-Glyph (New-Btn 'Camera doctor' { Do-Doctor }) ([string][char]0xE9D9)
+$docBtn.Dock = 'Fill'; $docBtn.Font = $fBtn; $docBtn.Margin = New-Object Windows.Forms.Padding(0, (Px 2), (Px 3), (Px 4)); $TK.docBtn = $docBtn
+$topRow.Controls.Add($docBtn, 0, 2)
+if ($TK.fixOn) {
+  $fixBtn = Set-Glyph (New-Btn 'Fix what failed' { Do-FixMenu }) ([string][char]0xE90F)
+  $fixBtn.Dock = 'Fill'; $fixBtn.Font = $fBtn; $fixBtn.Margin = New-Object Windows.Forms.Padding((Px 3), (Px 2), 0, (Px 4)); $TK.fixBtn = $fixBtn
+  $topRow.Controls.Add($fixBtn, 1, 2)
+} else { $topRow.SetColumnSpan($docBtn, 2) }
+$left.Controls.Add($topRow, 0, 0)
 $jobs = @(
   @('1   Find cameras', 'Read-only. Lists every Hikvision / Uniview camera and NVR, even on another IP scheme.', { Do-Find }, $cBlue, 0xE721, 'Every camera and NVR, even on another IP scheme.'),
   @('2   Check NVR', 'Read-only. Shows what is wrong (IP scheme, DNS, app access) and the fix plan.', { Do-Check }, $cTeal, 0xE9D9, 'Shows what is wrong and the fix plan.'),
@@ -943,6 +1064,11 @@ $health = @(
 )
 $tips = New-Object Windows.Forms.ToolTip
 $TK.buttons = @()
+$tips.SetToolTip($scBtn, 'One button, read-only: finds the cameras and compares them with the site list, router (UPnP / open ports), recording + streams, clocks, firmware. Writes ONE "Latest check" on the site page. Never fixes anything by itself.')
+$TK.buttons += $scBtn
+$tips.SetToolTip($docBtn, 'One camera that is offline: ping, MAC, ports, web page, ONE login try, video port, and what DW says. Plain verdict and which fix applies. Changes nothing.')
+$TK.buttons += $docBtn
+if ($TK.fixOn) { $tips.SetToolTip($fixBtn, 'Fixes only what the last Check this site / Camera doctor found. Each fix shows its plan, saves a backup, and needs YES. Not yet tested on real equipment.'); $TK.buttons += $fixBtn }
 function New-JobCard($j) {
   $num = ($j[0] -split '\s+')[0]; $name = ($j[0] -replace '^\d+\s+', '')
   if ($TK_UI) {
@@ -1048,6 +1174,9 @@ Fit-Options
 
 Add-Out 'Pick a job on the left. Results show here in plain words, and every run is saved in the logs folder.' $cInk
 Add-Out ''
+Add-Out 'New: Check this site (top) - one read-only run: cameras vs. the site list, router, recording, clocks, firmware, DW offline cameras.' $cInk
+Add-Out 'Camera doctor: one offline camera step by step, with a plain verdict.' $cMuted
+Add-Out ''
 Add-Out 'Usual order on a site:' $cInk
 Add-Out '  1 Find cameras  >  2 Check NVR  >  3 Fix NVR (type YES)  >  6 Save install snapshot' $cBlue
 Add-Out '  Type the Site ID or address first: Find cameras then saves its camera list to the site page and flags any camera missing since the last scan.' $cMuted
@@ -1086,8 +1215,9 @@ if ($Screenshot) {
   }
   $form.StartPosition = 'Manual'; $form.Location = New-Object Drawing.Point(-20000, -20000); $form.ShowInTaskbar = $false
   $form.Show(); [Windows.Forms.Application]::DoEvents()
-  $root.Dock = 'None'; $root.Location = New-Object Drawing.Point(0, 0)
-  $root.Size = New-Object Drawing.Size(($TK.want.Width - ($form.Width - $form.ClientSize.Width)), ($TK.want.Height - ($form.Height - $form.ClientSize.Height)))
+  $cs = New-Object Drawing.Size(($TK.want.Width - ($form.Width - $form.ClientSize.Width)), ($TK.want.Height - ($form.Height - $form.ClientSize.Height)))
+  if ($SimScreen) { $hostP.Dock = 'None'; $hostP.Location = New-Object Drawing.Point(0, 0); $hostP.Size = $cs; [Windows.Forms.Application]::DoEvents() }
+  else { $root.Dock = 'None'; $root.Location = New-Object Drawing.Point(0, 0); $root.Size = $cs }
   $TK.out.Clear()
   Add-Out ('=== Find cameras - ' + (Get-Date -Format 'ddd MMM d, h:mm tt') + ' (demo) ===')
   Add-Out 'Looking for Hikvision and Uniview devices on every network this PC is plugged into (read-only)...'
@@ -1104,7 +1234,7 @@ if ($Screenshot) {
   Add-OutTop @('MISSING since last scan: Camera DS-2CD2143G2-I 192.168.1.66 44:19:B6:00:01:03') $cRed
   Set-Pill 'Find cameras - done' $cOk; Set-Status 'Find cameras done. Saved to the logs folder.'
   [Windows.Forms.Application]::DoEvents(); Fit-Options; [Windows.Forms.Application]::DoEvents()
-  Save-Shot $root (Join-Path $Screenshot 'toolkit-main.png') $TK.out
+  if ($SimScreen) { Save-Shot $hostP (Join-Path $Screenshot 'toolkit-small.png') $TK.out } else { Save-Shot $root (Join-Path $Screenshot 'toolkit-main.png') $TK.out }
   $rf = @(Show-ResetWindow)[-1]
   $rf.StartPosition = 'Manual'; $rf.Location = New-Object Drawing.Point(-20000, -20000); $rf.ShowInTaskbar = $false
   $rf.Show(); [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 300; [Windows.Forms.Application]::DoEvents()
@@ -1130,7 +1260,7 @@ if ($Screenshot) {
   $af1.form.StartPosition = 'Manual'; $af1.form.Location = New-Object Drawing.Point(-20000, -20000); $af1.form.ShowInTaskbar = $false; $af1.form.Show(); [Windows.Forms.Application]::DoEvents()
   Save-Shot $af1.form (Join-Path $Screenshot 'toolkit-ask-site.png'); $af1.form.Close()
   $form.Close()
-  Write-Output ('screenshots saved in ' + $Screenshot + '; buttons=' + $TK.buttons.Count + '; resetFields=' + $TK.rs.fieldBtns.Count + '; look=' + $(if ($TK_UI) { 'new' } else { 'plain' }) + '; icons=' + $TK.icons + '; scale=' + $TK.scale)
+  Write-Output ('screenshots saved in ' + $Screenshot + '; buttons=' + $TK.buttons.Count + '; resetFields=' + $TK.rs.fieldBtns.Count + '; look=' + $(if ($TK_UI) { 'new' } else { 'plain' }) + '; icons=' + $TK.icons + '; scale=' + $TK.scale + '; scroll=' + $(if ($hostP.VerticalScroll.Visible -or $hostP.HorizontalScroll.Visible) { 'yes' } else { 'no' }))
   exit 0
 }
 $timer.Start()

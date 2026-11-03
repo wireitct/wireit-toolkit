@@ -430,7 +430,8 @@ function ConvertTo-TkScanDevice($d, [string]$kind = '') {
 function Get-TkScanDevices([string]$camResetDir) {
   $l = Read-TkJson (Join-Path $camResetDir 'out\latest.json')
   if (-not $l) { return @() }
-  return @(foreach ($d in @($l.devices)) { $x = ConvertTo-TkScanDevice $d; if ($x) { $x } })
+  # Nov 3 2026: cameras found only by the network sweep carry Kind 'camera' (often no model) - keep that kind
+  return @(foreach ($d in @($l.devices)) { $kd = ''; $kp = $d.PSObject.Properties['Kind']; if ($kp -and $kp.Value) { $kd = [string]$kp.Value }; $x = ConvertTo-TkScanDevice $d $kd; if ($x) { $x } })
 }
 # an install snapshot (FixNVR snapshot json) as the known-good list: NVRs + the cameras this PC can see (not the NVR's own PoE ports)
 function Get-TkSnapshotDevices([string]$path) {
@@ -470,4 +471,211 @@ function Format-TkScanAnswer($r, [string]$site) {
   else { & $add ('Saved to the site page: ' + $nm + ', ' + [int]$r.total + ' devices' + $(if (@($r.added).Count -eq [int]$r.total) { ' (first list for this site)' } else { '' }) + '.') 'ok' }
   if ([int]$r.alerted -gt 0) { & $add ('Alert sent to the office for ' + [int]$r.alerted + ' missing device(s).') 'warn' }
   return $L.ToArray()
+}
+
+
+# ---------------- router exposure (Nov 3 2026, "Check this site"): UPnP on? camera/NVR ports open to the internet? ----------------
+# READ-ONLY: one SSDP search on the LAN, the router's own description page, and the UPnP read calls GetExternalIPAddress /
+# GetGenericPortMappingEntry. Never AddPortMapping / DeletePortMapping, never the router's login or settings.
+$script:TkCamPorts = @(80, 443, 554, 8000, 8080, 8200, 8443, 8554, 7001, 37777, 34567, 9000, 10554)
+function Find-TkUpnpGateway([int]$timeoutMs = 2500) {
+  $found = @()
+  $u = New-Object Net.Sockets.UdpClient
+  try {
+    $u.Client.ReceiveTimeout = 600
+    $msg = "M-SEARCH * HTTP/1.1`r`nHOST: 239.255.255.250:1900`r`nMAN: `"ssdp:discover`"`r`nMX: 2`r`nST: urn:schemas-upnp-org:device:InternetGatewayDevice:1`r`n`r`n"
+    $b = [Text.Encoding]::ASCII.GetBytes($msg); $ep = New-Object Net.IPEndPoint([Net.IPAddress]::Parse('239.255.255.250'), 1900)
+    [void]$u.Send($b, $b.Length, $ep); Start-Sleep -Milliseconds 100; [void]$u.Send($b, $b.Length, $ep)
+    $end = (Get-Date).AddMilliseconds($timeoutMs)
+    while ((Get-Date) -lt $end) {
+      try { $from = New-Object Net.IPEndPoint([Net.IPAddress]::Any, 0); $r = [Text.Encoding]::ASCII.GetString($u.Receive([ref]$from)) } catch { continue }
+      $m = [regex]::Match($r, '(?im)^LOCATION:\s*(\S+)')
+      if ($m.Success -and $found -notcontains $m.Groups[1].Value) { $found += $m.Groups[1].Value }
+    }
+  } catch {} finally { $u.Close() }
+  return $found
+}
+function Get-TkUpnpXVal([string]$xml, [string]$name) { $m = [regex]::Match($xml, '<(?:\w+:)?' + $name + '(?:\s[^>]*)?>([^<]*)</(?:\w+:)?' + $name + '>'); if ($m.Success) { return $m.Groups[1].Value.Trim() } else { return '' } }
+function Invoke-TkUpnpRead([string]$ctl, [string]$svc, [string]$action, [string]$inner = '') {
+  if ($action -notin @('GetGenericPortMappingEntry', 'GetExternalIPAddress', 'GetStatusInfo')) { throw ('not a read action: ' + $action) }   # read-only, always
+  $body = '<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:' + $action + ' xmlns:u="' + $svc + '">' + $inner + '</u:' + $action + '></s:Body></s:Envelope>'
+  try {
+    $r = Invoke-WebRequest -Uri $ctl -Method Post -Body ([Text.Encoding]::UTF8.GetBytes($body)) -ContentType 'text/xml; charset="utf-8"' -Headers @{ SOAPAction = ('"' + $svc + '#' + $action + '"') } -UseBasicParsing -TimeoutSec 5
+    return @{ ok = $true; xml = [string]$r.Content }
+  } catch { return @{ ok = $false; xml = '' } }
+}
+function Get-TkUpnpExposure([string[]]$Locations = @(), [string[]]$CameraIps = @(), [switch]$NoSearch) {
+  # -> @{ answered; upnp; router; external; maps = @(@{ ext; proto; client; port; desc; on; camera }); exposed = @(maps that reach a camera/NVR); lines = @(@{ t; k }) }
+  $res = [ordered]@{ answered = $false; upnp = $false; router = ''; external = ''; maps = @(); exposed = @(); lines = @() }
+  $L = New-Object System.Collections.Generic.List[object]
+  if (-not $Locations.Count -and -not $NoSearch) { $Locations = @(Find-TkUpnpGateway) }
+  foreach ($loc in $Locations) {
+    try { $d = [string](Invoke-WebRequest -Uri $loc -UseBasicParsing -TimeoutSec 5).Content } catch { continue }
+    $res.answered = $true
+    $res.router = ((Get-TkUpnpXVal $d 'manufacturer') + ' ' + (Get-TkUpnpXVal $d 'modelName')).Trim()
+    $svc = ''; $ctl = ''
+    foreach ($m in [regex]::Matches($d, '(?s)<service>(.*?)</service>')) {
+      $st = Get-TkUpnpXVal $m.Groups[1].Value 'serviceType'
+      if ($st -match 'WAN(IP|PPP)Connection') { $svc = $st; $ctl = Get-TkUpnpXVal $m.Groups[1].Value 'controlURL'; break }
+    }
+    if (-not $svc) { continue }
+    $res.upnp = $true
+    $u = [Uri]$loc; $ctlUri = $(if ($ctl -match '^https?://') { $ctl } else { $u.Scheme + '://' + $u.Authority + '/' + $ctl.TrimStart('/') })
+    $e = Invoke-TkUpnpRead $ctlUri $svc 'GetExternalIPAddress'; if ($e.ok) { $res.external = Get-TkUpnpXVal $e.xml 'NewExternalIPAddress' }
+    for ($i = 0; $i -lt 128; $i++) {
+      $g = Invoke-TkUpnpRead $ctlUri $svc 'GetGenericPortMappingEntry' ('<NewPortMappingIndex>' + $i + '</NewPortMappingIndex>')
+      if (-not $g.ok) { break }
+      $cl = Get-TkUpnpXVal $g.xml 'NewInternalClient'; $ip = [int](Get-TkUpnpXVal $g.xml 'NewInternalPort')
+      $cam = ($CameraIps -contains $cl) -or ($script:TkCamPorts -contains $ip)
+      $res.maps += [pscustomobject]@{ ext = [int](Get-TkUpnpXVal $g.xml 'NewExternalPort'); proto = (Get-TkUpnpXVal $g.xml 'NewProtocol'); client = $cl; port = $ip; desc = (Get-TkUpnpXVal $g.xml 'NewPortMappingDescription'); on = ((Get-TkUpnpXVal $g.xml 'NewEnabled') -ne '0'); camera = $cam }
+    }
+    break
+  }
+  $res.exposed = @($res.maps | Where-Object { $_.camera -and $_.on })
+  if (-not $res.answered) { $L.Add(@{ t = 'Router: UPnP did not answer (off or blocked) - good. Port forwards made by hand need the router login to read; not checked.'; k = 'ok' }) }
+  elseif (-not $res.upnp) { $L.Add(@{ t = 'Router (' + $res.router + '): no UPnP port-opening service - good.'; k = 'ok' }) }
+  else {
+    $L.Add(@{ t = 'Router UPnP is ON (' + $res.router + '): any device inside can open ports to the internet by itself. Turn UPnP off on the router.'; k = 'red' })
+    foreach ($x in $res.exposed) { $L.Add(@{ t = 'OPEN TO THE INTERNET: port ' + $x.ext + '/' + $x.proto + ' -> ' + $x.client + ':' + $x.port + $(if ($x.desc) { ' (' + $x.desc + ')' } else { '' }) + ' - camera/NVR reachable from outside.'; k = 'red' }) }
+    $other = @($res.maps | Where-Object { -not $_.camera }); if ($other.Count) { $L.Add(@{ t = 'Other ports the router opened (not cameras): ' + (($other | ForEach-Object { '' + $_.ext + '/' + $_.proto + ' -> ' + $_.client }) -join ', '); k = 'plain' }) }
+    if (-not $res.maps.Count) { $L.Add(@{ t = 'No ports are open through UPnP right now.'; k = 'ok' }) }
+  }
+  $res.lines = $L.ToArray()
+  return [pscustomobject]$res
+}
+
+
+
+# ---------------- camera reachability (Nov 3 2026): ping, ARP / MAC, TCP ports - read-only ----------------
+# Tests set WIREIT_TEST_REACH = {"10.9.1.29": {"ping": true, "mac": "44:19:B6:00:0A:29", "ports": [80, 554], "rtsp": "hung"}} (no real network)
+function Get-TkTestReach([string]$ip) {
+  if (-not $env:WIREIT_TEST_REACH) { return $null }
+  try { $m = $env:WIREIT_TEST_REACH | ConvertFrom-Json; $p = $m.PSObject.Properties[$ip]; if ($p) { return $p.Value } } catch {}
+  return [pscustomobject]@{ ping = $false; mac = ''; ports = @(); rtsp = 'none' }
+}
+function Get-TkArpTable {
+  $t = @{}
+  try { foreach ($n in @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop)) { $ll = [string]$n.LinkLayerAddress; if ($ll -and $ll -ne '00-00-00-00-00-00' -and $ll -notmatch '^(FF-){5}FF$' -and [string]$n.State -ne 'Unreachable') { $t[[string]$n.IPAddress] = $ll.ToUpper().Replace('-', ':') } } }
+  catch { foreach ($l in @(arp -a 2>$null)) { $m = [regex]::Match([string]$l, '^\s*(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F-]{17})\s'); if ($m.Success) { $t[$m.Groups[1].Value] = $m.Groups[2].Value.ToUpper().Replace('-', ':') } } }
+  return $t
+}
+function Test-TkTcp([string]$ip, [int]$port, [int]$ms = 800) {
+  $c = New-Object Net.Sockets.TcpClient
+  try { $a = $c.BeginConnect($ip, $port, $null, $null); return ($a.AsyncWaitHandle.WaitOne($ms) -and $c.Connected) } catch { return $false } finally { $c.Close() }
+}
+function Test-TkCamReach([string]$ip, [string]$mac = '', [int[]]$ports = @(80, 443, 554, 8000), $arp = $null) {
+  $mac = ([string]$mac).ToUpper().Replace('-', ':')
+  $t = Get-TkTestReach $ip
+  if ($t) {
+    $ping = [bool]$t.ping; $seen = ([string]$t.mac).ToUpper(); $open = @($t.ports | Where-Object { $_ } | ForEach-Object { [int]$_ }); $moved = $(if ($t.PSObject.Properties['movedTo']) { [string]$t.movedTo } else { '' }); $rtsp = [string]$t.rtsp
+  } else {
+    $ping = $false; try { $ping = ((New-Object Net.NetworkInformation.Ping).Send($ip, 1000).Status -eq 'Success') } catch {}
+    $open = @($ports | Where-Object { Test-TkTcp $ip $_ })
+    if (-not $arp) { $arp = Get-TkArpTable }
+    $seen = $(if ($arp.ContainsKey($ip)) { $arp[$ip] } else { '' })
+    $moved = ''; if ($mac -and $seen -ne $mac) { foreach ($k in $arp.Keys) { if ($arp[$k] -eq $mac -and $k -ne $ip) { $moved = $k; break } } }
+    $rtsp = ''
+  }
+  return [pscustomobject]@{ ip = $ip; ping = $ping; mac = $seen; macMatch = $(if ($mac -and $seen) { $seen -eq $mac } else { $null }); movedTo = $moved; open = $open; rtsp = $rtsp }
+}
+function Get-TkLikelyCause($reach, [string]$dwStatus = '') {
+  if ($reach.movedTo) { return @{ k = 'moved'; t = 'IP MOVED: its MAC now answers at ' + $reach.movedTo + ' - DW still looks at the old address. Fix the address in DW (or set the camera back).' } }
+  if (-not $reach.ping -and -not $reach.mac -and -not @($reach.open).Count) { return @{ k = 'dead'; t = 'NO LINK: no ping, not in the ARP table - cable, switch port / PoE power, or the camera is dead.' } }
+  if ($dwStatus -eq 'Unauthorized') { return @{ k = 'dwpw'; t = 'DW HAS THE WRONG PASSWORD (DW says Unauthorized). A Uniview locks itself while DW keeps retrying - fix the password in DW. Camera doctor shows more.' } }
+  if (-not @($reach.open).Count) { return @{ k = 'hung'; t = 'HUNG: on the network (' + $(if ($reach.ping) { 'pings' } else { 'MAC seen' }) + ') but no service answers - restart its PoE port (or power).' } }
+  return @{ k = 'check'; t = 'Answers ping and ports ' + (@($reach.open) -join '/') + ' but DW cannot use it - run Camera doctor on it (password, lockout, hung web page).' }
+}
+# DW cameras that are offline / not recording, or have not recorded for 24 h -> with the likely cause
+function Get-TkDwProblemCams($channels, [int]$staleHours = 24, $nowUtc = $null) {
+  if (-not $nowUtc) { $nowUtc = [DateTime]::UtcNow }
+  $arp = $(if ($env:WIREIT_TEST_REACH) { @{} } else { Get-TkArpTable })
+  $out = @()
+  foreach ($c in @($channels)) {
+    if (-not $c) { continue }
+    $st = [string]$c.detect; $nw = $null; if ($c.newest) { try { $nw = ([datetime]$c.newest).ToUniversalTime() } catch {} }
+    if ($c.newest -is [datetime]) { $nw = $c.newest }
+    $hrs = $(if ($nw) { [math]::Round(($nowUtc - $nw).TotalHours) } else { $null })
+    $bad = ($st -and $st -notin @('Recording', 'Online')); $stale = ($null -eq $hrs -and $c.scheduled) -or ($null -ne $hrs -and $hrs -gt $staleHours -and -not $c.recording_now)
+    if (-not $bad -and -not $stale) { continue }
+    $rch = $(if ($c.ip) { Test-TkCamReach ([string]$c.ip) ([string]$c.mac) @(80, 554) $arp } else { $null })
+    $cause = $(if ($rch) { Get-TkLikelyCause $rch $st } else { @{ k = 'check'; t = 'no IP known in DW' } })
+    $when = $(if ($nw) { 'last recording ' + $nw.ToLocalTime().ToString('MMM d') + $(if ($hrs -ge 48) { ' (' + [math]::Floor($hrs / 24) + ' days ago)' } else { ' (' + $hrs + ' h ago)' }) } else { 'no recording found' })
+    $nm = $(if ($c.name) { [string]$c.name } else { 'camera ' + $c.ch })
+    $out += [pscustomobject]@{ name = $nm; ip = [string]$c.ip; status = $st; hours = $hrs; cause = $cause.k; reach = $rch; t = ($nm + ' (' + $c.ip + ') - DW: ' + $(if ($st) { $st } else { '?' }) + ', ' + $when + ': ' + $cause.t) }
+  }
+  return $out
+}
+
+# ---------------- "Check this site" summary (Nov 3 2026): one record for the results pane + the site page's "Latest check" card ----------------
+# -> @{ ok; lines = @(@{ t; k = red|ok|warn|plain }); fixes = @('recording','restart','readd','ntp','firmware','password'); page = <small, no passwords> }
+function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip = '', $Dw = $null) {
+  $L = New-Object System.Collections.Generic.List[object]; $fix = New-Object System.Collections.Generic.List[string]
+  $add = { param($t, $k) $L.Add(@{ t = $t; k = $k }) }
+  $j = { param($a) (@($a) | Where-Object { $_ }) -join '; ' }
+  $page = [ordered]@{ t = (Get-Date -Format 's'); ip = $Ip; ok = $true }
+  # cameras (the list Find cameras just saved)
+  $sa = $(if ($Scan) { $Scan.answer } else { $null })
+  if ($sa -and $sa.ok) {
+    $miss = @($sa.missing) + @($sa.stillMissing) | Where-Object { $_ }
+    $page.cams = [ordered]@{ total = [int]$sa.total; missing = @($miss).Count; added = @($sa.added).Count; changedIp = @($sa.changedIp).Count; missingNames = @($miss | Select-Object -First 8) }
+    if (@($miss).Count) { & $add ('Cameras: ' + @($miss).Count + ' MISSING of ' + [int]$sa.total + ' on the site list: ' + (& $j ($miss | Select-Object -First 5))) 'red' }
+    else { & $add ('Cameras: all ' + [int]$sa.total + ' on the site list found.') 'ok' }
+  } else { $page.cams = $null; & $add 'Cameras: no fresh list (run with the Site box filled to compare with the site page).' 'warn' }
+  # recorder
+  if ($Health) {
+    $rec = $Health.recording; $clk = $Health.clock; $fw = $Health.firmware
+    $page.vendor = [string]$Health.vendor
+    $chs = @($rec.channels)
+    $off = @($chs | Where-Object { $_.online -eq $false } | ForEach-Object { $_.ch }); $sched = @($chs | Where-Object { $_.scheduled -eq $false } | ForEach-Object { $_.ch })
+    $notRec = @($chs | Where-Object { -not $_.recording_now -and -not ($_.mode -match '(?i)motion|alarm|event|smart|vmd') } | ForEach-Object { $_.ch })
+    $page.rec = [ordered]@{ ok = [bool]$rec.ok; channels = $chs.Count; recording = [int]$rec.recording; offline = $off; scheduleOff = $sched; daysHeld = $rec.days_held; target = $rec.target_days; problems = @($rec.problems) }
+    if ($rec.ok) { & $add ('Recording: all ' + [int]$rec.recording + ' cameras recording, ' + $rec.days_held + ' days kept (target ' + $rec.target_days + ').') 'ok' }
+    else { & $add ('Recording: ' + (& $j $rec.problems)) 'red' }
+    $sf = $(if ($rec.streams) { @($rec.streams.flags) } else { @() })
+    $page.streams = $(if ($rec.streams -and $rec.streams.checked) { [ordered]@{ checked = [int]$rec.streams.checked; flags = $sf } } else { $null })
+    if ($sf.Count) { & $add ('Streams (report only): ' + (& $j ($sf | Select-Object -First 6))) 'warn' } elseif ($page.streams) { & $add ('Streams: sub-stream, bitrate and frame rate normal on ' + $rec.streams.checked + ' cameras.') 'ok' }
+    $page.clock = [ordered]@{ ok = [bool]$clk.ok; problems = @($clk.problems | Select-Object -First 8) }
+    if ($clk.ok) { & $add 'Clocks: right, time server on.' 'ok' } else { & $add ('Clocks: ' + (& $j ($clk.problems | Select-Object -First 4))) 'red' }
+    $page.fw = [ordered]@{ ok = [bool]$fw.ok; problems = @($fw.problems | Select-Object -First 8) }
+    if ($fw.ok) { & $add 'Firmware: current, no known security holes.' 'ok' } else { & $add ('Firmware: ' + (& $j ($fw.problems | Select-Object -First 4))) 'red' }
+    if ($sched.Count) { $fix.Add('recording') }
+    if ($off.Count) { $fix.Add('restart'); $fix.Add('readd') }
+    if (-not $clk.ok -and -not (@($clk.problems) -match 'login refused|no answer')) { $fix.Add('ntp') }
+    if (-not $fw.ok -and -not (@($fw.problems) -match 'login refused|no answer')) { $fix.Add('firmware') }
+    if ((@($rec.problems) -join ';') -match 'login refused|no answer') { $page.ok = $false }
+  } else { & $add 'Recorder: not checked (no answer or no login).' 'warn' }
+  # DW: cameras offline / not recording / nothing for 24 h, with the likely cause (read-only)
+  if ($null -ne $Dw) {
+    $dwl = @($Dw)
+    $page.dw = [ordered]@{ problems = $dwl.Count; cams = @($dwl | Select-Object -First 30 | ForEach-Object { [ordered]@{ name = $_.name; ip = $_.ip; status = $_.status; hours = $_.hours; cause = $_.cause } }) }
+    if ($dwl.Count) { foreach ($x in ($dwl | Select-Object -First 12)) { & $add ('DW: ' + $x.t) 'red' }; if ($dwl.Count -gt 12) { & $add ('DW: ' + ($dwl.Count - 12) + ' more - see the log.') 'red' } }
+    else { & $add 'DW: every camera online and recording in the last 24 h.' 'ok' }
+    if (@($dwl | Where-Object { $_.cause -eq 'dwpw' }).Count) { $fix.Add('dwpassword') }
+    if (@($dwl | Where-Object { $_.cause -eq 'hung' }).Count) { $fix.Add('restart') }
+  }
+  if ($page.cams -and $page.cams.missing -and -not ($fix -contains 'restart')) { $fix.Add('restart') }
+  # router
+  if ($Upnp) {
+    $page.router = [ordered]@{ checked = $true; answered = [bool]$Upnp.answered; upnp = [bool]$Upnp.upnp; model = [string]$Upnp.router; exposed = @($Upnp.exposed | ForEach-Object { '' + $_.ext + '/' + $_.proto + ' -> ' + $_.client + ':' + $_.port }) }
+    if ($Upnp.upnp -or @($Upnp.exposed).Count) { foreach ($ul in @($Upnp.lines | Where-Object { $_.k -eq 'red' })) { & $add $ul.t 'red' } } else { & $add ('Router: ' + $(if ($Upnp.answered) { 'UPnP off, nothing opened to the internet.' } else { 'UPnP off or blocked - good.' })) 'ok' }
+  } else { $page.router = $null }
+  $page.fixes = @($fix | Select-Object -Unique)
+  $page.ok = $page.ok -and -not @($L | Where-Object { $_.k -eq 'red' }).Count
+  return [pscustomobject]@{ ok = $page.ok; lines = $L.ToArray(); fixes = @($page.fixes); page = $page }
+}
+
+# ---------------- Nov 3 2026 (YKW Elm live test) small helpers ----------------
+# the DW server's own name, no login needed (moduleInformation) - used for the days-to-keep target when no site was typed
+function Get-TkDwName([string]$ip, [string]$mockUrl = '') {
+  $u = $(if ($mockUrl) { $mockUrl.TrimEnd('/') + '/dev/' + $ip + '/api/moduleInformation' } else { 'https://' + $ip + ':7001/api/moduleInformation' })
+  $j = $null
+  try { $j = (Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 4).Content | ConvertFrom-Json } catch {}
+  if (-not $j -and -not $mockUrl) { try { $o = & (Join-Path $env:SystemRoot 'System32\curl.exe') -k -s -m 4 $u 2>$null; if ($o) { $j = ($o | Out-String) | ConvertFrom-Json } } catch {} }
+  if ($j -and $j.PSObject.Properties['reply']) { $j = $j.reply }
+  if ($j) { if ($j.PSObject.Properties['systemName'] -and $j.systemName) { return [string]$j.systemName }; return [string]$j.name }
+  return ''
+}
+# "Recorder type" box -> NvrCheck -Vendor
+function Get-TkVendorArg([string]$s) {
+  switch -regex (([string]$s).Trim()) { '(?i)^(dw|digital|spectrum|watchdog)' { return 'DW' } '(?i)^hik' { return 'Hikvision' } '(?i)^(uni|unv)' { return 'Uniview' } '(?i)^onvif' { return 'Onvif' } default { return 'Auto' } }
 }

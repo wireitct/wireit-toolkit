@@ -4,7 +4,7 @@
  - makes C:\WireIt\Toolkit (logs\, previous\) and copies itself there if run from somewhere else (USB stick, Downloads)
  - copies NetCheck into C:\WireIt\NetCheck if it came along in .\bundle\NetCheck
  - desktop shortcut "WireIt Toolkit" (+ Start menu) with the WireIt icon
- - CamReset firewall rules (Hikvision discovery replies) if CamReset is here and they are missing
+ - camera-discovery firewall rules (UDP answers to PowerShell from the local network + SADP 37020) when run as admin and missing
  Nothing is downloaded and no password is asked or stored.
 #>
 param([string]$Root = 'C:\WireIt', [switch]$NoShortcut)
@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $tk = Join-Path $Root 'Toolkit'
 New-Item -ItemType Directory -Force -Path $tk, (Join-Path $tk 'logs'), (Join-Path $tk 'previous') | Out-Null
-$files = 'WireItToolkit.ps1', 'ToolkitCore.ps1', 'WireIt Toolkit.cmd', 'Install-Toolkit.ps1', 'README.txt', 'wireit.ico', 'wireit-logo.png', 'version.json', 'CamViews.ps1', 'Set upload key.cmd', 'NvrCheck.ps1', 'ScanUpload.ps1'
+$files = 'WireItToolkit.ps1', 'ToolkitCore.ps1', 'WireIt Toolkit.cmd', 'Install-Toolkit.ps1', 'README.txt', 'wireit.ico', 'wireit-logo.png', 'version.json', 'CamViews.ps1', 'Set upload key.cmd', 'NvrCheck.ps1', 'ScanUpload.ps1', 'FixIt.ps1'
 if ((Resolve-Path $here).Path.TrimEnd('\') -ne (Resolve-Path $tk).Path.TrimEnd('\')) {
   foreach ($f in $files) { if (Test-Path (Join-Path $here $f)) { Copy-Item (Join-Path $here $f) (Join-Path $tk $f) -Force } }
   foreach ($d in 'tests', 'modules') { if (Test-Path (Join-Path $here $d)) { Copy-Item (Join-Path $here $d) $tk -Recurse -Force } }
@@ -47,9 +47,19 @@ if (-not $NoShortcut) {
   }
 }
 $adm = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+# camera discovery firewall rules (Nov 3 2026): so "1 Find cameras" never pops a Windows Firewall question on a tech
 $cr = Join-Path $Root 'CamReset\Install-CamReset.ps1'
-if ((Test-Path $cr) -and -not (Get-NetFirewallRule -DisplayName 'WireIt CamReset*' -ErrorAction SilentlyContinue)) {
-  if ($adm) { & $cr } else { 'Run this again as administrator to add the camera-discovery firewall rules.' }
+$fwName = 'WireIt CamReset - camera discovery replies (PowerShell, local network)'
+if (-not (Get-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue)) {
+  if (-not $adm) { 'Run this again as administrator to add the camera-discovery firewall rules (then Windows never asks about the firewall on Find cameras).' }
+  elseif (Test-Path $cr) { & $cr -FirewallOnly }
+  else {
+    New-NetFirewallRule -DisplayName 'WireIt CamReset - SADP discovery replies (UDP 37020)' -Direction Inbound -Protocol UDP -LocalPort 37020 -Action Allow -Profile Any | Out-Null
+    foreach ($p in @((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'), (Join-Path $env:SystemRoot 'SysWOW64\WindowsPowerShell\v1.0\powershell.exe'))) {
+      if (Test-Path $p) { New-NetFirewallRule -DisplayName $fwName -Direction Inbound -Program $p -Protocol UDP -RemoteAddress LocalSubnet -Action Allow -Profile Any | Out-Null }
+    }
+    'Added the camera-discovery firewall rules.'
+  }
 }
 $h = 'C:\Program Files (x86)\HiToolsDelivery\client\HiToolsDelivery.exe'
 if (-not (Test-Path $h)) { 'NOTE: HiTools Delivery (Hikvision''s free tool) is not installed. Button 4 needs it: hikvision.com > Support > Tools > HiTools Delivery.' }

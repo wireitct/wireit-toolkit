@@ -15,12 +15,35 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def send(self, obj):
         b = json.dumps(obj).encode(); self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
-    def do_GET(self): self.send({'ok': True})
+    def xml(self, s, code=200):
+        b = s.encode(); self.send_response(code); self.send_header('Content-Type', 'text/xml'); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
+    def do_GET(self):
+        # Nov 3 2026: a stand-in router for the UPnP exposure check (description page + read-only SOAP calls below)
+        if self.path == '/igd.xml':
+            return self.xml('<?xml version="1.0"?><root xmlns="urn:schemas-upnp-org:device-1-0"><device><manufacturer>Technicolor</manufacturer><modelName>CGM4331COM</modelName>'
+                            '<deviceList><device><deviceList><device><serviceList><service><serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>'
+                            '<controlURL>/upnp/control/WANIPConn1</controlURL></service></serviceList></device></deviceList></device></deviceList></device></root>')
+        self.send({'ok': True})
     def do_POST(self):
         n = int(self.headers.get('Content-Length') or 0); body = self.rfile.read(n).decode('utf-8', 'replace')
+        if self.path == '/upnp/control/WANIPConn1':
+            act = (self.headers.get('SOAPAction') or '').strip('"').split('#')[-1]
+            with open(BODIES, 'a', encoding='utf-8') as f: f.write('SOAP ' + act + '\n')
+            if act == 'GetExternalIPAddress': return self.xml('<s:Envelope><s:Body><u:GetExternalIPAddressResponse><NewExternalIPAddress>73.1.2.3</NewExternalIPAddress></u:GetExternalIPAddressResponse></s:Body></s:Envelope>')
+            if act == 'GetGenericPortMappingEntry':
+                import re
+                i = int(re.search(r'<NewPortMappingIndex>(\d+)<', body).group(1))
+                maps = [(8000, 'TCP', '192.168.1.20', 8000, 'NVR'), (5554, 'TCP', '192.168.1.21', 554, 'cam rtsp'), (3074, 'UDP', '192.168.1.50', 3074, 'Xbox')]
+                if i >= len(maps): return self.xml('<s:Envelope><s:Body><s:Fault><detail><UPnPError><errorCode>713</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>', 500)
+                e, p, c, ip, d = maps[i]
+                return self.xml('<s:Envelope><s:Body><u:R><NewRemoteHost></NewRemoteHost><NewExternalPort>%d</NewExternalPort><NewProtocol>%s</NewProtocol><NewInternalPort>%d</NewInternalPort><NewInternalClient>%s</NewInternalClient><NewEnabled>1</NewEnabled><NewPortMappingDescription>%s</NewPortMappingDescription><NewLeaseDuration>0</NewLeaseDuration></u:R></s:Body></s:Envelope>' % (e, p, ip, c, d))
+            return self.xml('<s:Envelope><s:Body><s:Fault><detail><UPnPError><errorCode>401</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>', 500)
         with open(BODIES, 'a', encoding='utf-8') as f: f.write(body + '\n')
         try: req = json.loads(body)
         except Exception: return self.send({'ok': False, 'msg': 'bad json'})
+        if req.get('op') == 'toolkitCheck':
+            if len(req.get('key') or '') < 32: return self.send({'ok': False, 'msg': 'Not allowed.'})
+            return self.send({'ok': True, 'site': '2336 Main St' if '2336' in req.get('site', '') else req.get('site'), 'changed': self.path.strip('/') == 'changed'})
         if req.get('op') != 'scanPush' or len(req.get('key') or '') < 32: return self.send({'ok': False, 'msg': 'Not allowed.'})
         mode = self.path.strip('/') or 'first'
         a = dict(ANS.get(mode, ANS['first'])); a['site'] = '2336 Main St' if '2336' in req.get('site', '') else req.get('site')

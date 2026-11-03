@@ -5,7 +5,7 @@ New passwords go to Bitwarden only (never Drive, never WhatsApp).
 
 FILES (this folder is portable: copy the whole folder to another PC and run Install once)
   Find Cameras.cmd      double-click: finds every Hikvision/Uniview camera on the network (read-only)
-  Find-Cameras.ps1      the finder (SADP + ONVIF discovery, device date, Uniview default-password check)
+  Find-Cameras.ps1      the finder (SADP + ONVIF discovery, /24 network sweep, device date, Uniview default-password check)
   Make-Request.ps1      packages a Hikvision reset request after you export the XML in HiTools
   Install-CamReset.ps1  one-time setup, run as admin (firewall rules so camera replies are not blocked)
   config.json           company details used on the vendor forms (no passwords)
@@ -26,6 +26,12 @@ STEP 1 - FIND  (any brand)
   - Uniview "Default password works" = no reset needed: log in with admin/123456 and set a new password.
   - Camera on another IP scheme: HiTools still sees it; the finder says so.
   It also re-checks open requests: if a Hikvision camera rebooted since its XML was exported, it says the request is dead.
+  Nov 3 2026: it also SWEEPS this PC's own /24 (ping + ports 80/554/8000/7001, about 5-10 s, never wider than a /24),
+  so cameras that miss the discovery answers still show up ("Found by the network sweep: answers on 80/554, maker guess
+  Uniview (from MAC)"). Non-cameras (DW server on 7001, switches, PCs) are listed under "Other things on the network".
+  The sweep never logs in. Options: -NoSweep, -NoMulticast, -SweepTargets 10.1.61.0/24, config "sweep": false.
+  Uniview shows "Not tried" when no default-password try happened (try off, -NoLogin, or found only by the sweep);
+  "Locked" only appears after a real try was refused.
 
 STEP H - HIKVISION (US web form, XML method)
   H1. Open HiTools Delivery. Tick the camera in the device list.
@@ -52,4 +58,7 @@ STEP U - UNIVIEW (bulk "Temporary Password" request)
 SAFETY
   - Read-only discovery. The only login attempt is ONE try of Uniview's factory default per camera per day.
   - Firewall rules added by Install (remove with Install-CamReset.ps1 -Uninstall):
-    "WireIt CamReset - SADP discovery replies (UDP 37020)", "WireIt CamReset - HiTools Delivery", "WireIt CamReset - HiTools hscan".
+    "WireIt CamReset - SADP discovery replies (UDP 37020)", "WireIt CamReset - camera discovery replies (PowerShell, local network)",
+    "WireIt CamReset - HiTools Delivery", "WireIt CamReset - HiTools hscan".
+    Without them Find Cameras prints: "If Windows asks about the firewall, press Allow - or run Install once as admin so it never asks."
+  - Tests (mocks on 127.0.0.x only): powershell -ExecutionPolicy Bypass -File tests\Test-FindCameras.ps1

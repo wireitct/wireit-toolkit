@@ -39,6 +39,14 @@ try {
   Check 'hik good: only that problem' ($r.problems.Count -eq 1) ($r.problems -join ';')
   Check 'hik good: 2 healthy drives with SMART' (@($r.disks | Where-Object { $_.smartOk -eq $true }).Count -eq 2)
   Check 'hik good: read-only (no writes)' ((Writes).Count -eq 0)
+  $sf = @($r.streams.flags) -join ';'
+  Check 'streams: 4 cameras audited' ($r.streams.checked -eq 4) $r.streams.checked
+  Check 'streams: cam 2 bitrate 12 Mbps at 3.7 MP flagged' ($sf -match 'cam 2: main bitrate 12 Mbps is high for 3.7 MP') $sf
+  Check 'streams: cam 3 sub-stream off flagged' ($sf -match 'cam 3: sub-stream off') $sf
+  Check 'streams: cam 4 frame rate mismatch flagged (15 vs 20)' ($sf -match 'cam 4: 15 fps, the others run 20') $sf
+  Check 'streams: cam 4 12 Mbps at 8 MP is fine' ($sf -notmatch 'cam 4: main bitrate') $sf
+  Check 'streams: cam 1 clean' ($sf -notmatch 'cam 1:') $sf
+  Check 'streams: report only (not a recording problem)' ($r.problems.Count -eq 1) ($r.problems -join ';')
 
   Write-Host "`n=== recording: bad Hikvision NVR ==="
   $r = Get-RecordingStatus -Ip 10.9.0.30 -Vendor Hikvision -Credential $good -TargetDays 45
@@ -48,6 +56,7 @@ try {
   Check 'hik bad: short retention flagged' ($p -match 'only 20 of 45 days') $p
   Check 'hik bad: schedule-off camera flagged' ($p -match 'not recording: 1') $p
   Check 'hik bad: not ok' (-not $r.ok)
+  Check 'streams: bad NVR defaults all fine' ($r.streams.checked -eq 2 -and $r.streams.ok) (@($r.streams.flags) -join ';')
 
   Write-Host "`n=== recording: wrong password ==="
   $r = Get-RecordingStatus -Ip 10.9.0.60 -Vendor Hikvision -Credential $wrong

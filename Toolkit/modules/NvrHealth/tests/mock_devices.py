@@ -43,9 +43,9 @@ def fresh_state():
             'hdds': [{'id': '1', 'status': 'ok', 'cap': 3815447, 'free': 12288, 'smart': ('ok', 'functional', 38, 400)},
                      {'id': '2', 'status': 'ok', 'cap': 3815447, 'free': 8192, 'smart': ('ok', 'functional', 40, 400)}],
             'chans': [{'id': 1, 'ip': '192.168.254.2', 'online': True, 'segs': segs(50, 0), 'enable': 'true', 'mode': 'CMR'},
-                      {'id': 2, 'ip': '10.9.0.21', 'online': True, 'segs': segs(49, 1), 'enable': 'true', 'mode': 'CMR'},
-                      {'id': 3, 'ip': '192.168.254.4', 'online': True, 'segs': segs(48, 300), 'enable': 'true', 'mode': 'MOTION'},
-                      {'id': 4, 'ip': '192.168.254.5', 'online': False, 'segs': segs(50, 2 * 24 * 60), 'enable': 'true', 'mode': 'CMR'}]}
+                      {'id': 2, 'ip': '10.9.0.21', 'online': True, 'segs': segs(49, 1), 'enable': 'true', 'mode': 'CMR', 'main': (2560, 1440, 2000, 12288, 'VBR', True)},
+                      {'id': 3, 'ip': '192.168.254.4', 'online': True, 'segs': segs(48, 300), 'enable': 'true', 'mode': 'MOTION', 'sub': (640, 360, 1500, 512, 'VBR', False)},
+                      {'id': 4, 'ip': '192.168.254.5', 'online': False, 'segs': segs(50, 2 * 24 * 60), 'enable': 'true', 'mode': 'CMR', 'main': (3840, 2160, 1500, 12288, 'CBR', True)}]}
     bad = {'kind': 'hik_nvr', 'pw': PW['good'], 'model': 'DS-7732NI-M4/16P', 'serial': 'AA3696627', 'fw': ('V4.61.420', 'build 230217'),
            'mode': 'manual', 'tz': MOUNTAIN, 'drift': -420, 'ntp': {'id': '1', 'fmt': 'ipaddress', 'host': '', 'ip': '0.0.0.0', 'interval': '1440'}, 'with_offset': False,
            'hdds': [{'id': '1', 'status': 'ok', 'cap': 1907729, 'free': 0, 'smart': ('error', 'badsectors', 47, 2400)},
@@ -64,7 +64,11 @@ def fresh_state():
            'mode': 'Manual', 'tz': 'CST-8:00:00', 'dst': False, 'drift': 3600, 'ntp': ['192.168.1.1'],
            'recs': [{'tok': 'rec1', 'name': 'D1', 'earliest_days': 31, 'status': 'Recording', 'latest_min': 0},
                     {'tok': 'rec2', 'name': 'D2', 'earliest_days': 31, 'status': 'Stopped', 'latest_min': 600}]}
-    return {'10.9.0.20': good, '10.9.0.21': cam_good, '10.9.0.30': bad, '10.9.0.31': cam_bad, '10.9.0.40': dw, '10.9.0.50': unv,
+    # Nov 3 2026: a second DW server like YKW Elm - one camera DW cannot log in to, one dead for weeks (Check this site / Camera doctor)
+    dw2 = dict(dw, devices=[dict(dw['devices'][0], mac='44:19:B6:00:0A:11'),
+                            {'id': '{33333333-3333-3333-3333-333333333333}', 'name': 'Dining Room Center', 'status': 'Unauthorized', 'model': 'IPC328SR3-ADF28KM-G', 'vendor': 'Uniview', 'url': 'http://10.9.1.29/onvif/device_service', 'sched': True, 'fw': 'IPC_G6103', 'oldest_days': 60, 'live': False, 'last_hours': 54 * 24, 'mac': '44:19:B6:00:0A:29'},
+                            {'id': '{44444444-4444-4444-4444-444444444444}', 'name': 'Back Stairs', 'status': 'Offline', 'model': 'IPC2124LB', 'vendor': 'Uniview', 'url': 'http://10.9.1.30/onvif/device_service', 'sched': True, 'fw': 'IPC_G6103', 'oldest_days': 50, 'live': False, 'last_hours': 30, 'mac': '44:19:B6:00:0A:30'}])
+    return {'10.9.0.20': good, '10.9.0.21': cam_good, '10.9.0.30': bad, '10.9.0.31': cam_bad, '10.9.0.40': dw, '10.9.0.41': dw2, '10.9.1.29': {'kind': 'unvlock', 'remain': 1740}, '10.9.1.31': {'kind': 'hang'}, '10.9.0.50': unv,
             '10.9.0.60': dict(good, pw='SomethingElse!')}
 
 STATE = fresh_state()
@@ -109,10 +113,12 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self): self.route('GET')
     def do_PUT(self): self.route('PUT')
     def do_POST(self): self.route('POST')
+    def do_PATCH(self): self.route('PATCH')
     def route(self, method):
         global STATE, WRITES
         b = self.body()
         if self.path.startswith('/mockctl/writes'): return self.send(200, json.dumps(WRITES), 'application/json')
+        if self.path.startswith('/mockctl/tries/'): return self.send(200, json.dumps({'tries': STATE.get(self.path.rsplit('/', 1)[1], {}).get('tries', 0)}), 'application/json')
         if self.path.startswith('/mockctl/reset'):
             with LOCK: STATE = fresh_state(); WRITES = []
             return self.send(200, '{}', 'application/json')
@@ -121,6 +127,11 @@ class H(BaseHTTPRequestHandler):
         ip, path = m.group(1), m.group(2)
         d = STATE.get(ip)
         if not d: return self.send(404, 'no device')
+        if d['kind'] == 'hang':   # Nov 3 2026: a camera whose web service accepts the connection and never answers
+            import time; time.sleep(8); return self.send(200, '')
+        if d['kind'] == 'unvlock':   # a Uniview that locked its login after too many wrong passwords (shape UNVERIFIED on real gear)
+            d['tries'] = d.get('tries', 0) + 1
+            return self.send(401, json.dumps({'Response': {'ResponseURL': path, 'ResponseCode': 4, 'ResponseString': 'User locked', 'Data': {'RemainLockTime': d['remain']}}}), 'application/json')
         with LOCK:
             k = d['kind']
             if k in ('hik_nvr', 'hik_cam'): return self.hik(ip, d, method, path, b)
@@ -156,10 +167,45 @@ class H(BaseHTTPRequestHandler):
             n['fmt'] = tag(b, 'addressingFormatType') or n['fmt']; n['host'] = tag(b, 'hostName') or ''; n['ip'] = tag(b, 'ipAddress') or ''; n['interval'] = tag(b, 'synchronizeInterval') or n['interval']
             if d['mode'] == 'NTP': d['drift'] = 0
             return self.send(200, ok_xml())
+        # Nov 3 2026 Release C fix buttons (mock only)
+        if p == '/ISAPI/System/reboot' and method == 'PUT': d['reboots'] = d.get('reboots', 0) + 1; return self.send(200, ok_xml())
+        if p == '/ISAPI/Security/users/1' and method == 'PUT':
+            npw = tag(b, 'password')
+            if not npw: return self.send(400, ok_xml())
+            d['pw'] = npw; return self.send(200, ok_xml())
+        if p == '/ISAPI/System/configurationData' and method == 'GET': return self.send(200, 'MOCKCONFIG-' + d['serial'], 'application/octet-stream')
+        if p == '/ISAPI/System/updateFirmware' and method == 'PUT':
+            if not b: return self.send(400, ok_xml())
+            d['fw'] = ('V9.9.9', 'build 999999'); return self.send(200, ok_xml())
         if d['kind'] != 'hik_nvr': return self.send(404, ok_xml())
+        mm = re.match(r'^/ISAPI/ContentMgmt/record/tracks/(\d+)$', p)
+        if mm:
+            ch = next((c for c in d['chans'] if c['id'] * 100 + 1 == int(mm.group(1))), None)
+            if not ch: return self.send(404, ok_xml())
+            if method == 'PUT': ch['enable'] = 'true' if tag(b, 'Enable') == 'true' else 'false'; return self.send(200, ok_xml())
+            return self.send(200, '<?xml version="1.0" encoding="UTF-8"?><Track %s><id>%d01</id><Channel>%d</Channel><Enable>%s</Enable><TrackSchedule><ScheduleBlock><ScheduleAction><Actions><Record>true</Record><ActionRecordingMode>%s</ActionRecordingMode></Actions></ScheduleAction></ScheduleBlock></TrackSchedule></Track>' % (NS, ch['id'], ch['id'], ch['enable'], ch['mode']))
+        mm = re.match(r'^/ISAPI/ContentMgmt/InputProxy/channels/(\d+)$', p)
+        if mm:
+            cid = int(mm.group(1)); ch = next((c for c in d['chans'] if c['id'] == cid), None)
+            if method == 'PUT':
+                ip = tag(b, 'ipAddress')
+                if not ip or not tag(b, 'password'): return self.send(400, ok_xml())
+                if ch: ch['ip'] = ip; ch['online'] = True
+                else: d['chans'].append({'id': cid, 'ip': ip, 'online': True, 'segs': [], 'enable': 'true', 'mode': 'CMR'})
+                return self.send(200, ok_xml())
+            if not ch: return self.send(404, ok_xml())
+            return self.send(200, '<?xml version="1.0" encoding="UTF-8"?><InputProxyChannel %s><id>%d</id><name>Camera %02d</name><sourceInputPortDescriptor><ipAddress>%s</ipAddress><userName>admin</userName></sourceInputPortDescriptor></InputProxyChannel>' % (NS, cid, cid, ch['ip']))
         if p == '/ISAPI/ContentMgmt/InputProxy/channels':
             x = ''.join('<InputProxyChannel><id>%d</id><name>Camera %02d</name><sourceInputPortDescriptor><ipAddress>%s</ipAddress></sourceInputPortDescriptor></InputProxyChannel>' % (c['id'], c['id'], c['ip']) for c in d['chans'])
             return self.send(200, '<?xml version="1.0" encoding="UTF-8"?><InputProxyChannelList %s>%s</InputProxyChannelList>' % (NS, x))
+        if p == '/ISAPI/ContentMgmt/StreamingProxy/channels':   # Nov 3 2026: stream audit (main x01 / sub x02)
+            def sc(sid, s):
+                w, h, fr, kb, rc, en = s
+                return ('<StreamingChannel><id>%d</id><enabled>%s</enabled><Video><enabled>%s</enabled><videoCodecType>H.265</videoCodecType><videoResolutionWidth>%d</videoResolutionWidth>'
+                        '<videoResolutionHeight>%d</videoResolutionHeight><videoQualityControlType>%s</videoQualityControlType><constantBitRate>%d</constantBitRate><vbrUpperCap>%d</vbrUpperCap>'
+                        '<maxFrameRate>%d</maxFrameRate></Video></StreamingChannel>') % (sid, 'true', 'true' if en else 'false', w, h, rc, kb, kb, fr)
+            x = ''.join(sc(c['id'] * 100 + 1, c.get('main', (2560, 1440, 2000, 4096, 'VBR', True))) + sc(c['id'] * 100 + 2, c.get('sub', (640, 360, 1500, 512, 'VBR', True))) for c in d['chans'])
+            return self.send(200, '<?xml version="1.0" encoding="UTF-8"?><StreamingChannelList %s>%s</StreamingChannelList>' % (NS, x))
         if p == '/ISAPI/ContentMgmt/InputProxy/channels/status':
             x = ''.join('<InputProxyChannelStatus><id>%d</id><sourceInputPortDescriptor><ipAddress>%s</ipAddress></sourceInputPortDescriptor><online>%s</online><chanDetectResult>%s</chanDetectResult></InputProxyChannelStatus>' % (c['id'], c['ip'], str(c['online']).lower(), 'connect' if c['online'] else 'netUnreachable') for c in d['chans'])
             return self.send(200, '<?xml version="1.0" encoding="UTF-8"?><InputProxyChannelStatusList %s>%s</InputProxyChannelStatusList>' % (NS, x))
@@ -202,14 +248,24 @@ class H(BaseHTTPRequestHandler):
         if p == '/api/gettime': return self.send(200, json.dumps({'error': '0', 'reply': {'utcTime': str(ms(now) + d['drift'] * 1000), 'timeZoneOffset': str(offset_min(EAST, now) * 60000), 'timezoneId': d['tzid']}}), 'application/json')
         if p == '/rest/v3/servers/this/storages/*/status': return self.send(200, json.dumps(d['storages']), 'application/json')
         if p == '/rest/v3/devices':
-            return self.send(200, json.dumps([{'id': x['id'], 'name': x['name'], 'status': x['status'], 'model': x['model'], 'vendor': x['vendor'], 'url': x['url'], 'schedule': {'isEnabled': x['sched']}, 'parameters': {'firmware': x['fw']}} for x in d['devices']]), 'application/json')
+            return self.send(200, json.dumps([{'id': x['id'], 'name': x['name'], 'status': x['status'], 'model': x['model'], 'vendor': x['vendor'], 'url': x['url'], 'schedule': {'isEnabled': x['sched']}, 'parameters': {'firmware': x['fw']}, 'physicalId': x.get('mac', '')} for x in d['devices']]), 'application/json')
         if p == '/ec2/recordedTimePeriods':
             x = next(x for x in d['devices'] if x['id'] == requests_unquote(q.get('cameraId', '')))
             st = now - timedelta(days=x['oldest_days'])
             per = [{'startTimeMs': str(ms(st)), 'durationMs': str(3600 * 1000)}]
-            last = now - timedelta(hours=3) if not x['live'] else now - timedelta(minutes=30)
+            last = now - timedelta(hours=x.get('last_hours', 3)) if not x['live'] else now - timedelta(minutes=30)
             per.append({'startTimeMs': str(ms(last)), 'durationMs': '-1' if x['live'] else str(1800 * 1000)})
             return self.send(200, json.dumps({'error': '0', 'reply': per}), 'application/json')
+        mm = re.match(r'^/rest/v3/devices/(.+)$', p)
+        if mm and method == 'PATCH':
+            x = next((x for x in d['devices'] if x['id'] == requests_unquote(mm.group(1))), None)
+            if not x: return self.send(404, '{"error":"404"}', 'application/json')
+            j = json.loads(b or '{}')
+            if 'schedule' in j: x['sched'] = bool(j['schedule'].get('isEnabled'))
+            if 'credentials' in j:
+                if not j['credentials'].get('password'): return self.send(400, '{"error":"400"}', 'application/json')
+                x['status'] = 'Online'
+            return self.send(200, json.dumps({'id': x['id']}), 'application/json')
         return self.send(404, '{"error":"404"}', 'application/json')
 
     # ---------------- Uniview ----------------
@@ -219,6 +275,7 @@ class H(BaseHTTPRequestHandler):
             if not self.digest_ok(d, method, path): return self.challenge()
             if method != 'GET': WRITES.append({'ip': ip, 'method': method, 'path': p, 'body': b})
             def ok(data): return self.send(200, json.dumps({'Response': {'ResponseURL': p, 'ResponseCode': 0, 'ResponseString': 'Succeed', 'Data': data}}), 'application/json')
+            if p == '/LAPI/V1.0/System/Reboot' and method == 'PUT': return ok({})
             if p == '/LAPI/V1.0/System/DeviceInfo': return ok({'DeviceModel': d['model'], 'SerialNumber': d['serial'], 'FirmwareVersion': d['fw'], 'DeviceName': 'NVR'})
             if p == '/LAPI/V1.0/System/Time/NTP': return ok({'Enabled': 1 if d['mode'] == 'NTP' else 0, 'NTPServerInfos': [{'IPAddress': h, 'Port': 123, 'SynchronizeInterval': 60} for h in d['ntp']]})
             return self.send(404, '{}', 'application/json')

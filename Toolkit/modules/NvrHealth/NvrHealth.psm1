@@ -27,6 +27,7 @@ $script:Opt = [ordered]@{
   LogFile        = ''      # one fixed log file for every check (the Toolkit tails it); empty = a new file per check in LogDir
   ReferenceFile  = ''
   MockUrl        = ''      # TEST HARNESS ONLY: device calls go to <MockUrl>/dev/<ip>
+  ForceCurl      = $false  # TEST HARNESS ONLY: send login-free calls through curl.exe (the HTTPS fallback path)
   TimeoutSec     = 10
 }
 $script:IsPs5 = $PSVersionTable.PSVersion.Major -lt 6
@@ -83,17 +84,46 @@ function Base([string]$ip, [int]$port = 0, [string]$scheme = '') {
   $hp = $ip; if ($port -gt 0) { $hp = $ip + ':' + $port }
   return ($scheme + '://' + $hp)
 }
-function Err-Body($ex) { try { $r = $ex.Exception.Response; if ($r) { $sr = New-Object IO.StreamReader($r.GetResponseStream()); return $sr.ReadToEnd() } } catch {}; return '' }
+function Err-Body($ex) {
+  # PS 5.1 has often read the error body already: it is then in ErrorDetails, and the stream is at its end (seek back)
+  try { if ($ex.ErrorDetails -and $ex.ErrorDetails.Message) { return [string]$ex.ErrorDetails.Message } } catch {}
+  try { $r = $ex.Exception.Response; if ($r) { $st = $r.GetResponseStream(); if ($st.CanSeek) { $st.Position = 0 }; $sr = New-Object IO.StreamReader($st); return $sr.ReadToEnd() } } catch {}; return ''
+}
+# Nov 3 2026 (YKW Elm live test): on that DW server .NET HTTPS to https://127.0.0.1:7001 failed ("underlying connection was closed")
+# while curl.exe -k and plain http on 7001 worked. Fallbacks: curl.exe (ships with Windows 10/11), then http for this PC only.
+$script:ViaCurl = @{}
+function Http-Curl([string]$Uri, [string]$Method = 'GET', [string]$Body = '', [string]$ContentType = '', [hashtable]$Headers = $null, [int]$Timeout = 10) {
+  $curl = Join-Path $env:SystemRoot 'System32\curl.exe'; if (-not (Test-Path $curl)) { $c = Get-Command curl.exe -ErrorAction SilentlyContinue; if ($c) { $curl = $c.Source } else { return $null } }
+  $tmp = Join-Path ([IO.Path]::GetTempPath()) ('nvrh-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $tmp -Force -WhatIf:$false -Confirm:$false | Out-Null
+  try {
+    # header and body go through files, so a token or a password never shows on a command line
+    $h = @(); if ($Headers) { foreach ($k in $Headers.Keys) { $h += ($k + ': ' + $Headers[$k]) } }; if ($Body -and $ContentType) { $h += ('Content-Type: ' + $ContentType) }
+    $hf = Join-Path $tmp 'h.txt'; [IO.File]::WriteAllText($hf, (($h -join "`r`n") + "`r`n"))
+    $of = Join-Path $tmp 'o.bin'
+    $ca = @('-k', '-s', '-S', '-m', [string]$Timeout, '-X', $Method, '-H', ('@' + $hf), '-o', $of, '-w', '%{http_code}')
+    if ($Body) { $bf = Join-Path $tmp 'b.bin'; [IO.File]::WriteAllBytes($bf, [Text.Encoding]::UTF8.GetBytes($Body)); $ca += @('--data-binary', ('@' + $bf)) }
+    $code = (& $curl @ca $Uri 2>$null | Out-String).Trim()
+    $c = ''; if (Test-Path $of) { $c = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($of)) }
+    $n = 0; [void][int]::TryParse(($code -replace '\D', ''), [ref]$n)
+    return @{ code = $n; body = $c; err = $(if ($n) { '' } else { 'no answer (curl)' }) }
+  } catch { return $null } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false }
+}
 function Http {
   param([string]$Ip, [string]$Method = 'GET', [string]$Path, [string]$Body = '', [string]$ContentType = 'application/xml',
-        $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0)
+        $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0, [byte[]]$BodyBytes = $null)
   if (-not $Timeout) { $Timeout = [int]$script:Opt.TimeoutSec }
   $a = @{ Uri = ((Base $Ip $Port $Scheme) + $Path); Method = $Method; UseBasicParsing = $true; TimeoutSec = $Timeout }
   if ($Credential) { $a.Credential = $Credential }
   if ($Headers) { $a.Headers = $Headers }
   if ($Body) { $a.Body = [Text.Encoding]::UTF8.GetBytes($Body); $a.ContentType = $ContentType }
+  if ($BodyBytes) { $a.Body = $BodyBytes; $a.ContentType = $ContentType }
   if (-not $script:IsPs5) { $a.SkipCertificateCheck = $true; if ($Credential) { $a.AllowUnencryptedAuthentication = $true } }
   Log ($Method + ' ' + $Ip + $(if ($Port) { ':' + $Port } else { '' }) + $Path + $(if ($Body -and -not $NoLogBody) { ' BODY ' + $Body } elseif ($Body) { ' BODY (not logged)' } else { '' }))
+  $hk = $Ip + ':' + $Port
+  if (-not $Credential -and ($script:Opt.ForceCurl -or $script:ViaCurl.ContainsKey($hk))) {
+    $c = Http-Curl -Uri $a.Uri -Method $Method -Body $Body -ContentType $ContentType -Headers $Headers -Timeout $Timeout
+    if ($c) { Log ('  -> ' + $c.code + ' (curl.exe) ' + $(if ($c.body.Length -gt 700) { $c.body.Substring(0, 700) + '...' } else { $c.body })); return $c }
+  }
   for ($try = 0; $try -lt 2; $try++) {
     try {
       $r = Invoke-WebRequest @a
@@ -104,6 +134,13 @@ function Http {
       $code = 0; try { $code = [int]$_.Exception.Response.StatusCode } catch {}
       $eb = Err-Body $_
       Log ('  -> ' + $code + ' ' + $_.Exception.Message + ' ' + $eb)
+      if ($code -eq 0 -and $a.Uri -like 'https://*' -and -not $Credential -and -not $script:Opt.MockUrl) {
+        $c = Http-Curl -Uri $a.Uri -Method $Method -Body $Body -ContentType $ContentType -Headers $Headers -Timeout $Timeout
+        if ($c -and $c.code -gt 0) { $script:ViaCurl[$hk] = $true; Log ('  -> ' + $c.code + ' (curl.exe, .NET HTTPS failed)'); return $c }
+        if ($Ip -in @('127.0.0.1', 'localhost', '::1')) {   # this PC only: plain http on the same port
+          try { $a.Uri = $a.Uri -replace '^https://', 'http://'; $r = Invoke-WebRequest @a; $c2 = [string]$r.Content; if ($r.Content -is [byte[]]) { $c2 = [Text.Encoding]::UTF8.GetString($r.Content) }; Log ('  -> ' + [int]$r.StatusCode + ' (http on this PC)'); return @{ code = [int]$r.StatusCode; body = $c2; err = '' } } catch {}
+        }
+      }
       if ($code -eq 0 -and $try -eq 0 -and -not $script:Opt.MockUrl -and -not $Scheme) {
         $key = $Ip + ':' + $Port
         if (-not $script:Scheme.ContainsKey($key)) { $script:Scheme[$key] = 'https'; $a.Uri = ((Base $Ip $Port) + $Path); continue }
@@ -430,13 +467,14 @@ function Dw-Storage($t) {
   return $out
 }
 function Dw-Devices($t) {
-  $j = Dw-Get $t '/rest/v3/devices?_with=id,name,status,model,vendor,url,schedule,parameters'
+  $j = Dw-Get $t '/rest/v3/devices?_with=id,name,status,model,vendor,url,schedule,parameters,physicalId,mac'
   $out = @()
   foreach ($d in @($j)) {
     if (-not $d) { continue }
     $ip = ''; $m = [regex]::Match([string]$d.url, '//([^/:]+)'); if ($m.Success) { $ip = $m.Groups[1].Value } elseif ($d.url) { $ip = [string]$d.url }
     $fw = ''; if ($d.parameters -and $d.parameters.firmware) { $fw = [string]$d.parameters.firmware } elseif ($d.firmware) { $fw = [string]$d.firmware }
-    $out += [pscustomobject]@{ id = [string]$d.id; ip = $ip; status = [string]$d.status; model = [string]$d.model; vendor = [string]$d.vendor; scheduled = $(if ($d.schedule) { [bool]$d.schedule.isEnabled } else { $null }); firmware = $fw }
+    $mac = $(if ($d.mac) { [string]$d.mac } elseif ([string]$d.physicalId -match '^([0-9A-Fa-f]{2}[-:]){5}[0-9A-Fa-f]{2}$') { [string]$d.physicalId } else { '' })
+    $out += [pscustomobject]@{ id = [string]$d.id; name = [string]$d.name; mac = $mac.ToUpper().Replace('-', ':'); ip = $ip; status = [string]$d.status; model = [string]$d.model; vendor = [string]$d.vendor; scheduled = $(if ($d.schedule) { [bool]$d.schedule.isEnabled } else { $null }); firmware = $fw }
   }
   return $out
 }
@@ -452,6 +490,57 @@ function Dw-Periods($t, [string]$id, [DateTime]$nowUtc) {
 }
 
 # ================= Get-RecordingStatus =================
+# ---- Nov 3 2026: stream audit (read-only GETs): sub-stream on?, main/sub resolution, bitrate, frame rate ----
+function Hik-Streams($t) {
+  $out = @()
+  foreach ($path in @('/ISAPI/ContentMgmt/StreamingProxy/channels', '/ISAPI/Streaming/channels')) {
+    $r = Http -Ip $t.ip -Path $path -Credential $t.cred -Port $t.port
+    $x = Xml $r.body; if (-not $x) { continue }
+    foreach ($c in (XFind $x 'StreamingChannel')) {
+      $id = [int](XText $c 'id'); if (-not $id) { continue }
+      $v = @(XFind $c 'Video') | Select-Object -First 1
+      $q = (XText $v 'videoQualityControlType').ToUpper()
+      $kb = $(if ($q -eq 'VBR' -and (XText $v 'vbrUpperCap')) { [int](XText $v 'vbrUpperCap') } else { [int](XText $v 'constantBitRate') })
+      $en = ((XText $c 'enabled') -ne 'false') -and (-not $v -or (XText $v 'enabled') -ne 'false')
+      $fr = [int](XText $v 'maxFrameRate'); $fps = $(if ($fr -ge 100) { [math]::Round($fr / 100, 1) } else { $fr })
+      $out += [pscustomobject]@{ ch = [int][math]::Floor($id / 100); stream = ($id % 100); enabled = $en; w = [int](XText $v 'videoResolutionWidth'); h = [int](XText $v 'videoResolutionHeight'); fps = $fps; kbps = $kb; rc = $q; codec = (XText $v 'videoCodecType') }
+    }
+    if ($out.Count) { break }
+  }
+  return $out
+}
+function Get-StreamLimitKbps([int]$w, [int]$h) {
+  # WireIt rule of thumb (Moshe-approved Nov 3 2026): > 8 Mbps main at 4 MP or less, > 16 Mbps at 8 MP is excessive
+  $px = [double]$w * $h
+  if ($px -le 4.3e6) { return 8192 }
+  if ($px -le 8.9e6) { return 16384 }
+  return 24576
+}
+function Judge-Streams($streams) {
+  $res = [ordered]@{ checked = 0; ok = $true; flags = @(); cameras = @() }
+  $s = @($streams); if (-not $s.Count) { return [pscustomobject]$res }
+  $mains = @($s | Where-Object { $_.stream -eq 1 -and $_.enabled -and $_.fps -gt 0 })
+  $major = $null
+  if ($mains.Count) { $major = ($mains | Group-Object fps | Sort-Object Count -Descending | Select-Object -First 1).Name }
+  $flags = New-Object System.Collections.Generic.List[string]
+  foreach ($g in ($s | Group-Object ch | Sort-Object { [int]$_.Name })) {
+    $ch = [int]$g.Name; $m = @($g.Group | Where-Object { $_.stream -eq 1 }) | Select-Object -First 1; $sub = @($g.Group | Where-Object { $_.stream -eq 2 }) | Select-Object -First 1
+    if (-not $m) { continue }
+    $res.checked++
+    $mine = @()
+    $fmt = { param($x) if (-not $x) { return 'none' }; if (-not $x.enabled) { return 'OFF' }; return ('' + $x.w + 'x' + $x.h + ' ' + $x.fps + ' fps ' + [math]::Round($x.kbps / 1024, 1) + ' Mbps' + $(if ($x.rc) { ' ' + $x.rc } else { '' })) }
+    if (-not $sub -or -not $sub.enabled) { $mine += 'sub-stream off' }
+    $lim = Get-StreamLimitKbps $m.w $m.h
+    if ($m.enabled -and $m.kbps -gt $lim) { $mine += ('main bitrate ' + [math]::Round($m.kbps / 1024, 1) + ' Mbps is high for ' + [math]::Round(($m.w * $m.h) / 1e6, 1) + ' MP (max ' + ($lim / 1024) + ')') }
+    if ($null -ne $major -and $m.enabled -and $m.fps -gt 0 -and [string]$m.fps -ne [string]$major) { $mine += ('' + $m.fps + ' fps, the others run ' + $major) }
+    $line = 'Camera ' + $ch + ': main ' + (& $fmt $m) + ' | sub ' + (& $fmt $sub)
+    if ($mine.Count) { Warn ($line + ' - ' + ($mine -join '; ')); foreach ($x in $mine) { $flags.Add('cam ' + $ch + ': ' + $x) } } else { Ok $line }
+    $res.cameras += [pscustomobject]@{ ch = $ch; main = $m; sub = $sub; flags = $mine }
+  }
+  $res.flags = @($flags); $res.ok = ($flags.Count -eq 0)
+  return [pscustomobject]$res
+}
+
 function Get-RecordingStatus {
   <#
   .SYNOPSIS Read-only. Per camera: recording yes/no; oldest footage -> days held vs. target; hard drives (status + SMART).
@@ -464,7 +553,7 @@ function Get-RecordingStatus {
   if (-not $TargetDays) { $TargetDays = [int]$script:Opt.TargetDays }
   $t = Resolve-Target $Ip $Vendor $Credential $Port
   Say ''; Say ('----- Recording check: ' + $Ip + ' (target ' + $TargetDays + ' days) -----') 'Cyan'
-  $result = [ordered]@{ check = 'recording'; ip = $Ip; vendor = $t.vendor; target_days = $TargetDays; ok = $false; days_held = $null; shortest_days = $null; short_cameras = @(); recording = 0; channels = @(); disks = @(); problems = @(); log = $script:LogFile }
+  $result = [ordered]@{ check = 'recording'; ip = $Ip; vendor = $t.vendor; streams = $null; target_days = $TargetDays; ok = $false; days_held = $null; shortest_days = $null; short_cameras = @(); recording = 0; channels = @(); disks = @(); problems = @(); log = $script:LogFile }
   $problems = New-Object System.Collections.Generic.List[string]
   $chans = @(); $disks = @(); $now = $null; $diskApi = $true
   switch ($t.vendor) {
@@ -485,7 +574,7 @@ function Get-RecordingStatus {
         $i++; $p = Dw-Periods $t $d.id $now
         $online = ($d.status -eq 'Online' -or $d.status -eq 'Recording')
         $recNow = ($d.status -eq 'Recording') -or ($p -and ($p.live -or (($now - $p.newest).TotalMinutes -le [double]$script:Opt.FreshMinutes)))
-        $chans += [pscustomobject]@{ ch = $i; ip = $d.ip; online = $online; scheduled = $d.scheduled; recording_now = [bool]$recNow; mode = ''; newest = $(if ($p) { $p.newest } else { $null }); oldest = $(if ($p) { $p.oldest } else { $null }); days_held = $(if ($p) { [int][math]::Floor(($now - $p.oldest).TotalDays) } else { $null }); detect = $d.status }
+        $chans += [pscustomobject]@{ ch = $i; ip = $d.ip; online = $online; scheduled = $d.scheduled; recording_now = [bool]$recNow; mode = ''; newest = $(if ($p) { $p.newest } else { $null }); oldest = $(if ($p) { $p.oldest } else { $null }); days_held = $(if ($p) { [int][math]::Floor(($now - $p.oldest).TotalDays) } else { $null }); detect = $d.status; name = $d.name; mac = $d.mac; model = $d.model; vendor = $d.vendor }
       }
       $disks = @(Dw-Storage $t)
     }
@@ -542,6 +631,14 @@ function Get-RecordingStatus {
   }
   if (-not $chans.Count) { Warn 'No camera channels found on this recorder.'; $problems.Add('no channels') }
   if ($notRec.Count) { $problems.Add(('' + $notRec.Count + ' camera(s) not recording: ' + ($notRec -join ', '))) }
+  # stream audit (report only; never counted as a recording problem, never changes anything)
+  $streams = $null
+  if ($t.vendor -eq 'Hikvision') {
+    Say ''; Say 'Streams (main / sub):' 'Cyan'
+    try { $streams = Judge-Streams (Hik-Streams $t) } catch { Log ('streams: ' + $_.Exception.Message) }
+    if (-not $streams -or -not $streams.checked) { Info 'Stream settings could not be read from this recorder (older firmware?). Nothing else is affected.' }
+    elseif ($streams.ok) { Info ('All ' + $streams.checked + ' cameras: sub-stream on, bitrate and frame rate normal.') }
+  } else { Say ''; Info 'Stream audit (sub-stream / bitrate / frame rate): Hikvision recorders only for now.' }
 
   # The recorder overwrites its oldest footage for ALL cameras together, so the deepest camera = how far back the drives reach.
   # A camera whose footage starts later was added / re-added or was not recording before that (listed, not counted as retention).
@@ -555,7 +652,7 @@ function Get-RecordingStatus {
     else { Say ('DAYS HELD: only ' + $maxDays + ' days (target ' + $TargetDays + '). Drives are full and overwriting. Add storage or lower the recording bitrate.') 'Red'; $problems.Add('only ' + $maxDays + ' of ' + $TargetDays + ' days') }
   } elseif ($chans.Count) { Say 'DAYS HELD: unknown (no footage found to measure).' 'Red'; $problems.Add('days held unknown') }
   Say $(if ($problems.Count) { 'RESULT: ' + $problems.Count + ' problem(s): ' + ($problems -join '; ') } else { 'RESULT: all ' + $rec + ' cameras recording, drives healthy, ' + $TargetDays + '-day target met.' }) $(if ($problems.Count) { 'Red' } else { 'Green' })
-  $result.ok = ($problems.Count -eq 0); $result.days_held = $maxDays; $result.shortest_days = $minDays; $result.short_cameras = @($short | ForEach-Object { $_.ch }); $result.recording = $rec; $result.channels = $chans; $result.disks = $disks; $result.problems = @($problems); $result.log = $script:LogFile
+  $result.streams = $streams; $result.ok = ($problems.Count -eq 0); $result.days_held = $maxDays; $result.shortest_days = $minDays; $result.short_cameras = @($short | ForEach-Object { $_.ch }); $result.recording = $rec; $result.channels = $chans; $result.disks = $disks; $result.problems = @($problems); $result.log = $script:LogFile
   return [pscustomobject]$result
 }
 
@@ -892,4 +989,90 @@ function Get-NvrHealth {
   return $out
 }
 
-Export-ModuleMember -Function Get-RecordingStatus, Get-ClockStatus, Set-NtpTime, Get-FirmwareStatus, Get-NvrHealth, Set-NvrHealthOption, Get-NvrHealthOption, Get-NvrHealthSummary, Read-NvrCredential
+# ================= Camera doctor (Nov 3 2026) =================
+# ONE camera, read-only except ONE login try with the password the tech typed (never stored, never retried).
+# Steps: ping / ARP-MAC / ports (from the caller, -Reach) -> web page within 5 s -> one login -> RTSP DESCRIBE -> DW's view of it.
+# Uniview lock answer shape is UNVERIFIED on real gear (mock only): any 401/403 whose body says "lock" counts as LOCKED.
+function Rtsp-Describe([string]$Ip, [int]$Port = 554, [int]$ms = 4000) {
+  $c = New-Object Net.Sockets.TcpClient
+  try {
+    $a = $c.BeginConnect($Ip, $Port, $null, $null); if (-not ($a.AsyncWaitHandle.WaitOne(1500) -and $c.Connected)) { return 'closed' }
+    $s = $c.GetStream(); $s.ReadTimeout = $ms
+    $q = [Text.Encoding]::ASCII.GetBytes('DESCRIBE rtsp://' + $Ip + ':' + $Port + '/ RTSP/1.0' + "`r`nCSeq: 1`r`nUser-Agent: WireIt-Doctor`r`n`r`n"); $s.Write($q, 0, $q.Length)
+    $buf = New-Object byte[] 512; $n = $s.Read($buf, 0, 512)
+    $line = ([Text.Encoding]::ASCII.GetString($buf, 0, $n) -split "`r?`n")[0]
+    if ($line -match '^RTSP/1\.\d\s+(\d{3})') { return ('answers ' + $Matches[1]) }; return 'garbled'
+  } catch { return 'hung' } finally { $c.Close() }
+}
+function Invoke-CameraDoctor {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$Ip, [pscredential]$Credential, $Reach = $null, [string]$Maker = '', [string]$DwIp = '', [pscredential]$DwCredential, [int]$DwPort = 0, [int]$Port = 0)
+  Start-Log 'doctor'
+  $res = [ordered]@{ check = 'doctor'; ip = $Ip; maker = $Maker; ping = $null; mac = ''; open = @(); web = ''; login = ''; lockMin = $null; rtsp = ''; dw = ''; verdict = ''; fixes = @(); steps = @() }
+  $step = { param($n, $t, $k) $res.steps += [pscustomobject]@{ n = $n; t = $t; k = $k }; switch ($k) { 'ok' { Ok $t } 'bad' { Bad $t } 'warn' { Warn $t } default { Info $t } } }
+  Say ''; Say ('----- Camera doctor: ' + $Ip + ' -----') 'Cyan'
+  # 1-3 network (measured by the caller: ping, ARP table, TCP ports)
+  if ($Reach) {
+    $res.ping = [bool]$Reach.ping; $res.mac = [string]$Reach.mac; $res.open = @($Reach.open)
+    & $step 1 $(if ($Reach.ping) { 'Ping: answers.' } else { 'Ping: no answer.' }) $(if ($Reach.ping) { 'ok' } else { 'warn' })
+    & $step 2 $(if ($Reach.mac) { 'MAC ' + $Reach.mac + $(if ($Reach.macMatch -eq $false) { ' - NOT the MAC on the saved list (another device has this IP?)' } elseif ($Reach.macMatch) { ' - matches the saved list.' } else { '.' }) } elseif ($Reach.movedTo) { 'Its MAC now answers at ' + $Reach.movedTo + ' (IP moved).' } else { 'Not in the ARP table (nothing at this IP on this network right now).' }) $(if ($Reach.macMatch -eq $false -or $Reach.movedTo) { 'bad' } elseif ($Reach.mac) { 'ok' } else { 'warn' })
+    & $step 3 $(if (@($Reach.open).Count) { 'Ports open: ' + (@($Reach.open) -join ', ') + '.' } else { 'No port answers (80 / 443 / 554 / 8000).' }) $(if (@($Reach.open).Count) { 'ok' } else { 'bad' })
+  }
+  $dead = $Reach -and -not $Reach.ping -and -not $Reach.mac -and -not @($Reach.open).Count
+  # 4 web page within 5 s
+  if (-not $dead) {
+    $w = Http -Ip $Ip -Path '/' -Port $Port -Timeout 5
+    if ($w.code -gt 0) { $res.web = 'answers'; & $step 4 ('Web page: answers (' + $w.code + ').') 'ok' }
+    else { $res.web = 'hung'; & $step 4 'Web page: connection opens but no page within 5 s - the web service is HUNG.' 'bad' }
+  }
+  # 5 ONE login try (Uniview LAPI or Hikvision ISAPI), never repeated
+  if (-not $dead -and $res.web -ne 'hung' -and $Credential) {
+    $u = $null; if ($Maker -notmatch '(?i)hik') { $u = Http -Ip $Ip -Path '/LAPI/V1.0/System/DeviceInfo' -Port $Port -Timeout 5 }   # no password: tells the maker, and a Uniview says "locked" here without any login try
+    if (-not $Maker) { if ($u -and $u.code -in @(200, 401, 403)) { $Maker = 'Uniview' } else { $Maker = 'Hikvision' } }
+    $res.maker = $Maker
+    $path = $(if ($Maker -match '(?i)uniview|unv') { '/LAPI/V1.0/System/DeviceInfo' } else { '/ISAPI/System/deviceInfo' })
+    if ($u -and $u.code -in @(401, 403) -and ($u.body -match '(?i)lock')) { $r = $u }   # already locked: no login try at all
+    else { $r = Http -Ip $Ip -Path $path -Credential $Credential -Port $Port -Timeout 8 }
+    if ($r.code -eq 200) { $res.login = 'ok'; & $step 5 ('Login with the typed password: OK (' + $Maker + ').') 'ok' }
+    elseif ($r.code -in @(401, 403) -and ($r.body -match '(?i)lock')) {
+      $res.login = 'locked'; $m = [regex]::Match($r.body, '(?i)"?(RemainLockTime|unlockTime|LockTime)"?\s*[:=>]\s*"?(\d+)'); if ($m.Success) { $res.lockMin = [math]::Ceiling([int]$m.Groups[2].Value / 60) }
+      & $step 5 ('Login: the camera is LOCKED (too many wrong passwords)' + $(if ($res.lockMin) { ' - unlocks in about ' + $res.lockMin + ' min' } else { '' }) + '. No more tries from here.') 'bad'
+    }
+    elseif ($r.code -in @(401, 403)) { $res.login = 'wrong'; & $step 5 'Login: WRONG password (the typed site password is not this camera''s).' 'bad' }
+    elseif ($r.code -eq 0) { $res.login = 'hung'; & $step 5 'Login: no answer - hung.' 'bad' }
+    else { $res.login = 'other'; & $step 5 ('Login: unexpected answer ' + $r.code + '.') 'warn' }
+  } elseif (-not $Credential -and -not $dead) { & $step 5 'Login: skipped (no password typed).' 'plain' }
+  # 6 RTSP
+  if (-not $dead) {
+    $res.rtsp = $(if ($Reach -and $Reach.rtsp) { [string]$Reach.rtsp } else { Rtsp-Describe $Ip })
+    & $step 6 ('Video (RTSP 554): ' + $(switch -regex ($res.rtsp) { '^answers' { 'answers.' } '^hung' { 'connects but never answers - HUNG.' } '^closed' { 'port closed.' } default { $res.rtsp } })) $(if ($res.rtsp -like 'answers*') { 'ok' } else { 'bad' })
+  }
+  # 7 DW's view
+  $dwBad = $false
+  if ($DwIp -and $DwCredential) {
+    $t = @{ ip = $DwIp; vendor = 'DW'; cred = $DwCredential; port = $DwPort; token = $null }
+    if (Dw-Login $t) {
+      $d = @(Dw-Devices $t | Where-Object { $_.ip -eq $Ip }) | Select-Object -First 1
+      if ($d) { $res.dw = $d.status; $dwBad = ($d.status -eq 'Unauthorized'); & $step 7 ('DW says: ' + $d.status + $(if ($dwBad) { ' - DW keeps logging in with a WRONG password. On a Uniview that keeps it locked.' } else { '' })) $(if ($dwBad) { 'bad' } elseif ($d.status -in @('Recording', 'Online')) { 'ok' } else { 'warn' }) }
+      else { & $step 7 'DW: this IP is not in DW''s camera list.' 'warn' }
+    } else { & $step 7 'DW: login refused - not checked.' 'warn' }
+  }
+  # verdict + fix (Release C buttons; nothing is changed here)
+  $fx = New-Object System.Collections.Generic.List[string]
+  if ($dead) { $v = 'DEAD or no power/link: check the cable and the switch port / PoE. If PoE is on and still nothing: replace the camera.'; $fx.Add('poe'); $fx.Add('replace') }
+  elseif ($res.login -eq 'locked') { $v = 'LOCKED' + $(if ($dwBad) { ': DW keeps retrying the old password, so it stays locked. Pause the camera in DW (or fix its password there), wait ' + $(if ($res.lockMin) { $res.lockMin } else { '30' }) + ' min, then fix the password in DW.' } else { ': wait ' + $(if ($res.lockMin) { $res.lockMin } else { '30' }) + ' min and try once more with the right password.' }); if ($dwBad) { $fx.Add('dwpassword') } }
+  elseif ($res.login -eq 'wrong' -and $dwBad) { $v = 'WRONG PASSWORD IN DW: the camera answers but DW has the wrong password.'; $fx.Add('dwpassword') }
+  elseif ($res.login -eq 'wrong') { $v = 'The typed password is not this camera''s. Check the site password (one try per run, so nothing gets locked).' }
+  elseif ($res.web -eq 'hung' -or $res.login -eq 'hung' -or $res.rtsp -like 'hung*') { $v = 'HUNG: it is on the network but its services stopped answering. Restart its PoE port (or power)' + $(if ($res.login -eq 'ok') { ', or reboot it' } else { '' }) + '.'; $fx.Add('poe'); if ($res.login -eq 'ok' -and $Maker -match '(?i)uniview') { $fx.Add('reboot') } }
+  elseif ($dwBad) { $v = 'WRONG PASSWORD IN DW: the camera works with the site password; DW has an old one.'; $fx.Add('dwpassword') }
+  elseif ($res.login -eq 'ok') { $v = 'The camera itself is fine. If DW still shows it offline, look at DW (address, stream settings).' }
+  else { $v = 'Not sure - see the steps above.' }
+  $res.verdict = $v; $res.fixes = @($fx | Select-Object -Unique)
+  Say ''; Say ('VERDICT: ' + $v) $(if ($fx.Count) { 'Red' } else { 'Green' })
+  if ($fx.Count) { Say ('Fix buttons for this (each asks first; nothing was changed): ' + ($res.fixes -join ', ')) 'Yellow' }
+  return [pscustomobject]$res
+}
+
+$nvrFixFile = Join-Path $PSScriptRoot 'NvrFix.ps1'   # Release C (1.6.0) fix buttons; absent in 1.5.0
+if (Test-Path $nvrFixFile) { . $nvrFixFile; Export-ModuleMember -Function Invoke-NvrFix }
+Export-ModuleMember -Function Invoke-CameraDoctor, Get-RecordingStatus, Get-ClockStatus, Set-NtpTime, Get-FirmwareStatus, Get-NvrHealth, Set-NvrHealthOption, Get-NvrHealthOption, Get-NvrHealthSummary, Read-NvrCredential

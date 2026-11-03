@@ -8,6 +8,7 @@ $tkDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 if (-not $Root) { $Root = Split-Path -Parent $tkDir }
 . (Join-Path $tkDir 'ToolkitCore.ps1')
 $script:pass = 0; $script:fail = 0
+$nb = $(if (Test-Path (Join-Path $tkDir 'FixIt.ps1')) { 15 } else { 14 })   # 1.6.0 adds 'Fix what failed'
 function Check([string]$name, [bool]$ok, [string]$info = '') { if ($ok) { $script:pass++; Write-Output ('PASS ' + $name) } else { $script:fail++; Write-Output ('FAIL ' + $name + '  ' + $info) } }
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('wireit-tktest-' + (Get-Random)); New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
@@ -292,6 +293,96 @@ if ($py -and (Test-Path $mockSc)) {
     Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*mock_scan_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   }
 } else { Check 'python for the mock service site' $false 'python or mock_scan_server.py missing' }
+
+# 11 Check this site (Nov 3 2026): router exposure via UPnP (read-only), summary + fix suggestions, NvrCheck -Mode Site. Mocks only.
+Check 'ToolkitCore: UPnP reader refuses a write action' ($(try { Invoke-TkUpnpRead 'http://127.0.0.1:1/' 'urn:x' 'AddPortMapping' | Out-Null; $false } catch { $_.Exception.Message -match 'not a read action' }))
+$ux0 = Get-TkUpnpExposure -NoSearch
+Check 'router: no answer = green "UPnP off or blocked"' (-not $ux0.answered -and @($ux0.lines | Where-Object { $_.k -eq 'red' }).Count -eq 0 -and $ux0.lines[0].t -match 'did not answer')
+if ($py -and (Test-Path $mockSc) -and (Test-Path $mockPy)) {
+  $sp = 18193; $sbase = 'http://127.0.0.1:' + $sp + '/'; $bodies2 = Join-Path $tmp 'check-bodies.txt'
+  $mp = 18191; $mbase = 'http://127.0.0.1:' + $mp
+  $scMock = Start-Process -FilePath $py -ArgumentList @($mockSc, $sp, $bodies2) -PassThru -WindowStyle Hidden
+  $nvrMock = Start-Process -FilePath $py -ArgumentList @($mockPy, $mp) -PassThru -WindowStyle Hidden
+  try {
+    for ($i = 0; $i -lt 50; $i++) { try { Invoke-WebRequest ($sbase + 'ping') -UseBasicParsing -TimeoutSec 2 | Out-Null; Invoke-WebRequest ($mbase + '/mockctl/writes') -UseBasicParsing -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep -Milliseconds 200 } }
+    $ux = Get-TkUpnpExposure -Locations @($sbase + 'igd.xml') -CameraIps @('192.168.1.20')
+    $soap = @(Get-Content $bodies2 | Where-Object { $_ -like 'SOAP *' })
+    Check 'router: UPnP ON found, model read' ($ux.answered -and $ux.upnp -and $ux.router -eq 'Technicolor CGM4331COM' -and $ux.external -eq '73.1.2.3') ($ux | ConvertTo-Json -Depth 4)
+    Check 'router: 3 port maps read, 2 reach a camera/NVR (NVR IP + RTSP port), Xbox not flagged' (@($ux.maps).Count -eq 3 -and @($ux.exposed).Count -eq 2 -and -not (@($ux.exposed).client -contains '192.168.1.50'))
+    Check 'router: red lines = UPnP on + one per open camera port' (@($ux.lines | Where-Object { $_.k -eq 'red' }).Count -eq 3 -and (($ux.lines.t -join "`n") -match 'OPEN TO THE INTERNET: port 5554/TCP -> 192.168.1.21:554'))
+    Check 'router: only read calls reached the router' ($soap.Count -ge 4 -and -not ($soap | Where-Object { $_ -notmatch '^SOAP (GetGenericPortMappingEntry|GetExternalIPAddress)$' })) ($soap -join ', ')
+    # summary from a canned health result
+    $h = [pscustomobject]@{ vendor = 'Hikvision'; ok = $false
+      recording = [pscustomobject]@{ ok = $false; recording = 2; days_held = 20; target_days = 45; problems = @('camera 3 not recording', 'only 20 of 45 days'); streams = [pscustomobject]@{ checked = 3; flags = @('camera 2 main 30 fps -> 15 is plenty') }
+        channels = @([pscustomobject]@{ ch = 1; online = $true; scheduled = $true; recording_now = $true; mode = 'continuous' }, [pscustomobject]@{ ch = 2; online = $true; scheduled = $true; recording_now = $true; mode = 'continuous' }, [pscustomobject]@{ ch = 3; online = $false; scheduled = $false; recording_now = $false; mode = '' }) }
+      clock = [pscustomobject]@{ ok = $false; problems = @('clock 9 min off') }; firmware = [pscustomobject]@{ ok = $true; problems = @() } }
+    $sc = [pscustomobject]@{ answer = [pscustomobject]@{ ok = $true; total = 3; missing = @('Camera X 192.168.1.23'); stillMissing = @(); added = @(); changedIp = @() } }
+    $chk = New-TkSiteCheck -Health $h -Scan $sc -Upnp $ux -Site 'WI-TEST' -Ip '192.168.1.20'
+    $red = @($chk.lines | Where-Object { $_.k -eq 'red' })
+    Check 'summary: cameras / recording / clock / router red, firmware green' (-not $chk.ok -and $red.Count -eq 6 -and ($chk.lines.t -join "`n") -match 'Firmware: current' -and ($chk.lines.t -join "`n") -match 'Cameras: 1 MISSING of 3') (($chk.lines | ForEach-Object { $_.k + ' ' + $_.t }) -join "`n")
+    Check 'summary: fix buttons only for what failed (recording, restart, readd, ntp - not firmware)' ((($chk.fixes | Sort-Object) -join ',') -eq 'ntp,readd,recording,restart') ($chk.fixes -join ',')
+    $pj = $chk.page | ConvertTo-Json -Depth 6 -Compress
+    Check 'summary: page record small, no password' ($pj.Length -lt 4000 -and $pj -notmatch '(?i)password|NvrPass') $pj
+    $hOk = [pscustomobject]@{ vendor = 'Hikvision'; ok = $true; recording = [pscustomobject]@{ ok = $true; recording = 3; days_held = 46; target_days = 45; problems = @(); channels = @() }; clock = [pscustomobject]@{ ok = $true; problems = @() }; firmware = [pscustomobject]@{ ok = $true; problems = @() } }
+    $chk2 = New-TkSiteCheck -Health $hOk -Scan $null -Upnp $ux0
+    Check 'summary: all fine = ok, no fixes' ($chk2.ok -and -not @($chk2.fixes).Count)
+    # NvrCheck -Mode Site end to end (mock recorder + mock site + mock router)
+    $env:NVRCHECK_TEST_PW = 'NvrPass#2026'; $env:WIREIT_UPLOAD_KEY = 'T' * 32
+    $lastJ = Join-Path $tkDir 'logs\scan-upload-last.json'
+    ([ordered]@{ at = (Get-Date -Format 's'); site = 'WI-TEST'; snapshot = $false; sent = $true; answer = $sc.answer; lines = @('Saved to the site page: WI-TEST, 3 devices.', '!! MISSING since last scan: Camera X 192.168.1.23'); red = @('!! MISSING since last scan: Camera X 192.168.1.23') } | ConvertTo-Json -Depth 6) | Set-Content $lastJ -Encoding UTF8
+    Invoke-WebRequest ($mbase + '/mockctl/reset') -Method Post -UseBasicParsing | Out-Null
+    $runs = Join-Path $tmp 'nvrruns-site'; $nc = Join-Path $tkDir 'NvrCheck.ps1'
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $nc -Mode Site -Ip 10.9.0.30 -Vendor Hikvision -Site 'WI-TEST' -Days 45 -RunsDir $runs -MockUrl $mbase -TestAnswer x -CloseAfter 0 -UpnpLocation ($sbase + 'igd.xml') -ApiUrl ($sbase + 'changed') 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    $d = Get-ChildItem $runs -Directory -Filter 'NvrSite-*' | Select-Object -First 1
+    $said = $(if ($d) { (ConvertFrom-TkFixLog (Get-Content (Join-Path $d.FullName 'log.txt'))) -join "`n" } else { '' })
+    Check 'Check this site: 3 steps, summary, problems = code 4' ($code -eq 4 -and $said -match 'Step 1 of 3' -and $said -match 'Step 2 of 3' -and $said -match 'Step 3 of 3' -and $said -match 'CHECK THIS SITE: SUMMARY') ($o + $said)
+    Check 'Check this site: router red lines and the missing camera in the summary' ($said -match 'Router UPnP is ON' -and $said -match 'OPEN TO THE INTERNET' -and $said -match 'Cameras: 1 MISSING') $said
+    Check 'Check this site: saved as Latest check, change noted' ($said -match 'Saved as the "Latest check" on the site page: WI-TEST \(something changed') $said
+    $sent = @(Get-Content $bodies2 | Where-Object { $_ -like '{*' } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.op -eq 'toolkitCheck' })
+    Check 'Check this site: ONE toolkitCheck sent, with key + check, no password' ($sent.Count -eq 1 -and $sent[0].site -eq 'WI-TEST' -and $sent[0].check.rec -and ((Get-Content $bodies2 -Raw) -notmatch 'NvrPass')) ''
+    Check 'Check this site: read-only (no write reached the recorder)' (((Invoke-WebRequest ($mbase + '/mockctl/writes') -UseBasicParsing).Content).Trim() -eq '[]')
+    Check 'Check this site: result kept for the Toolkit window' (Test-Path (Join-Path $tkDir 'logs\check-site-last.json'))
+    Check 'Check this site: no password in the run log' (-not (Select-String -Path (Join-Path $runs '*\*') -Pattern 'NvrPass#2026' -SimpleMatch -Quiet))
+    # DW site (like YKW Elm): offline list with last recording + likely cause, days from the DW server's name, curl fallback
+    $env:WIREIT_TEST_REACH = '{"10.9.1.29":{"ping":true,"mac":"44:19:B6:00:0A:29","ports":[80,554]},"10.9.1.30":{"ping":false,"mac":"","ports":[]},"10.9.1.11":{"ping":true,"mac":"44:19:B6:00:0A:11","ports":[80,554]}}'
+    Invoke-WebRequest ($mbase + '/mockctl/reset') -Method Post -UseBasicParsing | Out-Null
+    Remove-Item (Join-Path $tkDir 'logs\scan-upload-last.json') -Force -ErrorAction SilentlyContinue
+    $runs2 = Join-Path $tmp 'nvrruns-dw'
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $nc -Mode Site -Ip 10.9.0.41 -Days 0 -RunsDir $runs2 -MockUrl $mbase -TestAnswer x -CloseAfter 0 -NoUpnp -NoSend 2>&1 | Out-String
+    $d = Get-ChildItem $runs2 -Directory -Filter 'NvrSite-*' | Select-Object -First 1
+    $said = $(if ($d) { (ConvertFrom-TkFixLog (Get-Content (Join-Path $d.FullName 'log.txt'))) -join "`n" } else { '' })
+    Check 'DW site: days to keep from the DW server name (YKW -> 45)' ($said -match 'Days to keep: 45 \(from the DW server name "YKW-TEST"\)') ($o + $said)
+    Check 'DW site: Offline in DW lists the 2 problem cameras, not the good one' ($said -match 'Offline in DW' -and $said -match 'Dining Room Center \(10\.9\.1\.29\) - DW: Unauthorized, last recording .+ \(54 days ago\): DW HAS THE WRONG PASSWORD' -and $said -match 'Back Stairs \(10\.9\.1\.30\) - DW: Offline, .+NO LINK' -and $said -notmatch 'Lobby \(10\.9\.1\.11\) - DW') $said
+    $cj = Read-TkJson (Join-Path $tkDir 'logs\check-site-last.json')
+    Check 'DW site: summary carries the DW list + fix dwpassword' ($cj -and [int]$cj.page.dw.problems -eq 2 -and (@($cj.fixes) -contains 'dwpassword')) ($cj | ConvertTo-Json -Depth 6)
+    Check 'DW site: read-only' ((((Invoke-WebRequest ($mbase + '/mockctl/writes') -UseBasicParsing).Content).Trim()) -eq '[]')
+    Check 'vendor box: dw / DW Spectrum / hik / blank' ((Get-TkVendorArg 'DW Spectrum') -eq 'DW' -and (Get-TkVendorArg 'dw') -eq 'DW' -and (Get-TkVendorArg 'hikvision') -eq 'Hikvision' -and (Get-TkVendorArg '') -eq 'Auto')
+    # Camera doctor (ONE login try max)
+    $runs3 = Join-Path $tmp 'nvrruns-doc'
+    function DocRun([string[]]$a) { $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $nc -Mode Doctor @a -RunsDir $runs3 -MockUrl $mbase -TestAnswer x -CloseAfter 0 2>&1 | Out-String; $j = Read-TkJson (Join-Path $tkDir 'logs\doctor-last.json'); return @{ out = $o; j = $j; code = $LASTEXITCODE } }
+    $x = DocRun @('-Ip', '10.9.1.29', '-DwIp', '10.9.0.41')
+    $tries = ((Invoke-WebRequest ($mbase + '/mockctl/tries/10.9.1.29') -UseBasicParsing).Content | ConvertFrom-Json).tries
+    Check 'doctor: locked Uniview + DW Unauthorized -> LOCKED, DW keeps retrying, fix dwpassword' ($x.j -and $x.j.login -eq 'locked' -and $x.j.lockMin -eq 29 -and $x.j.dw -eq 'Unauthorized' -and $x.j.verdict -match 'DW keeps retrying the old password' -and (@($x.j.fixes) -contains 'dwpassword') -and $x.code -eq 4) ($x.out + ($x.j | ConvertTo-Json -Depth 4))
+    Check 'doctor: never more than ONE login try (probe + 1 try + page)' ($tries -le 3) ('tries=' + $tries)
+    $env:WIREIT_TEST_REACH = '{"10.9.1.31":{"ping":true,"mac":"44:19:B6:00:0A:31","ports":[80,554],"rtsp":"hung"},"10.9.1.32":{"ping":false,"mac":"","ports":[]},"10.9.0.50":{"ping":true,"mac":"44:19:B6:00:00:50","ports":[80,554],"rtsp":"answers 401"}}'
+    $x = DocRun @('-Ip', '10.9.1.31')
+    Check 'doctor: hung web service -> HUNG, restart PoE' ($x.j -and $x.j.web -eq 'hung' -and $x.j.verdict -match '^HUNG' -and (@($x.j.fixes) -contains 'poe')) ($x.out)
+    $x = DocRun @('-Ip', '10.9.1.32')
+    Check 'doctor: nothing at the IP -> DEAD / no link, replace' ($x.j -and $x.j.verdict -match '^DEAD' -and (@($x.j.fixes) -contains 'replace')) ($x.out)
+    $x = DocRun @('-Ip', '10.9.0.50', '-Maker', 'Uniview')
+    Check 'doctor: good Uniview, right password -> fine, no fix' ($x.j -and $x.j.login -eq 'ok' -and $x.j.verdict -match '^The camera itself is fine' -and -not @($x.j.fixes).Count) ($x.out)
+    Check 'doctor: no password in its log' (-not (Select-String -Path (Join-Path $runs3 '*\*') -Pattern 'NvrPass#2026' -SimpleMatch -Quiet))
+    Remove-Item Env:\WIREIT_TEST_REACH -ErrorAction SilentlyContinue
+  } finally {
+    Remove-Item Env:\NVRCHECK_TEST_PW, Env:\WIREIT_UPLOAD_KEY, Env:\WIREIT_TEST_REACH -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $tkDir 'logs\scan-upload-last.json'), (Join-Path $tkDir 'logs\check-site-last.json'), (Join-Path $tkDir 'logs\doctor-last.json') -Force -ErrorAction SilentlyContinue
+    foreach ($pp in @($scMock, $nvrMock)) { try { if ($pp -and -not $pp.HasExited) { Stop-Process -Id $pp.Id -Force } } catch {} }
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*mock_scan_server.py*' -or $_.CommandLine -like '*mock_devices.py*18191*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  }
+} else { Check 'python for the Check this site mocks' $false 'python or mocks missing' }
+$ui0 = Get-Content (Join-Path $tkDir 'WireItToolkit.ps1') -Raw
+Check 'UI: Check this site button, read-only chain Find -> upload -> NvrCheck Site' ($ui0 -match "New-Btn 'Check this site \(read-only\)' \{ Do-SiteCheck \}" -and $ui0 -match "Start-Nvr 'Check this site' 'Site'" -and $ui0 -match 'Invoke-AfterScan')
 $ui = Get-Content (Join-Path $tkDir 'WireItToolkit.ps1') -Raw
 Check 'Find cameras: uploads when the Site box is filled, else the tip' ($ui -match "Start-ScanUpload ''\s*\}" -and $ui -match 'Tip: type the site to save this list to the site page\.')
 Check 'Save camera pictures: one-field dialog passes ONE field' ($ui -match "\(,@\('site', 'Site ID or address:'")
@@ -300,7 +391,7 @@ Check 'install snapshot: also the site known-good list' ($ui -match 'Start-ScanU
 # 8 the window itself, drawn off-screen to PNG (no window on the desktop)
 if ($Screens) {
   $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tkDir 'WireItToolkit.ps1') -Screenshot $Screens -DemoCamReset $cr 2>&1 | Out-String
-  Check 'window builds (12 buttons)' ($o -match 'buttons=12') $o
+  Check ('window builds (' + $nb + ' buttons)') ($o -match ('buttons=' + $nb + ';')) $o
   Check 'label: Site ID or address' ($o -match '(?m)^label site=Site ID or address:\s*$') $o
   Check 'label: site hint' ($o -match '(?m)^label hint=e\.g\. WI-061 or 2336 Main St\. Saves the camera list and results to that site.s page\.\s*$') $o
   Check 'label: lone cameras in plain words' ($o -match '(?m)^label lone=Also fix cameras plugged into the switch that aren.t added to the NVR\s*$') $o
@@ -312,7 +403,13 @@ if ($Screens) {
   Check 'icon font found' ($o -match 'icons=Segoe') $o
   $s150 = Join-Path $Screens 'at150'
   $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tkDir 'WireItToolkit.ps1') -Screenshot $s150 -SimScale 1.5 -DemoCamReset $cr 2>&1 | Out-String
-  Check 'window builds at 150% (the Dell screen)' (($o -match 'buttons=12') -and ($o -match 'scale=1.5') -and (Test-Path (Join-Path $s150 'toolkit-main.png'))) $o
+  Check 'window builds at 150% (the Dell screen)' (($o -match ('buttons=' + $nb + ';')) -and ($o -match 'scale=1.5') -and (Test-Path (Join-Path $s150 'toolkit-main.png'))) $o
+  $s1024 = Join-Path $Screens 'at1024'
+  $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tkDir 'WireItToolkit.ps1') -Screenshot $s1024 -SimScreen 1024x768 -DemoCamReset $cr 2>&1 | Out-String
+  Check 'window at 1024x768 (YKW Elm server): builds, picture saved' (($o -match ('buttons=' + $nb + ';')) -and (Test-Path (Join-Path $s1024 'toolkit-small.png'))) $o
+  $s800 = Join-Path $Screens 'at800'
+  $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tkDir 'WireItToolkit.ps1') -Screenshot $s800 -SimScreen 800x600 -DemoCamReset $cr 2>&1 | Out-String
+  Check 'window at 800x600: scrolls instead of cutting off' ($o -match 'scroll=yes') $o
 }
 Check 'logo file present' (Test-Path (Join-Path $tkDir 'wireit-logo.png'))
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
