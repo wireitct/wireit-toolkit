@@ -1,4 +1,4 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.5.0, 2026-11-03
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.6.0, 2026-11-03
 ==============================================================================
 One window for the site tools. Double-click "WireIt Toolkit" on the desktop.
 Works with no internet and without Tab. Windows PowerShell 5.1 only, nothing to install.
@@ -55,6 +55,20 @@ CHECK THIS SITE / CAMERA DOCTOR (1.5.0)
     does not ask (run Install once as admin).
   Window fits a 1024x768 screen (scrolls instead of cutting off).
   New in 1.5.0 and NOT yet tested on real equipment: the network sweep, DW offline list, Camera doctor.
+
+FIX WHAT FAILED (1.6.0) - NOT YET TESTED ON REAL EQUIPMENT
+  Button next to Camera doctor. Lists ONLY the fixes the last Check this site / Camera doctor found
+  (last 24 hours). Each fix opens a tool window: shows the plan, saves a backup, changes nothing until
+  you type YES (capitals). Passwords are typed there, hidden, never saved. Log: runs\Fix-<fix>-<time>\
+  and logs\fix-history.txt.
+    Turn recording back on   cameras whose recording is switched off (Hikvision NVR / DW)
+    Restart the camera       ONE camera, max once an hour and twice a day
+    Put the camera back      re-add a camera to its NVR channel (Hikvision NVR)
+    Set the time server      same as 11 Fix clock
+    Update firmware          ONE device, Hikvision, only with the SHA-256 from the maker's page; settings exported first
+    Set the site password    ONE device (Hikvision), strong password typed twice
+    Fix the camera password in DW   gives DW the camera's right password so DW stops locking it
+  Undo: each run saves its backup in its runs folder. the "Go back to the previous version" button removes 1.6.0.
 
 4 RESET PASSWORDS (Hikvision, official method only)
   1 Pick the device (from the last Find cameras, or "Scan now").

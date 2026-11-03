@@ -181,7 +181,9 @@ Set-Content (Join-Path $cd 'config.json') '{"daysToKeep":{"default":21,"sites":{
 $cfgE = Get-TkConfig $cd
 Check 'days: config.json overrides' ((Get-TkDaysToKeep $cfgE 'Fairbridge Commons') -eq 60 -and (Get-TkDaysToKeep $cfgE 'Shteeble') -eq 21 -and (Get-TkDaysToKeep $cfgE 'YKW') -eq 45)
 $mc = Read-TkJson (Join-Path $tkDir 'config.json')
-Check 'days: master config.json has YKW 45 / 30' ($mc -and [int]$mc.daysToKeep.sites.YKW -eq 45 -and [int]$mc.daysToKeep.default -eq 30)
+# an updated PC may have no config.json (updates never ship it): then the built-in defaults are what counts
+if (-not $mc) { Check 'days: no config.json here - built-in defaults YKW 45 / 30' ((Get-TkDaysToKeep (Get-TkConfig $tmp) 'YKW') -eq 45) } else {
+Check 'days: master config.json has YKW 45 / 30' ($mc -and [int]$mc.daysToKeep.sites.YKW -eq 45 -and [int]$mc.daysToKeep.default -eq 30) }
 $rw = Join-Path $tmp 'refw'; $rtk = Join-Path $rw 'Toolkit'; New-Item -ItemType Directory -Force -Path (Join-Path $rtk 'modules\NvrHealth'), (Join-Path $rw 'NvrHealth') | Out-Null
 Set-Content (Join-Path $rtk 'modules\NvrHealth\firmware-latest.json') '{"updated":"2026-11-02T10:00:00","models":{"x":{}}}'
 Check 'firmware list: own copy when no daily check' ((Get-TkNvrReference $rtk) -like '*modules\NvrHealth\firmware-latest.json')
