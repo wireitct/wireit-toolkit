@@ -1,4 +1,4 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.6.1, 2026-11-03
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.6.2, 2026-11-03
 ==============================================================================
 One window for the site tools. Double-click "WireIt Toolkit" on the desktop.
 Works with no internet and without Tab. Windows PowerShell 5.1 only, nothing to install.
@@ -69,6 +69,13 @@ FIX WHAT FAILED (1.6.0) - NOT YET TESTED ON REAL EQUIPMENT
     Set the site password    ONE device (Hikvision), strong password typed twice
     Fix the camera password in DW   gives DW the camera's right password so DW stops locking it
   Undo: each run saves its backup in its runs folder. the "Go back to the previous version" button removes 1.6.0.
+
+1.6.2 FIX (YKW Elm live re-test of 1.6.1, Nov 3 2026)
+- With a working DW login, "Check this site" stopped half way with "the file log.txt is being used by another
+  process" (the Toolkit window reads the log while the check writes it). The log is now written shared, with a short
+  retry, and can never stop a check; if it stays locked the rest goes to log-2.txt next to it.
+- A check that stopped with a problem now says "Recorder: NOT CHECKED - the check stopped with a problem (...)"
+  instead of "no answer or no login".
 
 1.6.1 FIXES (after the YKW Elm live test, Nov 3 2026)
   - DW / recorder login refused or skipped: "Offline in DW: NOT CHECKED (login refused)" in amber - never

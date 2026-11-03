@@ -26,7 +26,7 @@ if (-not $RunsDir) { $RunsDir = Join-Path $here 'runs' }
 $run = Join-Path $RunsDir ('Fix-' + $Fix + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss')); New-Item -ItemType Directory -Force -Path $run | Out-Null
 $log = Join-Path $run 'log.txt'
 if (-not $LogsDir) { $LogsDir = Join-Path $here 'logs' }; New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
-function Say2([string]$s, [string]$color = '') { if ($color) { Write-Host $s -ForegroundColor $color } else { Write-Host $s }; Add-Content -Path $log -Value ((Get-Date -Format 'HH:mm:ss') + ' SAY ' + $s) }
+function Say2([string]$s, [string]$color = '') { if ($color) { Write-Host $s -ForegroundColor $color } else { Write-Host $s }; [void](Add-TkLine $log ((Get-Date -Format 'HH:mm:ss') + ' SAY ' + $s)) }
 function Done([int]$code) { if ($CloseAfter -gt 0) { Write-Host ''; Write-Host ('Done. This window closes in ' + $CloseAfter + ' seconds.'); Start-Sleep -Seconds $CloseAfter }; exit $code }
 Import-Module (Join-Path $here 'modules\NvrHealth\NvrHealth.psm1') -Force
 Set-NvrHealthOption LogFile $log
@@ -59,7 +59,7 @@ try {
 $hist = ''
 if ($r -and $r.ran -and $r.history) {
   $hist = (Get-Date -Format 'yyyy-MM-dd HH:mm') + ' | ' + $env:COMPUTERNAME + ' | ' + $(if ($Site) { $Site } else { '-' }) + ' | ' + $r.history
-  Add-Content -Path (Join-Path $LogsDir 'fix-history.txt') -Value $hist
+  [void](Add-TkLine (Join-Path $LogsDir 'fix-history.txt') $hist)
 }
 $out = [ordered]@{ fix = $Fix; ip = $Ip; site = $Site; code = $code; ran = [bool]($r -and $r.ran); ok = [bool]($r -and $r.ok); msg = $(if ($r) { $r.msg } else { '' }); history = $hist; backup = $(if ($r) { $r.backup } else { '' }) }
 Save-TkJson ([pscustomobject]$out) (Join-Path $run 'result.json'); Save-TkJson ([pscustomobject]$out) (Join-Path $LogsDir 'fix-last.json')

@@ -33,7 +33,7 @@ if (-not $CamResetDir) { $CamResetDir = Join-Path (Split-Path -Parent $here) 'Ca
 $run = Join-Path $RunsDir ('Nvr' + $Mode + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory -Force -Path $run | Out-Null
 $log = Join-Path $run 'log.txt'
-function Say2([string]$s, [string]$color = '') { if ($color) { Write-Host $s -ForegroundColor $color } else { Write-Host $s }; Add-Content -Path $log -Value ((Get-Date -Format 'HH:mm:ss') + ' SAY ' + $s) }
+function Say2([string]$s, [string]$color = '') { if ($color) { Write-Host $s -ForegroundColor $color } else { Write-Host $s }; [void](Add-TkLine $log ((Get-Date -Format 'HH:mm:ss') + ' SAY ' + $s)) }
 function Done([int]$code) {
   if ($CloseAfter -gt 0) { Write-Host ''; Write-Host ('Done. The results are in the Toolkit window. This window closes in ' + $CloseAfter + ' seconds.'); Start-Sleep -Seconds $CloseAfter }
   exit $code
@@ -118,6 +118,7 @@ if ($noLogin) {
 }
 $common = @{ Ip = $Ip; Vendor = $Vendor; Credential = $cred; Port = $Port }
 $code = 0
+$stopWhy = ''
 try {
   Set-NvrHealthOption LogFile $log
   switch ($Mode) {
@@ -150,7 +151,7 @@ try {
     if (@($r.problems | Where-Object { $_ -match $TkNotCheckedRx }).Count -and -not @($r.problems | Where-Object { $_ -notmatch $TkNotCheckedRx }).Count) { $code = 2 } else { $code = 4 }
   }
 } catch {
-  Say2 ('PROBLEM ' + $_.Exception.Message) 'Red'; $code = 1
+  $stopWhy = $_.Exception.Message; Say2 ('PROBLEM ' + $stopWhy) 'Red'; $code = 1
 }
 
 # DW server (YKW Elm live test): list every camera that is offline / not recording / nothing for 24 h, with last recording + ping/ARP cause
@@ -170,7 +171,7 @@ if ($recR -and [string]$recR.vendor -eq 'DW') {
   }
 }
 if ($Mode -eq 'Site') {
-  $chk = New-TkSiteCheck -Health $r -Scan $scan -Upnp $ux -Site $Site -Ip $Ip -Dw $dwList -DwNotChecked $dwWhy
+  $chk = New-TkSiteCheck -Health $r -Scan $scan -Upnp $ux -Site $Site -Ip $Ip -Dw $dwList -DwNotChecked $dwWhy -StopWhy $stopWhy
   Save-TkJson $chk (Join-Path $here 'logs\check-site-last.json'); Save-TkJson $chk (Join-Path $run 'check.json')
   Say2 ''; Say2 '===== CHECK THIS SITE: SUMMARY =====' 'Cyan'
   foreach ($l in @($chk.lines)) { Say2 $l.t $(switch ($l.k) { 'red' { 'Red' } 'ok' { 'Green' } 'warn' { 'Yellow' } default { '' } }) }

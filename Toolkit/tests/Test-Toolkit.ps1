@@ -398,6 +398,12 @@ if ($py -and (Test-Path $mockSc) -and (Test-Path $mockPy)) {
     $k1 = New-TkSiteCheck -Health $dwRef -Scan $null -Upnp $null -Dw @()
     Check '1.6.1 summary: empty DW list after a refused login is NOT CHECKED, never green (old bug input)' (-not $k1.ok -and (($k1.lines.t) -contains 'Offline in DW: NOT CHECKED (login refused)') -and -not (($k1.lines.t -join "`n") -match '(?i)every camera|none - all') -and -not (@($k1.fixes) -contains 'ntp') -and -not (@($k1.fixes) -contains 'firmware')) (($k1.lines | ForEach-Object { $_.k + ' ' + $_.t }) -join "`n")
     $hikFw = [pscustomobject]@{ vendor = 'Hikvision'; ok = $false; recording = [pscustomobject]@{ ok = $true; recording = 2; days_held = 46; target_days = 45; problems = @(); channels = @() }; clock = [pscustomobject]@{ ok = $false; problems = @('camera 10.9.0.21: clock not checked') }; firmware = [pscustomobject]@{ ok = $false; problems = @('Recorder: CVE-2021-36260') } }
+    $tl = Join-Path $tmp 'tail-test.txt'; Set-Content $tl 'start'
+    $rd = New-Object IO.FileStream($tl, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]'ReadWrite, Delete')
+    $okW = 0; for ($q = 0; $q -lt 200; $q++) { if (Add-TkLine $tl ('line ' + $q)) { $okW++ } }; $rd.Dispose()
+    Check '1.6.2 run log: 200 lines written while the window is reading the file' ($okW -eq 200 -and (Get-Content $tl).Count -eq 201) ('written=' + $okW)
+    $k3 = New-TkSiteCheck -Health $null -Scan $null -Upnp $null -StopWhy "The process cannot access the file 'log.txt' because it is being used by another process."
+    Check '1.6.2 summary: a check that stopped says so (not "no login"), NOT CHECKED, never green' (-not $k3.ok -and (($k3.lines.t -join "`n") -match 'check stopped with a problem') -and -not (($k3.lines.t -join "`n") -match 'no answer or no login') -and (@($k3.page.notChecked) -contains 'recorder')) (($k3.lines | ForEach-Object { $_.k + ' ' + $_.t }) -join "`n")
     $k2 = New-TkSiteCheck -Health $hikFw -Scan $null -Upnp $null
     Check '1.6.1 summary: Hikvision firmware hole still offers the firmware fix; clock not checked offers no time fix' ((@($k2.fixes) -contains 'firmware') -and -not (@($k2.fixes) -contains 'ntp') -and (($k2.lines.t) -match '^Clock: not checked')) (($k2.lines | ForEach-Object { $_.k + ' ' + $_.t }) -join "`n")
     Check 'vendor box: dw / DW Spectrum / hik / blank' ((Get-TkVendorArg 'DW Spectrum') -eq 'DW' -and (Get-TkVendorArg 'dw') -eq 'DW' -and (Get-TkVendorArg 'hikvision') -eq 'Hikvision' -and (Get-TkVendorArg '') -eq 'Auto')

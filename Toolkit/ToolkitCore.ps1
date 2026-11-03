@@ -362,6 +362,16 @@ function ConvertFrom-TkFixLog([string[]]$lines) {
   return @($o)
 }
 
+function Add-TkLine([string]$path, [string]$line) {
+  # 1.6.2: append one line to a run log the Toolkit window is reading at the same time (shared, short retry, never throws)
+  $b = [Text.Encoding]::UTF8.GetBytes($line + "`r`n")
+  for ($i = 0; $i -lt 6; $i++) {
+    try { $fs = New-Object IO.FileStream($path, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]'ReadWrite, Delete'); try { $fs.Write($b, 0, $b.Length) } finally { $fs.Dispose() }; return $true }
+    catch { Start-Sleep -Milliseconds (40 * ($i + 1)) }
+  }
+  return $false
+}
+
 function Read-TkShared([string]$path, [long]$offset, [Text.Encoding]$enc) {
   # read new text from a file another process is still writing
   if (-not (Test-Path -LiteralPath $path)) { return [pscustomobject]@{ text = ''; offset = $offset } }
@@ -629,7 +639,7 @@ function Get-TkDwProblemCams($channels, [int]$staleHours = 24, $nowUtc = $null) 
 $TkNotCheckedRx = 'login refused|login skipped|not checked|no answer|unreadable'
 function Test-TkNotChecked($x) { if (-not $x -or $x.ok) { return $false }; $p = @($x.problems | Where-Object { $_ }); return ($p.Count -gt 0 -and -not @($p | Where-Object { $_ -notmatch $TkNotCheckedRx }).Count) }
 function Get-TkNotCheckedWhy($x) { $p = (@($x.problems) -join ';'); if ($p -match 'login skipped') { return 'login skipped' }; if ($p -match 'login refused') { return 'login refused' }; if ($p -match 'no answer') { return 'no answer' }; return 'could not read it' }
-function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip = '', $Dw = $null, [string]$DwNotChecked = '') {
+function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip = '', $Dw = $null, [string]$DwNotChecked = '', [string]$StopWhy = '') {
   $L = New-Object System.Collections.Generic.List[object]; $fix = New-Object System.Collections.Generic.List[string]
   $add = { param($t, $k) $L.Add(@{ t = $t; k = $k }) }
   $j = { param($a) (@($a) | Where-Object { $_ }) -join '; ' }
@@ -678,6 +688,10 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
     if ($sched.Count) { $fix.Add('recording') }
     if ($off.Count) { $fix.Add('restart'); $fix.Add('readd') }
     if ((@($rec.problems) -join ';') -match $TkNotCheckedRx) { $page.ok = $false }
+  } elseif ($StopWhy) {
+    # 1.6.2: the check itself stopped (it may have logged in fine) - say that, not 'no login'
+    $sw = $StopWhy; if ($sw.Length -gt 120) { $sw = $sw.Substring(0, 117) + '...' }
+    & $add ('Recorder: NOT CHECKED - the check stopped with a problem (' + $sw + '). Run it again; the full log is in the runs folder.') 'warn'; $nc.Add('recorder')
   } else { & $add 'Recorder: not checked (no answer or no login).' 'warn'; $nc.Add('recorder') }
   # DW: cameras offline / not recording / nothing for 24 h, with the likely cause (read-only)
   # 1.6.1 (YKW Elm): a failed / skipped DW login gave an EMPTY camera list, which used to print "every camera online". Now:

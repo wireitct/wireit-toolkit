@@ -11,7 +11,7 @@
  Passwords: hidden console prompt (Read-Host -AsSecureString) or a PSCredential passed in. Never logged or shown.
 #>
 Set-StrictMode -Off
-$script:ModVersion = '1.2 (2026-11-03)'
+$script:ModVersion = '1.3 (2026-11-03)'
 $script:Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Opt = [ordered]@{
   TargetDays     = 30
@@ -62,7 +62,28 @@ function Start-Log([string]$what) {
   $script:Sum.Clear()
   Log ('NvrHealth ' + $script:ModVersion + ' ' + $what + ' on ' + $env:COMPUTERNAME)
 }
-function Log([string]$s) { if ($script:LogFile) { Add-Content -WhatIf:$false -Confirm:$false -Path $script:LogFile -Value ((Get-Date -Format 'HH:mm:ss') + ' ' + (Redact $s)) } }
+function Add-NhLine([string]$path, [string]$line) {
+  # 1.3: append one line while another process (the Toolkit window) is reading the same file. Add-Content stopped the
+  # whole YKW Elm check with "being used by another process"; this shares the file, retries briefly and never throws.
+  $b = [Text.Encoding]::UTF8.GetBytes($line + "`r`n")
+  for ($i = 0; $i -lt 6; $i++) {
+    try { $fs = New-Object IO.FileStream($path, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]'ReadWrite, Delete'); try { $fs.Write($b, 0, $b.Length) } finally { $fs.Dispose() }; return $true }
+    catch { Start-Sleep -Milliseconds (40 * ($i + 1)) }
+  }
+  return $false
+}
+function Log([string]$s) {
+  if (-not $script:LogFile) { return }
+  $line = (Get-Date -Format 'HH:mm:ss') + ' ' + (Redact $s)
+  if (Add-NhLine $script:LogFile $line) { $script:LogFails = 0; return }
+  $script:LogFails = [int]$script:LogFails + 1
+  if ($script:LogFails -ge 3 -and $script:LogFile -notmatch '-2\.txt$') {
+    # the log file stays locked: carry on in a second file next to it instead of stopping the check
+    $alt = ($script:LogFile -replace '\.txt$', '') + '-2.txt'; $script:LogFile = $alt; $script:LogFails = 0
+    try { Write-Host ('(log file busy - the rest of the log goes to ' + $alt + ')') -ForegroundColor DarkYellow } catch {}
+    [void](Add-NhLine $alt $line)
+  }
+}
 function Say([string]$s, [string]$color = '') { if ($color) { Write-Host $s -ForegroundColor $color } else { Write-Host $s }; $script:Sum.Add($s); Log ('SAY ' + $s) }
 function Ok([string]$s) { Say ('  OK      ' + $s) 'Green' }
 function Warn([string]$s) { Say ('  CHECK   ' + $s) 'Yellow' }

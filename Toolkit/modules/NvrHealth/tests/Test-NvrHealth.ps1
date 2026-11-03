@@ -166,6 +166,27 @@ try {
   Check '1.6.1 clock alone, no login: not checked, nothing to fix' ($c.notChecked -and -not $c.ok -and (($c.problems) -join ';') -eq 'clock not checked') (($c.problems) -join ';')
   Check '1.6.1 skipped / refused checks are read-only' ((Writes).Count -eq 0)
 
+  Write-Host "`n=== 1.6.2: log file busy (YKW Elm live test: 'being used by another process' stopped the check) ==="
+  if (-not ('NhTestLock' -as [type])) { Add-Type -TypeDefinition 'using System;using System.IO;using System.Threading;public static class NhTestLock{public static void LockFor(string p,int ms){FileStream fs=new FileStream(p,FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);Thread t=new Thread(()=>{Thread.Sleep(ms);fs.Dispose();});t.IsBackground=true;t.Start();}}' }
+  $lf = Join-Path $logs 'busy-log.txt'; Set-NvrHealthOption LogFile $lf
+  Reset
+  [void](Get-RecordingStatus -Ip 10.9.0.20 -Vendor Hikvision -Credential $good -TargetDays 45)
+  [NhTestLock]::LockFor($lf, 300); Start-Sleep -Milliseconds 30
+  $err = $null; try { [void](Get-RecordingStatus -Ip 10.9.0.20 -Vendor Hikvision -Credential $good -TargetDays 45) } catch { $err = $_.Exception.Message }
+  Start-Sleep -Milliseconds 400
+  Check '1.6.2 log locked for 0.3 s: the check finishes (no "being used by another process")' ($null -eq $err) $err
+  Check '1.6.2 log locked for 0.3 s: the lines still land in the same log' ((Get-Content $lf | Where-Object { $_ -match 'NvrHealth .* recording' }).Count -ge 2)
+  $lf2 = Join-Path $logs 'held-log.txt'; Set-NvrHealthOption LogFile $lf2; Set-Content $lf2 'x'
+  [NhTestLock]::LockFor($lf2, 6000); Start-Sleep -Milliseconds 30
+  $sw = [Diagnostics.Stopwatch]::StartNew(); $err = $null
+  try { $rr = Get-RecordingStatus -Ip 10.9.0.20 -Vendor Hikvision -Credential $good -TargetDays 45 } catch { $err = $_.Exception.Message }
+  $sw.Stop()
+  Check '1.6.2 log locked the whole time: the check still finishes with its real result' ($null -eq $err -and $rr -and $rr.check -eq 'recording') $err
+  Check '1.6.2 log locked the whole time: the log carries on in held-log-2.txt' ((Test-Path (Join-Path $logs 'held-log-2.txt')) -and (Get-Content (Join-Path $logs 'held-log-2.txt') | Measure-Object).Count -ge 3)
+  Check '1.6.2 log locked the whole time: no long stall (under 10 s)' ($sw.Elapsed.TotalSeconds -lt 10) ([int]$sw.Elapsed.TotalSeconds)
+  Set-NvrHealthOption LogFile ''
+  for ($q = 0; $q -lt 40; $q++) { try { $fs = [IO.File]::Open($lf2, 'Open', 'Read', 'None'); $fs.Dispose(); break } catch { Start-Sleep -Milliseconds 250 } }   # wait for the test lock to end
+
   Write-Host "`n=== combined + secrets ==="
   $h = Get-NvrHealth -Ip 10.9.0.20 -Vendor Hikvision -Credential $good -TargetDays 45 -Json (Join-Path $logs 'h.json')
   Check 'combined: json written' (Test-Path (Join-Path $logs 'h.json'))
