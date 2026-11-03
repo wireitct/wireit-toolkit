@@ -1,19 +1,19 @@
 {
-  "version": "1.6.0",
+  "version": "1.6.1",
   "released": "2026-11-03",
-  "commit": "2c447b29bf1ceb2ec224af0acf8ff704c336953c",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/2c447b29bf1ceb2ec224af0acf8ff704c336953c/",
-  "notes": "Fix what failed (NEW, untested on real gear - mock-tested only): a button next to Camera doctor that offers only the fixes the last Check this site / Camera doctor found: turn recording back on, restart one camera (max 1/hour, 2/day), put a camera back on its NVR channel, set the time server, update firmware on one device (SHA-256 must match), set the site password, fix the camera password in DW. Each fix shows its plan, saves a backup, and changes nothing until you type YES. Includes everything in 1.5.0. 'Go back to the previous version' returns to 1.5.0 and removes the fix files.",
+  "commit": "8d086613d4bfb116ebbb3dcf0e4c513fdd289240",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/8d086613d4bfb116ebbb3dcf0e4c513fdd289240/",
+  "notes": "Fixes after the YKW Elm live test: if the recorder / DW login fails or is skipped, \"Offline in DW\", recording, clock and firmware say NOT CHECKED in amber - never \"every camera online\". One login try per run; leave the password empty to skip the login (nothing is sent). A clock that cannot be read = \"not checked\" (no time fix offered). Check this site uses the camera list Find cameras just made on this PC even without a Site ID. DW servers: firmware is report only (no update fix). Buttons fit at 1024x768.",
   "files": [
     {
       "path": "Toolkit/WireItToolkit.ps1",
-      "sha256": "94d424acecfed954257ef274bd3006234482c761cddcc77886c4d99210a3ec08",
-      "size": 108332
+      "sha256": "1e4b0c6e33a0f8857a01573ad81a461d4f23251b8c1a729d85818de32e1ca43c",
+      "size": 111796
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
-      "sha256": "7504f87bdbb22f6489dde6206564894137ddfdd6b0cf31915a71596c08d1d1b7",
-      "size": 48279
+      "sha256": "20208f9eef3f563ff52bcf6d029bea5c12ba612c45965d123a69c04ea9f5072c",
+      "size": 53568
     },
     {
       "path": "Toolkit/WireIt Toolkit.cmd",
@@ -27,8 +27,8 @@
     },
     {
       "path": "Toolkit/README.txt",
-      "sha256": "e0ad735d45f8674715199132fd621b6b02d1ebd0fbde2901b56ca6c7b1aed699",
-      "size": 9360
+      "sha256": "0e0456a1c01f9c5f96e70528b90d129fe0b61cb5d46b99d0730312c12c71144a",
+      "size": 10494
     },
     {
       "path": "Toolkit/wireit.ico",
@@ -42,8 +42,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Toolkit.ps1",
-      "sha256": "1f6f84a80be7c7a3cd92c489053174d5ab20c29d66c8bd4101d42ca012d05cba",
-      "size": 46965
+      "sha256": "3b7a49a6ca7bef6d9dd6b19017e58f1717d89934249371907529ce94b84309da",
+      "size": 53797
     },
     {
       "path": "Toolkit/CamViews.ps1",
@@ -122,13 +122,13 @@
     },
     {
       "path": "Toolkit/NvrCheck.ps1",
-      "sha256": "5f14239fc60ce7fe8d5ec56e536d353e1da93febb7d45ba6d6abacd75b6b85dc",
-      "size": 13715
+      "sha256": "ed6152de0fc6ed3b8c7e212fd9b7c12119509715432cf5a42efc881af9ffe924",
+      "size": 15712
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrHealth.psm1",
-      "sha256": "8432646d6b34465cb9afeda1b2e7cda86b99e6f64d5451f692418197bad6dded",
-      "size": 87552
+      "sha256": "3cba48d7070e11b151251d2c5f1a9d8b4936fd4ee4df7124d5f9a00859beeee6",
+      "size": 91588
     },
     {
       "path": "Toolkit/modules/NvrHealth/firmware-latest.json",
@@ -137,13 +137,13 @@
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/Test-NvrHealth.ps1",
-      "sha256": "cc6ca358056146a160dc99191f9e2b99809dc9e15722369d87878c30c4a63958",
-      "size": 12888
+      "sha256": "396cc575819cd9c0d202bc09b7a850cd07739d90eaa6f4026cee5ac8da1d5144",
+      "size": 15968
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/mock_devices.py",
-      "sha256": "4b9456f8caece73c93d7860af9c49e7e42a65704d05d04bd642f9092e9115bc0",
-      "size": 30958
+      "sha256": "990269c599877f4c912086493a09972033c2f351bc862c700eb11d3b43c5dd15",
+      "size": 31436
     },
     {
       "path": "Toolkit/ScanUpload.ps1",
