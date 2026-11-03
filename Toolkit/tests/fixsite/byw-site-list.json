@@ -1,0 +1,54 @@
+{
+ "site": "Bais Yaakov of Waterbury",
+ "siteId": "WI-0BY",
+ "scheme": "192.168.1",
+ "nvrs": [
+  {
+   "brand": "Hikvision",
+   "mac": "c0:56:e3:00:01:52",
+   "ip": "192.168.1.152"
+  }
+ ],
+ "cameras": [
+  {
+   "name": "Hall 1",
+   "mac": "c0:56:e3:00:00:31",
+   "ip": "192.168.1.31",
+   "channel": 1,
+   "switch": "Hall switch",
+   "port": 2
+  },
+  {
+   "name": "Second Entrance",
+   "mac": "9c:14:63:00:00:83",
+   "ip": "192.168.1.83",
+   "channel": 19,
+   "switch": "Hall switch",
+   "port": 7
+  },
+  {
+   "name": "Lunch Room",
+   "mac": "9c:14:63:00:00:85",
+   "ip": "192.168.1.85",
+   "channel": 21,
+   "switch": "Hall switch",
+   "port": 8
+  },
+  {
+   "name": "DR Side",
+   "mac": "9c:14:63:00:00:87",
+   "ip": "192.168.1.87",
+   "channel": 22,
+   "switch": "Gym switch",
+   "port": 10
+  },
+  {
+   "name": "Gym 2",
+   "mac": "9c:14:63:00:00:99",
+   "ip": "192.168.1.99",
+   "channel": 23,
+   "switch": "Gym switch",
+   "port": 11
+  }
+ ]
+}

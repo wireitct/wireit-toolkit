@@ -1,5 +1,34 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.6.3, 2026-11-03
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.0.0, 2026-11-03
 ==============================================================================
+HOW TO USE (2.0)
+  1. Double-click "WireIt Toolkit" on the desktop.
+  2. Type the site (the Site ID on the QR sticker, like WI-061, or the address).
+  3. Leave the camera settings as they are, or pick codec / frame rate / resolution / bitrate.
+  4. Press the big green "Fix this site". Click Yes when Windows asks.
+  5. Read the list of what is wrong and what it will change. Type YES to fix it all.
+  6. Watch the checklist: a green check per camera. A red X says exactly what to go check.
+
+WHAT "FIX THIS SITE" DOES (no order to remember, safe to run again)
+  - Knows what SHOULD be there: the site's list from its Drive folder (Docs\WireIt site list.json),
+    else this PC's copy, else the Fix NVR install snapshot. No list yet: at the end it offers
+    "Save this as the site's list" (cameras, IPs, NVR channels, switch ports - no passwords).
+  - Shows only problems. Healthy cameras are one line. Missing cameras say which switch port to check.
+  - WireIt IP scheme: router .100+, NVR .20, cameras .21-.99, other gear .10-.19.
+  - Per camera, one at a time: backup of its settings first, the site password, the camera settings,
+    move to the right IP scheme, back on the NVR, restart / power-cycle its switch port if it hangs,
+    then waits until the NVR shows video and it holds for 20 seconds.
+  - Camera settings: nothing picked = each camera keeps its own, except old/problem cameras
+    (Dahua on a Hikvision NVR, firmware 2020 or older) get H.264 and Smart Codec off. I-frame = frame rate.
+  - Passwords: tries the site password, then WireIt's usual ones ("Usual passwords..."), at most 3 tries
+    per camera - never guesses more. Unknown: one question; then the official Hikvision / Dahua reset
+    with one plain step for you. A new strong site password is made once per site, kept encrypted on
+    this PC (secrets\) and you are asked to save it in Bitwarden. Never in Drive, logs or messages.
+  - Undo the last fix: puts every camera and the NVR back the way that run found them.
+  - Just look (change nothing): the same list, no YES, nothing touched.
+  - Every run: runs\FixSite-<date>\ (log, plan, backups, undo file).
+  - The old numbered buttons are under "More tools (old buttons)".
+
+OLDER NOTES (1.x)
 One window for the site tools. Double-click "WireIt Toolkit" on the desktop.
 Works with no internet and without Tab. Windows PowerShell 5.1 only, nothing to install.
 1.1.0: new look (WireIt header, colored job cards with icons, color-coded results), sharp on 150% screens.
