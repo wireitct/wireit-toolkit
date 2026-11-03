@@ -1,4 +1,4 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.6.0, 2026-11-03
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.6.1, 2026-11-03
 ==============================================================================
 One window for the site tools. Double-click "WireIt Toolkit" on the desktop.
 Works with no internet and without Tab. Windows PowerShell 5.1 only, nothing to install.
@@ -69,6 +69,20 @@ FIX WHAT FAILED (1.6.0) - NOT YET TESTED ON REAL EQUIPMENT
     Set the site password    ONE device (Hikvision), strong password typed twice
     Fix the camera password in DW   gives DW the camera's right password so DW stops locking it
   Undo: each run saves its backup in its runs folder. the "Go back to the previous version" button removes 1.6.0.
+
+1.6.1 FIXES (after the YKW Elm live test, Nov 3 2026)
+  - DW / recorder login refused or skipped: "Offline in DW: NOT CHECKED (login refused)" in amber - never
+    "every camera online". Recording / clock / firmware that could not be read say NOT CHECKED too, and the
+    result is never "all OK".
+  - The recorder login is ONE try per run (recording, clock and firmware no longer each try again).
+  - Leave the recorder password EMPTY to skip the login: nothing is sent, those parts show NOT CHECKED.
+  - Clock that could not be read = "Clock: not checked". No "time needs fixing", no time-server fix offered.
+  - Check this site uses the camera list Find cameras just made on this PC (last 30 minutes), even with no
+    Site ID typed (then it counts them; with a Site ID it compares with the site list as before).
+  - DW servers: firmware is report only (DW updates come from the DW installer) - no "Update firmware" fix.
+  - Captions fit at 1024x768 (the font shrinks a little instead of cutting words).
+  DW cloud-account login: NOT built - the Toolkit logs in to the local DW server only (use a local or
+    read-only DW user).
 
 4 RESET PASSWORDS (Hikvision, official method only)
   1 Pick the device (from the last Find cameras, or "Scan now").

@@ -118,6 +118,7 @@ class H(BaseHTTPRequestHandler):
         global STATE, WRITES
         b = self.body()
         if self.path.startswith('/mockctl/writes'): return self.send(200, json.dumps(WRITES), 'application/json')
+        if self.path.startswith('/mockctl/auth/'): return self.send(200, json.dumps({'auth': STATE.get(self.path.rsplit('/', 1)[1], {}).get('auth', 0)}), 'application/json')
         if self.path.startswith('/mockctl/tries/'): return self.send(200, json.dumps({'tries': STATE.get(self.path.rsplit('/', 1)[1], {}).get('tries', 0)}), 'application/json')
         if self.path.startswith('/mockctl/reset'):
             with LOCK: STATE = fresh_state(); WRITES = []
@@ -127,6 +128,8 @@ class H(BaseHTTPRequestHandler):
         ip, path = m.group(1), m.group(2)
         d = STATE.get(ip)
         if not d: return self.send(404, 'no device')
+        ah = self.headers.get('Authorization') or ''
+        if ah and not ah.startswith('Bearer '): d['auth'] = d.get('auth', 0) + 1   # 1.6.1 tests: every password-carrying request counts
         if d['kind'] == 'hang':   # Nov 3 2026: a camera whose web service accepts the connection and never answers
             import time; time.sleep(8); return self.send(200, '')
         if d['kind'] == 'unvlock':   # a Uniview that locked its login after too many wrong passwords (shape UNVERIFIED on real gear)
@@ -239,6 +242,7 @@ class H(BaseHTTPRequestHandler):
         p = path.split('?')[0]; q = dict(re.findall(r'[?&]([^=&]+)=([^&]*)', path))
         if p == '/api/moduleInformation': return self.send(200, json.dumps({'error': '0', 'reply': {'version': d['version'], 'name': 'YKW-TEST', 'brand': 'digitalwatchdog'}}), 'application/json')
         if p == '/rest/v3/login/sessions' and method == 'POST':
+            d['tries'] = d.get('tries', 0) + 1   # 1.6.1 tests: DW login attempts (max 1 per run, 0 when skipped)
             j = json.loads(b or '{}')
             if j.get('username') == 'admin' and j.get('password') == d['pw']: return self.send(200, json.dumps({'token': 'vms-TESTTOKEN', 'username': 'admin'}), 'application/json')
             return self.send(401, json.dumps({'error': '401', 'errorString': 'Wrong password'}), 'application/json')

@@ -24,6 +24,19 @@ namespace WireItUi {
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     public static float S = 1f;
     public static Color Line = Color.FromArgb(222, 227, 233);
+    // 1.6.1 (YKW Elm, 1024x768): shrink a caption's font (down to 70 %) until it fits, instead of cutting it with "..."
+    public static Font Fit(Graphics g, string text, Font f, int w, out bool clipped) {
+      clipped = false; if (f == null || String.IsNullOrEmpty(text) || w <= 0) return f;
+      TextFormatFlags fl = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
+      if (TextRenderer.MeasureText(g, text, f, new Size(9999, 9999), fl).Width <= w) return f;
+      float min = f.Size * 0.70f;
+      for (float sz = f.Size - 0.5f; sz >= min; sz -= 0.5f) {
+        Font t = new Font(f.FontFamily, sz, f.Style, f.Unit);
+        if (TextRenderer.MeasureText(g, text, t, new Size(9999, 9999), fl).Width <= w) return t;
+        t.Dispose();
+      }
+      clipped = true; return new Font(f.FontFamily, min, f.Style, f.Unit);
+    }
     public static GraphicsPath Round(RectangleF r, float rad) {
       GraphicsPath p = new GraphicsPath(); float d = Math.Min(rad * 2, Math.Min(r.Width, r.Height));
       if (d <= 1) { p.AddRectangle(r); return p; }
@@ -133,6 +146,7 @@ namespace WireItUi {
     public Color Accent = Color.FromArgb(37, 99, 235);
     public string Title = "", Sub = "", Glyph = "", Num = "", Tag2 = "";
     public Font TitleFont, SubFont, GlyphFont, NumFont, TagFont, ChevFont;
+    public bool Clipped;   // 1.6.1: true when the title still does not fit at the smallest font (checked by the tests at 1024x768)
     bool hover, down;
     public Card() {
       SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
@@ -175,7 +189,8 @@ namespace WireItUi {
       Color ink = on ? Color.FromArgb(28, 33, 40) : Color.FromArgb(150, 156, 165);
       Color muted = on ? Color.FromArgb(98, 107, 118) : Color.FromArgb(170, 176, 184);
       TextFormatFlags one = TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
-      Size tsz = TextRenderer.MeasureText(g, Title, TitleFont, new Size(w, 9999), one);
+      bool tclip; Font tf = Gfx.Fit(g, Title, TitleFont, w, out tclip); Clipped = tclip;
+      Size tsz = TextRenderer.MeasureText(g, Title, tf, new Size(w, 9999), one);
       int lineH = TextRenderer.MeasureText(g, "Ag", SubFont, new Size(9999, 9999), TextFormatFlags.NoPadding).Height;
       int maxLines = (int)((r.Height - 12 * s - tsz.Height - 2 * s) / lineH); if (maxLines > 2) maxLines = 2; if (maxLines < 0) maxLines = 0;
       int subH = 0;
@@ -184,7 +199,8 @@ namespace WireItUi {
         subH = Math.Min(full.Height, lineH * maxLines);
       }
       float gap = subH > 0 ? 2 * s : 0; float y = r.Y + (r.Height - tsz.Height - gap - subH) / 2f;
-      TextRenderer.DrawText(g, Title, TitleFont, new Rectangle((int)x0, (int)y, w, tsz.Height + 2), ink, one);
+      TextRenderer.DrawText(g, Title, tf, new Rectangle((int)x0, (int)y, w, tsz.Height + 2), ink, one);
+      if (!Object.ReferenceEquals(tf, TitleFont)) tf.Dispose();
       if (!String.IsNullOrEmpty(Tag2) && TagFont != null) {
         Size tg = TextRenderer.MeasureText(g, Tag2, TagFont, new Size(9999, 9999), TextFormatFlags.NoPadding);
         RectangleF pill = new RectangleF(x0 + tsz.Width + 10 * s, y + (tsz.Height - tg.Height - 6 * s) / 2f + 1 * s, tg.Width + 12 * s, tg.Height + 6 * s);
@@ -219,6 +235,7 @@ namespace WireItUi {
   public class FlatBtn : Button {
     public Color Accent = Color.FromArgb(37, 99, 235); public bool Filled; public string Glyph = ""; public Font GlyphFont;
     public Color TextColor = Color.Empty;
+    public bool Clipped;
     bool hover, down;
     public FlatBtn() {
       SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
@@ -245,11 +262,13 @@ namespace WireItUi {
         using (SolidBrush b = new SolidBrush(fill)) g.FillPath(b, p);
         using (Pen pen = new Pen(border)) g.DrawPath(pen, p);
       }
-      Size t = TextRenderer.MeasureText(g, Text, Font, new Size(9999, 9999), TextFormatFlags.NoPadding);
-      int gw = GW; int tw = Math.Min(t.Width, Width - gw - (int)(20 * s));
+      int gw = GW; bool bclip; Font bf = Gfx.Fit(g, Text, Font, Width - gw - (int)(20 * s), out bclip); Clipped = bclip;
+      Size t = TextRenderer.MeasureText(g, Text, bf, new Size(9999, 9999), TextFormatFlags.NoPadding);
+      int tw = Math.Min(t.Width, Width - gw - (int)(20 * s));
       float x = (Width - tw - gw) / 2f;
       if (gw > 0) Gfx.Glyph(g, Glyph, GlyphFont, Filled || !Enabled ? text : Accent, new RectangleF(x - 2 * s, 0, gw, Height));
-      TextRenderer.DrawText(g, Text, Font, new Rectangle((int)(x + gw), (Height - t.Height) / 2, tw + 2, t.Height + 2), text, TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+      TextRenderer.DrawText(g, Text, bf, new Rectangle((int)(x + gw), (Height - t.Height) / 2, tw + 2, t.Height + 2), text, TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+      if (!Object.ReferenceEquals(bf, Font)) bf.Dispose();
     }
   }
 
@@ -709,7 +728,7 @@ function Do-SiteCheck {
   $vd = Get-TkVendorArg $a.vendor; if ($vd -ne 'Auto') { $e += '-Vendor ' + $vd }
   $TK.scArgs = $e; Hide-Fixes
   $TK.afterScan = {
-    Add-Out ''; Add-Out 'Next: router, recording, clocks and firmware. A tool window opens - type the recorder''s user name and password there (hidden, never saved).' $cBlue
+    Add-Out ''; Add-Out 'Next: router, recording, clocks and firmware. A tool window opens - type the recorder''s user name and password there (hidden, never saved, ONE try). Leave the password empty to skip the login: nothing is sent and those parts show NOT CHECKED.' $cBlue
     Start-Nvr 'Check this site' 'Site' $TK.scArgs { param($code) Show-SiteCheck } $true
   }
   Do-Find
@@ -719,7 +738,12 @@ function Show-SiteCheck {
   $c = Read-TkJson (Join-Path $TK.P.Toolkit 'logs\check-site-last.json')
   if (-not $c) { return }
   $red = @($c.lines | Where-Object { $_.k -eq 'red' } | ForEach-Object { [string]$_.t })
-  if ($red.Count) { Add-OutTop (@('CHECK THIS SITE - needs attention:') + $red) $cRed } else { Add-OutTop @('CHECK THIS SITE: all OK.') $cOk }
+  # 1.6.1: "not checked" parts (login refused / skipped, unreadable clock) are amber and the result is never "all OK"
+  $ncl = @($c.lines | Where-Object { $_.k -eq 'warn' -and [string]$_.t -match '(?i)not checked' } | ForEach-Object { [string]$_.t })
+  if ($red.Count) { Add-OutTop (@('CHECK THIS SITE - needs attention:') + $red + $ncl) $cRed }
+  elseif ($ncl.Count -or ($c.page -and @($c.page.notChecked).Count)) { Add-OutTop (@('CHECK THIS SITE - NOT everything could be checked (this is not an all-clear):') + $ncl) $cWarn }
+  elseif ($c.ok) { Add-OutTop @('CHECK THIS SITE: all OK.') $cOk }
+  else { Add-OutTop @('CHECK THIS SITE: see the details below.') $cWarn }
   Show-Fixes @($c.fixes)
 }
 # Release C fills these in; until then the row only says which fixes would apply
@@ -1022,6 +1046,9 @@ $body.Padding = New-Object Windows.Forms.Padding((Px 16), (Px 14), (Px 16), (Px 
 [void]$body.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 40))); [void]$body.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 60)))
 [void]$body.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
 $root.Controls.Add($body, 0, 1)
+# 1.6.1 (YKW Elm, 1024x768): on a narrow window the job buttons get more room (left 48 %) so captions are not cut
+$TK.body = $body
+$body.Add_SizeChanged({ $lp = $(if ($TK.body.ClientSize.Width -lt (Px 1180)) { 48 } else { 40 }); if ([int]$TK.body.ColumnStyles[0].Width -ne $lp) { $TK.body.ColumnStyles[0].Width = $lp; $TK.body.ColumnStyles[1].Width = 100 - $lp } })
 
 # left: the 8 jobs, in job order, then the 4 recorder-health checks (2 x 2)
 $left = New-Object Windows.Forms.TableLayoutPanel; $left.Dock = 'Fill'; $left.ColumnCount = 1; $left.RowCount = 11; $left.Margin = New-Object Windows.Forms.Padding(0, 0, (Px 8), 0)
@@ -1149,7 +1176,12 @@ $resCard.Controls.Add($res)
 $right.Controls.Add($resCard, 0, 2)
 $body.Controls.Add($right, 1, 0)
 function Fit-Options {
-  $w = [math]::Max(100, $TK.opt.ClientSize.Width); $line = [math]::Max($TK.lone.PreferredSize.Height, $TK.adv.PreferredSize.Height) + (Px 4)
+  $w = [math]::Max(100, $TK.opt.ClientSize.Width)
+  # 1.6.1: the long checkbox caption wraps onto 2 lines on a narrow window instead of being cut (1024x768)
+  $lw = [math]::Max((Px 160), $w - (Px 24)); $one = $TK.lone.GetPreferredSize((New-Object Drawing.Size(0, 0)))
+  if ($one.Width -le $lw) { $lsz = $one } else { $th = [Windows.Forms.TextRenderer]::MeasureText($TK.lone.Text, $TK.lone.Font, (New-Object Drawing.Size(($lw - (Px 22)), 0)), [Windows.Forms.TextFormatFlags]::WordBreak).Height; $lsz = New-Object Drawing.Size($lw, ([math]::Max($one.Height, $th + (Px 6)))) }
+  if ($TK.lone.AutoSize) { $TK.lone.AutoSize = $false }; if ($TK.lone.Size -ne $lsz) { $TK.lone.Size = $lsz }
+  $line = [math]::Max($TK.lone.Height, $TK.adv.PreferredSize.Height) + (Px 4)
   $pw = [math]::Max($line, $TK.pwRow.GetPreferredSize((New-Object Drawing.Size($w, 0))).Height)
   $h = $TK.site.PreferredHeight + $TK.site.Margin.Vertical + $TK.hint.Height + $TK.hint.Margin.Vertical + $TK.pwRow.Margin.Vertical + $pw + $TK.optCard.Padding.Vertical + $TK.optCard.Margin.Vertical
   $rsy = $TK.right.RowStyles[1]; if ([int]$rsy.Height -ne $h) { $rsy.Height = $h; $TK.right.PerformLayout() }
@@ -1235,6 +1267,9 @@ if ($Screenshot) {
   Set-Pill 'Find cameras - done' $cOk; Set-Status 'Find cameras done. Saved to the logs folder.'
   [Windows.Forms.Application]::DoEvents(); Fit-Options; [Windows.Forms.Application]::DoEvents()
   if ($SimScreen) { Save-Shot $hostP (Join-Path $Screenshot 'toolkit-small.png') $TK.out } else { Save-Shot $root (Join-Path $Screenshot 'toolkit-main.png') $TK.out }
+  # 1.6.1: every caption must fit (the 1024x768 YKW Elm test showed "Fix what faile", "Recording ch...")
+  $script:clipN = @(); function Find-Clipped($c) { foreach ($x in $c.Controls) { if ($x.Visible -and $x.PSObject.Properties['Clipped'] -and $x.Clipped) { $script:clipN += $(if ($x.PSObject.Properties['Title'] -and $x.Title) { $x.Title } else { $x.Text }) }; Find-Clipped $x } }
+  if ($TK_UI) { Find-Clipped $root; Write-Output ('clipped=' + $script:clipN.Count + $(if ($script:clipN.Count) { ' ' + ($script:clipN -join ' | ') } else { '' })) }
   $rf = @(Show-ResetWindow)[-1]
   $rf.StartPosition = 'Manual'; $rf.Location = New-Object Drawing.Point(-20000, -20000); $rf.ShowInTaskbar = $false
   $rf.Show(); [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 300; [Windows.Forms.Application]::DoEvents()

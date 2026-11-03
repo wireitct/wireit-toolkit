@@ -359,6 +359,47 @@ if ($py -and (Test-Path $mockSc) -and (Test-Path $mockPy)) {
     $cj = Read-TkJson (Join-Path $tkDir 'logs\check-site-last.json')
     Check 'DW site: summary carries the DW list + fix dwpassword' ($cj -and [int]$cj.page.dw.problems -eq 2 -and (@($cj.fixes) -contains 'dwpassword')) ($cj | ConvertTo-Json -Depth 6)
     Check 'DW site: read-only' ((((Invoke-WebRequest ($mbase + '/mockctl/writes') -UseBasicParsing).Content).Trim()) -eq '[]')
+    # 1.6.1 (YKW Elm live test Nov 3 2026): failed / skipped DW login, unreadable clock, fresh local camera list, no DW firmware fix
+    $crf = Join-Path $tmp 'cr-fresh'; $sdir = Join-Path $crf 'out\scan-20261103-035654'; New-Item -ItemType Directory -Force -Path $sdir | Out-Null
+    '[{"Brand":"Uniview","Model":"IPC3612LB","IP":"10.9.1.11","MAC":"44:19:B6:00:0A:11","Serial":"S1"},{"Brand":"Unknown","Model":"","IP":"10.9.1.99","MAC":"44:19:B6:00:0A:99","Kind":"camera","SweepOnly":true},{"Brand":"Hikvision","Model":"DS-7608NI-K2","IP":"10.9.0.30","MAC":"44:19:B6:00:00:30"}]' | Set-Content (Join-Path $sdir 'devices.json') -Encoding UTF8
+    $fs = Get-TkFreshScan $crf 30
+    Check '1.6.1 fresh camera list read from this PC (no upload): 3 devices, 2 cameras' ($fs -and $fs.local -and $fs.count -eq 3 -and $fs.cameras -eq 2) ($fs | ConvertTo-Json -Depth 3)
+    (Get-Item (Join-Path $sdir 'devices.json')).LastWriteTime = (Get-Date).AddHours(-2)
+    Check '1.6.1 a camera list older than 30 min is not used' ($null -eq (Get-TkFreshScan $crf 30))
+    (Get-Item (Join-Path $sdir 'devices.json')).LastWriteTime = (Get-Date)
+    $env:NVRCHECK_TEST_PW = 'WrongPw#1'
+    Invoke-WebRequest ($mbase + '/mockctl/reset') -Method Post -UseBasicParsing | Out-Null
+    Remove-Item (Join-Path $tkDir 'logs\scan-upload-last.json'), (Join-Path $tkDir 'logs\check-site-last.json') -Force -ErrorAction SilentlyContinue
+    $runs4 = Join-Path $tmp 'nvrruns-dwref'
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $nc -Mode Site -Ip 10.9.0.41 -Days 0 -Cameras -RunsDir $runs4 -MockUrl $mbase -TestAnswer x -CloseAfter 0 -NoUpnp -NoSend -CamResetDir $crf 2>&1 | Out-String
+    $d = Get-ChildItem $runs4 -Directory -Filter 'NvrSite-*' | Select-Object -First 1
+    $said = $(if ($d) { (ConvertFrom-TkFixLog (Get-Content (Join-Path $d.FullName 'log.txt'))) -join "`n" } else { '' })
+    $cj = Read-TkJson (Join-Path $tkDir 'logs\check-site-last.json')
+    $tries = [int](((Invoke-WebRequest ($mbase + '/mockctl/tries/10.9.0.41') -UseBasicParsing).Content | ConvertFrom-Json).tries)
+    $cl = @($(if ($cj) { $cj.lines } else { @() }))
+    Check '1.6.1 DW login refused: "Offline in DW: NOT CHECKED (login refused)" in amber' ($said -match 'Offline in DW: NOT CHECKED \(login refused\)' -and @($cl | Where-Object { $_.t -eq 'Offline in DW: NOT CHECKED (login refused)' -and $_.k -eq 'warn' }).Count -eq 1) ($o + $said)
+    Check '1.6.1 DW login refused: never "every camera online" / "0 camera(s)" / all OK' ($said -notmatch '(?i)every camera' -and $said -notmatch 'none - all' -and $said -notmatch '0 camera\(s\)' -and $cj -and -not $cj.ok -and -not @($cl | Where-Object { $_.k -eq 'ok' -and $_.t -match 'DW' }).Count) $said
+    Check '1.6.1 DW login refused: ONE login try for the whole check' ($tries -eq 1) ('tries=' + $tries)
+    Check '1.6.1 unreadable clock = "Clock: not checked", no "time needs fixing", no time fix offered' ($said -match 'Clock: not checked' -and $said -notmatch 'time needs fixing' -and -not (@($cj.fixes) -contains 'ntp')) ($said + ' fixes=' + (@($cj.fixes) -join ','))
+    Check '1.6.1 recording NOT CHECKED + "not an all-clear" in the summary' ($said -match 'Recording: NOT CHECKED \(login refused\)' -and $said -match 'this is not an all-clear') $said
+    Check '1.6.1 DW server: firmware report only, no "Update firmware" fix' (-not (@($cj.fixes) -contains 'firmware') -and $said -match 'Firmware \(report only') ($said + ' fixes=' + (@($cj.fixes) -join ','))
+    Check '1.6.1 Check this site uses the fresh local Find-cameras list (no Site ID, no upload)' ($said -notmatch 'No fresh camera list' -and $said -match 'Find cameras found 3 device' -and $said -match 'Cameras: 3 found on the network by Find cameras just now') $said
+    Remove-Item Env:\NVRCHECK_TEST_PW -ErrorAction SilentlyContinue
+    Invoke-WebRequest ($mbase + '/mockctl/reset') -Method Post -UseBasicParsing | Out-Null
+    $runs5 = Join-Path $tmp 'nvrruns-dwskip'
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $nc -Mode Site -Ip 10.9.0.41 -Days 0 -Cameras -RunsDir $runs5 -MockUrl $mbase -TestAnswer x -CloseAfter 0 -NoUpnp -NoSend -CamResetDir (Join-Path $tmp 'cr-none') 2>&1 | Out-String
+    $d = Get-ChildItem $runs5 -Directory -Filter 'NvrSite-*' | Select-Object -First 1
+    $said = $(if ($d) { (ConvertFrom-TkFixLog (Get-Content (Join-Path $d.FullName 'log.txt'))) -join "`n" } else { '' })
+    $tries = [int](((Invoke-WebRequest ($mbase + '/mockctl/tries/10.9.0.41') -UseBasicParsing).Content | ConvertFrom-Json).tries)
+    Check '1.6.1 empty recorder password = login skipped: NO login sent, NOT CHECKED (login skipped)' ($tries -eq 0 -and $said -match 'Recorder login skipped' -and $said -match 'Offline in DW: NOT CHECKED \(login skipped\)' -and $said -notmatch '(?i)every camera') ('tries=' + $tries + "`n" + $o + $said)
+    $env:NVRCHECK_TEST_PW = 'NvrPass#2026'
+    # summary unit checks (canned results)
+    $dwRef = [pscustomobject]@{ vendor = 'DW'; ok = $false; recording = [pscustomobject]@{ ok = $false; vendor = 'DW'; recording = 0; channels = @(); problems = @('login refused') }; clock = [pscustomobject]@{ ok = $false; problems = @('clock not checked') }; firmware = [pscustomobject]@{ ok = $false; problems = @('Server: CVE-2026-78414') } }
+    $k1 = New-TkSiteCheck -Health $dwRef -Scan $null -Upnp $null -Dw @()
+    Check '1.6.1 summary: empty DW list after a refused login is NOT CHECKED, never green (old bug input)' (-not $k1.ok -and (($k1.lines.t) -contains 'Offline in DW: NOT CHECKED (login refused)') -and -not (($k1.lines.t -join "`n") -match '(?i)every camera|none - all') -and -not (@($k1.fixes) -contains 'ntp') -and -not (@($k1.fixes) -contains 'firmware')) (($k1.lines | ForEach-Object { $_.k + ' ' + $_.t }) -join "`n")
+    $hikFw = [pscustomobject]@{ vendor = 'Hikvision'; ok = $false; recording = [pscustomobject]@{ ok = $true; recording = 2; days_held = 46; target_days = 45; problems = @(); channels = @() }; clock = [pscustomobject]@{ ok = $false; problems = @('camera 10.9.0.21: clock not checked') }; firmware = [pscustomobject]@{ ok = $false; problems = @('Recorder: CVE-2021-36260') } }
+    $k2 = New-TkSiteCheck -Health $hikFw -Scan $null -Upnp $null
+    Check '1.6.1 summary: Hikvision firmware hole still offers the firmware fix; clock not checked offers no time fix' ((@($k2.fixes) -contains 'firmware') -and -not (@($k2.fixes) -contains 'ntp') -and (($k2.lines.t) -match '^Clock: not checked')) (($k2.lines | ForEach-Object { $_.k + ' ' + $_.t }) -join "`n")
     Check 'vendor box: dw / DW Spectrum / hik / blank' ((Get-TkVendorArg 'DW Spectrum') -eq 'DW' -and (Get-TkVendorArg 'dw') -eq 'DW' -and (Get-TkVendorArg 'hikvision') -eq 'Hikvision' -and (Get-TkVendorArg '') -eq 'Auto')
     # Camera doctor (ONE login try max)
     $runs3 = Join-Path $tmp 'nvrruns-doc'
@@ -388,6 +429,7 @@ Check 'UI: Check this site button, read-only chain Find -> upload -> NvrCheck Si
 $ui = Get-Content (Join-Path $tkDir 'WireItToolkit.ps1') -Raw
 Check 'Find cameras: uploads when the Site box is filled, else the tip' ($ui -match "Start-ScanUpload ''\s*\}" -and $ui -match 'Tip: type the site to save this list to the site page\.')
 Check 'Save camera pictures: one-field dialog passes ONE field' ($ui -match "\(,@\('site', 'Site ID or address:'")
+Check '1.6.1 UI: "not checked" results are amber, never "all OK"' ($ui -match 'NOT everything could be checked \(this is not an all-clear\)' -and $ui -match "Leave the password empty to skip the login")
 Check 'install snapshot: also the site known-good list' ($ui -match 'Start-ScanUpload \$sn\.FullName')
 
 # 8 the window itself, drawn off-screen to PNG (no window on the desktop)
@@ -409,6 +451,7 @@ if ($Screens) {
   $s1024 = Join-Path $Screens 'at1024'
   $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tkDir 'WireItToolkit.ps1') -Screenshot $s1024 -SimScreen 1024x768 -DemoCamReset $cr 2>&1 | Out-String
   Check 'window at 1024x768 (YKW Elm server): builds, picture saved' (($o -match ('buttons=' + $nb + ';')) -and (Test-Path (Join-Path $s1024 'toolkit-small.png'))) $o
+  Check '1.6.1 window at 1024x768: no button caption cut off' ($o -match '(?m)^clipped=0\s*$') $o
   $s800 = Join-Path $Screens 'at800'
   $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tkDir 'WireItToolkit.ps1') -Screenshot $s800 -SimScreen 800x600 -DemoCamReset $cr 2>&1 | Out-String
   Check 'window at 800x600: scrolls instead of cutting off' ($o -match 'scroll=yes') $o

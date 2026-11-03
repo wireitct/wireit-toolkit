@@ -21,7 +21,7 @@ param(
   [ValidateSet('Auto', 'Hikvision', 'Uniview', 'DW', 'Onvif')][string]$Vendor = 'Auto', [int]$Port = 0,
   [string]$RunsDir = '', [string]$MockUrl = '', [string]$TestAnswer = '', [int]$CloseAfter = 8,
   [string]$UpnpLocation = '', [switch]$NoUpnp, [string]$ApiUrl = '', [switch]$NoSend,
-  [string]$DwIp = '', [string]$Maker = '', [string]$Mac = ''
+  [string]$DwIp = '', [string]$Maker = '', [string]$Mac = '', [string]$CamResetDir = ''
 )
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -29,6 +29,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $titles = @{ Doctor = 'Camera doctor'; Recording = 'Recording check'; Clock = 'Clock check'; FixClock = 'Fix clock (NTP)'; Firmware = 'Firmware / security check'; Site = 'Check this site' }
 try { $Host.UI.RawUI.WindowTitle = 'WireIt Toolkit - ' + $titles[$Mode] + ' - ' + $Ip } catch {}
 if (-not $RunsDir) { $RunsDir = Join-Path $here 'runs' }
+if (-not $CamResetDir) { $CamResetDir = Join-Path (Split-Path -Parent $here) 'CamReset' }
 $run = Join-Path $RunsDir ('Nvr' + $Mode + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory -Force -Path $run | Out-Null
 $log = Join-Path $run 'log.txt'
@@ -56,11 +57,14 @@ if ($Mode -eq 'Site') {
   Say2 'Read-only: nothing on the recorder, cameras or router is changed. Fixes are separate buttons.' 'Yellow'
   Say2 ''; Say2 'Step 1 of 3: camera list (from Find cameras just now)' 'Cyan'
   $scan = Read-TkJson (Join-Path $here 'logs\scan-upload-last.json')
-  if ($scan -and $scan.at -and ((Get-Date) - [datetime]$scan.at).TotalMinutes -lt 30 -and -not $scan.snapshot) {
-    foreach ($l in @($scan.lines)) { if ($l) { Say2 ('  ' + $l) $(if (@($scan.red) -contains $l) { 'Red' } else { '' }) } }
-  } else { Say2 '  No fresh camera list (Find cameras did not run or found nothing). Continuing.' 'Yellow'; $scan = $null }
+  if (-not ($scan -and $scan.at -and ((Get-Date) - [datetime]$scan.at).TotalMinutes -lt 30 -and -not $scan.snapshot)) {
+    # 1.6.1: nothing uploaded (no Site ID) - use the list Find cameras just made on this PC
+    $scan = $null; try { $scan = Get-TkFreshScan $CamResetDir 30 } catch { $scan = $null }
+  }
+  if ($scan) { foreach ($l in @($scan.lines)) { if ($l) { Say2 ('  ' + $l) $(if (@($scan.red) -contains $l) { 'Red' } else { '' }) } } }
+  else { Say2 '  No fresh camera list (Find cameras did not run in the last 30 minutes or found nothing). Continuing.' 'Yellow' }
   Say2 ''; Say2 'Step 2 of 3: router - UPnP and ports open to the internet (read-only)' 'Cyan'
-  $camIps = @($Ip); $lj = Read-TkJson (Join-Path (Join-Path (Split-Path -Parent $here) 'CamReset') 'out\latest.json'); if ($lj) { $camIps += @($lj.devices | ForEach-Object { [string]$_.IP } | Where-Object { $_ }) }
+  $camIps = @($Ip); $lj = Read-TkJson (Join-Path $CamResetDir 'out\latest.json'); if ($lj) { $camIps += @($lj.devices | ForEach-Object { [string]$_.IP } | Where-Object { $_ }) }
   if ($NoUpnp) { Say2 '  Router check skipped.' }
   else {
     try { $ux = Get-TkUpnpExposure -Locations @($(if ($UpnpLocation) { $UpnpLocation })) -CameraIps $camIps } catch { Say2 ('  Router check could not run: ' + $_.Exception.Message) 'Yellow' }
@@ -100,8 +104,18 @@ if ($Mode -in @('Recording', 'Site') -and $Days -le 0) {
   $Days = Get-TkDaysToKeep (Get-TkConfig $here) $nm
   Say2 ('Days to keep: ' + $Days + $(if ($nm) { ' (from the ' + $src + ' "' + $nm + '")' } else { ' (default - type the site to use its own target)' }))
 }
-if ($TestAnswer -and $MockUrl) { $cred = New-Object PSCredential('admin', (ConvertTo-SecureString ($env:NVRCHECK_TEST_PW) -AsPlainText -Force)) }   # test harness only
-else { $cred = Read-NvrCredential ('the recorder at ' + $Ip) }
+if ($TestAnswer -and $MockUrl) { $cred = New-Object PSCredential('admin', $(if ($env:NVRCHECK_TEST_PW) { ConvertTo-SecureString ($env:NVRCHECK_TEST_PW) -AsPlainText -Force } else { New-Object Security.SecureString })) }   # test harness only
+else {
+  # 1.6.1: the tech can skip the recorder login - nothing is sent, and what needs it shows NOT CHECKED (never an all-clear)
+  Write-Host ''
+  Write-Host $(if ($Mode -eq 'FixClock') { 'The recorder login (needed to change the time settings).' } else { 'The recorder login: ONE try, never repeated. Leave the password EMPTY to skip it - nothing is sent; recording, clocks and the DW list then show NOT CHECKED.' }) -ForegroundColor Yellow
+  $cred = Read-NvrCredential ('the recorder at ' + $Ip)
+}
+$noLogin = (-not $cred -or -not $cred.GetNetworkCredential().Password)
+if ($noLogin) {
+  if ($Mode -eq 'FixClock') { Say2 'No password typed - nothing was sent and nothing was changed.' 'Yellow'; Set-Content -Path (Join-Path $run 'result.json') -Value (@{ mode = $Mode; ip = $Ip; code = 0; skipped = $true; finished = (Get-Date -Format s) } | ConvertTo-Json); Done 0 }
+  Say2 'Recorder login skipped (no password typed) - nothing was sent to the recorder login. Parts that need it show NOT CHECKED.' 'Yellow'
+}
 $common = @{ Ip = $Ip; Vendor = $Vendor; Credential = $cred; Port = $Port }
 $code = 0
 try {
@@ -133,7 +147,7 @@ try {
   }
   if ($r -and $r.PSObject.Properties['failed'] -and $r.failed) { $code = 4 }
   elseif ($r -and $r.PSObject.Properties['problems'] -and @($r.problems).Count) {
-    if (@($r.problems | Where-Object { $_ -match 'login refused|no answer|unreadable' }).Count) { $code = 2 } else { $code = 4 }
+    if (@($r.problems | Where-Object { $_ -match $TkNotCheckedRx }).Count -and -not @($r.problems | Where-Object { $_ -notmatch $TkNotCheckedRx }).Count) { $code = 2 } else { $code = 4 }
   }
 } catch {
   Say2 ('PROBLEM ' + $_.Exception.Message) 'Red'; $code = 1
@@ -142,19 +156,25 @@ try {
 # DW server (YKW Elm live test): list every camera that is offline / not recording / nothing for 24 h, with last recording + ping/ARP cause
 $dwList = $null
 $recR = $(if ($Mode -eq 'Site' -and $r -and $r.PSObject.Properties['recording']) { $r.recording } elseif ($Mode -eq 'Recording') { $r } else { $null })
+$dwWhy = ''
 if ($recR -and [string]$recR.vendor -eq 'DW') {
-  try { $dwList = @(Get-TkDwProblemCams @($recR.channels)) } catch { Say2 ('Offline in DW: could not build the list: ' + $_.Exception.Message) 'Yellow'; $dwList = $null }
+  # 1.6.1: without DW data (login refused / skipped / no answer / no cameras returned) the list is NOT CHECKED - never "0 offline"
+  if (Test-TkNotChecked $recR) { $dwWhy = Get-TkNotCheckedWhy $recR }
+  elseif (-not @($recR.channels).Count) { $dwWhy = 'DW returned no cameras' }
+  if ($dwWhy) { Say2 ''; Say2 ('Offline in DW: NOT CHECKED (' + $dwWhy + ')') 'Yellow' }
+  else { try { $dwList = @(Get-TkDwProblemCams @($recR.channels)) } catch { Say2 ('Offline in DW: could not build the list: ' + $_.Exception.Message) 'Yellow'; $dwList = $null; $dwWhy = 'could not build the list' } }
   if ($null -ne $dwList) {
     Say2 ''; Say2 ('Offline in DW (offline, not recording, or nothing recorded for 24 h): ' + $dwList.Count + ' camera(s)') 'Cyan'
-    if ($dwList.Count) { foreach ($x in $dwList) { Say2 ('  ' + $x.t) 'Red' } } else { Say2 '  none - every camera is online and recorded in the last 24 h.' 'Green' }
+    if ($dwList.Count) { foreach ($x in $dwList) { Say2 ('  ' + $x.t) 'Red' } } else { Say2 ('  none - all ' + @($recR.channels).Count + ' cameras online and recorded in the last 24 h.') 'Green' }
     Save-TkJson @($dwList | ForEach-Object { [ordered]@{ name = $_.name; ip = $_.ip; status = $_.status; hours = $_.hours; cause = $_.cause; t = $_.t } }) (Join-Path $run 'dw-offline.json')
   }
 }
 if ($Mode -eq 'Site') {
-  $chk = New-TkSiteCheck -Health $r -Scan $scan -Upnp $ux -Site $Site -Ip $Ip -Dw $dwList
+  $chk = New-TkSiteCheck -Health $r -Scan $scan -Upnp $ux -Site $Site -Ip $Ip -Dw $dwList -DwNotChecked $dwWhy
   Save-TkJson $chk (Join-Path $here 'logs\check-site-last.json'); Save-TkJson $chk (Join-Path $run 'check.json')
   Say2 ''; Say2 '===== CHECK THIS SITE: SUMMARY =====' 'Cyan'
   foreach ($l in @($chk.lines)) { Say2 $l.t $(switch ($l.k) { 'red' { 'Red' } 'ok' { 'Green' } 'warn' { 'Yellow' } default { '' } }) }
+  if (@($chk.page.notChecked).Count) { Say2 ('NOT CHECKED: ' + (@($chk.page.notChecked) -join ', ') + ' - this is not an all-clear.') 'Yellow' }
   if (@($chk.fixes).Count) { Say2 ('Fix buttons offered in the Toolkit: ' + (@($chk.fixes) -join ', ') + ' (each asks you first; nothing was changed).') 'Yellow' }
   if (-not $Site) { Say2 'Tip: type the site to save this check to the site page.' }
   elseif (-not $NoSend) {

@@ -139,6 +139,33 @@ try {
   Check 'fw unv B3613 260918: current' ($f.devices[0].verdict -eq 'current') $f.devices[0].verdict
   Check 'firmware checks are read-only' ((Writes).Count -eq 0)
 
+  Write-Host "`n=== 1.6.1: skipped / refused login, unreadable clock (YKW Elm live test) ==="
+  $none = New-Object System.Management.Automation.PSCredential('admin', (New-Object Security.SecureString))   # empty password = skip
+  function Tries([string]$ip) { return [int](((Invoke-WebRequest ($base + '/mockctl/tries/' + $ip) -UseBasicParsing).Content | ConvertFrom-Json).tries) }
+  function Auths([string]$ip) { return [int](((Invoke-WebRequest ($base + '/mockctl/auth/' + $ip) -UseBasicParsing).Content | ConvertFrom-Json).auth) }
+  Reset
+  $h = Get-NvrHealth -Ip 10.9.0.40 -Vendor DW -Credential $wrong -TargetDays 45 -IncludeCameras
+  Check '1.6.1 DW wrong password: ONE login try for recording + clock + firmware' ((Tries '10.9.0.40') -eq 1) ('tries=' + (Tries '10.9.0.40'))
+  Check '1.6.1 DW wrong password: recording = login refused, no channels' ((($h.recording.problems) -join ';') -eq 'login refused' -and @($h.recording.channels).Count -eq 0) (($h.recording.problems) -join ';')
+  Check '1.6.1 DW wrong password: clock NOT CHECKED, not "needs fixing"' ($h.clock.notChecked -and (($h.clock.problems) -join ';') -eq 'clock not checked' -and -not $h.clock.ok) (($h.clock.problems) -join ';')
+  $sum = (Get-NvrHealthSummary) -join "`n"
+  Check '1.6.1 DW wrong password: no "time needs fixing", summary says NOT CHECKED' ($sum -notmatch 'time needs fixing' -and $sum -match 'RESULT: Clock: not checked' -and $sum -match 'SUMMARY: recording NOT CHECKED \| time NOT CHECKED') $sum
+  Reset
+  $h = Get-NvrHealth -Ip 10.9.0.40 -Vendor DW -Credential $none -TargetDays 45 -IncludeCameras
+  Check '1.6.1 DW empty password: NO login sent at all' ((Tries '10.9.0.40') -eq 0) ('tries=' + (Tries '10.9.0.40'))
+  Check '1.6.1 DW empty password: recording = login skipped' ((($h.recording.problems) -join ';') -eq 'login skipped') (($h.recording.problems) -join ';')
+  Check '1.6.1 DW empty password: server version still read (no login needed)' (@($h.firmware.devices).Count -ge 1) ''
+  Reset
+  $h = Get-NvrHealth -Ip 10.9.0.30 -Vendor Hikvision -Credential $none -TargetDays 45 -IncludeCameras
+  Check '1.6.1 Hikvision empty password: no password-carrying request at all (NVR or cameras)' ((Auths '10.9.0.30') -eq 0 -and (Auths '10.9.0.31') -eq 0) ('auth=' + (Auths '10.9.0.30') + '/' + (Auths '10.9.0.31'))
+  Check '1.6.1 Hikvision empty password: recording / clock / firmware all NOT CHECKED' ((($h.recording.problems) -join ';') -eq 'login skipped' -and $h.clock.notChecked -and $h.firmware.notChecked) ''
+  Reset
+  $h = Get-NvrHealth -Ip 10.9.0.60 -Vendor Hikvision -Credential $wrong -TargetDays 45 -IncludeCameras
+  Check '1.6.1 Hikvision wrong password: ONE password try for the whole check' ((Auths '10.9.0.60') -le 1) ('auth=' + (Auths '10.9.0.60'))
+  $c = Get-ClockStatus -Ip 10.9.0.40 -Vendor DW -Credential $none
+  Check '1.6.1 clock alone, no login: not checked, nothing to fix' ($c.notChecked -and -not $c.ok -and (($c.problems) -join ';') -eq 'clock not checked') (($c.problems) -join ';')
+  Check '1.6.1 skipped / refused checks are read-only' ((Writes).Count -eq 0)
+
   Write-Host "`n=== combined + secrets ==="
   $h = Get-NvrHealth -Ip 10.9.0.20 -Vendor Hikvision -Credential $good -TargetDays 45 -Json (Join-Path $logs 'h.json')
   Check 'combined: json written' (Test-Path (Join-Path $logs 'h.json'))

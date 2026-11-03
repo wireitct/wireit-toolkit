@@ -433,6 +433,23 @@ function Get-TkScanDevices([string]$camResetDir) {
   # Nov 3 2026: cameras found only by the network sweep carry Kind 'camera' (often no model) - keep that kind
   return @(foreach ($d in @($l.devices)) { $kd = ''; $kp = $d.PSObject.Properties['Kind']; if ($kp -and $kp.Value) { $kd = [string]$kp.Value }; $x = ConvertTo-TkScanDevice $d $kd; if ($x) { $x } })
 }
+# 1.6.1 (YKW Elm live test): "Check this site" uses the list Find cameras just made on THIS PC (CamReset out\scan-*\devices.json
+# or out\latest.json, newest one, at most $maxMin minutes old) even when nothing was uploaded (no Site ID typed). $null = none fresh.
+function Get-TkFreshScan([string]$camResetDir, [int]$maxMin = 30, $now = $null) {
+  if (-not $now) { $now = Get-Date }
+  $outDir = Join-Path $camResetDir 'out'; if (-not (Test-Path -LiteralPath $outDir)) { return $null }
+  $c = @(Get-ChildItem -LiteralPath $outDir -Directory -Filter 'scan-*' -ErrorAction SilentlyContinue | ForEach-Object { Get-Item -LiteralPath (Join-Path $_.FullName 'devices.json') -ErrorAction SilentlyContinue })
+  $c += @(Get-Item -LiteralPath (Join-Path $outDir 'latest.json') -ErrorAction SilentlyContinue)
+  $best = $c | Where-Object { $_ } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if (-not $best -or ($now - $best.LastWriteTime).TotalMinutes -gt $maxMin -or $best.LastWriteTime -gt $now.AddMinutes(5)) { return $null }
+  $j = Read-TkJson $best.FullName; if ($null -eq $j) { return $null }
+  $rows = $(if ($j -is [array]) { $j } elseif ($j.PSObject.Properties['devices']) { @($j.devices) } else { @($j) })
+  $devs = @(foreach ($d in $rows) { if (-not $d) { continue }; $kd = ''; $kp = $d.PSObject.Properties['Kind']; if ($kp -and $kp.Value) { $kd = [string]$kp.Value }; $x = ConvertTo-TkScanDevice $d $kd; if ($x) { $x } })
+  if (-not $devs.Count) { return $null }
+  $cams = @($devs | Where-Object { $_.kind -eq 'camera' }).Count
+  $line = 'Find cameras found ' + $devs.Count + ' device(s) on this PC at ' + $best.LastWriteTime.ToString('h:mm tt') + ': ' + $cams + ' camera(s), ' + ($devs.Count - $cams) + ' recorder(s) / other. (Not uploaded - type the Site ID to compare with the site list.)'
+  return [pscustomobject]@{ local = $true; at = $best.LastWriteTime.ToString('s'); file = $best.FullName; count = $devs.Count; cameras = $cams; devices = $devs; answer = $null; lines = @($line); red = @() }
+}
 # an install snapshot (FixNVR snapshot json) as the known-good list: NVRs + the cameras this PC can see (not the NVR's own PoE ports)
 function Get-TkSnapshotDevices([string]$path) {
   $s = Read-TkJson $path
@@ -608,11 +625,18 @@ function Get-TkDwProblemCams($channels, [int]$staleHours = 24, $nowUtc = $null) 
 
 # ---------------- "Check this site" summary (Nov 3 2026): one record for the results pane + the site page's "Latest check" card ----------------
 # -> @{ ok; lines = @(@{ t; k = red|ok|warn|plain }); fixes = @('recording','restart','readd','ntp','firmware','password'); page = <small, no passwords> }
-function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip = '', $Dw = $null) {
+# 1.6.1 (YKW Elm live test): words that mean "could not look" - never shown as OK, never offered as a fix
+$TkNotCheckedRx = 'login refused|login skipped|not checked|no answer|unreadable'
+function Test-TkNotChecked($x) { if (-not $x -or $x.ok) { return $false }; $p = @($x.problems | Where-Object { $_ }); return ($p.Count -gt 0 -and -not @($p | Where-Object { $_ -notmatch $TkNotCheckedRx }).Count) }
+function Get-TkNotCheckedWhy($x) { $p = (@($x.problems) -join ';'); if ($p -match 'login skipped') { return 'login skipped' }; if ($p -match 'login refused') { return 'login refused' }; if ($p -match 'no answer') { return 'no answer' }; return 'could not read it' }
+function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip = '', $Dw = $null, [string]$DwNotChecked = '') {
   $L = New-Object System.Collections.Generic.List[object]; $fix = New-Object System.Collections.Generic.List[string]
   $add = { param($t, $k) $L.Add(@{ t = $t; k = $k }) }
   $j = { param($a) (@($a) | Where-Object { $_ }) -join '; ' }
   $page = [ordered]@{ t = (Get-Date -Format 's'); ip = $Ip; ok = $true }
+  $nc = New-Object System.Collections.Generic.List[string]   # parts that could not be checked (amber, page not OK)
+  $isDw = ($Health -and [string]$Health.vendor -eq 'DW')
+  $loginWhy = ''; if ($Health -and $Health.recording -and (Test-TkNotChecked $Health.recording)) { $loginWhy = Get-TkNotCheckedWhy $Health.recording }
   # cameras (the list Find cameras just saved)
   $sa = $(if ($Scan) { $Scan.answer } else { $null })
   if ($sa -and $sa.ok) {
@@ -620,7 +644,12 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
     $page.cams = [ordered]@{ total = [int]$sa.total; missing = @($miss).Count; added = @($sa.added).Count; changedIp = @($sa.changedIp).Count; missingNames = @($miss | Select-Object -First 8) }
     if (@($miss).Count) { & $add ('Cameras: ' + @($miss).Count + ' MISSING of ' + [int]$sa.total + ' on the site list: ' + (& $j ($miss | Select-Object -First 5))) 'red' }
     else { & $add ('Cameras: all ' + [int]$sa.total + ' on the site list found.') 'ok' }
-  } else { $page.cams = $null; & $add 'Cameras: no fresh list (run with the Site box filled to compare with the site page).' 'warn' }
+  } elseif ($Scan -and $Scan.local) {
+    # 1.6.1: the list Find cameras just made on this PC (no Site ID / no upload) - counted, not compared with a site list
+    $dwN = $(if ($isDw -and $Health.recording) { @($Health.recording.channels).Count } else { 0 })
+    $page.cams = [ordered]@{ total = [int]$Scan.count; cameras = [int]$Scan.cameras; local = $true; missing = 0; dwListed = $dwN }
+    & $add ('Cameras: ' + [int]$Scan.count + ' found on the network by Find cameras just now (' + [int]$Scan.cameras + ' cameras)' + $(if ($dwN) { ', DW lists ' + $dwN } else { '' }) + '. Not compared with a site list - type the Site ID to compare.') 'ok'
+  } else { $page.cams = $null; & $add 'Cameras: no fresh list (Find cameras did not run in the last 30 minutes or found nothing).' 'warn' }
   # recorder
   if ($Health) {
     $rec = $Health.recording; $clk = $Health.clock; $fw = $Health.firmware
@@ -630,26 +659,42 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
     $notRec = @($chs | Where-Object { -not $_.recording_now -and -not ($_.mode -match '(?i)motion|alarm|event|smart|vmd') } | ForEach-Object { $_.ch })
     $page.rec = [ordered]@{ ok = [bool]$rec.ok; channels = $chs.Count; recording = [int]$rec.recording; offline = $off; scheduleOff = $sched; daysHeld = $rec.days_held; target = $rec.target_days; problems = @($rec.problems) }
     if ($rec.ok) { & $add ('Recording: all ' + [int]$rec.recording + ' cameras recording, ' + $rec.days_held + ' days kept (target ' + $rec.target_days + ').') 'ok' }
+    elseif ($loginWhy) { & $add ('Recording: NOT CHECKED (' + $loginWhy + ')') 'warn'; $nc.Add('recording'); $page.rec.notChecked = $loginWhy }
     else { & $add ('Recording: ' + (& $j $rec.problems)) 'red' }
     $sf = $(if ($rec.streams) { @($rec.streams.flags) } else { @() })
     $page.streams = $(if ($rec.streams -and $rec.streams.checked) { [ordered]@{ checked = [int]$rec.streams.checked; flags = $sf } } else { $null })
     if ($sf.Count) { & $add ('Streams (report only): ' + (& $j ($sf | Select-Object -First 6))) 'warn' } elseif ($page.streams) { & $add ('Streams: sub-stream, bitrate and frame rate normal on ' + $rec.streams.checked + ' cameras.') 'ok' }
     $page.clock = [ordered]@{ ok = [bool]$clk.ok; problems = @($clk.problems | Select-Object -First 8) }
-    if ($clk.ok) { & $add 'Clocks: right, time server on.' 'ok' } else { & $add ('Clocks: ' + (& $j ($clk.problems | Select-Object -First 4))) 'red' }
+    # 1.6.1: an unreadable clock = "not checked" (amber); only a clock that was READ and is wrong is red and gets the time fix
+    $clkReal = @($clk.problems | Where-Object { $_ -and $_ -notmatch $TkNotCheckedRx })
+    if ($clk.ok) { & $add 'Clocks: right, time server on.' 'ok' }
+    elseif ($clkReal.Count) { & $add ('Clocks: ' + (& $j ($clkReal | Select-Object -First 4))) 'red'; $fix.Add('ntp') }
+    else { & $add ('Clock: not checked (' + $(if ($loginWhy) { $loginWhy } else { 'could not read it' }) + ')') 'warn'; $nc.Add('clock'); $page.clock.notChecked = $true }
     $page.fw = [ordered]@{ ok = [bool]$fw.ok; problems = @($fw.problems | Select-Object -First 8) }
-    if ($fw.ok) { & $add 'Firmware: current, no known security holes.' 'ok' } else { & $add ('Firmware: ' + (& $j ($fw.problems | Select-Object -First 4))) 'red' }
+    if ($fw.ok) { & $add 'Firmware: current, no known security holes.' 'ok' }
+    elseif (Test-TkNotChecked $fw) { & $add ('Firmware: not checked (' + $(if ($loginWhy) { $loginWhy } else { Get-TkNotCheckedWhy $fw }) + ')') 'warn'; $nc.Add('firmware') }
+    elseif ($isDw) { & $add ('Firmware (report only - a DW server is updated with the DW installer, not by the Toolkit): ' + (& $j ($fw.problems | Select-Object -First 4))) 'warn'; $page.fw.reportOnly = $true }   # 1.6.1: never a firmware fix for DW
+    else { & $add ('Firmware: ' + (& $j ($fw.problems | Select-Object -First 4))) 'red'; $fix.Add('firmware') }
     if ($sched.Count) { $fix.Add('recording') }
     if ($off.Count) { $fix.Add('restart'); $fix.Add('readd') }
-    if (-not $clk.ok -and -not (@($clk.problems) -match 'login refused|no answer')) { $fix.Add('ntp') }
-    if (-not $fw.ok -and -not (@($fw.problems) -match 'login refused|no answer')) { $fix.Add('firmware') }
-    if ((@($rec.problems) -join ';') -match 'login refused|no answer') { $page.ok = $false }
-  } else { & $add 'Recorder: not checked (no answer or no login).' 'warn' }
+    if ((@($rec.problems) -join ';') -match $TkNotCheckedRx) { $page.ok = $false }
+  } else { & $add 'Recorder: not checked (no answer or no login).' 'warn'; $nc.Add('recorder') }
   # DW: cameras offline / not recording / nothing for 24 h, with the likely cause (read-only)
-  if ($null -ne $Dw) {
+  # 1.6.1 (YKW Elm): a failed / skipped DW login gave an EMPTY camera list, which used to print "every camera online". Now:
+  # no DW data = "Offline in DW: NOT CHECKED (...)" in amber, never green.
+  $dwWhy = $DwNotChecked
+  if (-not $dwWhy -and $isDw) {
+    if ($loginWhy) { $dwWhy = $loginWhy } elseif ($null -eq $Dw) { $dwWhy = 'no DW data' } elseif (-not @($Health.recording.channels).Count) { $dwWhy = 'DW returned no cameras' }
+  }
+  if ($dwWhy) {
+    $page.dw = [ordered]@{ notChecked = $dwWhy }; $nc.Add('dw')
+    & $add ('Offline in DW: NOT CHECKED (' + $dwWhy + ')') 'warn'
+  }
+  elseif ($null -ne $Dw) {
     $dwl = @($Dw)
     $page.dw = [ordered]@{ problems = $dwl.Count; cams = @($dwl | Select-Object -First 30 | ForEach-Object { [ordered]@{ name = $_.name; ip = $_.ip; status = $_.status; hours = $_.hours; cause = $_.cause } }) }
     if ($dwl.Count) { foreach ($x in ($dwl | Select-Object -First 12)) { & $add ('DW: ' + $x.t) 'red' }; if ($dwl.Count -gt 12) { & $add ('DW: ' + ($dwl.Count - 12) + ' more - see the log.') 'red' } }
-    else { & $add 'DW: every camera online and recording in the last 24 h.' 'ok' }
+    else { & $add ('Offline in DW: none - all ' + $(if ($Health -and $Health.recording) { @($Health.recording.channels).Count } else { '' }) + ' cameras online and recorded in the last 24 h.') 'ok' }
     if (@($dwl | Where-Object { $_.cause -eq 'dwpw' }).Count) { $fix.Add('dwpassword') }
     if (@($dwl | Where-Object { $_.cause -eq 'hung' }).Count) { $fix.Add('restart') }
   }
@@ -660,7 +705,8 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
     if ($Upnp.upnp -or @($Upnp.exposed).Count) { foreach ($ul in @($Upnp.lines | Where-Object { $_.k -eq 'red' })) { & $add $ul.t 'red' } } else { & $add ('Router: ' + $(if ($Upnp.answered) { 'UPnP off, nothing opened to the internet.' } else { 'UPnP off or blocked - good.' })) 'ok' }
   } else { $page.router = $null }
   $page.fixes = @($fix | Select-Object -Unique)
-  $page.ok = $page.ok -and -not @($L | Where-Object { $_.k -eq 'red' }).Count
+  $page.notChecked = @($nc | Select-Object -Unique)
+  $page.ok = $page.ok -and -not @($L | Where-Object { $_.k -eq 'red' }).Count -and -not $nc.Count
   return [pscustomobject]@{ ok = $page.ok; lines = $L.ToArray(); fixes = @($page.fixes); page = $page }
 }
 

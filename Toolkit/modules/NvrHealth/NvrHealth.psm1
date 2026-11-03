@@ -11,7 +11,7 @@
  Passwords: hidden console prompt (Read-Host -AsSecureString) or a PSCredential passed in. Never logged or shown.
 #>
 Set-StrictMode -Off
-$script:ModVersion = '1.1 (2026-11-02)'
+$script:ModVersion = '1.2 (2026-11-03)'
 $script:Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Opt = [ordered]@{
   TargetDays     = 30
@@ -54,6 +54,7 @@ function Redact([string]$s) {
   return $s
 }
 function Start-Log([string]$what) {
+  $script:LoginState = @{}   # 1.6.1: one login try per run - a refused or skipped login is never sent again in this run
   $dir = [string]$script:Opt.LogDir; if (-not $dir) { $dir = Join-Path $script:Here 'logs' }
   if ($script:Opt.LogFile) { $dir = Split-Path -Parent ([string]$script:Opt.LogFile) }
   New-Item -ItemType Directory -Force -Path $dir -WhatIf:$false -Confirm:$false | Out-Null
@@ -75,6 +76,12 @@ function Read-NvrCredential([string]$what) {
   return New-Object PSCredential($u, $p)
 }
 function Plain([pscredential]$c) { return $c.GetNetworkCredential().Password }
+# 1.6.1 (YKW Elm live test Nov 3 2026): an EMPTY password = skip the recorder login (nothing is sent), and a refused login is
+# never tried again in the same run (recording, clock and firmware used to log in one after the other = up to 3 failed tries).
+$script:LoginState = @{}
+function Login-Blocked($t) { $k = [string]$t.ip; if ($script:LoginState -and $script:LoginState.ContainsKey($k)) { return [string]$script:LoginState[$k] }; return '' }
+function Mark-Login($t, [string]$why) { if ($null -eq $script:LoginState) { $script:LoginState = @{} }; $k = [string]$t.ip; if (-not $script:LoginState.ContainsKey($k)) { $script:LoginState[$k] = $why } }
+function Login-Words([string]$why) { switch ($why) { 'skipped' { 'login skipped (no password typed - nothing was sent)' } 'refused' { 'login refused' } default { 'no answer' } } }
 
 # ---------------- HTTP ----------------
 function Base([string]$ip, [int]$port = 0, [string]$scheme = '') {
@@ -241,13 +248,16 @@ function Detect-Vendor([string]$Ip, [int]$Port = 0) {
 function Resolve-Target([string]$Ip, [string]$Vendor, $Credential, [int]$Port) {
   if (-not $Vendor -or $Vendor -eq 'Auto') { $Vendor = Detect-Vendor $Ip $Port; Info ('Recorder at ' + $Ip + ' looks like: ' + $(if ($Vendor -eq 'DW') { 'DW Spectrum server' } else { $Vendor })) }
   if (-not $Credential) { $Credential = Read-NvrCredential ($Ip + ' (' + $Vendor + ')') }
-  return @{ ip = $Ip; vendor = $Vendor; cred = $Credential; port = $Port; token = $null }
+  $t = @{ ip = $Ip; vendor = $Vendor; cred = $Credential; port = $Port; token = $null }
+  if (-not $Credential -or -not (Plain $Credential)) { Mark-Login $t 'skipped' }
+  return $t
 }
 
 # ================= HIKVISION (ISAPI) =================
 function Hik-DeviceInfo($t) {
+  $blk = Login-Blocked $t; if ($blk) { return @{ login = $(if ($blk -eq 'skipped') { 'skipped' } else { 'refused' }) } }
   $r = Http -Ip $t.ip -Path '/ISAPI/System/deviceInfo' -Credential $t.cred -Port $t.port
-  if ($r.code -eq 401) { return @{ login = 'refused' } }
+  if ($r.code -eq 401) { Mark-Login $t 'refused'; return @{ login = 'refused' } }
   $x = Xml $r.body; if ($r.code -ne 200 -or -not $x) { return @{ login = 'noanswer'; err = $r.err } }
   return @{ login = 'ok'; model = (XText $x 'model'); serial = (XText $x 'serialNumber'); name = (XText $x 'deviceName');
             firmware = ((XText $x 'firmwareVersion') + ' ' + (XText $x 'firmwareReleasedDate')).Trim(); type = (XText $x 'deviceType') }
@@ -411,7 +421,9 @@ function Unv-Get($t, [string]$path) {
   return @{ login = 'ok'; code = $j.Response.ResponseCode; data = $j.Response.Data }
 }
 function Unv-DeviceInfo($t) {
+  $blk = Login-Blocked $t; if ($blk) { return @{ login = $(if ($blk -eq 'skipped') { 'skipped' } else { 'refused' }) } }
   $r = Unv-Get $t '/LAPI/V1.0/System/DeviceInfo'
+  if ($r.login -eq 'refused') { Mark-Login $t 'refused' }
   if ($r.login -ne 'ok') { return @{ login = $r.login } }
   $d = $r.data
   return @{ login = 'ok'; model = [string]$d.DeviceModel; serial = [string]$d.SerialNumber; firmware = [string]$d.FirmwareVersion; name = [string]$d.DeviceName }
@@ -428,10 +440,11 @@ function Dw-Port($t) { if ($t.port) { return $t.port }; return 7001 }
 function Dw-Scheme { if ($script:Opt.MockUrl) { return '' }; return 'https' }
 function Dw-Login($t) {
   if ($t.token) { return $true }
+  if (Login-Blocked $t) { return $false }   # skipped (empty password) or already refused in this run: nothing is sent
   $body = (@{ username = $t.cred.UserName; password = (Plain $t.cred); setCookie = $false } | ConvertTo-Json -Compress)
   $r = Http -Ip $t.ip -Method 'POST' -Path '/rest/v3/login/sessions' -Body $body -ContentType 'application/json' -Port (Dw-Port $t) -Scheme (Dw-Scheme) -NoLogBody
   $body = $null
-  if ($r.code -ne 200) { return $false }
+  if ($r.code -ne 200) { Mark-Login $t $(if ($r.code -in @(401, 403)) { 'refused' } else { 'noanswer' }); return $false }
   try { $t.token = ($r.body | ConvertFrom-Json).token } catch {}
   return [bool]$t.token
 }
@@ -556,6 +569,13 @@ function Get-RecordingStatus {
   $result = [ordered]@{ check = 'recording'; ip = $Ip; vendor = $t.vendor; streams = $null; target_days = $TargetDays; ok = $false; days_held = $null; shortest_days = $null; short_cameras = @(); recording = 0; channels = @(); disks = @(); problems = @(); log = $script:LogFile }
   $problems = New-Object System.Collections.Generic.List[string]
   $chans = @(); $disks = @(); $now = $null; $diskApi = $true
+  $blk = Login-Blocked $t
+  if ($blk) {
+    # 1.6.1: no login sent (empty password) or already refused in this run -> NOT CHECKED, never an all-clear
+    if ($t.vendor -eq 'DW') { $info = Dw-Info $t; if ($info) { Info ('DW Spectrum ' + $info.version + '  server "' + $info.name + '"') } }
+    Warn ('Recorder ' + (Login-Words $blk) + '. Recording NOT CHECKED.')
+    $result.problems = @($(if ($blk -eq 'noanswer') { 'no answer' } else { 'login ' + $blk })); return [pscustomobject]$result
+  }
   switch ($t.vendor) {
     'Hikvision' {
       $di = Hik-DeviceInfo $t
@@ -670,15 +690,16 @@ function Clock-Of($t) {
     }
   }
 }
-function Judge-Clock([string]$label, $c, $ref) {
+function Judge-Clock([string]$label, $c, $ref, [string]$why = '') {
   $p = @()
-  if (-not $c) { Bad ($label + ': could not read its clock (login refused or no answer).'); return @('clock unreadable') }
+  # 1.6.1: an unreadable clock is NOT CHECKED - not a wrong clock, and no time fix is offered for it
+  if (-not $c) { Warn ($label + ': clock NOT CHECKED (' + $(if ($why) { Login-Words $why } else { 'could not read it - login refused or no answer' }) + '). Nothing to fix from this.'); return @('clock not checked') }
   if ($c.utc) {
     $drift = ($c.utc - $ref.utc).TotalSeconds; $dir = $(if ($drift -gt 0) { 'ahead' } else { 'behind' })
     if ([math]::Abs($drift) -ge [double]$script:Opt.DriftBadSec) { Bad ($label + ': clock is ' + (Fmt-Span $drift) + ' ' + $dir + '. Footage times are wrong - not usable as evidence until fixed.'); $p += ('clock ' + (Fmt-Span $drift) + ' ' + $dir) }
     elseif ([math]::Abs($drift) -ge [double]$script:Opt.DriftWarnSec) { Warn ($label + ': clock is ' + (Fmt-Span $drift) + ' ' + $dir + '.'); $p += ('clock ' + (Fmt-Span $drift) + ' ' + $dir) }
     else { Ok ($label + ': clock correct (within ' + [math]::Max(1, [math]::Round([math]::Abs($drift))) + ' s).') }
-  } else { Warn ($label + ': clock reading not understood.'); $p += 'clock unreadable' }
+  } else { Warn ($label + ': clock reading not understood - NOT CHECKED.'); $p += 'clock not checked' }
   if ($c.mode -eq 'Windows clock') {
     if ($c.tzId -and $c.tzId -notmatch '(?i)New_York|Eastern|Detroit|Toronto') { Bad ($label + ': server time zone is "' + $c.tzId + '", not US Eastern.'); $p += 'wrong time zone' } elseif ($c.tzId) { Ok ($label + ': time zone ' + $c.tzId + '.') }
     Info 'A DW server takes its time from Windows. Fix drift on the server: Windows time sync (w32tm) to time.nist.gov.'
@@ -695,6 +716,7 @@ function Judge-Clock([string]$label, $c, $ref) {
   return $p
 }
 function Get-CameraTargets($t, [string[]]$CameraIps, [pscredential]$CameraCredential) {
+  if (-not $CameraCredential -and (Login-Blocked $t)) { Info 'Cameras: not checked (no working recorder login, so no camera login is tried).'; return @() }
   $ips = @($CameraIps | Where-Object { $_ })
   if (-not $ips.Count -and $t.vendor -eq 'Hikvision') { $ips = @(Hik-Channels $t | Where-Object { $_.ip -and $_.ip -notmatch '^192\.168\.254\.' } | ForEach-Object { $_.ip }) }
   $out = @(); foreach ($i in ($ips | Select-Object -Unique)) { $out += @{ ip = $i; vendor = $(if ($t.vendor -in @('DW', 'Onvif')) { 'Auto' } else { $t.vendor }); cred = $(if ($CameraCredential) { $CameraCredential } else { $t.cred }); port = 0; token = $null } }
@@ -713,8 +735,10 @@ function Get-ClockStatus {
   $ref = Get-ReferenceTime
   Say ''; Say ('----- Clock check: ' + $Ip + ' (compared with ' + $ref.source + ') -----') 'Cyan'
   if ($null -ne $ref.pcOffsetSec -and [math]::Abs($ref.pcOffsetSec) -ge 30) { Warn ('This PC''s own clock is off by ' + (Fmt-Span $ref.pcOffsetSec) + '; using internet time instead.') }
-  $c = Clock-Of $t
-  $probs = @(Judge-Clock 'Recorder' $c $ref)
+  $blk = Login-Blocked $t
+  $c = $(if ($blk) { $null } else { Clock-Of $t })
+  if (-not $blk) { $blk = Login-Blocked $t }   # Clock-Of may have just been refused
+  $probs = @(Judge-Clock 'Recorder' $c $ref $blk)
   $cams = @()
   if ($IncludeCameras) {
     foreach ($ct in (Get-CameraTargets $t $CameraIps $CameraCredential)) {
@@ -726,8 +750,11 @@ function Get-ClockStatus {
     if (-not $cams.Count) { Info 'No cameras reachable by IP from this PC (cameras on the NVR''s own PoE ports normally take the NVR''s time).' }
   }
   $all = @($probs) + @($cams | ForEach-Object { $ip = $_.ip; $_.problems | ForEach-Object { 'camera ' + $ip + ': ' + $_ } })
-  Say $(if ($all.Count) { 'RESULT: time needs fixing (' + ($all -join '; ') + '). "Fix time" (Set-NtpTime) fixes it.' } else { 'RESULT: time is right and stays right (NTP + US Eastern).' }) $(if ($all.Count) { 'Red' } else { 'Green' })
-  return [pscustomobject]@{ check = 'clock'; ip = $Ip; vendor = $t.vendor; ok = ($all.Count -eq 0); reference = $ref.source;
+  $real = @($all | Where-Object { $_ -notmatch 'not checked' }); $nc = @($all | Where-Object { $_ -match 'not checked' })
+  if ($real.Count) { Say ('RESULT: time needs fixing (' + ($real -join '; ') + '). "Fix time" (Set-NtpTime) fixes it.' + $(if ($nc.Count) { ' Not checked: ' + ($nc -join '; ') + '.' } else { '' })) 'Red' }
+  elseif ($nc.Count) { $ncs = @($nc | Where-Object { $_ -ne 'clock not checked' }); Say ('RESULT: Clock: not checked' + $(if ($ncs.Count) { ' (' + ($ncs -join '; ') + ')' } else { '' }) + '. Nothing to fix from this check.') 'Yellow' }
+  else { Say 'RESULT: time is right and stays right (NTP + US Eastern).' 'Green' }
+  return [pscustomobject]@{ check = 'clock'; ip = $Ip; vendor = $t.vendor; ok = ($all.Count -eq 0); notChecked = ($nc.Count -gt 0 -and $real.Count -eq 0); reference = $ref.source;
     drift_sec = $(if ($c -and $c.utc) { [math]::Round(($c.utc - $ref.utc).TotalSeconds) } else { $null }); mode = $(if ($c) { $c.mode } else { '' });
     ntp = $(if ($c) { @($c.ntp) } else { @() }); timezone = $(if ($c -and $c.tz) { $c.tz.raw } elseif ($c) { $c.tzId } else { '' }); problems = @($all); cameras = $cams; log = $script:LogFile }
 }
@@ -930,6 +957,7 @@ function Get-FirmwareStatus {
   switch ($t.vendor) {
     'Hikvision' {
       $di = Hik-DeviceInfo $t
+      if ($di.login -in @('skipped', 'refused')) { Warn ('Firmware NOT CHECKED (' + (Login-Words $di.login) + ').'); return [pscustomobject]@{ check = 'firmware'; ip = $Ip; vendor = $t.vendor; ok = $false; notChecked = $true; devices = @(); problems = @('not checked (login ' + $di.login + ')'); log = $script:LogFile } }
       if ($di.login -ne 'ok') { Bad ('Could not read the recorder (' + $di.login + ').'); return [pscustomobject]@{ check = 'firmware'; ip = $Ip; vendor = $t.vendor; ok = $false; devices = @(); problems = @('recorder unreadable'); log = $script:LogFile } }
       $items += Judge-Firmware 'Recorder' $di.model $di.firmware $ref
       if ($IncludeCameras) {
@@ -943,11 +971,14 @@ function Get-FirmwareStatus {
       $info = Dw-Info $t
       if (-not $info) { Bad 'Could not read the DW server version.'; return [pscustomobject]@{ check = 'firmware'; ip = $Ip; vendor = 'DW'; ok = $false; devices = @(); problems = @('server unreadable'); log = $script:LogFile } }
       $items += Judge-Firmware 'Server' 'DW Spectrum' $info.version $ref
+      Info 'A DW server is updated with Digital Watchdog''s own installer - report only, the Toolkit never updates it.'
       if ($IncludeCameras -and (Dw-Login $t)) {
         foreach ($d in (Dw-Devices $t)) { if ($d.firmware) { $items += Judge-Firmware ('Camera ' + $d.ip) $d.model $d.firmware $ref } else { Info ('Camera ' + $d.ip + ' ' + $d.model + ': DW does not report its firmware.') } }
       }
     }
     default {
+      $blk = Login-Blocked $t
+      if ($blk) { Warn ('Firmware NOT CHECKED (' + (Login-Words $blk) + ').'); return [pscustomobject]@{ check = 'firmware'; ip = $Ip; vendor = $t.vendor; ok = $false; notChecked = $true; devices = @(); problems = @('not checked (login ' + $blk + ')'); log = $script:LogFile } }
       $di = $(if ($t.vendor -eq 'Uniview') { Unv-DeviceInfo $t } else { $null })
       if ($di -and $di.login -eq 'ok') { $items += Judge-Firmware 'Recorder' $di.model $di.firmware $ref }
       else {
@@ -984,7 +1015,9 @@ function Get-NvrHealth {
   $clk = Get-ClockStatus -Ip $Ip -Vendor $t.vendor -Credential $t.cred -Port $Port -IncludeCameras:$IncludeCameras -NoLog
   $fw = Get-FirmwareStatus -Ip $Ip -Vendor $t.vendor -Credential $t.cred -Port $Port -IncludeCameras:$IncludeCameras -NoLog
   $out = [pscustomobject]@{ taken = (Get-Date).ToString('s'); ip = $Ip; vendor = $t.vendor; recording = $rec; clock = $clk; firmware = $fw; ok = ($rec.ok -and $clk.ok -and $fw.ok); log = $script:LogFile }
-  Say ''; Say ('SUMMARY: recording ' + $(if ($rec.ok) { 'OK' } else { 'PROBLEM' }) + ' | time ' + $(if ($clk.ok) { 'OK' } else { 'PROBLEM' }) + ' | firmware ' + $(if ($fw.ok) { 'OK' } else { 'PROBLEM' })) $(if ($out.ok) { 'Green' } else { 'Red' })
+  $wd = { param($x) if ($x.ok) { 'OK' } elseif (@($x.problems).Count -and -not @(@($x.problems) | Where-Object { $_ -notmatch 'login refused|login skipped|not checked|no answer|unreadable' }).Count) { 'NOT CHECKED' } else { 'PROBLEM' } }
+  $ws = @((& $wd $rec), (& $wd $clk), (& $wd $fw))
+  Say ''; Say ('SUMMARY: recording ' + $ws[0] + ' | time ' + $ws[1] + ' | firmware ' + $ws[2]) $(if ($out.ok) { 'Green' } elseif ($ws -contains 'PROBLEM') { 'Red' } else { 'Yellow' })
   if ($Json) { ($out | ConvertTo-Json -Depth 8) | Set-Content -Path $Json -Encoding UTF8 -WhatIf:$false -Confirm:$false }
   return $out
 }
