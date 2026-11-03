@@ -1,9 +1,9 @@
 {
-  "version": "1.6.2",
+  "version": "1.6.3",
   "released": "2026-11-03",
-  "commit": "2185de0ec9b69e9cba0152f0971f2a400220c17d",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/2185de0ec9b69e9cba0152f0971f2a400220c17d/",
-  "notes": "Fix from the YKW Elm live re-test: with a working DW login, \"Check this site\" stopped half way (\"log.txt is being used by another process\") because the window reads the log while the check writes it. Logs are now written shared and can never stop a check. A check that stopped now says so instead of \"no answer or no login\". Includes all 1.6.1 fixes.",
+  "commit": "705c06a7e447e65e4ca1f42f6763651da9f61674",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/705c06a7e447e65e4ca1f42f6763651da9f61674/",
+  "notes": "Small fixes from the YKW Elm live run of 1.6.2: the DW recording line names the cameras (name + IP) instead of list numbers; last-footage times are shown in local time (were UTC, 5 h off); camera clocks behind a DW server are read from the fresh Find-cameras list without a login; cameras whose model is not in the firmware reference list are one summary line; \"Restart the camera\" only for cameras that still have a network link and never \"Put the camera back on the NVR\" on a DW server; the DW session is always logged out at the end (also after an error) and one DW login is shared by the whole run; Find cameras says to press Cancel on the firewall prompt and run the Toolkit installer once as admin. Includes all 1.6.1/1.6.2 fixes.",
   "files": [
     {
       "path": "Toolkit/WireItToolkit.ps1",
@@ -12,8 +12,8 @@
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
-      "sha256": "f809dd8cd47932f2d8d97a108ec40eb944f8b9919bd799dfc2a1fa35395a72dc",
-      "size": 54508
+      "sha256": "d92d35c12af9e2e1a5660d3c68a99a1fff5112f0313dcc782b135bcc5ee99414",
+      "size": 55776
     },
     {
       "path": "Toolkit/WireIt Toolkit.cmd",
@@ -27,8 +27,8 @@
     },
     {
       "path": "Toolkit/README.txt",
-      "sha256": "7de7dd199a0525dc6d14160b6108f9b9d4e680d94cce797302a44725abcbd610",
-      "size": 11021
+      "sha256": "18c1535855c2d26a829035018ceb9d9be47c898cf7ce6db869be362251f34fa7",
+      "size": 12410
     },
     {
       "path": "Toolkit/wireit.ico",
@@ -42,8 +42,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Toolkit.ps1",
-      "sha256": "0ea0e65c856296d9bb67335dc7b3ddafeac90678e07c8cfca878167270d9a254",
-      "size": 54777
+      "sha256": "07148babcebede504a93393d19bd7023e4749a207e3026cfee3e493e020c78eb",
+      "size": 63304
     },
     {
       "path": "Toolkit/CamViews.ps1",
@@ -82,8 +82,8 @@
     },
     {
       "path": "CamReset/Find-Cameras.ps1",
-      "sha256": "0e61bc00d64bc0d3f2e955b1b72776470356e26b87f9af4c72d220ced1a3b32a",
-      "size": 36300
+      "sha256": "0caeb3d39c3e3a76e85db25372350b4e606255c9645da256050f50fa5ad96f4d",
+      "size": 36320
     },
     {
       "path": "CamReset/Make-Request.ps1",
@@ -102,8 +102,8 @@
     },
     {
       "path": "CamReset/README.txt",
-      "sha256": "06cd1e53285469af26cb1230c4d7ae209dcd30890d4fead1b007afc664a53b68",
-      "size": 5570
+      "sha256": "f9f6fb8849001639bf433db1e528cb2e60311b1cd84925368b97758095c29a45",
+      "size": 5590
     },
     {
       "path": "NetCheck/NetCheck.ps1",
@@ -122,13 +122,13 @@
     },
     {
       "path": "Toolkit/NvrCheck.ps1",
-      "sha256": "1d85abe8f136665591cb730be8471f2615f49d509473429747b0689a089ede05",
-      "size": 15759
+      "sha256": "6cd44e43fdf068bfe5932da1695c0c6bf89e81ac1e0d2d2e6c615d91a70ccff5",
+      "size": 16769
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrHealth.psm1",
-      "sha256": "87373fc1a2fe19ad9d13ce8d4f2fc3e716356880f082702bd93d1b70ded66ce5",
-      "size": 92763
+      "sha256": "cfc11201508ad6ad25971ba512917be749b4470818c572ade93467ab1ed3c237",
+      "size": 101480
     },
     {
       "path": "Toolkit/modules/NvrHealth/firmware-latest.json",
@@ -137,13 +137,13 @@
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/Test-NvrHealth.ps1",
-      "sha256": "6febd78434a1b74eadb43526e586edcb1901a7384423d8d533f87074c2dfcb71",
-      "size": 18262
+      "sha256": "48fbce194f30aadcb848e851910aa43e12ffee3076259c7aa82259705e6bcada",
+      "size": 24555
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/mock_devices.py",
-      "sha256": "990269c599877f4c912086493a09972033c2f351bc862c700eb11d3b43c5dd15",
-      "size": 31436
+      "sha256": "0f06ed7773452464856db5251f98b12cb4fb94b20b8dc3abba3a3f6c926a4890",
+      "size": 32833
     },
     {
       "path": "Toolkit/ScanUpload.ps1",
@@ -157,8 +157,8 @@
     },
     {
       "path": "Toolkit/FixIt.ps1",
-      "sha256": "2623910caf8cddf40a39b54f273e20e85da953a5db8e786016d3b7cbe8d07cb1",
-      "size": 5767
+      "sha256": "5073f0e5d009b2c0af7f85c9d2591a53fb958cd140d607e36e6b0dd35bbb2d43",
+      "size": 5873
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrFix.ps1",
@@ -167,8 +167,8 @@
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
-      "sha256": "830d7b770af79f7338954fa5e04e3571c634d9e20db0baa1651c2b86fd17a08d",
-      "size": 7842
+      "sha256": "2d024084244530203d4e2e27602b55e814d9d3ac625ee46a0625df8fbad91f9a",
+      "size": 8101
     }
   ]
 }
