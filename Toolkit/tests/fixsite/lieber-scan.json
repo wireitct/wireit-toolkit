@@ -1,0 +1,129 @@
+{
+ "_about": "Synthetic recorded scan shaped like 3 Hewlett St (Lieber): Hikvision NVR, at least 2 cameras on the wrong IP scheme. Built from notes, not a real capture.",
+ "taken": "2026-11-03T18:00:00",
+ "pc": {
+  "ip": "192.168.1.105",
+  "gw": "192.168.1.1",
+  "mask": "255.255.255.0",
+  "dhcp": true
+ },
+ "devices": [
+  {
+   "kind": "nvr",
+   "brand": "Hikvision",
+   "model": "DS-7608NI-K2",
+   "serial": "DS-7608NI-K20820201234WCVU",
+   "mac": "44:19:b6:00:00:20",
+   "ip": "192.168.1.20",
+   "login": "site password"
+  },
+  {
+   "brand": "Hikvision",
+   "model": "DS-2CD2143G2-I",
+   "serial": "DS-2CD2143G2-I20210101AAWRF11111111",
+   "mac": "44:19:b6:00:00:21",
+   "ip": "192.168.1.21",
+   "firmware": "V5.7.3 build 220112",
+   "login": "site password",
+   "streams": {
+    "codec": "H.265",
+    "fps": 15,
+    "width": 2688,
+    "height": 1520,
+    "bitrate": 4096,
+    "gop": 15,
+    "smartCodec": "off"
+   }
+  },
+  {
+   "brand": "Hikvision",
+   "model": "DS-2CD2143G2-I",
+   "serial": "DS-2CD2143G2-I20210101AAWRF22222222",
+   "mac": "44:19:b6:00:00:22",
+   "ip": "192.168.1.22",
+   "firmware": "V5.7.3 build 220112",
+   "login": "site password",
+   "streams": {
+    "codec": "H.265",
+    "fps": 15,
+    "width": 2688,
+    "height": 1520,
+    "bitrate": 4096,
+    "gop": 15,
+    "smartCodec": "off"
+   }
+  },
+  {
+   "brand": "Hikvision",
+   "model": "DS-2CD2043G2-I",
+   "serial": "DS-2CD2043G2-I20200505AAWRF33333333",
+   "mac": "44:19:b6:00:00:33",
+   "ip": "192.168.0.64",
+   "firmware": "V5.6.5 build 200316",
+   "login": "WireIt usual 1"
+  },
+  {
+   "brand": "Hikvision",
+   "model": "DS-2CD2043G2-I",
+   "serial": "DS-2CD2043G2-I20200505AAWRF44444444",
+   "mac": "44:19:b6:00:00:44",
+   "ip": "192.168.0.65",
+   "firmware": "V5.6.5 build 200316",
+   "login": "unknown"
+  },
+  {
+   "brand": "Dahua",
+   "model": "IPC-HDW2431T",
+   "serial": "7J0ABCDPAG12345",
+   "mac": "3c:ef:8c:00:00:55",
+   "ip": "192.168.1.150",
+   "dhcp": true,
+   "firmware": "V2.820.0000000.18.R build 2022-03-01",
+   "login": "WireIt usual 1"
+  }
+ ],
+ "nvrs": [
+  {
+   "ip": "192.168.1.20",
+   "brand": "Hikvision",
+   "model": "DS-7608NI-K2",
+   "channels": [
+    {
+     "channel": 1,
+     "ip": "192.168.1.21",
+     "online": true,
+     "name": "Front Door",
+     "protocol": "HIKVISION"
+    },
+    {
+     "channel": 2,
+     "ip": "192.168.1.22",
+     "online": true,
+     "name": "Driveway",
+     "protocol": "HIKVISION"
+    },
+    {
+     "channel": 3,
+     "ip": "192.168.1.23",
+     "online": false,
+     "name": "Back Yard",
+     "protocol": "HIKVISION"
+    },
+    {
+     "channel": 4,
+     "ip": "192.168.1.24",
+     "online": false,
+     "name": "Side",
+     "protocol": "HIKVISION"
+    },
+    {
+     "channel": 5,
+     "ip": "192.168.1.150",
+     "online": true,
+     "name": "Garage",
+     "protocol": "ONVIF"
+    }
+   ]
+  }
+ ]
+}

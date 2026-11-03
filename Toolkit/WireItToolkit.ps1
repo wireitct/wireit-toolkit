@@ -6,7 +6,7 @@
  Start: double-click "WireIt Toolkit" on the desktop (or "WireIt Toolkit.cmd").
  Switches: -NoUpdate (skip the update check)   -Screenshot <folder> (tests: draw the windows to PNG, no screen)   -SimScale 1.5 (with -Screenshot: draw as a 150% screen)
 #>
-param([string]$Screenshot = '', [switch]$NoUpdate, [string]$DemoCamReset = '', [string]$UpdatedFrom = '', [double]$SimScale = 0, [string]$SimScreen = '')
+param([string]$Screenshot = '', [switch]$NoUpdate, [switch]$Classic, [string]$DemoCamReset = '', [string]$UpdatedFrom = '', [double]$SimScale = 0, [string]$SimScreen = '')
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -376,6 +376,16 @@ if (-not $NoUpdate -and -not $Screenshot) {
   }
 }
 if ($UpdatedFrom) { $TK.updateMsg = 'Updated itself from v' + $UpdatedFrom + '.' }
+
+# ---------------- 2.0: ONE screen first ("Fix this site"). The numbered buttons are behind "More tools" (or -Classic) ----------------
+if (-not $Classic -and -not $Screenshot) {
+  $fsw = Join-Path $here 'FixSiteWindow.ps1'
+  if ((Test-Path $fsw) -and (Test-Path (Join-Path $here 'FixSite.ps1'))) {
+    $fswResult = 'classic'
+    try { $fswResult = [string](@(& $fsw -ToolkitDir $here -Version $TK.ver -Note $TK.updateMsg) | Select-Object -Last 1) } catch { $fswResult = 'classic'; Write-TkLog $TK.P.Logs 'window' ('One-button screen failed, opening the classic window: ' + $_.Exception.Message) | Out-Null }
+    if ($fswResult -ne 'classic') { try { $TK.mutex.ReleaseMutex() } catch {}; exit 0 }
+  }
+}
 
 # ---------------- look ----------------
 $g = [Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $TK.scale = [math]::Max(1.0, $g.DpiX / 96.0); $g.Dispose()

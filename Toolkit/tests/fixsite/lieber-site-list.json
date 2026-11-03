@@ -1,0 +1,60 @@
+{
+ "site": "3 Hewlett St (Lieber)",
+ "siteId": "WI-0XX",
+ "scheme": "192.168.1",
+ "nvrs": [
+  {
+   "brand": "Hikvision",
+   "mac": "44:19:b6:00:00:20",
+   "ip": "192.168.1.20"
+  }
+ ],
+ "cameras": [
+  {
+   "name": "Front Door",
+   "mac": "44:19:b6:00:00:21",
+   "ip": "192.168.1.21",
+   "channel": 1,
+   "switch": "Basement PoE switch",
+   "port": 3
+  },
+  {
+   "name": "Driveway",
+   "mac": "44:19:b6:00:00:22",
+   "ip": "192.168.1.22",
+   "channel": 2,
+   "switch": "Basement PoE switch",
+   "port": 4
+  },
+  {
+   "name": "Back Yard",
+   "mac": "44:19:b6:00:00:33",
+   "ip": "192.168.1.23",
+   "channel": 3,
+   "switch": "Basement PoE switch",
+   "port": 5
+  },
+  {
+   "name": "Side",
+   "mac": "44:19:b6:00:00:44",
+   "ip": "192.168.1.24",
+   "channel": 4,
+   "switch": "Basement PoE switch",
+   "port": 6
+  },
+  {
+   "name": "Garage",
+   "mac": "3c:ef:8c:00:00:55",
+   "ip": "192.168.1.25",
+   "channel": 5
+  },
+  {
+   "name": "Pool",
+   "mac": "44:19:b6:00:00:66",
+   "ip": "192.168.1.26",
+   "channel": 6,
+   "switch": "Basement PoE switch",
+   "port": 10
+  }
+ ]
+}

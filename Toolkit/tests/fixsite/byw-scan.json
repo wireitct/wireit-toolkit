@@ -1,0 +1,130 @@
+{
+ "_about": "Synthetic recorded scan shaped like Bais Yaakov of Waterbury (Oct 30 + Nov 3 notes): Hikvision DS-9664NI-M8 NVR at .152, Dahua N42BJ62 cameras (.83/.85, firmware 2020) with no video on the NVR, one Dahua hung. Built from files/byw/report.md, not a real capture (no BYW scan file was saved).",
+ "taken": "2026-11-03T13:36:00",
+ "pc": {
+  "ip": "192.168.1.239",
+  "gw": "192.168.1.1",
+  "mask": "255.255.255.0",
+  "dhcp": true
+ },
+ "devices": [
+  {
+   "kind": "nvr",
+   "brand": "Hikvision",
+   "model": "DS-9664NI-M8",
+   "serial": "AE9312876",
+   "mac": "c0:56:e3:00:01:52",
+   "ip": "192.168.1.152",
+   "login": "typed"
+  },
+  {
+   "brand": "Dahua",
+   "model": "N42BJ62",
+   "serial": "8E0AB12PAZ00083",
+   "mac": "9c:14:63:00:00:83",
+   "ip": "192.168.1.83",
+   "firmware": "V2.800.12JW000.0.R build 2020-06-28",
+   "login": "site password",
+   "streams": {
+    "codec": "H.265",
+    "fps": 20,
+    "width": 2560,
+    "height": 1440,
+    "bitrate": 4096,
+    "gop": 40,
+    "smartCodec": "on",
+    "maxWidth": 2688,
+    "maxHeight": 1520
+   }
+  },
+  {
+   "brand": "Dahua",
+   "model": "N42BJ62",
+   "serial": "8E0AB12PAZ00085",
+   "mac": "9c:14:63:00:00:85",
+   "ip": "192.168.1.85",
+   "firmware": "V2.800.12JW000.0.R build 2020-06-28",
+   "login": "site password",
+   "streams": {
+    "codec": "H.264",
+    "fps": 20,
+    "width": 2688,
+    "height": 1520,
+    "bitrate": 3584,
+    "gop": 20,
+    "smartCodec": "off"
+   }
+  },
+  {
+   "brand": "Dahua",
+   "model": "N42BJ62",
+   "serial": "8E0AB12PAZ00087",
+   "mac": "9c:14:63:00:00:87",
+   "ip": "192.168.1.87",
+   "firmware": "V2.800.12JW000.0.R build 2020-06-28",
+   "answers": false,
+   "login": ""
+  },
+  {
+   "brand": "Hikvision",
+   "model": "NC324G2-XD",
+   "serial": "NC324G2XD0001",
+   "mac": "c0:56:e3:00:00:31",
+   "ip": "192.168.1.31",
+   "firmware": "V5.7.10 build 230101",
+   "login": "site password",
+   "streams": {
+    "codec": "H.265",
+    "fps": 15,
+    "width": 2688,
+    "height": 1520,
+    "bitrate": 4096,
+    "gop": 15,
+    "smartCodec": "off"
+   }
+  }
+ ],
+ "nvrs": [
+  {
+   "ip": "192.168.1.152",
+   "brand": "Hikvision",
+   "model": "DS-9664NI-M8",
+   "channels": [
+    {
+     "channel": 1,
+     "ip": "192.168.1.31",
+     "online": true,
+     "name": "Hall 1",
+     "protocol": "HIKVISION"
+    },
+    {
+     "channel": 19,
+     "ip": "192.168.1.83",
+     "online": false,
+     "name": "Second Entrance",
+     "protocol": "ONVIF"
+    },
+    {
+     "channel": 21,
+     "ip": "192.168.1.85",
+     "online": true,
+     "name": "Lunch Room",
+     "protocol": "ONVIF"
+    },
+    {
+     "channel": 22,
+     "ip": "192.168.1.87",
+     "online": false,
+     "name": "DR Side",
+     "protocol": "ONVIF"
+    }
+   ]
+  }
+ ],
+ "ports": {
+  "9c:14:63:00:00:87": {
+   "switch": "Gym switch",
+   "port": 10
+  }
+ }
+}

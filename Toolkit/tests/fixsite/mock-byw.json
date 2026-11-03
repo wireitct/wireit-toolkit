@@ -1,0 +1,115 @@
+{
+ "pc": {
+  "ip": "192.168.1.239",
+  "gw": "192.168.1.1",
+  "mask": "255.255.255.0",
+  "dhcp": true
+ },
+ "devices": {
+  "192.168.1.152": {
+   "brand": "Hikvision",
+   "model": "DS-9664NI-M8",
+   "serial": "AE9312876",
+   "mac": "c0:56:e3:00:01:52",
+   "kind": "nvr",
+   "password": "NvrPass9",
+   "firmware": "V5.7.3 build 220112",
+   "channels": {
+    "1": {
+     "ip": "192.168.1.31",
+     "password": "Usual#Pw1",
+     "name": "Hall 1",
+     "protocol": "HIKVISION"
+    },
+    "19": {
+     "ip": "192.168.1.83",
+     "password": "Usual#Pw1",
+     "name": "Second Entrance",
+     "protocol": "ONVIF"
+    },
+    "21": {
+     "ip": "192.168.1.85",
+     "password": "Usual#Pw1",
+     "name": "Lunch Room",
+     "protocol": "ONVIF"
+    },
+    "22": {
+     "ip": "192.168.1.87",
+     "password": "Usual#Pw1",
+     "name": "DR Side",
+     "protocol": "ONVIF"
+    }
+   }
+  },
+  "192.168.1.31": {
+   "brand": "Hikvision",
+   "model": "NC324G2-XD",
+   "serial": "NC324G2XD0001",
+   "mac": "c0:56:e3:00:00:31",
+   "kind": "camera",
+   "password": "Usual#Pw1",
+   "firmware": "V5.7.10 build 230101"
+  },
+  "192.168.1.83": {
+   "brand": "Dahua",
+   "model": "N42BJ62",
+   "serial": "8E0AB12PAZ00083",
+   "mac": "9c:14:63:00:00:83",
+   "kind": "camera",
+   "password": "Usual#Pw1",
+   "firmware": "V2.800.12JW000.0.R build 2020-06-28",
+   "stream": {
+    "codec": "H.265",
+    "fps": 20,
+    "width": 2560,
+    "height": 1440,
+    "bitrate": 4096,
+    "gop": 40,
+    "smart": "on",
+    "maxw": 2688,
+    "maxh": 1520
+   }
+  },
+  "192.168.1.85": {
+   "brand": "Dahua",
+   "model": "N42BJ62",
+   "serial": "8E0AB12PAZ00085",
+   "mac": "9c:14:63:00:00:85",
+   "kind": "camera",
+   "password": "Usual#Pw1",
+   "firmware": "V2.800.12JW000.0.R build 2020-06-28",
+   "stream": {
+    "codec": "H.264",
+    "fps": 20,
+    "width": 2688,
+    "height": 1520,
+    "bitrate": 3584,
+    "gop": 20,
+    "smart": "off",
+    "maxw": 2688,
+    "maxh": 1520
+   }
+  },
+  "192.168.1.87": {
+   "brand": "Dahua",
+   "model": "N42BJ62",
+   "serial": "8E0AB12PAZ00087",
+   "mac": "9c:14:63:00:00:87",
+   "kind": "camera",
+   "password": "Usual#Pw1",
+   "firmware": "V2.800.12JW000.0.R build 2020-06-28",
+   "answers": false,
+   "stream": {
+    "codec": "H.265",
+    "fps": 20,
+    "width": 2560,
+    "height": 1440,
+    "bitrate": 4096,
+    "gop": 40,
+    "smart": "on",
+    "maxw": 2688,
+    "maxh": 1520
+   }
+  }
+ }
+}

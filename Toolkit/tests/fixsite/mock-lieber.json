@@ -1,0 +1,97 @@
+{
+ "pc": {
+  "ip": "192.168.1.105",
+  "gw": "192.168.1.1",
+  "mask": "255.255.255.0",
+  "dhcp": true
+ },
+ "devices": {
+  "192.168.1.20": {
+   "brand": "Hikvision",
+   "model": "DS-7608NI-K2",
+   "serial": "DS-7608NI-K20820201234WCVU",
+   "mac": "44:19:b6:00:00:20",
+   "kind": "nvr",
+   "password": "NvrPass9",
+   "firmware": "V5.7.3 build 220112",
+   "channels": {
+    "1": {
+     "ip": "192.168.1.21",
+     "password": "Usual#Pw1",
+     "name": "Front Door",
+     "protocol": "HIKVISION"
+    },
+    "2": {
+     "ip": "192.168.1.22",
+     "password": "Usual#Pw1",
+     "name": "Driveway",
+     "protocol": "HIKVISION"
+    },
+    "3": {
+     "ip": "192.168.1.23",
+     "password": "Usual#Pw1",
+     "name": "Back Yard",
+     "protocol": "HIKVISION"
+    },
+    "4": {
+     "ip": "192.168.1.24",
+     "password": "Usual#Pw1",
+     "name": "Side",
+     "protocol": "HIKVISION"
+    },
+    "5": {
+     "ip": "192.168.1.150",
+     "password": "Usual#Pw1",
+     "name": "Garage",
+     "protocol": "ONVIF"
+    }
+   }
+  },
+  "192.168.1.21": {
+   "brand": "Hikvision",
+   "model": "DS-2CD2143G2-I",
+   "serial": "DS-2CD2143G2-I20210101AAWRF11111111",
+   "mac": "44:19:b6:00:00:21",
+   "kind": "camera",
+   "password": "Usual#Pw1",
+   "firmware": "V5.7.3 build 220112"
+  },
+  "192.168.1.22": {
+   "brand": "Hikvision",
+   "model": "DS-2CD2143G2-I",
+   "serial": "DS-2CD2143G2-I20210101AAWRF22222222",
+   "mac": "44:19:b6:00:00:22",
+   "kind": "camera",
+   "password": "Usual#Pw1",
+   "firmware": "V5.7.3 build 220112"
+  },
+  "192.168.0.64": {
+   "brand": "Hikvision",
+   "model": "DS-2CD2043G2-I",
+   "serial": "DS-2CD2043G2-I20200505AAWRF33333333",
+   "mac": "44:19:b6:00:00:33",
+   "kind": "camera",
+   "password": "Usual#Pw1",
+   "firmware": "V5.6.5 build 200316"
+  },
+  "192.168.0.65": {
+   "brand": "Hikvision",
+   "model": "DS-2CD2043G2-I",
+   "serial": "DS-2CD2043G2-I20200505AAWRF44444444",
+   "mac": "44:19:b6:00:00:44",
+   "kind": "camera",
+   "password": "Typed#Pw77",
+   "firmware": "V5.6.5 build 200316"
+  },
+  "192.168.1.150": {
+   "brand": "Dahua",
+   "model": "IPC-HDW2431T",
+   "serial": "7J0ABCDPAG12345",
+   "mac": "3c:ef:8c:00:00:55",
+   "kind": "camera",
+   "password": "Usual#Pw1",
+   "firmware": "V2.820.0000000.18.R build 2022-03-01",
+   "dhcp": true
+  }
+ }
+}
