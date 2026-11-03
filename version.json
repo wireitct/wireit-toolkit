@@ -1,149 +1,159 @@
 {
- "version": "1.3.0",
- "released": "2026-11-02",
- "commit": "d567625bd61e7c4cd36b7e00276cf0d5f5a26120",
- "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/d567625bd61e7c4cd36b7e00276cf0d5f5a26120/",
- "notes": "Recorder health: 9 Recording check (every camera recording, days kept vs. the site target - YKW 45, others 30 - and drive health), 10 Clock check, 11 Fix clock (NTP: shows the plan, changes only after you type YES), 12 Firmware check (newest firmware + known security holes; reports only). All read-only except 11.",
- "files": [
-  {
-   "path": "Toolkit/WireItToolkit.ps1",
-   "sha256": "efef1ed1574c6574272ba82015227cf42d085e005fbbf2e9844f9828d0140345",
-   "size": 88157
-  },
-  {
-   "path": "Toolkit/ToolkitCore.ps1",
-   "sha256": "bc6f9c6b2c27e4f169272a5b53b015e9617358d24a2badd8512299b761910caf",
-   "size": 24943
-  },
-  {
-   "path": "Toolkit/WireIt Toolkit.cmd",
-   "sha256": "467a4616a12d06212176e10d49264eb1ce91a5ad54629f92a1a99eae1e57919a",
-   "size": 243
-  },
-  {
-   "path": "Toolkit/Install-Toolkit.ps1",
-   "sha256": "2993d2fe86402d8f3302ebd8e39cf4bc5523ea01c5adcc0b09047e72f76bda38",
-   "size": 4280
-  },
-  {
-   "path": "Toolkit/README.txt",
-   "sha256": "d8daf38ef295d2bf2a335e678ea06a08379e34d962036fff029c82bb81d70d05",
-   "size": 6179
-  },
-  {
-   "path": "Toolkit/wireit.ico",
-   "sha256": "21f9b45d92577d82d23b53e0cca7471eb556edb100072ebd14211fb8c7c38909",
-   "size": 68202
-  },
-  {
-   "path": "Toolkit/wireit-logo.png",
-   "sha256": "dc00af083bfaf5b994f3a91940fa06a4ca33d173e8963944b382e3334757ea4f",
-   "size": 26683
-  },
-  {
-   "path": "Toolkit/tests/Test-Toolkit.ps1",
-   "sha256": "66ab1febdba1fbbadebfad279e4144d4c468947a8d624fbea6666804043c5b35",
-   "size": 23577
-  },
-  {
-   "path": "Toolkit/CamViews.ps1",
-   "sha256": "1ef7b655fe2e553a0988c195e9febc03e8af8588ef5aa12b00ad80618cef5e82",
-   "size": 26688
-  },
-  {
-   "path": "Toolkit/Set upload key.cmd",
-   "sha256": "35822aaba2b4f76b6293c4fdc3bc79a89067fc321f49882dc7eeae80ab739b44",
-   "size": 225
-  },
-  {
-   "path": "FixNVR/FixNVR.ps1",
-   "sha256": "82050991e97c96f9fdd8712e3506f1ed6bb099cafdcee3f1f9afa8ef64790daa",
-   "size": 85220
-  },
-  {
-   "path": "FixNVR/Check NVR.cmd",
-   "sha256": "cca4e7bc4959f9c4bced996570fde73bfa783422fdaaf8a0d1c4d7eb6cce4a1a",
-   "size": 357
-  },
-  {
-   "path": "FixNVR/Fix NVR.cmd",
-   "sha256": "c0992e3e524600fe6dc0f411a5a270c8fd64d3295471cfc161df363bb8b11c66",
-   "size": 353
-  },
-  {
-   "path": "FixNVR/NVR Snapshot.cmd",
-   "sha256": "378646da694552e2025ed69b6dd56fd16e8b03b176c3225f1cc09cc66c5543e1",
-   "size": 752
-  },
-  {
-   "path": "FixNVR/README.txt",
-   "sha256": "581f3c664d8a8250bff22f8d312709a6ca6b4cc5b6725318f49a39b075b2d0bf",
-   "size": 7688
-  },
-  {
-   "path": "CamReset/Find-Cameras.ps1",
-   "sha256": "dc6a804371ab682c456ad51a3e8f35fa3e60c15b9d7bc93882bc5716b240e930",
-   "size": 17551
-  },
-  {
-   "path": "CamReset/Make-Request.ps1",
-   "sha256": "3af37ab2e69d3346e99c892e22df5c44d50e2a796ea7ee3d84086aa87f33787e",
-   "size": 3833
-  },
-  {
-   "path": "CamReset/Install-CamReset.ps1",
-   "sha256": "666844b6592acea9815f78fa6a30e43a54c720ce8cbeefce28170fe5b3904d47",
-   "size": 1607
-  },
-  {
-   "path": "CamReset/Find Cameras.cmd",
-   "sha256": "8d72512d20a55e892b96765e26c2ee43da1320f509ae4a1db4932bad8cb8f297",
-   "size": 125
-  },
-  {
-   "path": "CamReset/README.txt",
-   "sha256": "41026c0cec34aed7d9455c849d8cba231b7281cf6dce89a5731a1ded5466f483",
-   "size": 4649
-  },
-  {
-   "path": "NetCheck/NetCheck.ps1",
-   "sha256": "6ed617007ea62f6a7e5f1c3960eb8d6da0d5947f60515ad95f9fcb7550258814",
-   "size": 15636
-  },
-  {
-   "path": "NetCheck/Network Check.cmd",
-   "sha256": "f6818feed516bfc141769f4db6fb4ed98589853f5200ee30cf44f45b6f92ed10",
-   "size": 196
-  },
-  {
-   "path": "NetCheck/README.txt",
-   "sha256": "7814cdb8561f4f517f7b727512b78a0c43534e372d472282f0a873f6d9560ec6",
-   "size": 2042
-  },
-  {
-   "path": "Toolkit/NvrCheck.ps1",
-   "sha256": "34e847ca0f2cb81f5446552e0dbd64e70472c9793d616f80ef73014f62126c8b",
-   "size": 5316
-  },
-  {
-   "path": "Toolkit/modules/NvrHealth/NvrHealth.psm1",
-   "sha256": "62f98f98a4682b2fb15c88a0baf4bf0cb7766b954873c1531efc001bc9211789",
-   "size": 70707
-  },
-  {
-   "path": "Toolkit/modules/NvrHealth/firmware-latest.json",
-   "sha256": "24172bf5ba951dc7e3695cd9f3750689d2cad970916aa2eefbebd65f9426b967",
-   "size": 22130
-  },
-  {
-   "path": "Toolkit/modules/NvrHealth/tests/Test-NvrHealth.ps1",
-   "sha256": "fae53bf842db1f710dc87990a2538e65d0dc48f620d8e89afc18e0c7b84511de",
-   "size": 12056
-  },
-  {
-   "path": "Toolkit/modules/NvrHealth/tests/mock_devices.py",
-   "sha256": "205c6c825d0551b654ddd9bb2963364258025c626bc877577baf82fe600a53e8",
-   "size": 24779
-  }
- ]
+  "version": "1.4.0",
+  "released": "2026-11-03",
+  "commit": "839a4df0fe9d82e11a0ac9a3ab0554d5a6e89e53",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/839a4df0fe9d82e11a0ac9a3ab0554d5a6e89e53/",
+  "notes": "Site camera list: after 1 Find cameras, the list (type, brand, model, serial, MAC, IP, firmware, NVR channel - never a password) is saved to the site page you type in the box (Site ID like WI-061 or the address). One list per site, updated in place; cameras missing since the last scan show in red here and on the site page (one alert each). Clearer labels; the Bitwarden option moved under Advanced.",
+  "files": [
+    {
+      "path": "Toolkit/WireItToolkit.ps1",
+      "sha256": "f613189e4d4aaac928f00a74895665c6fda8e6f242b1d224d5b6607a84dcc9ee",
+      "size": 94087
+    },
+    {
+      "path": "Toolkit/ToolkitCore.ps1",
+      "sha256": "0237515c4599c404bbdfdcec771d0d7ca25ad2258aa540e09b9a25ea42e70d1e",
+      "size": 30003
+    },
+    {
+      "path": "Toolkit/WireIt Toolkit.cmd",
+      "sha256": "467a4616a12d06212176e10d49264eb1ce91a5ad54629f92a1a99eae1e57919a",
+      "size": 243
+    },
+    {
+      "path": "Toolkit/Install-Toolkit.ps1",
+      "sha256": "86d3c4943dc97f579a78ae61ec266d09fe82d069630f1b5dce929684945a19de",
+      "size": 4298
+    },
+    {
+      "path": "Toolkit/README.txt",
+      "sha256": "d8b2ef4b96fb649750b7d761df237f9237ffbc6c25ed73277ff7d3ea45ad9ee8",
+      "size": 7068
+    },
+    {
+      "path": "Toolkit/wireit.ico",
+      "sha256": "21f9b45d92577d82d23b53e0cca7471eb556edb100072ebd14211fb8c7c38909",
+      "size": 68202
+    },
+    {
+      "path": "Toolkit/wireit-logo.png",
+      "sha256": "dc00af083bfaf5b994f3a91940fa06a4ca33d173e8963944b382e3334757ea4f",
+      "size": 26683
+    },
+    {
+      "path": "Toolkit/tests/Test-Toolkit.ps1",
+      "sha256": "beb1c1d0d052ca77bf6cdafd4d91455e985e9c0ed217389570e10c71d3770a37",
+      "size": 33217
+    },
+    {
+      "path": "Toolkit/CamViews.ps1",
+      "sha256": "1ef7b655fe2e553a0988c195e9febc03e8af8588ef5aa12b00ad80618cef5e82",
+      "size": 26688
+    },
+    {
+      "path": "Toolkit/Set upload key.cmd",
+      "sha256": "35822aaba2b4f76b6293c4fdc3bc79a89067fc321f49882dc7eeae80ab739b44",
+      "size": 225
+    },
+    {
+      "path": "FixNVR/FixNVR.ps1",
+      "sha256": "82050991e97c96f9fdd8712e3506f1ed6bb099cafdcee3f1f9afa8ef64790daa",
+      "size": 85220
+    },
+    {
+      "path": "FixNVR/Check NVR.cmd",
+      "sha256": "cca4e7bc4959f9c4bced996570fde73bfa783422fdaaf8a0d1c4d7eb6cce4a1a",
+      "size": 357
+    },
+    {
+      "path": "FixNVR/Fix NVR.cmd",
+      "sha256": "c0992e3e524600fe6dc0f411a5a270c8fd64d3295471cfc161df363bb8b11c66",
+      "size": 353
+    },
+    {
+      "path": "FixNVR/NVR Snapshot.cmd",
+      "sha256": "378646da694552e2025ed69b6dd56fd16e8b03b176c3225f1cc09cc66c5543e1",
+      "size": 752
+    },
+    {
+      "path": "FixNVR/README.txt",
+      "sha256": "581f3c664d8a8250bff22f8d312709a6ca6b4cc5b6725318f49a39b075b2d0bf",
+      "size": 7688
+    },
+    {
+      "path": "CamReset/Find-Cameras.ps1",
+      "sha256": "dc6a804371ab682c456ad51a3e8f35fa3e60c15b9d7bc93882bc5716b240e930",
+      "size": 17551
+    },
+    {
+      "path": "CamReset/Make-Request.ps1",
+      "sha256": "3af37ab2e69d3346e99c892e22df5c44d50e2a796ea7ee3d84086aa87f33787e",
+      "size": 3833
+    },
+    {
+      "path": "CamReset/Install-CamReset.ps1",
+      "sha256": "666844b6592acea9815f78fa6a30e43a54c720ce8cbeefce28170fe5b3904d47",
+      "size": 1607
+    },
+    {
+      "path": "CamReset/Find Cameras.cmd",
+      "sha256": "8d72512d20a55e892b96765e26c2ee43da1320f509ae4a1db4932bad8cb8f297",
+      "size": 125
+    },
+    {
+      "path": "CamReset/README.txt",
+      "sha256": "41026c0cec34aed7d9455c849d8cba231b7281cf6dce89a5731a1ded5466f483",
+      "size": 4649
+    },
+    {
+      "path": "NetCheck/NetCheck.ps1",
+      "sha256": "6ed617007ea62f6a7e5f1c3960eb8d6da0d5947f60515ad95f9fcb7550258814",
+      "size": 15636
+    },
+    {
+      "path": "NetCheck/Network Check.cmd",
+      "sha256": "f6818feed516bfc141769f4db6fb4ed98589853f5200ee30cf44f45b6f92ed10",
+      "size": 196
+    },
+    {
+      "path": "NetCheck/README.txt",
+      "sha256": "7814cdb8561f4f517f7b727512b78a0c43534e372d472282f0a873f6d9560ec6",
+      "size": 2042
+    },
+    {
+      "path": "Toolkit/NvrCheck.ps1",
+      "sha256": "34e847ca0f2cb81f5446552e0dbd64e70472c9793d616f80ef73014f62126c8b",
+      "size": 5316
+    },
+    {
+      "path": "Toolkit/modules/NvrHealth/NvrHealth.psm1",
+      "sha256": "62f98f98a4682b2fb15c88a0baf4bf0cb7766b954873c1531efc001bc9211789",
+      "size": 70707
+    },
+    {
+      "path": "Toolkit/modules/NvrHealth/firmware-latest.json",
+      "sha256": "24172bf5ba951dc7e3695cd9f3750689d2cad970916aa2eefbebd65f9426b967",
+      "size": 22130
+    },
+    {
+      "path": "Toolkit/modules/NvrHealth/tests/Test-NvrHealth.ps1",
+      "sha256": "fae53bf842db1f710dc87990a2538e65d0dc48f620d8e89afc18e0c7b84511de",
+      "size": 12056
+    },
+    {
+      "path": "Toolkit/modules/NvrHealth/tests/mock_devices.py",
+      "sha256": "205c6c825d0551b654ddd9bb2963364258025c626bc877577baf82fe600a53e8",
+      "size": 24779
+    },
+    {
+      "path": "Toolkit/ScanUpload.ps1",
+      "sha256": "ab4f351675bdabed4c006ec89462a4adc567dc0c39d36486d0ef1dda95d4566a",
+      "size": 5208
+    },
+    {
+      "path": "Toolkit/tests/mock_scan_server.py",
+      "sha256": "b5f490edd8616f75d663ffea27b28d2d874c6787ee98e9f7da84b31d211e6210",
+      "size": 2050
+    }
+  ]
 }
