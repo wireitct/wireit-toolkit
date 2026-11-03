@@ -60,5 +60,5 @@ SAFETY
   - Firewall rules added by Install (remove with Install-CamReset.ps1 -Uninstall):
     "WireIt CamReset - SADP discovery replies (UDP 37020)", "WireIt CamReset - camera discovery replies (PowerShell, local network)",
     "WireIt CamReset - HiTools Delivery", "WireIt CamReset - HiTools hscan".
-    Without them Find Cameras prints: "If Windows asks about the firewall, press Allow - or run Install once as admin so it never asks."
+    Without them Find Cameras prints: "If Windows asks about the firewall, press Cancel; to add the firewall rule, run the Toolkit installer once as admin."
   - Tests (mocks on 127.0.0.x only): powershell -ExecutionPolicy Bypass -File tests\Test-FindCameras.ps1

@@ -1,4 +1,4 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.6.2, 2026-11-03
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.6.3, 2026-11-03
 ==============================================================================
 One window for the site tools. Double-click "WireIt Toolkit" on the desktop.
 Works with no internet and without Tab. Windows PowerShell 5.1 only, nothing to install.
@@ -69,6 +69,22 @@ FIX WHAT FAILED (1.6.0) - NOT YET TESTED ON REAL EQUIPMENT
     Set the site password    ONE device (Hikvision), strong password typed twice
     Fix the camera password in DW   gives DW the camera's right password so DW stops locking it
   Undo: each run saves its backup in its runs folder. the "Go back to the previous version" button removes 1.6.0.
+
+1.6.3 SMALL FIXES (from the YKW Elm live run of 1.6.2, Nov 3 2026)
+- DW recording line names the cameras (DW name + IP) instead of DW's list numbers ("5, 30, 55...").
+- Last-footage times in the recording details are shown in this PC's local time (they were UTC, 5 h off).
+- Camera clocks behind a DW server: the cameras Find cameras just found are read WITHOUT a login (the standard
+  ONVIF time read - no password is sent, nothing can lock). One summary line; only wrong clocks are listed.
+  A wrong camera clock behind DW is fixed on the camera's page (or by DW) - no "Fix time" button for it.
+- Firmware: cameras whose model is not in the reference list are one line ("N camera model(s) not in the
+  reference list"), each one is in the log.
+- "Restart the camera" is offered only for a camera that still has a network link (it reboots through its own
+  web page). "Put the camera back on the NVR" is never offered on a DW server.
+- A DW session is logged out at the end of every run (also when a check stops with an error), and recording,
+  clock and firmware share ONE DW login (a working login used to be sent up to 3 times).
+- Find cameras: "If Windows asks about the firewall, press Cancel; to add the firewall rule, run the Toolkit
+  installer once as admin."
+Not tested on real equipment yet (mock tests only): the no-login camera clock read on Uniview cameras, the DW logout.
 
 1.6.2 FIX (YKW Elm live re-test of 1.6.1, Nov 3 2026)
 - With a working DW login, "Check this site" stopped half way with "the file log.txt is being used by another

@@ -605,6 +605,12 @@ function Test-TkCamReach([string]$ip, [string]$mac = '', [int[]]$ports = @(80, 4
   }
   return [pscustomobject]@{ ip = $ip; ping = $ping; mac = $seen; macMatch = $(if ($mac -and $seen) { $seen -eq $mac } else { $null }); movedTo = $moved; open = $open; rtsp = $rtsp }
 }
+function Test-TkHasLink([string]$ip) {
+  # 1.4: does this camera still have a network link from this PC (ping, ARP entry or an open web/video port)?
+  if (-not $ip) { return $false }
+  try { $r = Test-TkCamReach $ip '' @(80, 443, 554) } catch { return $false }
+  return [bool]($r.ping -or $r.mac -or @($r.open).Count)
+}
 function Get-TkLikelyCause($reach, [string]$dwStatus = '') {
   if ($reach.movedTo) { return @{ k = 'moved'; t = 'IP MOVED: its MAC now answers at ' + $reach.movedTo + ' - DW still looks at the old address. Fix the address in DW (or set the camera back).' } }
   if (-not $reach.ping -and -not $reach.mac -and -not @($reach.open).Count) { return @{ k = 'dead'; t = 'NO LINK: no ping, not in the ARP table - cable, switch port / PoE power, or the camera is dead.' } }
@@ -625,7 +631,7 @@ function Get-TkDwProblemCams($channels, [int]$staleHours = 24, $nowUtc = $null) 
     $bad = ($st -and $st -notin @('Recording', 'Online')); $stale = ($null -eq $hrs -and $c.scheduled) -or ($null -ne $hrs -and $hrs -gt $staleHours -and -not $c.recording_now)
     if (-not $bad -and -not $stale) { continue }
     $rch = $(if ($c.ip) { Test-TkCamReach ([string]$c.ip) ([string]$c.mac) @(80, 554) $arp } else { $null })
-    $cause = $(if ($rch) { Get-TkLikelyCause $rch $st } else { @{ k = 'check'; t = 'no IP known in DW' } })
+    $cause = $(if ($rch) { Get-TkLikelyCause $rch $st } else { @{ k = 'noip'; t = 'no IP known in DW' } })
     $when = $(if ($nw) { 'last recording ' + $nw.ToLocalTime().ToString('MMM d') + $(if ($hrs -ge 48) { ' (' + [math]::Floor($hrs / 24) + ' days ago)' } else { ' (' + $hrs + ' h ago)' }) } else { 'no recording found' })
     $nm = $(if ($c.name) { [string]$c.name } else { 'camera ' + $c.ch })
     $out += [pscustomobject]@{ name = $nm; ip = [string]$c.ip; status = $st; hours = $hrs; cause = $cause.k; reach = $rch; t = ($nm + ' (' + $c.ip + ') - DW: ' + $(if ($st) { $st } else { '?' }) + ', ' + $when + ': ' + $cause.t) }
@@ -678,7 +684,11 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
     # 1.6.1: an unreadable clock = "not checked" (amber); only a clock that was READ and is wrong is red and gets the time fix
     $clkReal = @($clk.problems | Where-Object { $_ -and $_ -notmatch $TkNotCheckedRx })
     if ($clk.ok) { & $add 'Clocks: right, time server on.' 'ok' }
-    elseif ($clkReal.Count) { & $add ('Clocks: ' + (& $j ($clkReal | Select-Object -First 4))) 'red'; $fix.Add('ntp') }
+    elseif ($clkReal.Count) {
+      & $add ('Clocks: ' + (& $j ($clkReal | Select-Object -First 4))) 'red'
+      # 1.4: behind a DW server a wrong CAMERA clock was read without a login - "Fix time" has no camera password, so no button for it
+      if (-not ($isDw -and -not @($clkReal | Where-Object { $_ -notmatch '^camera ' }).Count)) { $fix.Add('ntp') }
+    }
     else { & $add ('Clock: not checked (' + $(if ($loginWhy) { $loginWhy } else { 'could not read it' }) + ')') 'warn'; $nc.Add('clock'); $page.clock.notChecked = $true }
     $page.fw = [ordered]@{ ok = [bool]$fw.ok; problems = @($fw.problems | Select-Object -First 8) }
     if ($fw.ok) { & $add 'Firmware: current, no known security holes.' 'ok' }
@@ -686,7 +696,14 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
     elseif ($isDw) { & $add ('Firmware (report only - a DW server is updated with the DW installer, not by the Toolkit): ' + (& $j ($fw.problems | Select-Object -First 4))) 'warn'; $page.fw.reportOnly = $true }   # 1.6.1: never a firmware fix for DW
     else { & $add ('Firmware: ' + (& $j ($fw.problems | Select-Object -First 4))) 'red'; $fix.Add('firmware') }
     if ($sched.Count) { $fix.Add('recording') }
-    if ($off.Count) { $fix.Add('restart'); $fix.Add('readd') }
+    # 1.4 (YKW Elm): "Put the camera back on the NVR" is never offered on a DW server (there is no NVR channel), and
+    # "Restart the camera" only for a camera that still has a network link (it reboots through the camera's own web page).
+    # DW cameras: decided below from the ping / ARP cause. NVR cameras: an offline camera whose IP shows no link is left out.
+    if ($off.Count -and -not $isDw) {
+      $offLinked = @($chs | Where-Object { $_.online -eq $false } | Where-Object { -not $_.PSObject.Properties['ip'] -or -not $_.ip -or (Test-TkHasLink ([string]$_.ip)) })
+      if ($offLinked.Count) { $fix.Add('restart') }
+      $fix.Add('readd')
+    }
     if ((@($rec.problems) -join ';') -match $TkNotCheckedRx) { $page.ok = $false }
   } elseif ($StopWhy) {
     # 1.6.2: the check itself stopped (it may have logged in fine) - say that, not 'no login'
@@ -710,9 +727,9 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
     if ($dwl.Count) { foreach ($x in ($dwl | Select-Object -First 12)) { & $add ('DW: ' + $x.t) 'red' }; if ($dwl.Count -gt 12) { & $add ('DW: ' + ($dwl.Count - 12) + ' more - see the log.') 'red' } }
     else { & $add ('Offline in DW: none - all ' + $(if ($Health -and $Health.recording) { @($Health.recording.channels).Count } else { '' }) + ' cameras online and recorded in the last 24 h.') 'ok' }
     if (@($dwl | Where-Object { $_.cause -eq 'dwpw' }).Count) { $fix.Add('dwpassword') }
-    if (@($dwl | Where-Object { $_.cause -eq 'hung' }).Count) { $fix.Add('restart') }
+    if (@($dwl | Where-Object { $_.cause -in @('hung', 'check') }).Count) { $fix.Add('restart') }   # 1.4: only cameras that still answer on the network
   }
-  if ($page.cams -and $page.cams.missing -and -not ($fix -contains 'restart')) { $fix.Add('restart') }
+  # 1.4: a camera MISSING from Find cameras has no network link here, so "Restart the camera" (through its web page) cannot reach it - not offered
   # router
   if ($Upnp) {
     $page.router = [ordered]@{ checked = $true; answered = [bool]$Upnp.answered; upnp = [bool]$Upnp.upnp; model = [string]$Upnp.router; exposed = @($Upnp.exposed | ForEach-Object { '' + $_.ext + '/' + $_.proto + ' -> ' + $_.client + ':' + $_.port }) }

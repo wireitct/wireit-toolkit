@@ -67,7 +67,7 @@ try {
   Check 'dw: 2 cameras' ($r.channels.Count -eq 2)
   Check 'dw: 1 recording' ($r.recording -eq 1) $r.recording
   Check 'dw: days held 46' ($r.days_held -eq 46) $r.days_held
-  Check 'dw: offline camera flagged' (($r.problems -join ';') -match 'not recording: 2') ($r.problems -join ';')
+  Check 'dw: offline camera flagged' (($r.problems -join ';') -match 'not recording: Yard \(10\.9\.1\.12\)') ($r.problems -join ';')
   Check 'dw: storage read' ($r.disks.Count -eq 1 -and $r.disks[0].capMB -gt 7000000)
 
   Write-Host "`n=== recording: Uniview via ONVIF ==="
@@ -143,7 +143,7 @@ try {
   $none = New-Object System.Management.Automation.PSCredential('admin', (New-Object Security.SecureString))   # empty password = skip
   function Tries([string]$ip) { return [int](((Invoke-WebRequest ($base + '/mockctl/tries/' + $ip) -UseBasicParsing).Content | ConvertFrom-Json).tries) }
   function Auths([string]$ip) { return [int](((Invoke-WebRequest ($base + '/mockctl/auth/' + $ip) -UseBasicParsing).Content | ConvertFrom-Json).auth) }
-  Reset
+  [void](Close-NvrSessions); Reset
   $h = Get-NvrHealth -Ip 10.9.0.40 -Vendor DW -Credential $wrong -TargetDays 45 -IncludeCameras
   Check '1.6.1 DW wrong password: ONE login try for recording + clock + firmware' ((Tries '10.9.0.40') -eq 1) ('tries=' + (Tries '10.9.0.40'))
   Check '1.6.1 DW wrong password: recording = login refused, no channels' ((($h.recording.problems) -join ';') -eq 'login refused' -and @($h.recording.channels).Count -eq 0) (($h.recording.problems) -join ';')
@@ -186,6 +186,51 @@ try {
   Check '1.6.2 log locked the whole time: no long stall (under 10 s)' ($sw.Elapsed.TotalSeconds -lt 10) ([int]$sw.Elapsed.TotalSeconds)
   Set-NvrHealthOption LogFile ''
   for ($q = 0; $q -lt 40; $q++) { try { $fs = [IO.File]::Open($lf2, 'Open', 'Read', 'None'); $fs.Dispose(); break } catch { Start-Sleep -Milliseconds 250 } }   # wait for the test lock to end
+
+  Write-Host "`n=== 1.6.3: names, local times, camera clocks without a login, firmware noise, DW logout (YKW Elm 1.6.2 live run) ==="
+  [void](Close-NvrSessions); Reset
+  $r = Get-RecordingStatus -Ip 10.9.0.40 -Vendor DW -Credential $good -TargetDays 45
+  $sum = (Get-NvrHealthSummary) -join "`n"
+  Check '1.6.3 recording: DW camera named by DW name + IP, not its list number' ($sum -match 'PROBLEM Yard \(10\.9\.1\.12\): camera OFFLINE' -and $sum -match 'OK +Lobby \(10\.9\.1\.11\): recording' -and $sum -notmatch 'Camera 2 \(') $sum
+  Check '1.6.3 recording: problems line lists names, no bare numbers' (($r.problems -join ';') -match '1 camera\(s\) not recording: Yard \(10\.9\.1\.12\)$|1 camera\(s\) not recording: Yard \(10\.9\.1\.12\);') ($r.problems -join ';')
+  $yard = @($r.channels | Where-Object { $_.name -eq 'Yard' })[0]
+  $locS = $yard.newest.ToLocalTime().ToString('MMM d h:mm tt', [Globalization.CultureInfo]::InvariantCulture); $utcS = $yard.newest.ToString('MMM d h:mm tt', [Globalization.CultureInfo]::InvariantCulture)
+  Check '1.6.3 recording: last footage shown in local time (DW gives UTC)' ($sum -match [regex]::Escape('last footage ' + $locS) -and ($locS -eq $utcS -or $sum -notmatch [regex]::Escape('last footage ' + $utcS))) ('local=' + $locS + ' utc=' + $utcS)
+  $m2 = Get-Module NvrHealth
+  $tz = & $m2 { $u = New-Object DateTime(2026, 9, 10, 11, 15, 0, ([DateTimeKind]::Utc)); @((Fmt-Local $u), $u.ToLocalTime().ToString('MMM d h:mm tt', [Globalization.CultureInfo]::InvariantCulture), (Fmt-Local (New-Object DateTime(2026, 9, 10, 7, 15, 0)))) }
+  Check '1.6.3 Fmt-Local: UTC -> this PC local; a recorder''s own local stamp stays as it is' ($tz[0] -eq $tz[1] -and $tz[2] -eq 'Sep 10 7:15 AM') ($tz -join ' | ')
+  Check '1.6.3 DW: one login for the whole run, session kept' ((Tries '10.9.0.40') -eq 1) ('tries=' + (Tries '10.9.0.40'))
+  $h = Get-NvrHealth -Ip 10.9.0.40 -Vendor DW -Credential $good -TargetDays 45 -IncludeCameras -FindIps @('10.9.1.21', '10.9.1.22', '10.9.1.23', '10.9.0.40')
+  Check '1.6.3 DW good login: recording + clock + firmware share ONE login (was up to 3)' ((Tries '10.9.0.40') -eq 1) ('tries=' + (Tries '10.9.0.40'))
+  $sum = (Get-NvrHealthSummary) -join "`n"
+  Check '1.6.3 clock: Find-cameras list used, no "No cameras reachable"' ($sum -notmatch 'No cameras reachable' -and $sum -match 'Camera clocks: 3 camera\(s\) from the Find cameras list, read WITHOUT a login') $sum
+  Check '1.6.3 clock: right camera = one summary OK line' ($sum -match 'OK +1 camera clock\(s\) correct') $sum
+  Check '1.6.3 clock: wrong camera clock found (10 min ahead)' (@($h.clock.cameras | Where-Object { $_.ip -eq '10.9.1.22' -and -not $_.ok }).Count -eq 1 -and (($h.clock.problems) -join ';') -match 'camera 10\.9\.1\.22: clock 10 minutes ahead') (($h.clock.problems) -join ';')
+  Check '1.6.3 clock: silent camera = not checked (1), not a problem' ($h.clock.cameras_not_checked -eq 1 -and $sum -match '1 camera\(s\) did not answer the no-login time read - not checked: 10\.9\.1\.23') $sum
+  Check '1.6.3 clock: NO password sent to any camera (DW login never tried on a camera)' ((Auths '10.9.1.21') -eq 0 -and (Auths '10.9.1.22') -eq 0) ('auth=' + (Auths '10.9.1.21') + '/' + (Auths '10.9.1.22'))
+  $pre = [int](((Invoke-WebRequest ($base + '/mockctl/preauth/10.9.1.21') -UseBasicParsing).Content | ConvertFrom-Json).preauth)
+  Check '1.6.3 clock: camera read with the no-login ONVIF time call' ($pre -eq 1) ('preauth=' + $pre)
+  Check '1.6.3 clock: DW camera drift -> camera page / DW, not "Fix time"' ($sum -match 'RESULT: camera clock\(s\) wrong' -and $sum -notmatch '"Fix time" \(Set-NtpTime\) fixes it') $sum
+  $fwLines = @((Get-NvrHealthSummary) | Where-Object { $_ -match 'not in the reference list' })
+  Check '1.6.3 firmware: at most ONE "not in the reference list" line' ($fwLines.Count -le 1) ($fwLines -join ' | ')
+  $c = Get-ClockStatus -Ip 10.9.0.40 -Vendor DW -Credential $good -IncludeCameras -CameraIps @('10.9.1.21')
+  Check '1.6.3 clock: camera IPs behind DW are read without a login too' ((Auths '10.9.1.21') -eq 0 -and @($c.cameras).Count -eq 1 -and $c.cameras[0].nologin) ''
+  $w = Set-NtpTime -Ip 10.9.0.40 -Vendor DW -Credential $good -IncludeCameras -CameraIps @('10.9.1.22') -WhatIf
+  Check '1.6.3 fix time: never touches a camera it has no password for' (@($w.devices | Where-Object { $_.ip -eq '10.9.1.22' }).Count -eq 0 -and (Auths '10.9.1.22') -eq 0) (($w.devices | ForEach-Object { $_.target + '=' + $_.result }) -join ',')
+  $items = & $m2 { param($rf) $ref = Load-Reference $rf; @(1..40 | ForEach-Object { Judge-Firmware ('Camera 10.1.61.' + $_) ('IPC-NOT-LISTED-' + ($_ % 3)) 'V1.0' $ref -Quiet }) } (Join-Path $root 'firmware-latest.json')
+  $before = @(Get-NvrHealthSummary).Count
+  & $m2 { param($it) Write-FwUnlisted $it 5 } $items
+  $new = @(Get-NvrHealthSummary | Select-Object -Skip $before)
+  Check '1.6.3 firmware: 40 unlisted cameras -> one line "3 camera model(s) not in the reference list"' ($new.Count -eq 2 -and $new[0] -match 'CHECK +3 camera model\(s\) not in the reference list \(40 camera\(s\)' -and $new[1] -match '5 camera\(s\): DW does not report their firmware') ($new -join ' | ')
+  Check '1.6.3 firmware: each unlisted camera still in the log' ((Get-ChildItem $logs -Recurse -File | Get-Content | Out-String) -match 'FW Camera 10\.1\.61\.40 IPC-NOT-LISTED-1') ''
+  $lo = Close-NvrSessions
+  Check '1.6.3 logout: DELETE session sent once at the end' ($lo -eq 1 -and ([int](((Invoke-WebRequest ($base + '/mockctl/logouts/10.9.0.40') -UseBasicParsing).Content | ConvertFrom-Json).logouts)) -eq 1) ('closed=' + $lo)
+  Check '1.6.3 logout: a second call sends nothing more' ((Close-NvrSessions) -eq 0)
+  Check '1.6.3 logout: session token never in a log' (-not @(Get-ChildItem $logs -Recurse -File | Where-Object { (Get-Content $_.FullName -Raw) -match 'vms-TESTTOKEN' }).Count)
+  $none2 = New-Object System.Management.Automation.PSCredential('admin', (New-Object Security.SecureString))
+  Reset; [void](Get-NvrHealth -Ip 10.9.0.40 -Vendor DW -Credential $none2 -TargetDays 45)
+  Check '1.6.3 logout: nothing to log out after a skipped login' ((Close-NvrSessions) -eq 0)
+  Check '1.6.3 checks + logout are read-only (no writes)' ((Writes).Count -eq 0)
 
   Write-Host "`n=== combined + secrets ==="
   $h = Get-NvrHealth -Ip 10.9.0.20 -Vendor Hikvision -Credential $good -TargetDays 45 -Json (Join-Path $logs 'h.json')

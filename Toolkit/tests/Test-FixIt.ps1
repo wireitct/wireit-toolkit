@@ -74,6 +74,8 @@ try {
   $x = Fx 'dwpassword' '10.9.0.41' 'YES' @('-CameraIp', '10.9.1.29')
   $wr = @(W)
   Check 'dwpassword: PATCH the device, DW no longer Unauthorized' ($wr[-1].method -eq 'PATCH' -and $wr[-1].path -match '^/rest/v3/devices/' -and $x.j.ok -and @(Hist)[-1] -match 'DW now says Online') $x.out
+  $lo = [int](((Invoke-WebRequest ('http://127.0.0.1:' + $mp + '/mockctl/logouts/10.9.0.41') -UseBasicParsing).Content | ConvertFrom-Json).logouts)
+  Check '1.6.3 dwpassword: logged out of DW when the fix ends (DELETE session)' ($lo -ge 1) ('logouts=' + $lo)
   Check 'no password in any run log, backup or history' (-not (Select-String -Path (Join-Path $runs '*\*'), (Join-Path $runs '*\backup\*'), (Join-Path $logs '*') -Pattern 'NvrPass#2026', 'NewSite#2027', 'CamPass#2026' -SimpleMatch -Quiet -ErrorAction SilentlyContinue))
   Check 'one history line per fix that ran (7)' (@(Hist).Count -eq 7) (@(Hist) -join "`n")
 } finally {

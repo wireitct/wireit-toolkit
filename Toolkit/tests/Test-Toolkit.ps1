@@ -359,6 +359,10 @@ if ($py -and (Test-Path $mockSc) -and (Test-Path $mockPy)) {
     $cj = Read-TkJson (Join-Path $tkDir 'logs\check-site-last.json')
     Check 'DW site: summary carries the DW list + fix dwpassword' ($cj -and [int]$cj.page.dw.problems -eq 2 -and (@($cj.fixes) -contains 'dwpassword')) ($cj | ConvertTo-Json -Depth 6)
     Check 'DW site: read-only' ((((Invoke-WebRequest ($mbase + '/mockctl/writes') -UseBasicParsing).Content).Trim()) -eq '[]')
+    Check '1.6.3 DW site: no "Put the camera back on the NVR", no "Restart" for a camera with no link (dead + wrong DW password only)' ($cj -and -not (@($cj.fixes) -contains 'readd') -and -not (@($cj.fixes) -contains 'restart')) (@($cj.fixes) -join ',')
+    Check '1.6.3 DW site: Recording line names the cameras (name + IP), no DW list numbers' ($said -match 'Recording: 2 camera\(s\) not recording: Dining Room Center \(10\.9\.1\.29\), Back Stairs \(10\.9\.1\.30\)' -and $said -notmatch 'not recording: \d') $said
+    $lo = [int](((Invoke-WebRequest ($mbase + '/mockctl/logouts/10.9.0.41') -UseBasicParsing).Content | ConvertFrom-Json).logouts)
+    Check '1.6.3 DW site: logged out of DW at the end (one DELETE), one login' ($lo -eq 1 -and $said -match 'Logged out of the DW server' -and [int](((Invoke-WebRequest ($mbase + '/mockctl/tries/10.9.0.41') -UseBasicParsing).Content | ConvertFrom-Json).tries) -eq 1) ('logouts=' + $lo)
     # 1.6.1 (YKW Elm live test Nov 3 2026): failed / skipped DW login, unreadable clock, fresh local camera list, no DW firmware fix
     $crf = Join-Path $tmp 'cr-fresh'; $sdir = Join-Path $crf 'out\scan-20261103-035654'; New-Item -ItemType Directory -Force -Path $sdir | Out-Null
     '[{"Brand":"Uniview","Model":"IPC3612LB","IP":"10.9.1.11","MAC":"44:19:B6:00:0A:11","Serial":"S1"},{"Brand":"Unknown","Model":"","IP":"10.9.1.99","MAC":"44:19:B6:00:0A:99","Kind":"camera","SweepOnly":true},{"Brand":"Hikvision","Model":"DS-7608NI-K2","IP":"10.9.0.30","MAC":"44:19:B6:00:00:30"}]' | Set-Content (Join-Path $sdir 'devices.json') -Encoding UTF8
@@ -393,6 +397,52 @@ if ($py -and (Test-Path $mockSc) -and (Test-Path $mockPy)) {
     $tries = [int](((Invoke-WebRequest ($mbase + '/mockctl/tries/10.9.0.41') -UseBasicParsing).Content | ConvertFrom-Json).tries)
     Check '1.6.1 empty recorder password = login skipped: NO login sent, NOT CHECKED (login skipped)' ($tries -eq 0 -and $said -match 'Recorder login skipped' -and $said -match 'Offline in DW: NOT CHECKED \(login skipped\)' -and $said -notmatch '(?i)every camera') ('tries=' + $tries + "`n" + $o + $said)
     $env:NVRCHECK_TEST_PW = 'NvrPass#2026'
+    # 1.6.3 (YKW Elm 1.6.2 live run): camera clocks from the Find list without a login, logout even after an error
+    $cr3 = Join-Path $tmp 'cr-163'; $sd3 = Join-Path $cr3 ('out\scan-' + (Get-Date -Format 'yyyyMMdd-HHmmss')); New-Item -ItemType Directory -Force -Path $sd3 | Out-Null
+    '[{"Brand":"Uniview","Model":"IPC2124LB","IP":"10.9.1.21","MAC":"44:19:B6:00:0A:21"},{"Brand":"Uniview","Model":"IPC2124LB","IP":"10.9.1.22","MAC":"44:19:B6:00:0A:22"},{"Brand":"Uniview","Model":"IPC2124LB","IP":"10.9.1.23","MAC":"44:19:B6:00:0A:23"},{"Brand":"DW","Model":"DW Spectrum","IP":"10.9.0.41","MAC":"44:19:B6:00:00:41","Kind":"recorder"}]' | Set-Content (Join-Path $sd3 'devices.json') -Encoding UTF8
+    Invoke-WebRequest ($mbase + '/mockctl/reset') -Method Post -UseBasicParsing | Out-Null
+    Remove-Item (Join-Path $tkDir 'logs\scan-upload-last.json'), (Join-Path $tkDir 'logs\check-site-last.json') -Force -ErrorAction SilentlyContinue
+    $runs6 = Join-Path $tmp 'nvrruns-163'
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $nc -Mode Site -Ip 10.9.0.41 -Days 0 -Cameras -RunsDir $runs6 -MockUrl $mbase -TestAnswer x -CloseAfter 0 -NoUpnp -NoSend -CamResetDir $cr3 2>&1 | Out-String
+    $d = Get-ChildItem $runs6 -Directory -Filter 'NvrSite-*' | Select-Object -First 1
+    $said = $(if ($d) { (ConvertFrom-TkFixLog (Get-Content (Join-Path $d.FullName 'log.txt'))) -join "`n" } else { '' })
+    $cj = Read-TkJson (Join-Path $tkDir 'logs\check-site-last.json')
+    $au = { param($ip) [int](((Invoke-WebRequest ($mbase + '/mockctl/auth/' + $ip) -UseBasicParsing).Content | ConvertFrom-Json).auth) }
+    Check '1.6.3 clocks: the Find-cameras list is used (3 cameras), no "No cameras reachable"' ($said -notmatch 'No cameras reachable' -and $said -match 'Camera clocks: 3 camera\(s\) from the Find cameras list, read WITHOUT a login') ($o + $said)
+    Check '1.6.3 clocks: wrong camera clock reported, right one summed up, silent one not checked' ($said -match 'Camera 10\.9\.1\.22: clock is 10 minutes ahead' -and $said -match '1 camera clock\(s\) correct' -and $said -match 'did not answer the no-login time read - not checked: 10\.9\.1\.23') $said
+    Check '1.6.3 clocks: no password sent to any camera, no "Fix time" button for a DW camera clock' ((& $au '10.9.1.21') -eq 0 -and (& $au '10.9.1.22') -eq 0 -and $cj -and -not (@($cj.fixes) -contains 'ntp')) ('fixes=' + (@($cj.fixes) -join ','))
+    Check '1.6.3 firmware: no flood of "not in the reference list" lines' (@(($said -split "`n") | Where-Object { $_ -match 'not in the reference list' }).Count -le 1) $said
+    Check '1.6.3 run: logged out of DW at the end, still read-only' ([int](((Invoke-WebRequest ($mbase + '/mockctl/logouts/10.9.0.41') -UseBasicParsing).Content | ConvertFrom-Json).logouts) -eq 1 -and (((Invoke-WebRequest ($mbase + '/mockctl/writes') -UseBasicParsing).Content).Trim()) -eq '[]')
+    Invoke-WebRequest ($mbase + '/mockctl/reset') -Method Post -UseBasicParsing | Out-Null
+    $env:NVRCHECK_TEST_THROW = 'test: the check stopped after the DW login'
+    $runs7 = Join-Path $tmp 'nvrruns-163err'
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $nc -Mode Site -Ip 10.9.0.41 -Days 0 -RunsDir $runs7 -MockUrl $mbase -TestAnswer x -CloseAfter 0 -NoUpnp -NoSend -CamResetDir (Join-Path $tmp 'cr-none') 2>&1 | Out-String
+    Remove-Item Env:\NVRCHECK_TEST_THROW -ErrorAction SilentlyContinue
+    $d = Get-ChildItem $runs7 -Directory -Filter 'NvrSite-*' | Select-Object -First 1
+    $said = $(if ($d) { (ConvertFrom-TkFixLog (Get-Content (Join-Path $d.FullName 'log.txt'))) -join "`n" } else { '' })
+    $lo = [int](((Invoke-WebRequest ($mbase + '/mockctl/logouts/10.9.0.41') -UseBasicParsing).Content | ConvertFrom-Json).logouts)
+    Check '1.6.3 a check that stops with an error still logs out of DW (finally)' ($lo -eq 1 -and $said -match 'PROBLEM test: the check stopped after the DW login' -and $said -match 'Logged out of the DW server') ('logouts=' + $lo + "`n" + $o + $said)
+    Check '1.6.3 no session token in any run log' (-not (Select-String -Path (Join-Path $tmp 'nvrruns-163*\*\*') -Pattern 'vms-TESTTOKEN' -SimpleMatch -Quiet))
+    # 1.6.3 fix buttons: no "Restart" for a camera with no network link, no "Put back on the NVR" on a DW server
+    $hDw = [pscustomobject]@{ vendor = 'DW'; ok = $false; recording = [pscustomobject]@{ ok = $false; recording = 1; days_held = 50; target_days = 45; problems = @('1 camera(s) not recording: Gone (10.9.9.1)'); channels = @([pscustomobject]@{ ch = 1; ip = '10.9.9.1'; online = $false; scheduled = $true; recording_now = $false; mode = '' }) }; clock = [pscustomobject]@{ ok = $true; problems = @() }; firmware = [pscustomobject]@{ ok = $true; problems = @() } }
+    $dDead = @([pscustomobject]@{ name = 'Gone'; ip = '10.9.9.1'; status = 'Offline'; hours = 900; cause = 'dead'; t = 'Gone (10.9.9.1) - NO LINK' })
+    $c1 = New-TkSiteCheck -Health $hDw -Scan $null -Upnp $null -Ip '10.9.0.41' -Dw $dDead
+    Check '1.6.3 DW, camera with NO LINK: no Restart, no Put-back-on-NVR' (-not (@($c1.fixes) -contains 'restart') -and -not (@($c1.fixes) -contains 'readd')) (@($c1.fixes) -join ',')
+    $dHung = @([pscustomobject]@{ name = 'Stuck'; ip = '10.9.9.2'; status = 'Offline'; hours = 30; cause = 'hung'; t = 'Stuck (10.9.9.2) - HUNG' })
+    $c2 = New-TkSiteCheck -Health $hDw -Scan $null -Upnp $null -Ip '10.9.0.41' -Dw $dHung
+    Check '1.6.3 DW, camera still on the network (hung): Restart offered, never Put-back-on-NVR' ((@($c2.fixes) -contains 'restart') -and -not (@($c2.fixes) -contains 'readd')) (@($c2.fixes) -join ',')
+    $prevReach = $env:WIREIT_TEST_REACH
+    $env:WIREIT_TEST_REACH = '{"192.168.1.33":{"ping":false,"mac":"","ports":[]},"192.168.1.34":{"ping":true,"mac":"44:19:B6:00:01:34","ports":[80]}}'
+    $hNvr = { param($ip) [pscustomobject]@{ vendor = 'Hikvision'; ok = $false; recording = [pscustomobject]@{ ok = $false; recording = 1; days_held = 50; target_days = 45; problems = @('1 camera(s) not recording: 3'); channels = @([pscustomobject]@{ ch = 3; ip = $ip; online = $false; scheduled = $true; recording_now = $false; mode = '' }) }; clock = [pscustomobject]@{ ok = $true; problems = @() }; firmware = [pscustomobject]@{ ok = $true; problems = @() } } }
+    $c3 = New-TkSiteCheck -Health (& $hNvr '192.168.1.33') -Scan $null -Upnp $null -Ip '192.168.1.20'
+    $c4 = New-TkSiteCheck -Health (& $hNvr '192.168.1.34') -Scan $null -Upnp $null -Ip '192.168.1.20'
+    Check '1.6.3 NVR, offline camera with no link: no Restart (Put back on the NVR stays)' (-not (@($c3.fixes) -contains 'restart') -and (@($c3.fixes) -contains 'readd')) (@($c3.fixes) -join ',')
+    Check '1.6.3 NVR, offline camera that still pings: Restart offered' ((@($c4.fixes) -contains 'restart') -and (@($c4.fixes) -contains 'readd')) (@($c4.fixes) -join ',')
+    $scM = [pscustomobject]@{ answer = [pscustomobject]@{ ok = $true; total = 3; missing = @('Camera X 192.168.1.23'); stillMissing = @(); added = @(); changedIp = @() } }
+    $hOk2 = [pscustomobject]@{ vendor = 'Hikvision'; ok = $true; recording = [pscustomobject]@{ ok = $true; recording = 3; days_held = 46; target_days = 45; problems = @(); channels = @() }; clock = [pscustomobject]@{ ok = $true; problems = @() }; firmware = [pscustomobject]@{ ok = $true; problems = @() } }
+    $c5 = New-TkSiteCheck -Health $hOk2 -Scan $scM -Upnp $null -Site 'WI-TEST' -Ip '192.168.1.20'
+    Check '1.6.3 a camera MISSING from Find cameras (no link): no Restart button' (-not (@($c5.fixes) -contains 'restart')) (@($c5.fixes) -join ',')
+    $env:WIREIT_TEST_REACH = $prevReach
     # summary unit checks (canned results)
     $dwRef = [pscustomobject]@{ vendor = 'DW'; ok = $false; recording = [pscustomobject]@{ ok = $false; vendor = 'DW'; recording = 0; channels = @(); problems = @('login refused') }; clock = [pscustomobject]@{ ok = $false; problems = @('clock not checked') }; firmware = [pscustomobject]@{ ok = $false; problems = @('Server: CVE-2026-78414') } }
     $k1 = New-TkSiteCheck -Health $dwRef -Scan $null -Upnp $null -Dw @()

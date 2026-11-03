@@ -72,6 +72,13 @@ if ($Mode -eq 'Site') {
   }
   Say2 ''; Say2 'Step 3 of 3: recorder - recording, streams, clocks, firmware' 'Cyan'
 }
+# 1.4: the cameras Find cameras just found (last 30 min) - behind a DW server their clocks are read from this list, with NO login
+$findIps = @()
+if ($Cameras -and $Mode -in @('Site', 'Clock')) {
+  $pick = { param($fs) if ($fs -and $fs.devices) { @($fs.devices | Where-Object { $_ -and [string]$_.kind -eq 'camera' -and $_.ip -and $_.ip -ne $Ip } | ForEach-Object { [string]$_.ip } | Select-Object -Unique) } else { @() } }
+  $findIps = @(& $pick $scan)
+  if (-not $findIps.Count) { try { $findIps = @(& $pick (Get-TkFreshScan $CamResetDir 30)) } catch { $findIps = @() } }
+}
 if ($Mode -eq 'Doctor') {
   # Camera doctor: read-only. At most ONE login try on the camera (never repeated, so it cannot lock it), one DW read.
   Say2 'Read-only: nothing on the camera, DW or the network is changed. At most ONE login try on the camera.' 'Yellow'
@@ -95,6 +102,7 @@ if ($Mode -eq 'Doctor') {
     Save-TkJson ([pscustomobject]$j) (Join-Path $here 'logs\doctor-last.json'); Save-TkJson ([pscustomobject]$j) (Join-Path $run 'doctor.json')
     if (@($r.fixes).Count) { $code = 4 }
   } catch { Say2 ('PROBLEM ' + $_.Exception.Message) 'Red'; $code = 1 }
+  finally { try { [void](Close-NvrSessions) } catch {} }   # 1.4: always log out of DW
   Set-Content -Path (Join-Path $run 'result.json') -Value (@{ mode = $Mode; ip = $Ip; code = $code } | ConvertTo-Json)
   Done $code
 }
@@ -123,9 +131,9 @@ try {
   Set-NvrHealthOption LogFile $log
   switch ($Mode) {
     'Recording' { $r = Get-RecordingStatus @common -TargetDays $Days }
-    'Clock'     { $r = Get-ClockStatus @common -IncludeCameras:$Cameras }
+    'Clock'     { $r = Get-ClockStatus @common -IncludeCameras:$Cameras -FindIps $findIps }
     'Firmware'  { $r = Get-FirmwareStatus @common -IncludeCameras:$Cameras }
-    'Site'      { $r = Get-NvrHealth @common -TargetDays $Days -IncludeCameras:$Cameras -Json (Join-Path $run 'health.json') }
+    'Site'      { $r = Get-NvrHealth @common -TargetDays $Days -IncludeCameras:$Cameras -FindIps $findIps -Json (Join-Path $run 'health.json') }
     'FixClock' {
       $plan = Set-NtpTime @common -IncludeCameras:$Cameras -WhatIf
       $todo = @($plan.devices | Where-Object { $_.result -eq 'what-if (not changed)' })
@@ -146,12 +154,16 @@ try {
       }
     }
   }
+  if ($MockUrl -and $env:NVRCHECK_TEST_THROW) { throw $env:NVRCHECK_TEST_THROW }   # test harness only: a check that stops after the login
   if ($r -and $r.PSObject.Properties['failed'] -and $r.failed) { $code = 4 }
   elseif ($r -and $r.PSObject.Properties['problems'] -and @($r.problems).Count) {
     if (@($r.problems | Where-Object { $_ -match $TkNotCheckedRx }).Count -and -not @($r.problems | Where-Object { $_ -notmatch $TkNotCheckedRx }).Count) { $code = 2 } else { $code = 4 }
   }
 } catch {
   $stopWhy = $_.Exception.Message; Say2 ('PROBLEM ' + $stopWhy) 'Red'; $code = 1
+} finally {
+  # 1.4: always log out of DW (DELETE session), also after an error
+  try { $lo = Close-NvrSessions; if ($lo) { Say2 'Logged out of the DW server.' } } catch {}
 }
 
 # DW server (YKW Elm live test): list every camera that is offline / not recording / nothing for 24 h, with last recording + ping/ARP cause

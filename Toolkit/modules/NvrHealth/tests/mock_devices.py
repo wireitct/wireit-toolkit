@@ -68,7 +68,9 @@ def fresh_state():
     dw2 = dict(dw, devices=[dict(dw['devices'][0], mac='44:19:B6:00:0A:11'),
                             {'id': '{33333333-3333-3333-3333-333333333333}', 'name': 'Dining Room Center', 'status': 'Unauthorized', 'model': 'IPC328SR3-ADF28KM-G', 'vendor': 'Uniview', 'url': 'http://10.9.1.29/onvif/device_service', 'sched': True, 'fw': 'IPC_G6103', 'oldest_days': 60, 'live': False, 'last_hours': 54 * 24, 'mac': '44:19:B6:00:0A:29'},
                             {'id': '{44444444-4444-4444-4444-444444444444}', 'name': 'Back Stairs', 'status': 'Offline', 'model': 'IPC2124LB', 'vendor': 'Uniview', 'url': 'http://10.9.1.30/onvif/device_service', 'sched': True, 'fw': 'IPC_G6103', 'oldest_days': 50, 'live': False, 'last_hours': 30, 'mac': '44:19:B6:00:0A:30'}])
-    return {'10.9.0.20': good, '10.9.0.21': cam_good, '10.9.0.30': bad, '10.9.0.31': cam_bad, '10.9.0.40': dw, '10.9.0.41': dw2, '10.9.1.29': {'kind': 'unvlock', 'remain': 1740}, '10.9.1.31': {'kind': 'hang'}, '10.9.0.50': unv,
+    # 1.6.3: cameras behind a DW server, as Find cameras lists them - their password is NOT known; ONVIF lets anyone read the clock
+    camA = dict(unv, pw='CamOnly#1', mode='NTP', drift=1, recs=[]); camB = dict(unv, pw='CamOnly#1', mode='NTP', drift=600, recs=[])
+    return {'10.9.1.21': camA, '10.9.1.22': camB, '10.9.0.20': good, '10.9.0.21': cam_good, '10.9.0.30': bad, '10.9.0.31': cam_bad, '10.9.0.40': dw, '10.9.0.41': dw2, '10.9.1.29': {'kind': 'unvlock', 'remain': 1740}, '10.9.1.31': {'kind': 'hang'}, '10.9.0.50': unv,
             '10.9.0.60': dict(good, pw='SomethingElse!')}
 
 STATE = fresh_state()
@@ -114,11 +116,14 @@ class H(BaseHTTPRequestHandler):
     def do_PUT(self): self.route('PUT')
     def do_POST(self): self.route('POST')
     def do_PATCH(self): self.route('PATCH')
+    def do_DELETE(self): self.route('DELETE')
     def route(self, method):
         global STATE, WRITES
         b = self.body()
         if self.path.startswith('/mockctl/writes'): return self.send(200, json.dumps(WRITES), 'application/json')
         if self.path.startswith('/mockctl/auth/'): return self.send(200, json.dumps({'auth': STATE.get(self.path.rsplit('/', 1)[1], {}).get('auth', 0)}), 'application/json')
+        if self.path.startswith('/mockctl/logouts/'): return self.send(200, json.dumps({'logouts': STATE.get(self.path.rsplit('/', 1)[1], {}).get('logouts', 0)}), 'application/json')
+        if self.path.startswith('/mockctl/preauth/'): return self.send(200, json.dumps({'preauth': STATE.get(self.path.rsplit('/', 1)[1], {}).get('preauth', 0)}), 'application/json')
         if self.path.startswith('/mockctl/tries/'): return self.send(200, json.dumps({'tries': STATE.get(self.path.rsplit('/', 1)[1], {}).get('tries', 0)}), 'application/json')
         if self.path.startswith('/mockctl/reset'):
             with LOCK: STATE = fresh_state(); WRITES = []
@@ -247,6 +252,9 @@ class H(BaseHTTPRequestHandler):
             if j.get('username') == 'admin' and j.get('password') == d['pw']: return self.send(200, json.dumps({'token': 'vms-TESTTOKEN', 'username': 'admin'}), 'application/json')
             return self.send(401, json.dumps({'error': '401', 'errorString': 'Wrong password'}), 'application/json')
         if self.headers.get('Authorization') != 'Bearer vms-TESTTOKEN': return self.send(401, '{"error":"401"}', 'application/json')
+        if p.startswith('/rest/v3/login/sessions/') and method == 'DELETE':   # 1.6.3: logout (not a write to the system)
+            if p.rsplit('/', 1)[1] != 'vms-TESTTOKEN': return self.send(404, '{"error":"404"}', 'application/json')
+            d['logouts'] = d.get('logouts', 0) + 1; return self.send(204, '')
         if method != 'GET': WRITES.append({'ip': ip, 'method': method, 'path': p, 'body': b})
         now = utcnow(); ms = lambda t: int(t.timestamp() * 1000)
         if p == '/api/gettime': return self.send(200, json.dumps({'error': '0', 'reply': {'utcTime': str(ms(now) + d['drift'] * 1000), 'timeZoneOffset': str(offset_min(EAST, now) * 60000), 'timezoneId': d['tzid']}}), 'application/json')
@@ -284,7 +292,10 @@ class H(BaseHTTPRequestHandler):
             if p == '/LAPI/V1.0/System/Time/NTP': return ok({'Enabled': 1 if d['mode'] == 'NTP' else 0, 'NTPServerInfos': [{'IPAddress': h, 'Port': 123, 'SynchronizeInterval': 60} for h in d['ntp']]})
             return self.send(404, '{}', 'application/json')
         if p.startswith('/onvif/'):
-            if not self.wsse_ok(d, b): return self.send(400, '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body><s:Fault><s:Code><s:Value>s:Sender</s:Value><s:Subcode><s:Value>ter:NotAuthorized</s:Value></s:Subcode></s:Code></s:Fault></s:Body></s:Envelope>', 'application/soap+xml')
+            if 'UsernameToken' in b: d['auth'] = d.get('auth', 0) + 1   # 1.6.3: a WS-Security password counts as a login attempt too
+            pre = 'UsernameToken' not in b and re.search(r'<s:Body><x:GetSystemDateAndTime\s*/>', b)
+            if pre: d['preauth'] = d.get('preauth', 0) + 1   # ONVIF: GetSystemDateAndTime is answered without a login
+            if not pre and not self.wsse_ok(d, b): return self.send(400, '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body><s:Fault><s:Code><s:Value>s:Sender</s:Value><s:Subcode><s:Value>ter:NotAuthorized</s:Value></s:Subcode></s:Code></s:Fault></s:Body></s:Envelope>', 'application/soap+xml')
             op = re.search(r'<s:Body><x:(\w+)', b); op = op.group(1) if op else ''
             if op.startswith('Set'): WRITES.append({'ip': ip, 'method': 'ONVIF', 'path': op, 'body': re.sub(r'<s:Header>.*</s:Header>', '', b)})
             env = lambda inner: self.send(200, '<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trc="http://www.onvif.org/ver10/recording/wsdl" xmlns:tse="http://www.onvif.org/ver10/search/wsdl"><s:Body>' + inner + '</s:Body></s:Envelope>', 'application/soap+xml')

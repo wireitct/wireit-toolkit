@@ -57,7 +57,7 @@ function Test-DiscoveryFirewall {
 }
 if (-not $NoMulticast) {
   $fw = Test-DiscoveryFirewall
-  if ($fw.known -and -not $fw.rule) { Say 'If Windows asks about the firewall, press Allow - or run Install once as admin so it never asks.' }
+  if ($fw.known -and -not $fw.rule) { Say 'If Windows asks about the firewall, press Cancel; to add the firewall rule, run the Toolkit installer once as admin.' }
   if ($fw.block) { Say 'Windows Firewall has a rule that BLOCKS PowerShell here (someone pressed Cancel on that popup), so some camera answers can be lost. The network sweep still works. Fix once: Windows Defender Firewall > Advanced settings > Inbound Rules > delete the red "Windows PowerShell" rules.' }
 }
 

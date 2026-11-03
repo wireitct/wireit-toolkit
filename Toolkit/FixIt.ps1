@@ -56,6 +56,7 @@ try {
   $r = Invoke-NvrFix @p
   if (-not $r.ok) { $code = 4 }
 } catch { Say2 ('PROBLEM ' + $_.Exception.Message) 'Red'; $code = 1 }
+finally { try { [void](Close-NvrSessions) } catch {} }   # 1.4: always log out of DW, also after an error
 $hist = ''
 if ($r -and $r.ran -and $r.history) {
   $hist = (Get-Date -Format 'yyyy-MM-dd HH:mm') + ' | ' + $env:COMPUTERNAME + ' | ' + $(if ($Site) { $Site } else { '-' }) + ' | ' + $r.history
