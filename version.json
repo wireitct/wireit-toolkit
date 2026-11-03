@@ -1,9 +1,9 @@
 {
-  "version": "1.5.0",
+  "version": "1.6.0",
   "released": "2026-11-03",
-  "commit": "12594760aac98d58fc4983e83e0f3ef44edf8c02",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/12594760aac98d58fc4983e83e0f3ef44edf8c02/",
-  "notes": "Check this site (read-only): finds cameras, saves the site list, checks the recorder and prints one summary with what would fix each problem. DW Spectrum servers supported (pick 'dw' or auto; https with http fallback) with an 'Offline in DW' list: last recording, ping/ARP, >24 h no-recording flag. Camera doctor: why is ONE camera offline - at most one login try, none if it is already locked. Find cameras now also sweeps the PC's own network so cameras that miss discovery show up; Uniview says 'Not tried' when no login was tried; installer adds the firewall rule so Windows does not ask. Window fits 1024x768. Untested on real gear: the sweep, DW list and Camera doctor (mock-tested only).",
+  "commit": "2c447b29bf1ceb2ec224af0acf8ff704c336953c",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/2c447b29bf1ceb2ec224af0acf8ff704c336953c/",
+  "notes": "Fix what failed (NEW, untested on real gear - mock-tested only): a button next to Camera doctor that offers only the fixes the last Check this site / Camera doctor found: turn recording back on, restart one camera (max 1/hour, 2/day), put a camera back on its NVR channel, set the time server, update firmware on one device (SHA-256 must match), set the site password, fix the camera password in DW. Each fix shows its plan, saves a backup, and changes nothing until you type YES. Includes everything in 1.5.0. 'Go back to the previous version' returns to 1.5.0 and removes the fix files.",
   "files": [
     {
       "path": "Toolkit/WireItToolkit.ps1",
@@ -27,8 +27,8 @@
     },
     {
       "path": "Toolkit/README.txt",
-      "sha256": "6bb25dffc35845ee742ddf9c5f955fc837a9538f71cb762dac85948f77ea6e91",
-      "size": 8260
+      "sha256": "e0ad735d45f8674715199132fd621b6b02d1ebd0fbde2901b56ca6c7b1aed699",
+      "size": 9360
     },
     {
       "path": "Toolkit/wireit.ico",
@@ -42,8 +42,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Toolkit.ps1",
-      "sha256": "c44f51cc48f06f68b5930502c8902b5bcb57466c74a5a84e6ec2af6f7ff65818",
-      "size": 46710
+      "sha256": "1f6f84a80be7c7a3cd92c489053174d5ab20c29d66c8bd4101d42ca012d05cba",
+      "size": 46965
     },
     {
       "path": "Toolkit/CamViews.ps1",
@@ -154,6 +154,21 @@
       "path": "Toolkit/tests/mock_scan_server.py",
       "sha256": "f5cc4d39d05a6567f17935a8a8c1cb4b793f04999154fed7e4074f784ac52a3b",
       "size": 4817
+    },
+    {
+      "path": "Toolkit/FixIt.ps1",
+      "sha256": "22f696c9c38285895919ffc76a9e0b0c9422927181e0aac4cb952eac4564c630",
+      "size": 5779
+    },
+    {
+      "path": "Toolkit/modules/NvrHealth/NvrFix.ps1",
+      "sha256": "59b6c4f942edb89c40ff7ce033b7e9fd0ae8a028122a145114c7aed0de413fc6",
+      "size": 20251
+    },
+    {
+      "path": "Toolkit/tests/Test-FixIt.ps1",
+      "sha256": "830d7b770af79f7338954fa5e04e3571c634d9e20db0baa1651c2b86fd17a08d",
+      "size": 7842
     }
   ]
 }
