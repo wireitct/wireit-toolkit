@@ -432,8 +432,9 @@ function Add-Out([string]$text, $color = $null) {
   $box = $TK.out
   if ($box -is [Windows.Forms.RichTextBox]) {
     foreach ($ln in ($t.Substring(0, $t.Length - 2) -split "`r`n")) {
+      $lc = $color; if ($ln.StartsWith('!! ')) { $ln = $ln.Substring(3); $lc = $cRed }   # ScanUpload: missing / new / changed IP
       $box.SelectionStart = $box.TextLength; $box.SelectionLength = 0
-      $box.SelectionColor = $(if ($color) { $color } else { Get-LineColor $ln })
+      $box.SelectionColor = $(if ($lc) { $lc } else { Get-LineColor $ln })
       $box.SelectionFont = $(if ($ln -match '^\s*===' -or $ln -match '^(In short|Usual order)') { $TK.fMonoB } else { $box.Font })
       $box.AppendText($ln + "`n")
     }
@@ -442,15 +443,22 @@ function Add-Out([string]$text, $color = $null) {
   if ($TK.run -and $TK.run.Log) { [void]$TK.run.Log.Append($t) }
 }
 function Set-Status([string]$s) { $TK.status.Text = $s }
+function Add-OutTop([string[]]$lines, $color) {
+  # puts lines at the very top of the results (red: missing / new / changed IP after a scan was saved to the site page)
+  $box = $TK.out; $lines = @($lines | Where-Object { $_ }); if (-not $lines.Count -or -not ($box -is [Windows.Forms.RichTextBox])) { return }
+  $ro = $box.ReadOnly; $box.ReadOnly = $false
+  try { $box.SelectionStart = 0; $box.SelectionLength = 0; $box.SelectionColor = $color; $box.SelectionFont = $TK.fMonoB; $box.SelectedText = (($lines -join "`n") + "`n`n") } finally { $box.ReadOnly = $ro }
+  $box.SelectionStart = 0; $box.SelectionLength = 0; $box.ScrollToCaret()
+}
 function Set-Busy([bool]$b) { foreach ($x in $TK.buttons) { $x.Enabled = -not $b }; $TK.out.Cursor = $(if ($b) { [Windows.Forms.Cursors]::AppStarting } else { [Windows.Forms.Cursors]::IBeam }) }
 function Set-Clip([string]$text, [string]$what) {
   if (-not $text) { Set-Status ('Nothing to copy for ' + $what); return }
   try { [Windows.Forms.Clipboard]::SetText($text); Set-Status ('Copied ' + $what + '. Paste it with Ctrl+V.') } catch { Set-Status ('Could not copy ' + $what) }
 }
-function Begin-Run([string]$name) {
-  $TK.out.Clear()
+function Begin-Run([string]$name, [bool]$keep = $false) {
+  if (-not $keep) { $TK.out.Clear() }   # keep = a follow-up step (saving the list) under the results it follows
   $TK.run = @{ Name = $name; Log = (New-Object Text.StringBuilder); Started = Get-Date }
-  Add-Out ('=== ' + $name + ' - ' + (Get-Date -Format 'ddd MMM d, h:mm tt') + ' ===')
+  if (-not $keep) { Add-Out ('=== ' + $name + ' - ' + (Get-Date -Format 'ddd MMM d, h:mm tt') + ' ===') }
   Set-Busy $true; Set-Status ($name + ' is running...'); Set-Pill ($name + ' - running') $cAmber
 }
 function End-Run([int]$code, [string]$plain) {
@@ -469,9 +477,9 @@ function Test-Tool([string]$path, [string]$name) {
 }
 
 # hidden run: output streams into the results pane
-function Start-Hidden([string]$name, [string]$file, [string]$argLine, [scriptblock]$onDone) {
+function Start-Hidden([string]$name, [string]$file, [string]$argLine, [scriptblock]$onDone, [bool]$keep = $false) {
   if ($TK.run) { Set-Status 'Wait for the running tool to finish.'; return $false }
-  Begin-Run $name
+  Begin-Run $name $keep
   if (-not (Test-Tool $file $name)) { End-Run 2 ''; return $false }
   $outFile = Join-Path ([IO.Path]::GetTempPath()) ('wireit-tk-' + [guid]::NewGuid().ToString('N').Substring(0, 10) + '.txt')
   $psi = New-TkHiddenPsi $TK.psexe $file $argLine $outFile
@@ -533,7 +541,9 @@ function Poll-Run {
 }
 
 # ---------------- small input dialog ----------------
-function Ask-Fields([string]$title, [string]$intro, $fields) {
+function New-AskForm([string]$title, [string]$intro, $fields) {
+  # a single field @(@('site','Site:','')) arrives unrolled as 3 strings (Nov 3 bug: 3 boxes labelled "i", "t" and blank)
+  $fields = @($fields); if ($fields.Count -gt 0 -and $fields[0] -is [string]) { $fields = ,$fields }
   $f = New-Object Windows.Forms.Form; $f.Text = $title; $f.Font = $fNorm; $f.BackColor = [Drawing.Color]::White; if ($TK.form -and $TK.form.Icon) { $f.Icon = $TK.form.Icon }; $f.StartPosition = 'CenterParent'; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false
   $f.AutoSize = $true; $f.AutoSizeMode = 'GrowAndShrink'; $f.Padding = New-Object Windows.Forms.Padding (Px 18)
   $t = New-Object Windows.Forms.TableLayoutPanel; $t.ColumnCount = 2; $t.AutoSize = $true; $t.Dock = 'Fill'
@@ -547,6 +557,11 @@ function Ask-Fields([string]$title, [string]$intro, $fields) {
   $cn = New-Btn 'Cancel' $null; $cn.DialogResult = 'Cancel'
   $fl = New-Object Windows.Forms.FlowLayoutPanel; $fl.AutoSize = $true; $fl.Margin = New-Object Windows.Forms.Padding(0, (Px 10), 0, 0); $fl.Controls.AddRange(@($ok, $cn)); $t.Controls.Add($fl); $t.SetColumnSpan($fl, 2)
   $f.Controls.Add($t); $f.AcceptButton = $ok; $f.CancelButton = $cn
+  return @{ form = $f; boxes = $boxes }
+}
+function Ask-Fields([string]$title, [string]$intro, $fields) {
+  $fields = @($fields); if ($fields.Count -gt 0 -and $fields[0] -is [string]) { $fields = ,$fields }
+  $af = New-AskForm $title $intro $fields; $f = $af.form; $boxes = $af.boxes
   if ($f.ShowDialog($TK.form) -ne 'OK') { return $null }
   $res = @{}; foreach ($k in $boxes.Keys) { $res[$k] = $boxes[$k].Text.Trim() }; return $res
 }
@@ -561,10 +576,20 @@ function Do-Find {
       $hik = @($d | Where-Object { $_.Brand -like 'Hikvision*' }).Count; $unv = @($d | Where-Object { $_.Brand -eq 'Uniview' }).Count
       $other = @($d | Where-Object { $_.Status -like '*different IP scheme*' }).Count
       Add-Out ('In short: ' + $d.Count + ' device(s) found - ' + $hik + ' Hikvision, ' + $unv + ' Uniview' + $(if ($other) { '; ' + $other + ' on a different IP scheme (button 3 Fix NVR moves them)' } else { '' }) + '.')
-      if ($TK.log) { }
     }
     if ($TK.rs -and $TK.rs.form -and -not $TK.rs.form.IsDisposed) { Fill-ResetList }
+    # Nov 3 2026: the list goes to the site's page (one list per site, compared with the last scan)
+    if ($d.Count) { if ($TK.site.Text.Trim()) { Start-ScanUpload '' } else { Add-Out ''; Add-Out 'Tip: type the site to save this list to the site page.' $cBlue } }
   })
+}
+function Start-ScanUpload([string]$snapshotFile) {
+  $su = Join-Path $TK.P.Toolkit 'ScanUpload.ps1'
+  $a = '-Site ' + (Q $TK.site.Text.Trim()) + ' -CamResetDir ' + (Q $TK.P.CamReset); if ($snapshotFile) { $a += ' -Snapshot ' + (Q $snapshotFile) }
+  [void](Start-Hidden 'Save to site page' $su $a {
+    param($code)
+    $j = Read-TkJson (Join-Path $TK.P.Toolkit 'logs\scan-upload-last.json')
+    if ($j -and @($j.red).Count) { Add-OutTop @($j.red) $cRed }
+  } $true)
 }
 function Fix-Extras { $e = @(); if ($TK.site.Text.Trim()) { $e += '-Site ' + (Q $TK.site.Text.Trim()) }; if ($TK.lone.Checked) { $e += '-MoveUnlisted' }; return $e }
 function Do-Check { Start-Fix 'Check NVR' 'Check' (Fix-Extras) $null }
@@ -580,13 +605,19 @@ function Do-Net {
 }
 function Do-Snapshot {
   $a = Ask-Fields 'Save install snapshot' 'Saves a known-good record of the NVR and cameras (no passwords). Fill what you know; blanks are fine.' @(
-    @('site', 'Site (Drive folder name):', $TK.site.Text), @('router', 'Router make/model (e.g. Xfinity XB8):', ''), @('range', 'Router DHCP range (e.g. 100-254, or reserved):', ''))
+    @('site', 'Site ID or address:', $TK.site.Text), @('router', 'Router make/model (e.g. Xfinity XB8):', ''), @('range', 'Router DHCP range (e.g. 100-254, or reserved):', ''))
   if (-not $a) { return }
   $e = @(); if ($a.site) { $e += '-Site ' + (Q $a.site); $TK.site.Text = $a.site }; if ($a.router) { $e += '-RouterModel ' + (Q $a.router) }; if ($a.range) { $e += '-DhcpRange ' + (Q $a.range) }
-  Start-Fix 'Install snapshot' 'Snapshot' $e $null
+  $TK.snapSince = Get-Date
+  Start-Fix 'Install snapshot' 'Snapshot' $e {
+    param($code)
+    # the snapshot is also the site's known-good camera list on the site page (one list, Moshe Nov 3)
+    $sn = Get-TkNewestSnapshot $TK.P.FixNVR $TK.snapSince
+    if ($sn -and $TK.site.Text.Trim()) { Start-ScanUpload $sn.FullName } elseif ($sn) { Add-Out 'Tip: type the site to save this snapshot to the site page.' $cBlue }
+  }
 }
 function Do-Pics {
-  $a = Ask-Fields 'Save camera pictures' 'Takes one picture of every camera on the NVR (read-only) and puts it on the site page, so a camera that goes down shows where it is. Type the Site ID (e.g. WI-061) or the site folder name.' @(@('site', 'Site:', $TK.site.Text))
+  $a = Ask-Fields 'Save camera pictures' 'Takes one picture of every camera on the NVR (read-only) and puts it on the site page, so a camera that goes down shows where it is. Type the Site ID (e.g. WI-061) or the site folder name.' (,@('site', 'Site ID or address:', $TK.site.Text))
   if (-not $a) { return }
   if (-not $a.site) { $TK.out.Clear(); Add-Out 'Type the site (Site ID like WI-061, or the site folder name) so the pictures go to the right site page.'; return }
   $TK.site.Text = $a.site
@@ -620,7 +651,7 @@ function Do-Nvr([string]$mode) {
     FixClock  = 'CHANGES the recorder''s time settings (time server + US Eastern). It shows the plan first; nothing changes until you type YES in its window.'
     Firmware  = 'Read-only. Firmware vs. the newest published and known security holes. Only REPORTS - it never updates anything.'
   }
-  $fields = @(@('ip', 'Recorder IP address:', (Get-LastNvrIp)), @('site', 'Site (optional):', $TK.site.Text))
+  $fields = @(@('ip', 'Recorder IP address:', (Get-LastNvrIp)), @('site', 'Site ID or address (optional):', $TK.site.Text))
   if ($mode -eq 'Recording') { $fields += ,@('days', 'Days to keep (blank = from the site):', '') }
   else { $fields += ,@('cams', 'Cameras too? (yes / no):', 'yes') }
   $a = Ask-Fields $names[$mode] $intro[$mode] $fields
@@ -947,23 +978,31 @@ $right = New-Object Windows.Forms.TableLayoutPanel; $right.Dock = 'Fill'; $right
 [void]$right.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))); [void]$right.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', (Px 110)))); [void]$right.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
 $right.Controls.Add((New-Caps 'Job options'), 0, 0)
 $optCard = New-Round; $optCard.Dock = 'Fill'; $optCard.Padding = New-Object Windows.Forms.Padding((Px 16), (Px 10), (Px 16), (Px 8)); $optCard.Margin = New-Object Windows.Forms.Padding(0, (Px 3), 0, (Px 12))
-$opt = New-Object Windows.Forms.TableLayoutPanel; $opt.ColumnCount = 2; $opt.RowCount = 2; $opt.Dock = 'Fill'; $opt.Margin = New-Object Windows.Forms.Padding 0
-[void]$opt.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))); [void]$opt.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
+$opt = New-Object Windows.Forms.TableLayoutPanel; $opt.ColumnCount = 2; $opt.RowCount = 3; $opt.Dock = 'Fill'; $opt.Margin = New-Object Windows.Forms.Padding 0
+[void]$opt.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))); [void]$opt.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))); [void]$opt.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
 [void]$opt.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('AutoSize'))); [void]$opt.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 100)))
-$l1 = New-Object Windows.Forms.Label; $l1.Text = 'Site (optional):'; $l1.AutoSize = $true; $l1.Anchor = 'Left'; $l1.Font = $fBold; $l1.ForeColor = $cInk; $l1.Margin = New-Object Windows.Forms.Padding(0, 0, (Px 4), 0); $opt.Controls.Add($l1, 0, 0)
-$site = New-Object Windows.Forms.TextBox; $site.Anchor = 'Left, Right'; $site.Font = Fnt 10.5; $site.BorderStyle = 'FixedSingle'; $site.Margin = New-Object Windows.Forms.Padding((Px 6), (Px 4), 0, (Px 4)); $TK.site = $site; $opt.Controls.Add($site, 1, 0); $tips.SetToolTip($site, 'Site folder name as in Google Drive (finds/saves the snapshot). Used by 2, 3 and 6.')
+# Nov 3 2026 (Moshe on the Dell: "it says site, and then optional ... what does that mean?"): plain labels, Bitwarden under Advanced
+$l1 = New-Object Windows.Forms.Label; $l1.Text = 'Site ID or address:'; $l1.AutoSize = $true; $l1.Anchor = 'Left'; $l1.Font = $fBold; $l1.ForeColor = $cInk; $l1.Margin = New-Object Windows.Forms.Padding(0, 0, (Px 4), 0); $opt.Controls.Add($l1, 0, 0); $TK.l1 = $l1
+$site = New-Object Windows.Forms.TextBox; $site.Anchor = 'Left, Right'; $site.Font = Fnt 10.5; $site.BorderStyle = 'FixedSingle'; $site.Margin = New-Object Windows.Forms.Padding((Px 6), (Px 4), 0, (Px 2)); $TK.site = $site; $opt.Controls.Add($site, 1, 0)
+$tips.SetToolTip($site, 'The Site ID on the QR sticker (e.g. WI-061) or the address / site folder name (e.g. 2336 Main St). Find cameras saves its camera list to that site''s page; Check / Fix NVR, the install snapshot and camera pictures use it too. Leave it blank to keep everything on this PC only.')
+$hint = New-Object Windows.Forms.Label; $hint.Text = 'e.g. WI-061 or 2336 Main St. Saves the camera list and results to that site''s page.'
+$hint.AutoSize = $false; $hint.AutoEllipsis = $true; $hint.Dock = 'Fill'; $hint.Font = $fSmall; $hint.ForeColor = $cMuted; $hint.Height = [int]([math]::Ceiling($fSmall.GetHeight() * 1.3)); $hint.Margin = New-Object Windows.Forms.Padding((Px 6), 0, 0, 0)
+$opt.Controls.Add($hint, 1, 1); $tips.SetToolTip($hint, $tips.GetToolTip($site)); $TK.hint = $hint
 $pwRow = New-Object Windows.Forms.FlowLayoutPanel; $pwRow.AutoSize = $true; $pwRow.WrapContents = $true; $pwRow.Dock = 'Fill'; $pwRow.Margin = New-Object Windows.Forms.Padding(0, (Px 6), 0, 0)
-$lone = New-Object Windows.Forms.CheckBox; $lone.Text = 'Also move lone cameras (not on an NVR list)'; $lone.AutoSize = $true; $lone.ForeColor = $cInk; $lone.Margin = New-Object Windows.Forms.Padding(0, (Px 2), (Px 18), (Px 2)); $TK.lone = $lone
-$pwType = New-Object Windows.Forms.RadioButton; $pwType.Text = 'Passwords: type them when asked (hidden)'; $pwType.AutoSize = $true; $pwType.Checked = $true; $pwType.ForeColor = $cInk; $pwType.Margin = New-Object Windows.Forms.Padding(0, (Px 2), (Px 18), (Px 2))
-$pwBw = New-Object Windows.Forms.RadioButton; $pwBw.Text = 'Passwords: from a Bitwarden export file...'; $pwBw.AutoSize = $true; $pwBw.ForeColor = $cInk; $pwBw.Margin = New-Object Windows.Forms.Padding(0, (Px 2), 0, (Px 2))
-$pwRow.Controls.AddRange(@($lone, $pwType, $pwBw)); $pwRow.SetFlowBreak($lone, $true); $opt.Controls.Add($pwRow, 0, 1); $opt.SetColumnSpan($pwRow, 2)
-$TK.pwType = $pwType; $TK.pwBw = $pwBw
-$pwBw.Add_Click({
+$lone = New-Object Windows.Forms.CheckBox; $lone.Text = 'Also fix cameras plugged into the switch that aren''t added to the NVR'; $lone.AutoSize = $true; $lone.ForeColor = $cInk; $lone.Margin = New-Object Windows.Forms.Padding(0, (Px 2), (Px 18), (Px 2)); $TK.lone = $lone
+$tips.SetToolTip($lone, 'For 3 Fix NVR: also move cameras that are on the network but not on the NVR''s camera list to the new address scheme.')
+# passwords: typed when asked (hidden) is the normal way; a Bitwarden export file is tucked under Advanced
+$adv = New-Object Windows.Forms.LinkLabel; $adv.Text = 'Advanced...'; $adv.AutoSize = $true; $adv.LinkColor = $cMuted; $adv.ActiveLinkColor = $cBlue; $adv.Margin = New-Object Windows.Forms.Padding(0, (Px 4), 0, (Px 2)); $TK.adv = $adv
+$advMenu = New-Object Windows.Forms.ContextMenuStrip; $TK.advMenu = $advMenu
+$miBw = $advMenu.Items.Add('Read NVR passwords from a Bitwarden export file...'); $miType = $advMenu.Items.Add('Type passwords when asked (normal)')
+$miBw.Add_Click({
   $o = New-Object Windows.Forms.OpenFileDialog; $o.Filter = 'Bitwarden export (*.json)|*.json'; $o.Title = 'Pick the Bitwarden export (.json, unencrypted)'
-  if ($o.ShowDialog($TK.form) -eq 'OK') { $TK.bw = $o.FileName; $TK.pwBw.Text = 'Passwords: from ' + [IO.Path]::GetFileName($o.FileName) + ' (delete it when done)' }
-  else { $TK.bw = ''; $TK.pwType.Checked = $true }
+  if ($o.ShowDialog($TK.form) -eq 'OK') { $TK.bw = $o.FileName; $TK.adv.Text = 'Advanced: passwords from ' + [IO.Path]::GetFileName($o.FileName) + ' (delete it when done)' }
 })
-$pwType.Add_Click({ $TK.bw = ''; $TK.pwBw.Text = 'Passwords: from a Bitwarden export file...' })
+$miType.Add_Click({ $TK.bw = ''; $TK.adv.Text = 'Advanced...' })
+$adv.Add_LinkClicked({ $TK.advMenu.Show($TK.adv, (New-Object Drawing.Point(0, $TK.adv.Height))) })
+$tips.SetToolTip($adv, 'Passwords are typed when a tool asks (hidden, never saved). Advanced: read them from a Bitwarden export file instead.')
+$pwRow.Controls.AddRange(@($lone, $adv)); $opt.Controls.Add($pwRow, 0, 2); $opt.SetColumnSpan($pwRow, 2)
 $optCard.Controls.Add($opt)
 $right.Controls.Add($optCard, 0, 1)
 
@@ -983,7 +1022,12 @@ $res.Controls.Add($rb, 0, 2); $res.SetColumnSpan($rb, 2)
 $resCard.Controls.Add($res)
 $right.Controls.Add($resCard, 0, 2)
 $body.Controls.Add($right, 1, 0)
-function Fit-Options { $line = [math]::Max($TK.lone.PreferredSize.Height, $TK.pwBw.PreferredSize.Height) + (Px 4); $h = $TK.site.PreferredHeight + $TK.site.Margin.Vertical + $TK.pwRow.Margin.Vertical + 2 * $line + $TK.optCard.Padding.Vertical + $TK.optCard.Margin.Vertical; $rsy = $TK.right.RowStyles[1]; if ([int]$rsy.Height -ne $h) { $rsy.Height = $h; $TK.right.PerformLayout() } }
+function Fit-Options {
+  $w = [math]::Max(100, $TK.opt.ClientSize.Width); $line = [math]::Max($TK.lone.PreferredSize.Height, $TK.adv.PreferredSize.Height) + (Px 4)
+  $pw = [math]::Max($line, $TK.pwRow.GetPreferredSize((New-Object Drawing.Size($w, 0))).Height)
+  $h = $TK.site.PreferredHeight + $TK.site.Margin.Vertical + $TK.hint.Height + $TK.hint.Margin.Vertical + $TK.pwRow.Margin.Vertical + $pw + $TK.optCard.Padding.Vertical + $TK.optCard.Margin.Vertical
+  $rsy = $TK.right.RowStyles[1]; if ([int]$rsy.Height -ne $h) { $rsy.Height = $h; $TK.right.PerformLayout() }
+}
 $TK.optCard = $optCard; $TK.opt = $opt; $TK.right = $right; $TK.pwRow = $pwRow
 $optCard.Add_SizeChanged({ Fit-Options })
 
@@ -1006,6 +1050,7 @@ Add-Out 'Pick a job on the left. Results show here in plain words, and every run
 Add-Out ''
 Add-Out 'Usual order on a site:' $cInk
 Add-Out '  1 Find cameras  >  2 Check NVR  >  3 Fix NVR (type YES)  >  6 Save install snapshot' $cBlue
+Add-Out '  Type the Site ID or address first: Find cameras then saves its camera list to the site page and flags any camera missing since the last scan.' $cMuted
 Add-Out '  Unknown password?  4 Reset passwords.   Slow or dropping video?  5 Network check.   Fix went wrong?  7 Undo last fix.' $cMuted
 Add-Out '  8 Save camera pictures: the site page shows each camera''s last picture (3 and 6 take them too when the Site box is filled).' $cMuted
 Add-Out ''
@@ -1015,7 +1060,7 @@ Set-Pill 'Ready' $cSlate
 Set-Status ('Ready. ' + $env:COMPUTERNAME)
 
 $form.Add_DragEnter({ if ($_.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $_.Effect = 'Copy' } })
-$form.Add_DragDrop({ $files = $_.Data.GetData([Windows.Forms.DataFormats]::FileDrop); if ($files) { $p = [string]$files[0]; if ($p -match '(?i)\.json$') { [void][Windows.Forms.MessageBox]::Show($TK.form, 'That looks like a settings/Bitwarden file, not a Hikvision reply. Use "Passwords: from a Bitwarden export file" for that.', 'WireIt Toolkit') } else { Show-ResetWindow $p } } })
+$form.Add_DragDrop({ $files = $_.Data.GetData([Windows.Forms.DataFormats]::FileDrop); if ($files) { $p = [string]$files[0]; if ($p -match '(?i)\.json$') { [void][Windows.Forms.MessageBox]::Show($TK.form, 'That looks like a settings/Bitwarden file, not a Hikvision reply. For Bitwarden use Advanced... under Job options.', 'WireIt Toolkit') } else { Show-ResetWindow $p } } })
 $timer = New-Object Windows.Forms.Timer; $timer.Interval = 400
 $timer.Add_Tick({ try { Poll-Run; Watch-Export } catch { Set-Status ('(' + $_.Exception.Message + ')') } })
 $form.Add_FormClosing({
@@ -1052,6 +1097,11 @@ if ($Screenshot) {
   Add-Out ''
   Add-Out 'In short: 3 device(s) found - 3 Hikvision, 0 Uniview; 3 on a different IP scheme (button 3 Fix NVR moves them).'
   Add-Out 'Find cameras: finished.'
+  $TK.site.Text = '2336 Main St'
+  Add-Out ''; Add-Out 'Saving the camera list (3 devices, no passwords) to the site page for "2336 Main St"...'
+  Add-Out '!! MISSING since last scan: Camera DS-2CD2143G2-I 192.168.1.66 44:19:B6:00:01:03'
+  Add-Out 'Saved to the site page: 2336 Main St (WI-064), 4 devices.'
+  Add-OutTop @('MISSING since last scan: Camera DS-2CD2143G2-I 192.168.1.66 44:19:B6:00:01:03') $cRed
   Set-Pill 'Find cameras - done' $cOk; Set-Status 'Find cameras done. Saved to the logs folder.'
   [Windows.Forms.Application]::DoEvents(); Fit-Options; [Windows.Forms.Application]::DoEvents()
   Save-Shot $root (Join-Path $Screenshot 'toolkit-main.png') $TK.out
@@ -1069,7 +1119,17 @@ if ($Screenshot) {
   $need = $TK.rs.flow.GetPreferredSize((New-Object Drawing.Size($TK.rs.flow.ClientSize.Width, 0))).Height + $TK.rs.head.Height
   $hp.Size = New-Object Drawing.Size($TK.rs.client.Width, [math]::Max($TK.rs.client.Height, $need)); [Windows.Forms.Application]::DoEvents()
   Save-Shot $hp (Join-Path $Screenshot 'toolkit-reset-2.png')
-  $TK.rs.watch = $false; $rf.Close(); $form.Close()
+  $TK.rs.watch = $false; $rf.Close()
+  # Nov 3 2026 checks: the plain option labels, no password radio buttons on the main window, a 1-field dialog = 1 box
+  $script:radioN = 0; function Count-Radios($c) { foreach ($x in $c.Controls) { if ($x -is [Windows.Forms.RadioButton] -and $x.Visible) { $script:radioN++ }; Count-Radios $x } }; Count-Radios $TK.opt
+  Write-Output ('label site=' + $TK.l1.Text); Write-Output ('label hint=' + $TK.hint.Text); Write-Output ('label lone=' + $TK.lone.Text); Write-Output ('label advanced=' + $TK.adv.Text + ' items=' + (@($TK.advMenu.Items | ForEach-Object { $_.Text }) -join ' | '))
+  Write-Output ('main radios=' + $script:radioN)
+  $af1 = New-AskForm 'Save camera pictures' 'Type the Site ID (e.g. WI-061) or the site folder name.' @(@('site', 'Site ID or address:', 'WI-061'))
+  $tl = $af1.form.Controls[0]; $lbls = @($tl.Controls | Where-Object { $_ -is [Windows.Forms.Label] } | Select-Object -Skip 1 | ForEach-Object { $_.Text })
+  Write-Output ('ask1 boxes=' + @($tl.Controls | Where-Object { $_ -is [Windows.Forms.TextBox] }).Count + ' labels=' + ($lbls -join '|') + ' value=' + $af1.boxes['site'].Text)
+  $af1.form.StartPosition = 'Manual'; $af1.form.Location = New-Object Drawing.Point(-20000, -20000); $af1.form.ShowInTaskbar = $false; $af1.form.Show(); [Windows.Forms.Application]::DoEvents()
+  Save-Shot $af1.form (Join-Path $Screenshot 'toolkit-ask-site.png'); $af1.form.Close()
+  $form.Close()
   Write-Output ('screenshots saved in ' + $Screenshot + '; buttons=' + $TK.buttons.Count + '; resetFields=' + $TK.rs.fieldBtns.Count + '; look=' + $(if ($TK_UI) { 'new' } else { 'plain' }) + '; icons=' + $TK.icons + '; scale=' + $TK.scale)
   exit 0
 }

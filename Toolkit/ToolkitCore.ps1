@@ -401,3 +401,73 @@ function New-TkHiddenPsi([string]$psexe, [string]$file, [string]$argLine, [strin
   $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.WorkingDirectory = (Split-Path -Parent $file)
   return $psi
 }
+
+
+# ---------------- site camera list (Nov 3 2026): "1 Find cameras" / "6 Save install snapshot" -> the site page ----------------
+# Moshe Nov 2 9:24 PM: "after the scan it could get saved to this site ... to mesh with everything else". ONE list per site on the
+# service site (op scanPush, the same upload key as Save camera pictures). Only the fields below are ever sent: never a password.
+function Get-TkDeviceKind([string]$model, [string]$brand = '') {
+  $m = ([string]$model).Trim().ToUpper()
+  if ($m -match '^I?DS-[789]\d{3}' -or $m -match '^(NVR|DVR|XVR)') { return 'recorder' }
+  if ($m) { return 'camera' }
+  return 'other'
+}
+function ConvertTo-TkScanDevice($d, [string]$kind = '') {
+  if (-not $d) { return $null }
+  $g = { param($n) $p = $d.PSObject.Properties[$n]; if ($p -and $null -ne $p.Value) { return ([string]$p.Value).Trim() } else { return '' } }
+  $brand = (& $g 'Brand'); if (-not $brand) { $brand = (& $g 'brand') }; $brand = ($brand -replace '\s*\(ONVIF\)', '').Trim()
+  $model = (& $g 'Model'); if (-not $model) { $model = (& $g 'model') }
+  $o = [ordered]@{
+    kind = $(if ($kind) { $kind } else { Get-TkDeviceKind $model $brand }); brand = $brand; model = $model
+    serial = $(& $g 'Serial'); mac = $(& $g 'MAC'); ip = $(& $g 'IP'); firmware = $(& $g 'Firmware')
+  }
+  if (-not $o.serial) { $o.serial = (& $g 'serial') }; if (-not $o.mac) { $o.mac = (& $g 'mac') }; if (-not $o.ip) { $o.ip = (& $g 'ip') }; if (-not $o.firmware) { $o.firmware = (& $g 'firmware') }
+  $ch = (& $g 'channel'); if ($ch) { $o.channel = $ch }
+  if (-not ($o.mac -or $o.serial -or $o.ip)) { return $null }
+  return $o
+}
+# the last "Find cameras" scan (CamReset out\latest.json) as the list the site page keeps
+function Get-TkScanDevices([string]$camResetDir) {
+  $l = Read-TkJson (Join-Path $camResetDir 'out\latest.json')
+  if (-not $l) { return @() }
+  return @(foreach ($d in @($l.devices)) { $x = ConvertTo-TkScanDevice $d; if ($x) { $x } })
+}
+# an install snapshot (FixNVR snapshot json) as the known-good list: NVRs + the cameras this PC can see (not the NVR's own PoE ports)
+function Get-TkSnapshotDevices([string]$path) {
+  $s = Read-TkJson $path
+  if (-not $s) { return @() }
+  $out = New-Object System.Collections.Generic.List[object]
+  foreach ($n in @($s.nvrs)) { $x = ConvertTo-TkScanDevice $n 'recorder'; if ($x) { $out.Add($x) } }
+  foreach ($c in @($s.cameras)) {
+    if (-not $c) { continue }
+    if ([string]$c.ip -like '192.168.254.*' -or -not ($c.mac -or $c.serial)) { continue }   # behind the NVR's PoE ports: a PC scan never sees those
+    $x = ConvertTo-TkScanDevice $c 'camera'; if ($x) { $out.Add($x) }
+  }
+  return $out.ToArray()
+}
+function Get-TkNewestSnapshot([string]$fixDir, [datetime]$since) {
+  $d = Join-Path $fixDir 'snapshots'
+  if (-not (Test-Path $d)) { return $null }
+  return (Get-ChildItem $d -Filter 'FixNVR snapshot*.json' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $since.AddSeconds(-5) } | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+}
+# the server's answer -> lines for the results pane: @{ t = text; k = red | ok | warn | plain }; red ones go at the top
+function Format-TkScanAnswer($r, [string]$site) {
+  $L = New-Object System.Collections.Generic.List[object]
+  $add = { param($t, $k) $L.Add(@{ t = $t; k = $k }) }
+  $dash = [string][char]0x2014
+  if (-not $r) { & $add ('Not saved to the site page: no answer from the service site (no internet?). It is sent next time you run Find cameras with this site.') 'warn'; return $L.ToArray() }
+  if (-not $r.ok) { & $add ('Not saved to the site page: ' + [string]$r.msg) 'warn'; return $L.ToArray() }
+  $j = { param($a) (@($a) | Where-Object { $_ }) -join '; ' }
+  if (@($r.missing).Count) { & $add ('MISSING since last scan: ' + (& $j $r.missing)) 'red' }
+  if (@($r.stillMissing).Count) { & $add ('Still missing: ' + (& $j $r.stillMissing)) 'red' }
+  if (@($r.added).Count -and -not $r.snapshot -and [int]$r.total -gt @($r.added).Count) { & $add ('NEW: ' + (& $j $r.added)) 'red' }
+  foreach ($c in @($r.changedIp)) { if ($c) { & $add ('CHANGED IP: ' + [string]$c.label + ' ' + [string]$c.from + ' -> ' + [string]$c.to) 'red' } }
+  foreach ($c in @($r.changed)) { if ($c) { & $add ('Changed: ' + [string]$c) 'plain' } }
+  if (@($r.back).Count) { & $add ('Back again: ' + (& $j $r.back)) 'ok' }
+  $nm = [string]$r.site + $(if ($r.code) { ' (' + [string]$r.code + ')' } else { '' })
+  if ($r.same) { & $add ('No changes ' + $dash + ' site list already up to date (' + $nm + ', ' + [int]$r.total + ' devices).') 'ok' }
+  elseif ($r.snapshot) { & $add ('Install snapshot saved as the known-good camera list on the site page: ' + $nm + ', ' + [int]$r.total + ' devices.') 'ok' }
+  else { & $add ('Saved to the site page: ' + $nm + ', ' + [int]$r.total + ' devices' + $(if (@($r.added).Count -eq [int]$r.total) { ' (first list for this site)' } else { '' }) + '.') 'ok' }
+  if ([int]$r.alerted -gt 0) { & $add ('Alert sent to the office for ' + [int]$r.alerted + ' missing device(s).') 'warn' }
+  return $L.ToArray()
+}

@@ -228,10 +228,85 @@ if ($py -and (Test-Path $mockPy) -and (Test-Path $nm)) {
   }
 } else { Check 'python for the mock recorders' $false 'python or mock_devices.py missing' }
 
+# 10 site camera list (Nov 3 2026): Find cameras / install snapshot -> the site page. Mock server only, no device, no real site.
+Check 'kind: NVR model' ((Get-TkDeviceKind 'DS-7616NXI-I2/16P/S') -eq 'recorder' -and (Get-TkDeviceKind 'NVR302-16S') -eq 'recorder' -and (Get-TkDeviceKind 'iDS-7208HUHI-M1/S') -eq 'recorder')
+Check 'kind: camera model' ((Get-TkDeviceKind 'DS-2CD2143G2-I') -eq 'camera' -and (Get-TkDeviceKind 'IPC2124LB-SF28KM-G') -eq 'camera' -and (Get-TkDeviceKind '') -eq 'other')
+$scr = Join-Path $tmp 'scanCR'; New-Item -ItemType Directory -Force -Path (Join-Path $scr 'out') | Out-Null
+$fake = [ordered]@{ scannedAt = '2026-11-03T09:00:00'; pc = 'TEST'; devices = @(
+  [ordered]@{ Brand = 'Hikvision'; Model = 'DS-7616NXI-I2/16P/S'; Serial = 'DS-7616NXI-I2/16P/S1620230101CCRRJ12345678WCVU'; IP = '192.168.1.20'; MAC = '44-19-B6-00-00-01'; Firmware = 'V4.71.105'; Status = 'Activated'; DefaultLoginWorks = 'no (401)' },
+  [ordered]@{ Brand = 'Hikvision'; Model = 'DS-2CD2143G2-I'; Serial = 'DS-2CD2143G2-I20230101AAWRK87654321'; IP = '192.168.1.21'; MAC = '44-19-B6-00-01-01'; Firmware = 'V5.7.15'; password = 'Secret#123' },
+  [ordered]@{ Brand = 'Other (ONVIF)'; Model = ''; Serial = ''; IP = ''; MAC = '' }) }
+($fake | ConvertTo-Json -Depth 5) | Set-Content (Join-Path $scr 'out\latest.json') -Encoding UTF8
+$sd = @(Get-TkScanDevices $scr)
+Check 'scan list: 2 devices (empty one dropped)' ($sd.Count -eq 2) ($sd | ConvertTo-Json -Depth 3)
+Check 'scan list: NVR + camera, fields' ($sd[0].kind -eq 'recorder' -and $sd[1].kind -eq 'camera' -and $sd[1].mac -eq '44-19-B6-00-01-01' -and $sd[1].firmware -eq 'V5.7.15')
+Check 'scan list: never a password or login result' (-not (($sd | ConvertTo-Json -Depth 3) -match 'Secret|password|DefaultLogin|401'))
+$snapF = Join-Path $tmp 'FixNVR snapshot test.json'
+([ordered]@{ site = 'x'; nvrs = @([ordered]@{ brand = 'Hikvision'; model = 'DS-7616NXI-I2/16P/S'; serial = 'S1'; mac = '44:19:B6:00:00:01'; ip = '192.168.1.20'; firmware = 'V4'; channels = @(@{ channel = 1; ip = '192.168.254.2' }) })
+  cameras = @([ordered]@{ channel = '1'; brand = 'Hikvision'; model = 'DS-2CD2143G2-I'; serial = 'C1'; mac = '44:19:B6:00:01:01'; ip = '192.168.1.21' }, [ordered]@{ channel = '2'; model = 'DS-2CD2143G2-I'; serial = 'C2'; mac = 'AA'; ip = '192.168.254.3' }) } | ConvertTo-Json -Depth 6) | Set-Content $snapF -Encoding UTF8
+$sn = @(Get-TkSnapshotDevices $snapF)
+Check 'snapshot list: NVR + switch camera, not the NVR PoE ports' ($sn.Count -eq 2 -and $sn[0].kind -eq 'recorder' -and $sn[1].channel -eq '1' -and $sn[1].ip -eq '192.168.1.21') ($sn | ConvertTo-Json -Depth 3)
+$fa = @(Format-TkScanAnswer ([pscustomobject]@{ ok = $true; site = '2336 Main St'; code = 'WI-064'; same = $true; total = 5; added = @(); changedIp = @(); changed = @(); missing = @(); stillMissing = @(); back = @() }) 'x')
+Check 'answer: same scan twice = no changes line' ($fa.Count -eq 1 -and $fa[0].t -match '^No changes .+ site list already up to date \(2336 Main St \(WI-064\), 5 devices\)' -and $fa[0].k -eq 'ok') (($fa | ForEach-Object { $_.t }) -join ' / ')
+$fa = @(Format-TkScanAnswer ([pscustomobject]@{ ok = $true; site = 'S'; code = ''; same = $false; total = 6; added = @('Camera X 192.168.1.30'); changedIp = @([pscustomobject]@{ label = 'Camera Y'; from = '192.168.1.22'; to = '192.168.1.42' }); changed = @(); missing = @('Camera Z 192.168.1.23 44:19:B6:00:01:03'); stillMissing = @(); back = @(); alerted = 1 }) 'S')
+$red = @($fa | Where-Object { $_.k -eq 'red' } | ForEach-Object { $_.t })
+Check 'answer: MISSING / NEW / CHANGED IP in red' ($red.Count -eq 3 -and $red[0] -match '^MISSING since last scan: Camera Z' -and $red[1] -match '^NEW: Camera X' -and $red[2] -match '^CHANGED IP: Camera Y 192.168.1.22 -> 192.168.1.42') ($red -join ' / ')
+Check 'answer: alert line' (@($fa | Where-Object { $_.t -match 'Alert sent to the office for 1' }).Count -eq 1)
+$fa = @(Format-TkScanAnswer ([pscustomobject]@{ ok = $false; msg = 'Site not found: zz.' }) 'zz'); Check 'answer: refused = plain reason' ($fa[0].t -match 'Not saved to the site page: Site not found')
+$fa = @(Format-TkScanAnswer $null 'zz'); Check 'answer: offline = waits for next time' ($fa[0].t -match 'no internet')
+$su = Join-Path $tkDir 'ScanUpload.ps1'
+$o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $su -CamResetDir $scr 2>&1 | Out-String
+Check 'upload: no site = the tip line' ($o -match 'Tip: type the site to save this list to the site page.') $o
+$o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $su -Site 'WI-064' -CamResetDir $scr -NoSend 2>&1 | Out-String
+Check 'upload body: op scanPush, 2 devices, no password' ($o -match '"op":"scanPush"' -and $o -match '"site":"WI-064"' -and ([regex]::Matches($o, '"kind"')).Count -eq 2 -and $o -notmatch 'Secret|password') $o
+$py = (Get-Command python -ErrorAction SilentlyContinue).Source
+$mockSc = Join-Path $tkDir 'tests\mock_scan_server.py'
+if ($py -and (Test-Path $mockSc)) {
+  $sp = 18192; $sbase = 'http://127.0.0.1:' + $sp + '/'
+  $bodies = Join-Path $tmp 'scan-bodies.txt'
+  $scMock = Start-Process -FilePath $py -ArgumentList @($mockSc, $sp, $bodies) -PassThru -WindowStyle Hidden
+  try {
+    for ($i = 0; $i -lt 50; $i++) { try { Invoke-WebRequest ($sbase + 'ping') -UseBasicParsing -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep -Milliseconds 200 } }
+    $env:WIREIT_UPLOAD_KEY = 'T' * 32
+    $lastJ = Join-Path $tkDir 'logs\scan-upload-last.json'
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $su -Site '2336 main' -CamResetDir $scr -ApiUrl ($sbase + 'first') 2>&1 | Out-String
+    Check 'upload: first scan saved' ($LASTEXITCODE -eq 0 -and $o -match 'Saved to the site page: 2336 Main St \(WI-064\), 2 devices \(first list') $o
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $su -Site '2336 main' -CamResetDir $scr -ApiUrl ($sbase + 'same') 2>&1 | Out-String
+    Check 'upload: same scan twice = No changes' ($o -match 'No changes .+ site list already up to date') $o
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $su -Site '2336 main' -CamResetDir $scr -ApiUrl ($sbase + 'missing') 2>&1 | Out-String
+    $lj = Read-TkJson $lastJ
+    Check 'upload: missing / changed IP marked red for the top of the results' ($o -match '!! MISSING since last scan: Camera DS-2CD2143G2-I 192.168.1.23' -and $o -match '!! CHANGED IP: ' -and $lj -and @($lj.red).Count -eq 2) $o
+    $sent = Get-Content $bodies -Raw
+    Check 'upload: what reached the server has the key but no password' ($sent -match '"key":"TTTT' -and $sent -notmatch 'Secret|password' -and $sent -match '"pc":') ''
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $su -Site '2336 main' -CamResetDir $scr -ApiUrl 'http://127.0.0.1:1/' 2>&1 | Out-String
+    $pend = Join-Path $tkDir 'outbox\scan-2336_main.json'
+    Check 'upload: offline = ONE waiting list, no key in it' ((Test-Path $pend) -and -not ((Get-Content $pend -Raw) -match 'TTTT|"key"') -and $o -match 'no internet') $o
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $su -Site '2336 main' -CamResetDir $scr -ApiUrl 'http://127.0.0.1:1/' 2>&1 | Out-String
+    Check 'upload: offline twice = still ONE waiting list' (@(Get-ChildItem (Join-Path $tkDir 'outbox') -Filter 'scan-*.json').Count -eq 1)
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $su -Site 'WI-070' -CamResetDir $scr -ApiUrl ($sbase + 'first') 2>&1 | Out-String
+    Check 'upload: waiting list of the other site goes with the next scan' ($o -match 'Sent the list that was waiting for 2336 main' -and -not (Test-Path $pend)) $o
+  } finally {
+    Remove-Item Env:\WIREIT_UPLOAD_KEY -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $tkDir 'outbox\scan-*.json') -Force -ErrorAction SilentlyContinue; Remove-Item (Join-Path $tkDir 'logs\scan-upload-last.json') -Force -ErrorAction SilentlyContinue
+    try { if ($scMock -and -not $scMock.HasExited) { Stop-Process -Id $scMock.Id -Force } } catch {}
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*mock_scan_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  }
+} else { Check 'python for the mock service site' $false 'python or mock_scan_server.py missing' }
+$ui = Get-Content (Join-Path $tkDir 'WireItToolkit.ps1') -Raw
+Check 'Find cameras: uploads when the Site box is filled, else the tip' ($ui -match "Start-ScanUpload ''\s*\}" -and $ui -match 'Tip: type the site to save this list to the site page\.')
+Check 'Save camera pictures: one-field dialog passes ONE field' ($ui -match "\(,@\('site', 'Site ID or address:'")
+Check 'install snapshot: also the site known-good list' ($ui -match 'Start-ScanUpload \$sn\.FullName')
+
 # 8 the window itself, drawn off-screen to PNG (no window on the desktop)
 if ($Screens) {
   $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tkDir 'WireItToolkit.ps1') -Screenshot $Screens -DemoCamReset $cr 2>&1 | Out-String
   Check 'window builds (12 buttons)' ($o -match 'buttons=12') $o
+  Check 'label: Site ID or address' ($o -match '(?m)^label site=Site ID or address:\s*$') $o
+  Check 'label: site hint' ($o -match '(?m)^label hint=e\.g\. WI-061 or 2336 Main St\. Saves the camera list and results to that site.s page\.\s*$') $o
+  Check 'label: lone cameras in plain words' ($o -match '(?m)^label lone=Also fix cameras plugged into the switch that aren.t added to the NVR\s*$') $o
+  Check 'Bitwarden only under Advanced (no password radio buttons)' ($o -match '(?m)^main radios=0' -and $o -match 'label advanced=Advanced\.\.\. items=Read NVR passwords from a Bitwarden export file\.\.\.') $o
+  Check '1-field dialog = exactly 1 labelled box' ($o -match '(?m)^ask1 boxes=1 labels=Site ID or address: value=WI-061') $o
+  Check 'dialog screenshot saved' (Test-Path (Join-Path $Screens 'toolkit-ask-site.png')) $o
   Check 'screenshots saved' ((Test-Path (Join-Path $Screens 'toolkit-main.png')) -and (Test-Path (Join-Path $Screens 'toolkit-reset.png'))) $o
   Check 'new look built (rounded cards, header)' ($o -match 'look=new') $o
   Check 'icon font found' ($o -match 'icons=Segoe') $o

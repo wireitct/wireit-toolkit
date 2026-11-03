@@ -1,4 +1,4 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.3.0, 2026-11-02
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 1.4.0, 2026-11-03
 ==============================================================================
 One window for the site tools. Double-click "WireIt Toolkit" on the desktop.
 Works with no internet and without Tab. Windows PowerShell 5.1 only, nothing to install.
@@ -28,9 +28,19 @@ THE BUTTONS (usual order on a site)
   Toolkit and is refreshed monthly by the daily NVR check (C:\WireIt\NvrHealth) when that PC has it.
   Results show in plain words on the right. "Copy results" copies them. Every run is saved in logs\.
   2, 3, 6, 7 open a blue tool window (Windows asks permission: Yes). Passwords are typed there, hidden.
-  Passwords are never saved or logged. Optional: "Passwords: from a Bitwarden export file" (the Toolkit
-  offers to delete that file when you close it - it holds passwords unencrypted).
-  "Site" box: the site's Google Drive folder name, so Check/Fix/Snapshot find the site's snapshot.
+  Passwords are never saved or logged. Optional: "Advanced..." under Job options > "Read NVR passwords from a
+  Bitwarden export file" (the Toolkit offers to delete that file when you close it - it holds passwords unencrypted).
+  "Site ID or address" box: the Site ID on the QR sticker (WI-061) or the address / site folder name (2336 Main St).
+  Check/Fix/Snapshot use the folder name to find the site's Drive folder (a WI code does not work there yet).
+
+SITE CAMERA LIST (1.4.0)
+  Type the site in the box, then 1 Find cameras: the camera list (type, brand, model, serial, MAC, IP, firmware -
+  NEVER a password) is saved to that site's page. ONE list per site, compared with the last scan:
+    MISSING / NEW / CHANGED IP show in red at the top of the results; the same scan twice saves nothing
+    ("No changes - site list already up to date"). A missing camera stays on the site page marked
+    "Missing - not found in last scan" with ONE alert to the office; the office removes it there when it is gone for good.
+  6 Save install snapshot also saves the known-good list (the baseline). No site typed = "Tip: type the site...".
+  Uses the same upload key as 8 Save camera pictures ("Set upload key.cmd"). No internet: sent with the next scan.
 
 4 RESET PASSWORDS (Hikvision, official method only)
   1 Pick the device (from the last Find cameras, or "Scan now").
