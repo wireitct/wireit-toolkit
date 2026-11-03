@@ -1,14 +1,14 @@
 {
-  "version": "1.6.3",
+  "version": "2.0.0",
   "released": "2026-11-03",
-  "commit": "705c06a7e447e65e4ca1f42f6763651da9f61674",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/705c06a7e447e65e4ca1f42f6763651da9f61674/",
-  "notes": "Small fixes from the YKW Elm live run of 1.6.2: the DW recording line names the cameras (name + IP) instead of list numbers; last-footage times are shown in local time (were UTC, 5 h off); camera clocks behind a DW server are read from the fresh Find-cameras list without a login; cameras whose model is not in the firmware reference list are one summary line; \"Restart the camera\" only for cameras that still have a network link and never \"Put the camera back on the NVR\" on a DW server; the DW session is always logged out at the end (also after an error) and one DW login is shared by the whole run; Find cameras says to press Cancel on the firewall prompt and run the Toolkit installer once as admin. Includes all 1.6.1/1.6.2 fixes.",
+  "commit": "fb14128e6e9793da6f7cdfce8369e48be3246908",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/fb14128e6e9793da6f7cdfce8369e48be3246908/",
+  "notes": "2.0 \"Fix this site\": one screen, one big button. It reads the site's camera list, shows only what is wrong, you type YES once, and it fixes each camera (site password, settings from the drop-downs, move to the WireIt IP scheme, back on the NVR, restart or power-cycle hung cameras) with a check per camera when video is back. Missing cameras say which switch port to check. Undo the last fix in one click. The old buttons are under \"More tools\".",
   "files": [
     {
       "path": "Toolkit/WireItToolkit.ps1",
-      "sha256": "1e4b0c6e33a0f8857a01573ad81a461d4f23251b8c1a729d85818de32e1ca43c",
-      "size": 111796
+      "sha256": "d8e60afe258f550e70005f055fcf86a2b13a04afc23cc2b96c364e741dc83d56",
+      "size": 112518
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
@@ -22,13 +22,13 @@
     },
     {
       "path": "Toolkit/Install-Toolkit.ps1",
-      "sha256": "47bca9ed0b9a063b053908e9b722489660dae4ced38865175b69ee3b4aefc66c",
-      "size": 5217
+      "sha256": "d9494a4a45be7082246a11dad9d109f429cc2216e31e6f89d4be37bebf719653",
+      "size": 5294
     },
     {
       "path": "Toolkit/README.txt",
-      "sha256": "18c1535855c2d26a829035018ceb9d9be47c898cf7ce6db869be362251f34fa7",
-      "size": 12410
+      "sha256": "dff98e28f78babf80c98f14eb93c1f698bc95cfc8bed9d3c9694a3c628f84b81",
+      "size": 14637
     },
     {
       "path": "Toolkit/wireit.ico",
@@ -169,6 +169,66 @@
       "path": "Toolkit/tests/Test-FixIt.ps1",
       "sha256": "2d024084244530203d4e2e27602b55e814d9d3ac625ee46a0625df8fbad91f9a",
       "size": 8101
+    },
+    {
+      "path": "Toolkit/FixSite.ps1",
+      "sha256": "8477a9fa85ac869230984d9e6872661bae4933b8e448b14e9c68bc8abfb3a644",
+      "size": 47540
+    },
+    {
+      "path": "Toolkit/FixSiteCore.ps1",
+      "sha256": "a01b23ce4e9fd3377192f8e2aea214318bfd4dce2836550d24e147eae3d4144f",
+      "size": 38128
+    },
+    {
+      "path": "Toolkit/FixSiteDevices.ps1",
+      "sha256": "2834742275f1d764552224b9c15c2062d9311a869a2c23ede58794479f46dbec",
+      "size": 34508
+    },
+    {
+      "path": "Toolkit/FixSiteWindow.ps1",
+      "sha256": "13f1d556ad90c8e18b2cbe7e97ebdaa935c670d9e672f1ce9626af9583256cd4",
+      "size": 12195
+    },
+    {
+      "path": "Toolkit/tests/Test-FixSite.ps1",
+      "sha256": "5aaab188b89a66998e60d4429dcf8072770dd3cc6b17cf03b220cec74c65520f",
+      "size": 17263
+    },
+    {
+      "path": "Toolkit/tests/fixsite/mock_site.py",
+      "sha256": "f62dc9c9653aea39426ccf04a3cacbf94735ba0b6400ca36d6c5c58eec81746f",
+      "size": 17377
+    },
+    {
+      "path": "Toolkit/tests/fixsite/lieber-scan.json",
+      "sha256": "f9bb72746eb7ae732cb6d3549eba40f80962f5eebb199260fdc1ddeae699614a",
+      "size": 2830
+    },
+    {
+      "path": "Toolkit/tests/fixsite/lieber-site-list.json",
+      "sha256": "239754222097bdac34a010eb88cd8920ff0b59af32882c31376ee05bef820423",
+      "size": 1069
+    },
+    {
+      "path": "Toolkit/tests/fixsite/byw-scan.json",
+      "sha256": "671badebe3018db8a94a170f95a2668927983db4e53af9ddd937e04f87a691f4",
+      "size": 2795
+    },
+    {
+      "path": "Toolkit/tests/fixsite/byw-site-list.json",
+      "sha256": "3c4df2a250f65dd139af71481d4f40b0f12a505e4a8674b90de7221e389ac1cd",
+      "size": 942
+    },
+    {
+      "path": "Toolkit/tests/fixsite/mock-lieber.json",
+      "sha256": "b872b63b0eab5387b27609d3e6d46c89b60c5f9addcc17dc138e0866149a0e00",
+      "size": 2272
+    },
+    {
+      "path": "Toolkit/tests/fixsite/mock-byw.json",
+      "sha256": "0f9bcb62bf624532f4ec018a7d50891d94bf6a9b69ae59d91407ada10e51299a",
+      "size": 2384
     }
   ]
 }
