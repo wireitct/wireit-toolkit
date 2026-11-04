@@ -376,6 +376,8 @@ if (-not $NoUpdate -and -not $Screenshot) {
   }
 }
 if ($UpdatedFrom) { $TK.updateMsg = 'Updated itself from v' + $UpdatedFrom + '.' }
+# 2.0.4: right after an update, check in once with the download service so it records this PC's new version
+if ($UpdatedFrom -and -not $Screenshot) { try { [void](Get-TkUpdateInfo $TK.cfg $here) } catch {} }
 
 # ---------------- 2.0: ONE screen first ("Fix this site"). The numbered buttons are behind "More tools" (or -Classic) ----------------
 if (-not $Classic -and -not $Screenshot) {
