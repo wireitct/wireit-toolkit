@@ -266,16 +266,17 @@ Check (-not (Test-Path "$tmp\n0\sites") -and -not @(Get-ChildItem "$tmp\n0\sec" 
 # 2.0.3 "Site password..." button (no network): make / type THIS site's password; never printed
 $spd = "$tmp\sp\sec"; $script:FsTestSecrets = $true; Save-FsSitePrefix $spd 'Testpw'; $script:FsTestSecrets = $false
 $ansp = Join-Path $tmp 'ansp.txt'; Set-Content -Path $ansp -Value @('M', '')
-$spArgs = @('-Mode', 'SitePassword', '-Site', 'Elm', '-MockUrl', 'http://127.0.0.1:9', '-Answers', $ansp, '-RunsRoot', "$tmp\sp\runs", '-SecretsDir', $spd, '-SitesDir', "$tmp\sp\sites")
+$spArgs = @('-Mode', 'SitePassword', '-Site', 'Qq Nosuch Test 203', '-MockUrl', 'http://127.0.0.1:9', '-Answers', $ansp, '-RunsRoot', "$tmp\sp\runs", '-SecretsDir', $spd, '-SitesDir', "$tmp\sp\sites")
 $osp = RunFix $spArgs
-$script:FsTestSecrets = $true; $sx = Read-FsSecrets $spd 'Elm'; $script:FsTestSecrets = $false
+function Read-SpSec { $f = @(Get-ChildItem $spd -Filter 'site-*.dat')[0]; if (-not $f) { return [pscustomobject]@{ password = ''; known = @(); shownOnce = $false; bitwardenSaved = $false } }; $script:FsTestSecrets = $true; try { return ((Unprotect-FsText ((Get-Content $f.FullName -Raw).Trim())) | ConvertFrom-Json) } finally { $script:FsTestSecrets = $false } }
+$sx = Read-SpSec
 Check ($osp -match 'This site has no site password yet' -and $osp -match 'SHOWN ONCE' -and $osp -match 'Save this in Bitwarden') 'Site password...: no password yet -> M makes one, shown once with Copy, "Save this in Bitwarden"'
 Check ($sx.password -cmatch '^Testpw\d{4}$' -and $sx.shownOnce -and -not $sx.bitwardenSaved) 'Site password...: word + 4 digits, kept encrypted on this PC'
-Check (-not ($osp -match [regex]::Escape([string]$sx.password)) -and -not @(Get-ChildItem "$tmp\sp\runs" -Recurse -File | Select-String -SimpleMatch -Pattern ([string]$sx.password) -List).Count) 'Site password...: never printed in the console or a log'
+Check ($sx.password -and -not ($osp -match [regex]::Escape([string]$sx.password)) -and -not @(Get-ChildItem "$tmp\sp\runs" -Recurse -File | Select-String -SimpleMatch -Pattern ([string]$sx.password) -List).Count) 'Site password...: never printed in the console or a log'
 $oldSp = [string]$sx.password
 Set-Content -Path $ansp -Value @('T', 'Typed#Site9', 'Typed#Site9', '')
 $osp2 = RunFix $spArgs
-$script:FsTestSecrets = $true; $sx2 = Read-FsSecrets $spd 'Elm'; $script:FsTestSecrets = $false
+$sx2 = Read-SpSec
 Check ($sx2.password -eq 'Typed#Site9' -and @($sx2.known) -contains $oldSp) 'Site password...: T sets the one in use; the old one stays a try at THIS site'
 Check (-not (Test-Path (Join-Path $spd 'wireit-usual.dat'))) 'Site password...: no shared-password file'
 
