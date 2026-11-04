@@ -1,19 +1,19 @@
 {
-  "version": "2.0.3",
+  "version": "2.0.4",
   "released": "2026-11-04",
-  "commit": "1cb2ffdfb28e46ab80f6d9332f686ada3466dd3b",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/1cb2ffdfb28e46ab80f6d9332f686ada3466dd3b/",
-  "notes": "2.0.3: every site has its own password - nothing is shared between sites (\"Usual passwords...\" is now \"Site password...\": show, copy, save in Bitwarden, make or type THIS site's password). A site with no site password yet gets one (your word + 4 random digits); every camera and NVR still on its factory password gets it, with its NVR channel updated and the picture checked. New tick \"Make every device use the site password\" (off unless ticked): every device on a different password gets it, one at a time; a camera whose picture does not come back gets its old password back. Saved in Bitwarden when the bw command is on the PC, else shown once with a Copy button. 2.0.2: \"New site (not listed)\" button beside \"Fix this site\": one tap at a site with no saved list, nothing to type. It finds the router, NVR and cameras by itself, names the site from what it sees, tries the saved and old factory passwords (same try limit), shows \"New site (no saved list): found ...\" first, fixes ONLY the problem cameras after YES (backups + undo), then asks for the address (optional) and saves the site on this PC so the next visit finds it. 2.0.1: \"Fix this site\" changes ONLY cameras with a real problem (offline, no video, hung, wrong IP scheme, not on the NVR, password unknown with no video, missing). Working cameras are not touched at all. The camera-setting drop-downs go only on the cameras being fixed, unless you tick \"Apply settings to ALL cameras\"; the site password goes on working cameras only if you tick \"Set the site password on all cameras\". The list now starts with \"Changes only the N cameras listed below. M working cameras will not be touched.\" 2.0 \"Fix this site\": one screen, one big button. It reads the site's camera list, shows only what is wrong, you type YES once, and it fixes each camera (site password, settings from the drop-downs, move to the WireIt IP scheme, back on the NVR, restart or power-cycle hung cameras) with a check per camera when video is back. Missing cameras say which switch port to check. Undo the last fix in one click. The old buttons are under \"More tools\".",
+  "commit": "d424688ba2a6f6032b98384b549578e66ed796d6",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/d424688ba2a6f6032b98384b549578e66ed796d6/",
+  "notes": "2.0.4: updates now come through WireIt's own download service (so the code on GitHub can be private); same SHA-256 checks. 2.0.3: every site has its own password - nothing is shared between sites (\"Usual passwords...\" is now \"Site password...\": show, copy, save in Bitwarden, make or type THIS site's password). A site with no site password yet gets one (your word + 4 random digits); every camera and NVR still on its factory password gets it, with its NVR channel updated and the picture checked. New tick \"Make every device use the site password\" (off unless ticked): every device on a different password gets it, one at a time; a camera whose picture does not come back gets its old password back. Saved in Bitwarden when the bw command is on the PC, else shown once with a Copy button. 2.0.2: \"New site (not listed)\" button beside \"Fix this site\": one tap at a site with no saved list, nothing to type. It finds the router, NVR and cameras by itself, names the site from what it sees, tries the saved and old factory passwords (same try limit), shows \"New site (no saved list): found ...\" first, fixes ONLY the problem cameras after YES (backups + undo), then asks for the address (optional) and saves the site on this PC so the next visit finds it. 2.0.1: \"Fix this site\" changes ONLY cameras with a real problem (offline, no video, hung, wrong IP scheme, not on the NVR, password unknown with no video, missing). Working cameras are not touched at all. The camera-setting drop-downs go only on the cameras being fixed, unless you tick \"Apply settings to ALL cameras\"; the site password goes on working cameras only if you tick \"Set the site password on all cameras\". The list now starts with \"Changes only the N cameras listed below. M working cameras will not be touched.\" 2.0 \"Fix this site\": one screen, one big button. It reads the site's camera list, shows only what is wrong, you type YES once, and it fixes each camera (site password, settings from the drop-downs, move to the WireIt IP scheme, back on the NVR, restart or power-cycle hung cameras) with a check per camera when video is back. Missing cameras say which switch port to check. Undo the last fix in one click. The old buttons are under \"More tools\".",
   "files": [
     {
       "path": "Toolkit/WireItToolkit.ps1",
-      "sha256": "d8e60afe258f550e70005f055fcf86a2b13a04afc23cc2b96c364e741dc83d56",
-      "size": 112518
+      "sha256": "1d946007998415f6fbd8858b42d7a39467a0e63eb02764b018e122c57cf3699a",
+      "size": 112726
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
-      "sha256": "d92d35c12af9e2e1a5660d3c68a99a1fff5112f0313dcc782b135bcc5ee99414",
-      "size": 55776
+      "sha256": "d15bc76ac5960d254b5b87e29cf6073d065b08cc0c237b1fe7cc9feecc8cb8d2",
+      "size": 57886
     },
     {
       "path": "Toolkit/WireIt Toolkit.cmd",
@@ -27,8 +27,8 @@
     },
     {
       "path": "Toolkit/README.txt",
-      "sha256": "3a518129d9cca196fc0d315ab7ab50145bd8f9ff51f265bf94fe9b5523786f98",
-      "size": 18999
+      "sha256": "28dd0881da605e427f90edb10fe7b7334ea6e8fc09ea83c6d2ecfa30ef0e3ba2",
+      "size": 19241
     },
     {
       "path": "Toolkit/wireit.ico",
@@ -42,8 +42,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Toolkit.ps1",
-      "sha256": "07148babcebede504a93393d19bd7023e4749a207e3026cfee3e493e020c78eb",
-      "size": 63304
+      "sha256": "7f6b11104943b01f662a9dda23dff65381f1c04445c8b71c77da403c82e543e4",
+      "size": 66913
     },
     {
       "path": "Toolkit/CamViews.ps1",
