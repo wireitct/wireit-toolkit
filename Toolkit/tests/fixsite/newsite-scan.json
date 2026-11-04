@@ -1,0 +1,145 @@
+{
+ "_about": "2.0.2 synthetic New site scan (no list, no site secrets): router 10.0.5.1, PC .57 by DHCP, NVR at .64, Office on the factory password, Side hung, a brand-new camera at .150, NVR ch 5 (Garage .25) has no video and nothing answers there. Not a real capture.",
+ "taken": "2026-11-04T13:00:00",
+ "pc": {
+  "ip": "10.0.5.57",
+  "gw": "10.0.5.1",
+  "mask": "255.255.255.0",
+  "dhcp": true
+ },
+ "devices": [
+  {
+   "kind": "nvr",
+   "brand": "Hikvision",
+   "model": "DS-7608NI-K2",
+   "serial": "DS-7608NI-K20820209999WCVU",
+   "mac": "44:19:b6:05:00:64",
+   "ip": "10.0.5.64",
+   "login": "WireIt usual 1"
+  },
+  {
+   "kind": "camera",
+   "brand": "Hikvision",
+   "model": "DS-2CD2143G2-I",
+   "serial": "DS-2CD2143G2-I20210101AAWRF56050021",
+   "mac": "44:19:b6:05:00:21",
+   "ip": "10.0.5.21",
+   "firmware": "V5.7.3 build 220112",
+   "login": "WireIt usual 1",
+   "streams": {
+    "codec": "H.265",
+    "fps": 15,
+    "width": 2688,
+    "height": 1520,
+    "bitrate": 4096,
+    "gop": 15,
+    "smartCodec": "off"
+   }
+  },
+  {
+   "kind": "camera",
+   "brand": "Hikvision",
+   "model": "DS-2CD2143G2-I",
+   "serial": "DS-2CD2143G2-I20210101AAWRF56050022",
+   "mac": "44:19:b6:05:00:22",
+   "ip": "10.0.5.22",
+   "firmware": "V5.7.3 build 220112",
+   "login": "factory default",
+   "streams": {
+    "codec": "H.265",
+    "fps": 15,
+    "width": 2688,
+    "height": 1520,
+    "bitrate": 4096,
+    "gop": 15,
+    "smartCodec": "off"
+   }
+  },
+  {
+   "kind": "camera",
+   "brand": "Hikvision",
+   "model": "DS-2CD2143G2-I",
+   "serial": "DS-2CD2143G2-I20210101AAWRF56050024",
+   "mac": "44:19:b6:05:00:24",
+   "ip": "10.0.5.24",
+   "firmware": "V5.7.3 build 220112",
+   "login": "",
+   "answers": false
+  },
+  {
+   "kind": "camera",
+   "brand": "Hikvision",
+   "model": "DS-2CD2143G2-I",
+   "serial": "DS-2CD2143G2-I20210101AAWRF56050026",
+   "mac": "44:19:b6:05:00:26",
+   "ip": "10.0.5.26",
+   "firmware": "V5.7.3 build 220112",
+   "login": "WireIt usual 1",
+   "streams": {
+    "codec": "H.265",
+    "fps": 15,
+    "width": 2688,
+    "height": 1520,
+    "bitrate": 4096,
+    "gop": 15,
+    "smartCodec": "off"
+   }
+  },
+  {
+   "kind": "camera",
+   "brand": "Hikvision",
+   "model": "DS-2CD2143G2-I",
+   "serial": "DS-2CD2143G2-I20210101AAWRF56050150",
+   "mac": "44:19:b6:05:01:50",
+   "ip": "10.0.5.150",
+   "firmware": "V5.7.3 build 220112",
+   "login": "",
+   "activated": false
+  }
+ ],
+ "nvrs": [
+  {
+   "ip": "10.0.5.64",
+   "brand": "Hikvision",
+   "model": "DS-7608NI-K2",
+   "login": "WireIt usual 1",
+   "channels": [
+    {
+     "channel": 1,
+     "ip": "10.0.5.21",
+     "online": true,
+     "name": "Front",
+     "protocol": "HIKVISION"
+    },
+    {
+     "channel": 2,
+     "ip": "10.0.5.22",
+     "online": true,
+     "name": "Office",
+     "protocol": "HIKVISION"
+    },
+    {
+     "channel": 4,
+     "ip": "10.0.5.24",
+     "online": false,
+     "name": "Side",
+     "protocol": "HIKVISION"
+    },
+    {
+     "channel": 5,
+     "ip": "10.0.5.25",
+     "online": false,
+     "name": "Garage",
+     "protocol": "HIKVISION"
+    },
+    {
+     "channel": 6,
+     "ip": "10.0.5.26",
+     "online": true,
+     "name": "Gate",
+     "protocol": "HIKVISION"
+    }
+   ]
+  }
+ ]
+}

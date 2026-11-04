@@ -19,6 +19,12 @@
    6. Missing cameras: "should be on <switch> port 10 - go check port 10" (power-cycles that port first when it can).
    7. Offers to save what it found as the site's list, and to put the site password in Bitwarden.
  Every step reads first and skips what is already right, so running it twice is safe. Backups + rollback file in runs\FixSite-<time>.
+ 2.0.2 (Moshe, Nov 4 2026: "if I come to a new site, I want to be able to run the program and ... fix whatever is broken, whatever is
+   missing"): -NewSite = the window's "New site (not listed)" button. No site to type: it names the site from what the scan sees
+   ("New site 10.0.5.x 2026-11-04"), tries the per-camera / WireIt usual / old factory passwords (same try limit), and "missing" means an
+   NVR channel with no video that nothing answers for. Same 2.0.1 rule: only problem cameras change, YES first, backups + undo. After the
+   plan screen it asks for the address (optional) and saves the site list + secrets under that name. If the NVR (or 2+ cameras) match a
+   site already saved on this PC, it uses that site instead.
  Modes: Fix (default) | Plan (look only) | DryRun (-Recorded <scan.json>, no network at all) | Rollback (-RollbackDir) | SetUsual
  Passwords: typed hidden, kept only in the encrypted site store on this PC (secrets\), never in a log, a file, Drive or a chat.
 #>
@@ -29,7 +35,8 @@ param(
   [string]$ListFile = '',           # use this site list instead of the Drive one
   [string]$Codec = 'auto', [int]$Fps = 0, [string]$Resolution = 'keep', [int]$Bitrate = 0,
   [switch]$AllCameras,              # 2.0.1: the drop-down settings go on EVERY camera (the window's "Apply settings to ALL cameras" tick). Off = only cameras with a real problem
-  [switch]$PasswordAll,             # 2.0.1: every camera gets the site password (the window's "Set the site password on all cameras" tick). Off = only cameras being fixed
+  [switch]$PasswordAll,           # 2.0.1: every camera gets the site password (the window's "Set the site password on all cameras" tick). Off = only cameras being fixed
+  [switch]$NewSite,                 # 2.0.2: the window's "New site (not listed)" button - no -Site, no list, the scan names the site
   [string]$RollbackDir = '',
   [string]$ConfigPath = '', [string]$SecretsDir = '', [string]$RunsRoot = '', [string]$SitesDir = '',
   [string]$MockUrl = '',            # TEST HARNESS ONLY: all device calls go to tests\fixsite\mock_site.py
@@ -89,8 +96,12 @@ function Done([int]$code) {
 }
 
 Write-Host ''
-Write-Host ('=== WireIt Toolkit ' + $script:FsVersion + ' - Fix this site' + $(if ($Site) { ' - ' + $Site } else { '' }) + ' ===') -ForegroundColor Cyan
-Fs-Log ('start mode=' + $Mode + ' site=' + $Site + ' ps=' + $PSVersionTable.PSVersion + ' pc=' + $env:COMPUTERNAME)
+if ($NewSite -and $Mode -notin @('Fix', 'Plan', 'DryRun')) { $NewSite = $false }
+if ($NewSite) { $Site = '' }
+# 2.0.2: an undo always uses the site its run was saved under (a New site run has a name the site box may not show)
+if ($Mode -eq 'Rollback' -and $RollbackDir) { try { $rbSite = [string]((Get-Content -LiteralPath (Join-Path $RollbackDir 'rollback.json') -Raw | ConvertFrom-Json).site); if ($rbSite) { $Site = $rbSite } } catch {} }
+Write-Host ('=== WireIt Toolkit ' + $script:FsVersion + ' - Fix this site' + $(if ($NewSite) { ' - New site' } elseif ($Site) { ' - ' + $Site } else { '' }) + ' ===') -ForegroundColor Cyan
+Fs-Log ('start mode=' + $Mode + ' site=' + $Site + ' newsite=' + [bool]$NewSite + ' ps=' + $PSVersionTable.PSVersion + ' pc=' + $env:COMPUTERNAME)
 Clear-FsLeftoverTemps $tempState
 
 if ($Mode -eq 'SetUsual') {
@@ -102,32 +113,38 @@ if ($Mode -eq 'SetUsual') {
 }
 
 # ---------------- the site and its list ----------------
-if (-not $Site) { $Site = (Ask 'Which site? Type the Site ID from the QR sticker (e.g. WI-061) or the address (e.g. 3 Hewlett St):').Trim() }
-if (-not $Site) { Say 'No site typed - nothing was done.' 'Yellow'; Done 2 }
-$siteFolder = Find-FsSiteFolder $Site $driveRoots
-$siteName = $(if ($siteFolder) { Split-Path -Leaf $siteFolder } else { $Site })
-$siteId = $(if ($Site -match '^(?i)WI-\d+$') { $Site.ToUpper() } else { '' })
-$listPath = $(if ($siteFolder) { Join-Path (Join-Path $siteFolder 'Docs') 'WireIt site list.json' } else { '' })
-$localList = Join-Path $SitesDir ((($siteName -replace '[^A-Za-z0-9_-]+', '_').Trim('_')) + '.json')
-$list = $null; $listFrom = ''
-foreach ($cand in @($ListFile, $listPath, $localList)) { if ($cand -and (Test-Path -LiteralPath $cand)) { try { $list = Get-Content -LiteralPath $cand -Raw | ConvertFrom-Json; $listFrom = $cand; break } catch {} } }
-if (-not $list -and $siteFolder) {
-  $snap = Get-ChildItem -LiteralPath (Join-Path $siteFolder 'Docs') -Filter 'FixNVR snapshot*.json' -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
-  if ($snap) { try { $list = ConvertFrom-FsSnapshot (Get-Content -LiteralPath $snap.FullName -Raw | ConvertFrom-Json); $listFrom = $snap.FullName } catch {} }
-}
-if ($list -and -not $siteId -and $list.PSObject.Properties['siteId'] -and $list.siteId) { $siteId = [string]$list.siteId }
-# PortMap (office Dell only): camera -> switch + port
 $pmSite = $null
-if (Test-Path (Join-Path $portMapDir 'out')) {
-  foreach ($f in @(Get-ChildItem (Join-Path $portMapDir 'out') -Filter 'WI-*.json' -ErrorAction SilentlyContinue)) {
-    try { $j = Get-Content $f.FullName -Raw | ConvertFrom-Json; if (($siteId -and $j.site_id -eq $siteId) -or ([string]$j.site -like ('*' + $Site + '*'))) { $pmSite = $j; if (-not $siteId) { $siteId = [string]$j.site_id }; break } } catch {}
+if ($NewSite) {
+  # 2.0.2: nothing typed. The scan below names the site (or recognises one already saved on this PC).
+  $siteFolder = $null; $siteName = 'New site'; $siteId = ''; $listPath = ''; $localList = ''; $list = $null; $listFrom = ''
+  Say 'New site (not listed): nothing to type. It looks at the network, names the site from what it finds, and saves it on this PC at the end.'
+} else {
+  if (-not $Site) { $Site = (Ask 'Which site? Type the Site ID from the QR sticker (e.g. WI-061) or the address (e.g. 3 Hewlett St):').Trim() }
+  if (-not $Site) { Say 'No site typed - nothing was done.' 'Yellow'; Done 2 }
+  $siteFolder = Find-FsSiteFolder $Site $driveRoots
+  $siteName = $(if ($siteFolder) { Split-Path -Leaf $siteFolder } else { $Site })
+  $siteId = $(if ($Site -match '^(?i)WI-\d+$') { $Site.ToUpper() } else { '' })
+  $listPath = $(if ($siteFolder) { Join-Path (Join-Path $siteFolder 'Docs') 'WireIt site list.json' } else { '' })
+  $localList = Join-Path $SitesDir ((($siteName -replace '[^A-Za-z0-9_-]+', '_').Trim('_')) + '.json')
+  $list = $null; $listFrom = ''
+  foreach ($cand in @($ListFile, $listPath, $localList)) { if ($cand -and (Test-Path -LiteralPath $cand)) { try { $list = Get-Content -LiteralPath $cand -Raw | ConvertFrom-Json; $listFrom = $cand; break } catch {} } }
+  if (-not $list -and $siteFolder) {
+    $snap = Get-ChildItem -LiteralPath (Join-Path $siteFolder 'Docs') -Filter 'FixNVR snapshot*.json' -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+    if ($snap) { try { $list = ConvertFrom-FsSnapshot (Get-Content -LiteralPath $snap.FullName -Raw | ConvertFrom-Json); $listFrom = $snap.FullName } catch {} }
   }
+  if ($list -and -not $siteId -and $list.PSObject.Properties['siteId'] -and $list.siteId) { $siteId = [string]$list.siteId }
+  # PortMap (office Dell only): camera -> switch + port
+  $pmSite = $null
+  if (Test-Path (Join-Path $portMapDir 'out')) {
+    foreach ($f in @(Get-ChildItem (Join-Path $portMapDir 'out') -Filter 'WI-*.json' -ErrorAction SilentlyContinue)) {
+      try { $j = Get-Content $f.FullName -Raw | ConvertFrom-Json; if (($siteId -and $j.site_id -eq $siteId) -or ([string]$j.site -like ('*' + $Site + '*'))) { $pmSite = $j; if (-not $siteId) { $siteId = [string]$j.site_id }; break } } catch {}
+    }
+  }
+  if ($list -and $pmSite) { $list = Add-FsPortMap $list $pmSite }
+  Say ('Site: ' + $siteName + $(if ($siteId) { ' (' + $siteId + ')' } else { '' }))
+  if ($list) { Say ('What should be here: ' + @($list.cameras).Count + ' camera(s) from ' + $(if ($listFrom -like '*snapshot*') { 'the install snapshot' } elseif ($listFrom -eq $localList) { 'this PC''s copy of the site list' } else { 'the site list' }) + '.') }
+  else { Say 'This site has no camera list yet - the Toolkit will offer to save one at the end.' 'Yellow' }
 }
-if ($list -and $pmSite) { $list = Add-FsPortMap $list $pmSite }
-Say ('Site: ' + $siteName + $(if ($siteId) { ' (' + $siteId + ')' } else { '' }))
-if ($list) { Say ('What should be here: ' + @($list.cameras).Count + ' camera(s) from ' + $(if ($listFrom -like '*snapshot*') { 'the install snapshot' } elseif ($listFrom -eq $localList) { 'this PC''s copy of the site list' } else { 'the site list' }) + '.') }
-else { Say 'This site has no camera list yet - the Toolkit will offer to save one at the end.' 'Yellow' }
-
 $sec = Read-FsSecrets $SecretsDir $siteName
 foreach ($p in @($sec.password) + @($sec.known) + @($sec.usual)) { Remember-Secret $p }
 
@@ -189,12 +206,33 @@ if ($Mode -eq 'Rollback') {
 # =====================================================================================
 #  LOOK (read-only)
 # =====================================================================================
+# 2.0.2: New site - name it from what the scan sees, or recognise a site this PC already saved (NVR MAC / 2+ camera MACs)
+function Resolve-NewSite($devs, [string]$gw) {
+  $k = Find-FsKnownSite @(Get-FsKnownSiteFiles $SitesDir $driveRoots) $devs
+  if ($k) {
+    $script:list = $k.list; $script:listFrom = $k.path; $script:siteName = $k.site; $script:NewSite = $false
+    if ($k.folder) { $script:siteFolder = $k.folder; $script:listPath = $k.path; $script:localList = Join-Path $SitesDir (Get-FsListFileName $k.site) } else { $script:localList = $k.path }
+    if ($k.list.PSObject.Properties['siteId'] -and $k.list.siteId) { $script:siteId = [string]$k.list.siteId }
+    Say ('This network was saved before on this PC as "' + $k.site + '" (its NVR / cameras match). Using that site and its list: ' + @($k.list.cameras).Count + ' camera(s).') 'Green'
+  } else {
+    $base = New-FsNewSiteName $gw; $name = $base; $n = 1
+    while ((Test-Path -LiteralPath (Join-Path $SitesDir (Get-FsListFileName $name))) -or (Test-Path -LiteralPath (Get-FsSecretPath $SecretsDir $name))) { $n++; $name = $base + ' (' + $n + ')' }
+    $script:siteName = $name; $script:localList = Join-Path $SitesDir (Get-FsListFileName $name)
+    Say ('Site: ' + $name + '  (named from the network it found; you can type the address after the list of problems)')
+  }
+  $script:sec = Read-FsSecrets $SecretsDir $script:siteName
+  foreach ($p in @($script:sec.password) + @($script:sec.known) + @($script:sec.usual)) { Remember-Secret $p }
+  if ($k) { try { Set-Content -LiteralPath (Join-Path $runDir 'site.txt') -Value $script:siteName -Encoding UTF8 } catch {} }   # the window fills the site box with it (a new name only once it is saved: Save-NewSite)
+}
+function Get-NewSiteDefaults([string]$brand) { if ($NewSite) { return @(Get-FsFactoryPasswords $brand) }; return @() }   # 2.0.2: old factory passwords, last, new site only
+
 $pwFor = @{}     # mac/ip -> the password that works (memory only)
 $nvrPw = @{}     # nvr ip -> password
 if ($Mode -eq 'DryRun') {
   if (-not $Recorded -or -not (Test-Path $Recorded)) { Say 'Dry run needs -Recorded <scan file>.' 'Red'; Done 2 }
   $observed = Get-Content $Recorded -Raw | ConvertFrom-Json
   Say ('DRY RUN from a recorded scan (' + (Split-Path -Leaf $Recorded) + ', taken ' + [string]$observed.taken + '). Nothing on the network is touched.') 'Cyan'
+  if ($NewSite) { Resolve-NewSite @($observed.devices) ([string]$observed.pc.gw) }
 } else {
   if (-not $MockUrl) {
     $adm = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -218,6 +256,7 @@ if ($Mode -eq 'DryRun') {
     } else { Say 'Find cameras is not on this PC (C:\WireIt\CamReset), so only the NVR''s list and the site list are used.' 'Yellow' }
     foreach ($d in @(Find-FsDahua)) { if (-not @($found | Where-Object { $_.ip -eq $d.ip }).Count) { $found += $d } }
   }
+  if ($NewSite) { Resolve-NewSite $found $pc.gw }
   # list addresses nobody answered for: try them too (a camera can miss the discovery)
   foreach ($c in @($(if ($list) { $list.cameras } else { @() }))) { $lip = [string]$c.ip; if ($lip -and -not @($found | Where-Object { $_.ip -eq $lip }).Count -and (Get-FsP3 $lip) -eq $scheme) { $s = Test-FsLogin $lip (Get-FsBrand ([string]$c.brand) ([string]$c.model)) ''; if ($s -ne 'noanswer') { $found += [pscustomobject]@{ brand = (Get-FsBrand ([string]$c.brand) ([string]$c.model)); model = [string]$c.model; serial = [string]$c.serial; mac = [string]$c.mac; ip = $lip; kind = 'camera'; activated = $true } } } }
   $found = @($found | Where-Object { $_.ip -and $_.ip -ne $pc.ip -and $_.ip -ne $pc.gw -and ($_.kind -in @('camera', 'nvr')) })
@@ -230,7 +269,7 @@ if ($Mode -eq 'DryRun') {
   if ($list) { foreach ($n in @($list.nvrs)) { if ($n.ip -and $nvrIps -notcontains [string]$n.ip -and (& $reach ([string]$n.ip)) -and (Test-FsLogin ([string]$n.ip) 'Hikvision' '') -ne 'noanswer') { $nvrIps += [string]$n.ip } } }
   foreach ($nip in $nvrIps) {
     $cands = @(); if ($sec.nvr -and $sec.nvr.ContainsKey($nip)) { $cands += [pscustomobject]@{ label = 'saved NVR password'; value = [string]$sec.nvr[$nip] } }
-    $cands += @(Get-FsPasswordCandidates $sec ([int]$opts.maxPasswordTries - 1))
+    $cands += @(Get-FsPasswordCandidates $sec ([int]$opts.maxPasswordTries - 1) '' (Get-NewSiteDefaults 'Hikvision'))
     $fp = Find-FsPassword $nip 'Hikvision' $cands ([int]$opts.maxPasswordTries - 1)
     if ($fp.state -ne 'ok' -and $fp.state -ne 'noanswer' -and $fp.state -ne 'locked') {
       $typed = Ask ('Type the password of the NVR at ' + $nip + ' (hidden; Enter = skip - then cameras cannot be put back on it):') -Secret
@@ -253,7 +292,7 @@ if ($Mode -eq 'DryRun') {
     if (Test-FsPoeNet $d.ip) { $observed.devices += [pscustomobject]$o; continue }
     if (-not (& $reach $d.ip)) { $o.login = 'unreachable'; $observed.devices += [pscustomobject]$o; continue }
     if ($d.activated -eq $false) { $observed.devices += [pscustomobject]$o; continue }
-    $fp = Find-FsPassword $d.ip $o.brand @(Get-FsPasswordCandidates $sec ([int]$opts.maxPasswordTries - 1) $o.mac) ([int]$opts.maxPasswordTries - 1)
+    $fp = Find-FsPassword $d.ip $o.brand @(Get-FsPasswordCandidates $sec ([int]$opts.maxPasswordTries - 1) $o.mac (Get-NewSiteDefaults $o.brand)) ([int]$opts.maxPasswordTries - 1)
     if ($fp.state -eq 'noanswer') { $o.answers = $false; $o.login = '' }
     elseif ($fp.state -eq 'ok') {
       $o.login = $fp.label; $pwFor[$d.ip] = $fp.value; $cr = Fs-Cred $fp.value
@@ -263,7 +302,7 @@ if ($Mode -eq 'DryRun') {
     } else { $o.login = $fp.state; $o.tries = $fp.tries }
     $observed.devices += [pscustomobject]$o
   }
-  if ($camPwSeen) { try { Save-FsSecrets $SecretsDir $sec } catch {} }
+  if ($camPwSeen -and -not $NewSite) { try { Save-FsSecrets $SecretsDir $sec } catch {} }   # 2.0.2: a new site's secrets are saved under its final name (after the address question)
   if ($pmSite) { $observed.ports = Get-FsPortsFromPortMap $pmSite }
   # 5. ONE question for the unknown passwords (Moshe Nov 3 5:24 PM: "sometimes I will know")
   $unk = @($observed.devices | Where-Object { $_.kind -eq 'camera' -and $_.login -in @('unknown', 'refused') })
@@ -284,14 +323,49 @@ if ($Mode -eq 'DryRun') {
 # =====================================================================================
 #  PLAN
 # =====================================================================================
+$opts.newSite = [bool]$NewSite
 $plan = New-FsPlan $list $observed $opts
 $plan.site = $siteName
+if ($NewSite) { $plan.notes += ('It saves this site as "' + $siteName + '" on this PC when it finishes (no passwords in the list), so next time it knows what should be here.') }
 ($plan | ConvertTo-Json -Depth 8) | Set-Content -Path (Join-Path $runDir 'plan.json') -Encoding UTF8
 Write-Host ''
 Say '----- What is wrong, and what it will do -----' 'Cyan'
 foreach ($l in (Format-FsPlan $plan)) { Say ('  ' + $l) }
+# 2.0.2: a new site's address - optional, asked only AFTER the plan screen (Enter keeps the name the scan gave it)
+function Rename-NewSite([string]$addr) {
+  $clean = (($addr -replace '[\\/:*?"<>|]', ' ') -replace '\s+', ' ').Trim(); if ($clean.Length -gt 60) { $clean = $clean.Substring(0, 60).Trim() }
+  if (-not $clean -or -not (Get-FsListFileName $clean)) { return }
+  $fold = Find-FsSiteFolder $clean $driveRoots; if ($fold -and (Split-Path -Leaf $fold) -ne $clean) { $fold = $null }   # only the exact folder: "12 Main" must not land in "112 Main St"
+  $newName = $(if ($fold) { Split-Path -Leaf $fold } else { $clean })
+  $newList = Join-Path $SitesDir (Get-FsListFileName $newName)
+  $dl = $(if ($fold) { Join-Path (Join-Path $fold 'Docs') 'WireIt site list.json' } else { '' })
+  if ($newName -eq $siteName) { return }
+  if ((Test-Path -LiteralPath $newList) -or ($dl -and (Test-Path -LiteralPath $dl)) -or (Test-Path -LiteralPath (Get-FsSecretPath $SecretsDir $newName))) {
+    Say ('"' + $newName + '" is already a saved site, so this run stays "' + $siteName + '" (nothing of that site is overwritten). Next time there, pick it in the site box.') 'Yellow'; return
+  }
+  $oldSec = Get-FsSecretPath $SecretsDir $siteName
+  $script:siteName = $newName; $script:localList = $newList; $script:listPath = $dl; $script:siteFolder = $fold
+  $sec.site = $newName; $plan.site = $newName
+  if (Test-Path -LiteralPath $oldSec) { try { Save-FsSecrets $SecretsDir $sec; Remove-Item -LiteralPath $oldSec -Force } catch {} }
+  Say ('Site name: ' + $newName + $(if ($fold) { ' (its Drive folder was found: the list goes there too)' } else { '' })) 'Green'
+}
+if ($NewSite -and $Mode -eq 'Fix') {
+  $addr = [string](Ask ('Optional: type this site''s address to name it (like 12 Main St), or just press Enter to keep "' + $siteName + '".'))
+  if ($addr.Trim()) { Rename-NewSite $addr.Trim() }
+}
 $work = @($plan.cams | Where-Object { $_.state -eq 'fix' -or ($_.state -eq 'missing' -and $_.steps.Count) }) + @($plan.nvrs | Where-Object { $_.steps -contains 'move' })
+function Save-NewSite {
+  # 2.0.2: a new site is saved without asking (a list on this PC, no passwords; the secrets file under the same name), so the next visit finds it
+  $nl = New-FsSiteList $siteName '' $plan $observed
+  $json = $nl | ConvertTo-Json -Depth 6
+  New-Item -ItemType Directory -Force -Path (Split-Path $localList) | Out-Null; $json | Set-Content -LiteralPath $localList -Encoding UTF8
+  if ($listPath) { try { New-Item -ItemType Directory -Force -Path (Split-Path $listPath) | Out-Null; $json | Set-Content -LiteralPath $listPath -Encoding UTF8 } catch { Say ('Could not write the list to Drive (' + $_.Exception.Message + '). It is saved on this PC.') 'Yellow' } }
+  try { Save-FsSecrets $SecretsDir $sec } catch {}
+  try { Set-Content -LiteralPath (Join-Path $runDir 'site.txt') -Value $siteName -Encoding UTF8 } catch {}
+  Say ('Saved this site as "' + $siteName + '" on this PC: ' + @($nl.cameras).Count + ' camera(s), no passwords. Next time pick it in the site box, or press New site again - it recognises the NVR.') 'Green'
+}
 function Offer-List {
+  if ($NewSite) { if ($Mode -eq 'DryRun') { Say ('(dry run) At the end it would save this site as "' + $siteName + '" on this PC.') } else { Save-NewSite }; return }
   if ($Mode -eq 'DryRun') { if (-not $list) { Say '(dry run) At the end it would offer: "Save this as the site''s list?"' }; return }
   $newOnes = @($plan.cams | Where-Object { -not $_.onList -and $_.state -ne 'missing' })
   if ($list -and -not $newOnes.Count -and $listFrom -notlike '*snapshot*') { return }
@@ -402,7 +476,7 @@ foreach ($c in $ordered) {
     if (-not $stop) {
       $up = $false; $end = (Get-Date).AddSeconds([int]$opts.rebootWaitSec); do { Fs-Sleep 5; $s = Test-FsLogin $ip $c.brand ''; if ($s -ne 'noanswer') { $up = $true } } while (-not $up -and (Get-Date) -lt $end)
       if (-not $up) { & $step 'still not answering' $false; $stop = $true }
-      else { $fp = Find-FsPassword $ip $c.brand @(Get-FsPasswordCandidates $sec ([int]$opts.maxPasswordTries) $c.mac) ([int]$opts.maxPasswordTries); if ($fp.state -eq 'ok') { $pw = $fp.value; if ($pw -ne $sitePw -and $c.steps -notcontains 'password') { $c.steps = @($c.steps | ForEach-Object { if ($_ -eq 'backup') { 'backup'; 'password' } else { $_ } }) } } else { $c.steps = @($c.steps) + @('reset') } }
+      else { $fp = Find-FsPassword $ip $c.brand @(Get-FsPasswordCandidates $sec ([int]$opts.maxPasswordTries) $c.mac (Get-NewSiteDefaults $c.brand)) ([int]$opts.maxPasswordTries); if ($fp.state -eq 'ok') { $pw = $fp.value; if ($pw -ne $sitePw -and $c.steps -notcontains 'password') { $c.steps = @($c.steps | ForEach-Object { if ($_ -eq 'backup') { 'backup'; 'password' } else { $_ } }) } } else { $c.steps = @($c.steps) + @('reset') } }
     }
   }
   if (-not $stop -and ($c.steps -contains 'reset' -or $c.steps -contains 'activate')) {
