@@ -1,9 +1,9 @@
 {
-  "version": "2.0.1",
-  "released": "2026-11-03",
-  "commit": "f2b841d5f02740df543c645b09e138097880d1ea",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/f2b841d5f02740df543c645b09e138097880d1ea/",
-  "notes": "2.0.1: \"Fix this site\" changes ONLY cameras with a real problem (offline, no video, hung, wrong IP scheme, not on the NVR, password unknown with no video, missing). Working cameras are not touched at all. The camera-setting drop-downs go only on the cameras being fixed, unless you tick \"Apply settings to ALL cameras\"; the site password goes on working cameras only if you tick \"Set the site password on all cameras\". The list now starts with \"Changes only the N cameras listed below. M working cameras will not be touched.\" 2.0 \"Fix this site\": one screen, one big button. It reads the site's camera list, shows only what is wrong, you type YES once, and it fixes each camera (site password, settings from the drop-downs, move to the WireIt IP scheme, back on the NVR, restart or power-cycle hung cameras) with a check per camera when video is back. Missing cameras say which switch port to check. Undo the last fix in one click. The old buttons are under \"More tools\".",
+  "version": "2.0.2",
+  "released": "2026-11-04",
+  "commit": "35242189982e443df80091813b870a36fdb59178",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/35242189982e443df80091813b870a36fdb59178/",
+  "notes": "2.0.2: \"New site (not listed)\" button beside \"Fix this site\": one tap at a site with no saved list, nothing to type. It finds the router, NVR and cameras by itself, names the site from what it sees, tries the saved, usual and old factory passwords (same try limit), shows \"New site (no saved list): found ...\" first, fixes ONLY the problem cameras after YES (backups + undo), then asks for the address (optional) and saves the site on this PC so the next visit finds it. 2.0.1: \"Fix this site\" changes ONLY cameras with a real problem (offline, no video, hung, wrong IP scheme, not on the NVR, password unknown with no video, missing). Working cameras are not touched at all. The camera-setting drop-downs go only on the cameras being fixed, unless you tick \"Apply settings to ALL cameras\"; the site password goes on working cameras only if you tick \"Set the site password on all cameras\". The list now starts with \"Changes only the N cameras listed below. M working cameras will not be touched.\" 2.0 \"Fix this site\": one screen, one big button. It reads the site's camera list, shows only what is wrong, you type YES once, and it fixes each camera (site password, settings from the drop-downs, move to the WireIt IP scheme, back on the NVR, restart or power-cycle hung cameras) with a check per camera when video is back. Missing cameras say which switch port to check. Undo the last fix in one click. The old buttons are under \"More tools\".",
   "files": [
     {
       "path": "Toolkit/WireItToolkit.ps1",
@@ -27,8 +27,8 @@
     },
     {
       "path": "Toolkit/README.txt",
-      "sha256": "5a0282a849fbe16fb6081cc29bb15913a3d772a9b0aadb099739a729fa4477e8",
-      "size": 15758
+      "sha256": "ba0ef987255042c7fa760f0648e3c6a9f94e19530915af7145ea093d413ad6f0",
+      "size": 16939
     },
     {
       "path": "Toolkit/wireit.ico",
@@ -172,13 +172,13 @@
     },
     {
       "path": "Toolkit/FixSite.ps1",
-      "sha256": "3bee0b8d154ef540ecff98d505ace034b10606e1dfa1152770d64497b1ddf458",
-      "size": 49799
+      "sha256": "29dc48a636881e4eb69fc742ae04ce6919e9175b21ac26c0c0f934ab9ab28bcf",
+      "size": 57393
     },
     {
       "path": "Toolkit/FixSiteCore.ps1",
-      "sha256": "f7d948851a2a94007d77d042d0d7e282d03ca5252495d975b29a4963b53b8de7",
-      "size": 43634
+      "sha256": "353aaae1c522403e802216583067bc265e61fcba64bed0145a27d13fa491e948",
+      "size": 52061
     },
     {
       "path": "Toolkit/FixSiteDevices.ps1",
@@ -187,18 +187,18 @@
     },
     {
       "path": "Toolkit/FixSiteWindow.ps1",
-      "sha256": "920f09280ebbe6ae82ad9c1dc1b67ff88c8b5fe80edeea156a6d3c2fb883892c",
-      "size": 13484
+      "sha256": "c0a6fc6de9e298aa5a46735f58c04260661be04048939f2a1049ea95612c230b",
+      "size": 16171
     },
     {
       "path": "Toolkit/tests/Test-FixSite.ps1",
-      "sha256": "a7c15742e705a6d0ce81038ef0cb9da6f43714138e7f510ffce14e2ff8cc70b0",
-      "size": 28951
+      "sha256": "d68a182211bacdca2f948df96828824ea1988e3275f66a7e3a9e72893790c9b6",
+      "size": 43118
     },
     {
       "path": "Toolkit/tests/fixsite/mock_site.py",
-      "sha256": "f62dc9c9653aea39426ccf04a3cacbf94735ba0b6400ca36d6c5c58eec81746f",
-      "size": 17377
+      "sha256": "0b405fb2c09968905f6c140593f2b4aa26cd8a360b7162bf589cbf4061f7e534",
+      "size": 17724
     },
     {
       "path": "Toolkit/tests/fixsite/lieber-scan.json",
@@ -229,6 +229,16 @@
       "path": "Toolkit/tests/fixsite/mock-byw.json",
       "sha256": "0f9bcb62bf624532f4ec018a7d50891d94bf6a9b69ae59d91407ada10e51299a",
       "size": 2384
+    },
+    {
+      "path": "Toolkit/tests/fixsite/newsite-scan.json",
+      "sha256": "fede346c18d6fc48cfa3ec47ad8f8d779dfb674eeccfb2b593ad6458f1c22b2f",
+      "size": 3191
+    },
+    {
+      "path": "Toolkit/tests/fixsite/mock-newsite.json",
+      "sha256": "6f00e36a72cc2bb7ec2da5b247c94935649c072cc99c41470405659cd71ab4c6",
+      "size": 2554
     }
   ]
 }
