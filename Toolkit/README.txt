@@ -200,8 +200,10 @@ Not tested on real equipment yet (mock tests only): the no-login camera clock re
   Uniview: Find cameras already tries the factory password once; locked Uniview = CamReset README step U.
 
 UPDATES
-  At start the Toolkit checks https://raw.githubusercontent.com/wireitct/wireit-toolkit/main/version.json
-  (a public list with no passwords or site data). A newer version is downloaded, every file's SHA-256 is
+  At start the Toolkit checks https://wireit-toolkit-dl.wireitct.workers.dev/version.json (since 2.0.4: WireIt's
+  own Cloudflare download service, so the code on GitHub can be private; the Toolkit sends its download key,
+  which only allows Toolkit downloads, plus the PC name and version so we can see which PCs have updated).
+  While the GitHub repo is still public, raw GitHub is the fallback. A newer version is downloaded, every file's SHA-256 is
   checked, and only then swapped in; the replaced files are kept in previous\. Offline or any error = it just
   runs the version it has. Updates may also refresh FixNVR, CamReset and NetCheck scripts; config.json files
   are never touched. "Go back to the previous version" (bottom of the window) undoes the last update.

@@ -4,6 +4,14 @@
 #>
 $script:TkAllowedTop = @('Toolkit', 'FixNVR', 'CamReset', 'NetCheck')
 $script:TkUpdatePrefix = 'https://raw.githubusercontent.com/wireitct/wireit-toolkit/'
+# 2.0.4: updates come from WireIt's own Cloudflare download service, so the GitHub repo can be private.
+# The download key below only lets a PC download Toolkit files from that service; it opens nothing else
+# (no cameras, no Drive, no site data). Raw GitHub stays as a fallback only while the repo is still public.
+$script:TkDlBase = 'https://wireit-toolkit-dl.wireitct.workers.dev/'
+$script:TkDlKey = 'OXO1mhmkMJevVhd5f2Sk-ylPBogt6vmD'
+$script:TkOldUpdateUrl = 'https://raw.githubusercontent.com/wireitct/wireit-toolkit/main/version.json'
+$script:TkUpdatePrefixes = @(($script:TkDlBase + 'f/'), $script:TkUpdatePrefix)
+$script:TkCurVersion = ''
 
 function Get-TkPaths([string]$toolkitDir) {
   $root = Split-Path -Parent $toolkitDir
@@ -24,7 +32,8 @@ function Save-TkJson($obj, [string]$path) { ($obj | ConvertTo-Json -Depth 8) | S
 function Get-TkConfig([string]$toolkitDir) {
   $c = Read-TkJson (Join-Path $toolkitDir 'config.json')
   $d = [ordered]@{
-    updateUrl = 'https://raw.githubusercontent.com/wireitct/wireit-toolkit/main/version.json'
+    updateUrl = 'https://wireit-toolkit-dl.wireitct.workers.dev/version.json'
+    updateFallbackUrl = 'https://raw.githubusercontent.com/wireitct/wireit-toolkit/main/version.json'
     updateTimeoutMs = 4000; autoUpdate = $true
     hikvisionForm = 'https://www.hikvision.com/us-en/support/password-reset/'
     bitwardenUrl = 'https://vault.bitwarden.com/'
@@ -38,6 +47,11 @@ function Get-TkConfig([string]$toolkitDir) {
       if ($p.Name -eq 'form' -and $p.Value) { foreach ($q in $p.Value.PSObject.Properties) { $d.form[$q.Name] = $q.Value } }
       else { $d[$p.Name] = $p.Value }
     }
+  }
+  # 2.0.4: a config.json written before 2.0.4 names the old raw GitHub address; move it to the download service
+  # (raw GitHub becomes the fallback). Any other address someone typed in config.json is kept as it is.
+  if (-not [string]$d.updateUrl -or ([string]$d.updateUrl).TrimEnd('/') -ieq $script:TkOldUpdateUrl) {
+    $d.updateUrl = $script:TkDlBase + 'version.json'; $d.updateFallbackUrl = $script:TkOldUpdateUrl
   }
   return [pscustomobject]$d
 }
@@ -118,7 +132,8 @@ function Test-TkManifestPath([string]$p) {
 
 function Test-TkManifest($m) {
   if (-not $m -or -not $m.version -or -not $m.base -or -not $m.files) { return 'manifest is missing version/base/files' }
-  if (-not ([string]$m.base).StartsWith($script:TkUpdatePrefix)) { return 'download address is not the WireIt toolkit repository' }
+  $okBase = $false; foreach ($pre in $script:TkUpdatePrefixes) { if (([string]$m.base).StartsWith($pre)) { $okBase = $true } }
+  if (-not $okBase) { return 'download address is not the WireIt toolkit repository' }
   foreach ($f in $m.files) {
     if (-not (Test-TkManifestPath ([string]$f.path))) { return ('file path not allowed: ' + $f.path) }
     if (-not ($f.sha256 -match '^[0-9a-fA-F]{64}$')) { return ('bad hash for ' + $f.path) }
@@ -131,6 +146,12 @@ function Get-TkWeb([string]$url, [int]$timeoutMs) {
   $req = [Net.WebRequest]::Create($url)
   $req.Timeout = $timeoutMs
   if ($req -is [Net.HttpWebRequest]) { $req.ReadWriteTimeout = $timeoutMs; $req.UserAgent = 'WireIt-Toolkit' }
+  if ($url.StartsWith($script:TkDlBase)) {
+    # the download service wants the Toolkit's key; the PC name + version let Moshe see which PCs have updated
+    $req.Headers.Add('X-WireIt-Key', $script:TkDlKey)
+    $req.Headers.Add('X-WireIt-PC', [string]$env:COMPUTERNAME)
+    if ($script:TkCurVersion) { $req.Headers.Add('X-WireIt-Version', $script:TkCurVersion) }
+  }
   $req.CachePolicy = New-Object Net.Cache.RequestCachePolicy([Net.Cache.RequestCacheLevel]::NoCacheNoStore)
   $resp = $req.GetResponse()
   try { $ms = New-Object IO.MemoryStream; $resp.GetResponseStream().CopyTo($ms); return $ms.ToArray() } finally { $resp.Close() }
@@ -139,9 +160,17 @@ function Get-TkWeb([string]$url, [int]$timeoutMs) {
 function Get-TkUpdateInfo($cfg, [string]$toolkitDir) {
   # returns @{ state = 'offline'|'current'|'available'|'error'; manifest; message }
   $cur = Get-TkVersion $toolkitDir
-  try { $bytes = Get-TkWeb ([string]$cfg.updateUrl) ([int]$cfg.updateTimeoutMs) }
-  catch { return [pscustomobject]@{ state = 'offline'; manifest = $null; current = $cur; message = 'No internet (or update site not reachable) - running this version.' } }
-  try { $m = [Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF) | ConvertFrom-Json } catch { return [pscustomobject]@{ state = 'error'; manifest = $null; current = $cur; message = 'Update info unreadable - running this version.' } }
+  $script:TkCurVersion = $cur
+  # 2.0.4: the download service first; raw GitHub only if that fails (works only while the repo is public)
+  $urls = @([string]$cfg.updateUrl)
+  if ($cfg.PSObject.Properties['updateFallbackUrl'] -and [string]$cfg.updateFallbackUrl -and ([string]$cfg.updateFallbackUrl -ne [string]$cfg.updateUrl)) { $urls += [string]$cfg.updateFallbackUrl }
+  $m = $null; $reached = $false
+  foreach ($uu in $urls) {
+    try { $bytes = Get-TkWeb $uu ([int]$cfg.updateTimeoutMs); $reached = $true } catch { continue }
+    try { $m = [Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF) | ConvertFrom-Json; break } catch { $m = $null }
+  }
+  if (-not $reached) { return [pscustomobject]@{ state = 'offline'; manifest = $null; current = $cur; message = 'No internet (or update site not reachable) - running this version.' } }
+  if (-not $m) { return [pscustomobject]@{ state = 'error'; manifest = $null; current = $cur; message = 'Update info unreadable - running this version.' } }
   $bad = Test-TkManifest $m
   if ($bad) { return [pscustomobject]@{ state = 'error'; manifest = $null; current = $cur; message = ('Update refused: ' + $bad) } }
   if ((Compare-TkVersion ([string]$m.version) $cur) -le 0) { return [pscustomobject]@{ state = 'current'; manifest = $m; current = $cur; message = ('Up to date (v' + $cur + ').') } }

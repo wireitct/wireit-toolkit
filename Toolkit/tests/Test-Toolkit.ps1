@@ -70,6 +70,39 @@ Check 'newer version seen' ($av.state -eq 'available') $av.message
 $mf2 = Join-Path $tmp 'evil.json'; ($evil | ConvertTo-Json -Depth 5) | Set-Content $mf2 -Encoding UTF8
 $ev = Get-TkUpdateInfo ([pscustomobject]@{ updateUrl = ([Uri]$mf2).AbsoluteUri; updateTimeoutMs = 3000 }) $tk
 Check 'foreign download refused' ($ev.state -eq 'error') $ev.message
+# 2.0.4 download service (private repo): new base accepted, look-alikes refused, old config moved, fallback
+$dlm = [pscustomobject]@{ version = '9.9.9'; base = ($script:TkDlBase + 'f/abc/'); files = $good.files }
+Check '2.0.4 download-service base ok' ((Test-TkManifest $dlm) -eq '')
+$look = [pscustomobject]@{ version = '9.9.9'; base = 'https://wireit-toolkit-dl.wireitct.workers.dev.evil.example/f/abc/'; files = $good.files }
+Check '2.0.4 look-alike address refused' ((Test-TkManifest $look) -ne '')
+$nokey = [pscustomobject]@{ version = '9.9.9'; base = ($script:TkDlBase + 'abc/'); files = $good.files }
+Check '2.0.4 service base must be /f/' ((Test-TkManifest $nokey) -ne '')
+$cdir = Join-Path $tmp 'cfgtest'; New-Item -ItemType Directory -Force -Path $cdir | Out-Null
+Set-Content (Join-Path $cdir 'config.json') '{"updateUrl":"https://raw.githubusercontent.com/wireitct/wireit-toolkit/main/version.json","autoUpdate":true}' -Encoding UTF8
+$cc = Get-TkConfig $cdir
+Check '2.0.4 old config.json address moved to the download service' (([string]$cc.updateUrl -eq ($script:TkDlBase + 'version.json')) -and ([string]$cc.updateFallbackUrl -eq $script:TkOldUpdateUrl)) ([string]$cc.updateUrl)
+Set-Content (Join-Path $cdir 'config.json') '{"updateUrl":"http://10.0.0.5/my/version.json"}' -Encoding UTF8
+Check '2.0.4 a custom update address is kept' ([string](Get-TkConfig $cdir).updateUrl -eq 'http://10.0.0.5/my/version.json')
+Remove-Item (Join-Path $cdir 'config.json')
+Check '2.0.4 no config.json = download service' ([string](Get-TkConfig $cdir).updateUrl -eq ($script:TkDlBase + 'version.json'))
+$fb = Get-TkUpdateInfo ([pscustomobject]@{ updateUrl = 'http://127.0.0.1:9/version.json'; updateFallbackUrl = ([Uri]$mf).AbsoluteUri; updateTimeoutMs = 3000 }) $tk
+Check '2.0.4 fallback used when the service is unreachable' ($fb.state -eq 'available') $fb.message
+$fb2 = Get-TkUpdateInfo ([pscustomobject]@{ updateUrl = 'http://127.0.0.1:9/version.json'; updateFallbackUrl = 'http://127.0.0.1:9/v2.json'; updateTimeoutMs = 2000 }) $tk
+Check '2.0.4 both unreachable = just run' ($fb2.state -eq 'offline') $fb2.state
+$fb3 = Get-TkUpdateInfo ([pscustomobject]@{ updateUrl = ([Uri]$mf2).AbsoluteUri; updateFallbackUrl = ([Uri]$mf).AbsoluteUri; updateTimeoutMs = 3000 }) $tk
+Check '2.0.4 a refused manifest is not swapped for the fallback' ($fb3.state -eq 'error') $fb3.message
+if ($env:WIREIT_LIVE_DL) {
+  $script:TkCurVersion = 'test'
+  $lj = $null; try { $lj = [Text.Encoding]::UTF8.GetString((Get-TkWeb ($script:TkDlBase + 'version.json') 15000)) | ConvertFrom-Json } catch { $lj = $null }
+  Check '2.0.4 LIVE download service answers with the key' ($lj -and ([string]$lj.base).StartsWith($script:TkDlBase + 'f/') -and ((Test-TkManifest $lj) -eq '')) ([string]$lj.base)
+  $nk = 0; try { $rq = [Net.WebRequest]::Create($script:TkDlBase + 'version.json'); $rq.Timeout = 15000; $rs = $rq.GetResponse(); $nk = [int]$rs.StatusCode; $rs.Close() } catch [Net.WebException] { if ($_.Exception.Response) { $nk = [int]$_.Exception.Response.StatusCode } }
+  Check '2.0.4 LIVE download service refuses without the key' ($nk -eq 403) ([string]$nk)
+  if ($lj) {
+    $lf = @($lj.files | Select-Object -First 3); $okf = $true
+    foreach ($f in $lf) { $u2 = ([string]$lj.base).TrimEnd('/') + '/' + (($f.path -split '[\\/]' | ForEach-Object { [Uri]::EscapeDataString($_) }) -join '/'); $hf = Join-Path $tmp 'live.bin'; [IO.File]::WriteAllBytes($hf, (Get-TkWeb $u2 30000)); if ((Get-TkSha256 $hf) -ne ([string]$f.sha256).ToLower()) { $okf = $false } }
+    Check '2.0.4 LIVE files from the service match their SHA-256' $okf
+  }
+}
 if ($env:WIREIT_LIVE_URL) { $lv = Get-TkUpdateInfo ([pscustomobject]@{ updateUrl = $env:WIREIT_LIVE_URL; updateTimeoutMs = 8000 }) $tk; Check 'live version.json readable' ($lv.state -in @('available', 'current')) $lv.message }
 
 # 5 reset flow with the real CamReset scripts against a fake scan (no network)

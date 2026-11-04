@@ -5,7 +5,7 @@ No install, no admin rights, nothing left running after you close it. It changes
 
 ## Run it (3 steps)
 1. On the site PC, download **WireIt-SiteCheck.cmd**:
-   https://github.com/wireitct/wireit-toolkit/releases/download/sitecheck/WireIt-SiteCheck.cmd
+   https://wireit-toolkit-dl.wireitct.workers.dev/sitecheck/WireIt-SiteCheck.cmd
    (If the browser asks, choose **Keep**. If Windows shows "Windows protected your PC", click **More info -> Run anyway**.)
 2. Double-click it. The "WireIt Site Check" window opens.
 3. Type the NVR address and password (optional, but needed to name the offline channels) and press **Start check**.
@@ -13,7 +13,7 @@ No install, no admin rights, nothing left running after you close it. It changes
 
 No-download option (paste into Start -> Run, or a PowerShell window):
 
-    powershell -NoProfile -ExecutionPolicy Bypass -c "[Net.ServicePointManager]::SecurityProtocol='Tls12';&([scriptblock]::Create((irm https://raw.githubusercontent.com/wireitct/wireit-toolkit/main/sitecheck/SiteCheck.ps1)))"
+    powershell -NoProfile -ExecutionPolicy Bypass -c "[Net.ServicePointManager]::SecurityProtocol='Tls12';&([scriptblock]::Create((irm https://wireit-toolkit-dl.wireitct.workers.dev/sitecheck/main/SiteCheck.ps1)))"
 
 ## What it checks
 - This PC's network (wired/Wi-Fi only; VPNs and Tailscale are skipped).
