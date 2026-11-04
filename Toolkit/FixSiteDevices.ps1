@@ -345,16 +345,16 @@ function Unprotect-FsText([string]$s) {
 }
 function Get-FsSecretPath([string]$dir, [string]$site) { return (Join-Path $dir ('site-' + (($site -replace '[^A-Za-z0-9_-]+', '_').Trim('_')) + '.dat')) }
 function Read-FsSecrets([string]$dir, [string]$site) {
-  $o = [ordered]@{ site = $site; password = ''; known = @(); usual = @(); nvr = @{}; rollback = @{}; bitwardenSaved = $false }
+  $o = [ordered]@{ site = $site; password = ''; known = @(); usual = @(); nvr = @{}; cams = @{}; rollback = @{}; bitwardenSaved = $false }
   $p = Get-FsSecretPath $dir $site
-  if (Test-Path $p) { try { $j = (Unprotect-FsText ((Get-Content $p -Raw).Trim())) | ConvertFrom-Json; foreach ($k in @('password', 'known', 'bitwardenSaved')) { if ($j.PSObject.Properties[$k]) { $o[$k] = $j.$k } }; foreach ($k in @('nvr', 'rollback')) { if ($j.PSObject.Properties[$k] -and $j.$k) { $h = @{}; foreach ($q in $j.$k.PSObject.Properties) { $h[$q.Name] = $q.Value }; $o[$k] = $h } } } catch { Fs-LogLine ('secret store unreadable: ' + $_.Exception.Message) } }
+  if (Test-Path $p) { try { $j = (Unprotect-FsText ((Get-Content $p -Raw).Trim())) | ConvertFrom-Json; foreach ($k in @('password', 'known', 'bitwardenSaved')) { if ($j.PSObject.Properties[$k]) { $o[$k] = $j.$k } }; foreach ($k in @('nvr', 'cams', 'rollback')) { if ($j.PSObject.Properties[$k] -and $j.$k) { $h = @{}; foreach ($q in $j.$k.PSObject.Properties) { $h[$q.Name] = $q.Value }; $o[$k] = $h } } } catch { Fs-LogLine ('secret store unreadable: ' + $_.Exception.Message) } }
   $u = Join-Path $dir 'wireit-usual.dat'
   if (Test-Path $u) { try { $uj = (Unprotect-FsText ((Get-Content $u -Raw).Trim())) | ConvertFrom-Json; $o.usual = @($uj) } catch {} }
   $o.known = @($o.known | Where-Object { $_ }); return [pscustomobject]$o
 }
 function Save-FsSecrets([string]$dir, $sec) {
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
-  $keep = [ordered]@{ site = $sec.site; password = $sec.password; known = @($sec.known); nvr = $sec.nvr; rollback = $sec.rollback; bitwardenSaved = [bool]$sec.bitwardenSaved; updated = (Get-Date -Format 's') }
+  $keep = [ordered]@{ site = $sec.site; password = $sec.password; known = @($sec.known); nvr = $sec.nvr; cams = $(if ($sec.PSObject.Properties['cams'] -and $sec.cams) { $sec.cams } else { @{} }); rollback = $sec.rollback; bitwardenSaved = [bool]$sec.bitwardenSaved; updated = (Get-Date -Format 's') }
   $p = Get-FsSecretPath $dir $sec.site; $tmp = $p + '.tmp'
   [IO.File]::WriteAllText($tmp, (Protect-FsText ($keep | ConvertTo-Json -Depth 6 -Compress)))
   Move-Item -LiteralPath $tmp -Destination $p -Force

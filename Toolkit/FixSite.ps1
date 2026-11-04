@@ -8,8 +8,13 @@
    2. Looks at what IS here: every camera and NVR (Hikvision SADP, Dahua search, network sweep, the NVR's channel list),
       even on the wrong IP scheme, and logs in with the site's saved passwords only (a short, fixed list - never guessing).
    3. Asks ONE question if some passwords are unknown: type it, or Enter for the official reset.
-   4. Shows ONLY the problems and what it will change. Healthy cameras are one line. You type YES once.
-   5. Then, one camera at a time: backup -> site password -> camera settings -> move to the right address -> back on the NVR
+   4. Shows ONLY the problems and what it will change; the first line says "Changes only the N cameras listed below. M working cameras
+      will not be touched." Working cameras are one "OK, not touched" line. You type YES once.
+      2.0.1 (Moshe, Nov 3 2026): ONLY cameras with a real problem (offline / no video / hung / wrong IP scheme / not on the NVR /
+      password unknown / locked / not activated / missing) get any change. A working camera gets nothing - no password, no settings,
+      no I-frame, no address change - unless this run was started with -AllCameras ("Apply settings to ALL cameras": the drop-downs only)
+      or -PasswordAll ("Set the site password on all cameras"). Both are off unless ticked for that run.
+   5. Then, one camera at a time (cameras being fixed): backup -> site password -> camera settings -> move to the right address -> back on the NVR
       -> restart / switch-port power-cycle if hung -> waits until the NVR shows video for 20 s -> check mark.
    6. Missing cameras: "should be on <switch> port 10 - go check port 10" (power-cycles that port first when it can).
    7. Offers to save what it found as the site's list, and to put the site password in Bitwarden.
@@ -23,6 +28,8 @@ param(
   [string]$Recorded = '',           # DryRun: a recorded scan (tests\fixsite\*.json)
   [string]$ListFile = '',           # use this site list instead of the Drive one
   [string]$Codec = 'auto', [int]$Fps = 0, [string]$Resolution = 'keep', [int]$Bitrate = 0,
+  [switch]$AllCameras,              # 2.0.1: the drop-down settings go on EVERY camera (the window's "Apply settings to ALL cameras" tick). Off = only cameras with a real problem
+  [switch]$PasswordAll,             # 2.0.1: every camera gets the site password (the window's "Set the site password on all cameras" tick). Off = only cameras being fixed
   [string]$RollbackDir = '',
   [string]$ConfigPath = '', [string]$SecretsDir = '', [string]$RunsRoot = '', [string]$SitesDir = '',
   [string]$MockUrl = '',            # TEST HARNESS ONLY: all device calls go to tests\fixsite\mock_site.py
@@ -46,6 +53,7 @@ $driveRoots = @('G:\My Drive\WireIt Sites', '%USERPROFILE%\My Drive\WireIt Sites
 if ($fsCfg -and $fsCfg.PSObject.Properties['driveRoots']) { $driveRoots = @($fsCfg.driveRoots) }
 $opts = Merge-FsOptions $fsCfg
 $opts.settings.codec = $Codec; $opts.settings.fps = $Fps; $opts.settings.resolution = $Resolution; $opts.settings.bitrate = $Bitrate
+$opts.settingsAll = [bool]$AllCameras; $opts.passwordAll = [bool]$PasswordAll   # per run, never from config: a working camera is only touched when the tech ticks it this time
 if (-not $SecretsDir) { $SecretsDir = Join-Path $here 'secrets' }
 if (-not $RunsRoot) { $RunsRoot = Join-Path $here 'runs' }
 if (-not $SitesDir) { $SitesDir = Join-Path $here 'sites' }
@@ -143,7 +151,9 @@ if ($Mode -eq 'Rollback') {
     $ip = $(if ($c.ip_after) { [string]$c.ip_after } else { [string]$c.ip_before }); $res = @()
     if ((Get-FsP3 $ip) -ne (Get-FsP3 $pc.gw)) { [void](Add-FsTempIp (Get-FsP3 $ip) $pc $tempState) }
     $oldPw = $(if ($old.ContainsKey([string]$c.mac + '|' + [string]$c.ip_before)) { [string]$old[[string]$c.mac + '|' + [string]$c.ip_before] } else { '' })
-    $pw = ''; foreach ($cand in @($sec.password, $oldPw)) { if ($cand -and (Test-FsLogin $ip $c.brand $cand) -eq 'ok') { $pw = $cand; break } }
+    $mkR = ConvertTo-FsMac ([string]$c.mac); $lastPw = $(if ($mkR -and $sec.cams -and $sec.cams.ContainsKey($mkR)) { [string]$sec.cams[$mkR] } else { '' })
+    $candsR = @(@($lastPw, $sec.password, $oldPw) + @($sec.known) + @($sec.usual) | Where-Object { $_ } | Select-Object -Unique | Select-Object -First ([int]$opts.maxPasswordTries))   # 2.0.1: a working camera kept its own password
+    $pw = ''; foreach ($cand in $candsR) { if ($cand -and (Test-FsLogin $ip $c.brand $cand) -eq 'ok') { $pw = $cand; break } }
     if (-not $pw) { Say ('  ' + $c.name + ': cannot log in at ' + $ip + ' - not undone ' + $script:FsBad) 'Red'; $bad++; continue }
     $cr = Fs-Cred $pw
     if ($c.stream_before) { $cur = Get-FsStream $ip $c.brand $cr; $want = [pscustomobject]@{ codec = [string]$c.stream_before.codec; fps = [int]$c.stream_before.fps; resolution = $(if ($c.stream_before.width) { '' + $c.stream_before.width + 'x' + $c.stream_before.height } else { 'keep' }); bitrate = [int]$c.stream_before.bitrate; gop = 0; smartCodec = 'keep' }
@@ -151,7 +161,7 @@ if ($Mode -eq 'Rollback') {
       if ([string]$c.stream_before.smartCodec -eq 'on' -and $cur.smartCodec -eq 'off') { $diff += [pscustomobject]@{ field = 'smartCodecOn'; from = 'off'; to = 'on' } }
       $diff = @($diff | Where-Object { $_.field -ne 'smartCodecOn' })   # Smart Codec back on: by hand (it was the cause on BYW)
       if ($diff.Count) { $w = Set-FsStream $ip $c.brand $cr $cur $diff; $res += [pscustomobject]@{ text = 'settings back'; ok = [bool]$w.ok } } }
-    if ($c.password_changed -and $oldPw) { $ok = Set-FsPassword $ip $c.brand $cr $oldPw; if ($ok) { $pw = $oldPw; $cr = Fs-Cred $pw }; $res += [pscustomobject]@{ text = 'old password back'; ok = $ok } }
+    if ($c.password_changed -and $oldPw) { $ok = Set-FsPassword $ip $c.brand $cr $oldPw; if ($ok) { $pw = $oldPw; $cr = Fs-Cred $pw; $mk = ConvertTo-FsMac ([string]$c.mac); if ($mk) { $sec.cams[$mk] = $oldPw } }; $res += [pscustomobject]@{ text = 'old password back'; ok = $ok } }
     if ($c.net_before -and $c.ip_after -and $c.ip_after -ne $c.ip_before) {
       $net = Get-FsNet $ip $c.brand $cr; [void](Add-FsTempIp (Get-FsP3 ([string]$c.net_before.ip)) $pc $tempState)
       $w = Set-FsNet $ip $c.brand $cr $net ([string]$c.net_before.ip) ([string]$c.net_before.mask) ([string]$c.net_before.gw) ([string]$c.net_before.dns1) ([string]$c.net_before.dns2)
@@ -171,6 +181,7 @@ if ($Mode -eq 'Rollback') {
     Say ('  NVR: back to ' + $n.old.ip + ' ' + $(if ($w.ok) { $script:FsOk } else { $script:FsBad }))
   }
   Remove-FsTempIps $tempState
+  try { Save-FsSecrets $SecretsDir $sec } catch {}
   [IO.File]::WriteAllText((Join-Path $RollbackDir 'undone.txt'), (Get-Date -Format 's'))
   Say $(if ($bad) { 'Undo finished with ' + $bad + ' problem(s) above.' } else { 'Undo finished: everything is back.' }) $(if ($bad) { 'Yellow' } else { 'Green' })
   Done $(if ($bad) { 4 } else { 0 })
@@ -242,27 +253,29 @@ if ($Mode -eq 'DryRun') {
     if (Test-FsPoeNet $d.ip) { $observed.devices += [pscustomobject]$o; continue }
     if (-not (& $reach $d.ip)) { $o.login = 'unreachable'; $observed.devices += [pscustomobject]$o; continue }
     if ($d.activated -eq $false) { $observed.devices += [pscustomobject]$o; continue }
-    $fp = Find-FsPassword $d.ip $o.brand @(Get-FsPasswordCandidates $sec ([int]$opts.maxPasswordTries - 1)) ([int]$opts.maxPasswordTries - 1)
+    $fp = Find-FsPassword $d.ip $o.brand @(Get-FsPasswordCandidates $sec ([int]$opts.maxPasswordTries - 1) $o.mac) ([int]$opts.maxPasswordTries - 1)
     if ($fp.state -eq 'noanswer') { $o.answers = $false; $o.login = '' }
     elseif ($fp.state -eq 'ok') {
       $o.login = $fp.label; $pwFor[$d.ip] = $fp.value; $cr = Fs-Cred $fp.value
+      $mk = ConvertTo-FsMac $o.mac; if ($mk) { $sec.cams[$mk] = $fp.value; $camPwSeen = $true }   # 2.0.1: remembered (encrypted) so a working camera on its own password is found first next run
       $st = Get-FsStream $d.ip $o.brand $cr; if ($st) { $o.streams = [ordered]@{ codec = $st.codec; fps = $st.fps; width = $st.width; height = $st.height; bitrate = $st.bitrate; gop = $st.gop; smartCodec = $st.smartCodec; maxWidth = $st.maxWidth; maxHeight = $st.maxHeight } }
       $nt = Get-FsNet $d.ip $o.brand $cr; if ($nt) { $o.dhcp = [bool]$nt.dhcp; if (-not $o.mac -and $o.brand -eq 'Hikvision') { $o.mac = (Get-FsInfo $d.ip $o.brand $cr).mac } }
     } else { $o.login = $fp.state; $o.tries = $fp.tries }
     $observed.devices += [pscustomobject]$o
   }
+  if ($camPwSeen) { try { Save-FsSecrets $SecretsDir $sec } catch {} }
   if ($pmSite) { $observed.ports = Get-FsPortsFromPortMap $pmSite }
   # 5. ONE question for the unknown passwords (Moshe Nov 3 5:24 PM: "sometimes I will know")
   $unk = @($observed.devices | Where-Object { $_.kind -eq 'camera' -and $_.login -in @('unknown', 'refused') })
   if ($unk.Count) {
     $chNames = @{}; foreach ($nv in @($observed.nvrs)) { foreach ($cc in @($nv.channels)) { if ($cc.ip -and $cc.name) { $chNames[[string]$cc.ip] = [string]$cc.name } } }
     $names = @($unk | ForEach-Object { if ($chNames.ContainsKey([string]$_.ip)) { $chNames[[string]$_.ip] + ' ' + $_.ip } else { $_.ip } })
-    $typed = Ask ('Know the password for ' + $(if ($unk.Count -eq 1) { 'this camera' } else { 'these ' + $unk.Count + ' cameras' }) + ' (' + ($names -join ', ') + ')? Type it (hidden), or press Enter to skip - they get the official reset.') -Secret
+    $typed = Ask ('Know the password for ' + $(if ($unk.Count -eq 1) { 'this camera' } else { 'these ' + $unk.Count + ' cameras' }) + ' (' + ($names -join ', ') + ')? Type it (hidden), or press Enter to skip - a camera with a problem gets the official reset; one whose video is fine is left alone.') -Secret
     if ($typed) {
       Remember-Secret $typed; $worked = 0
-      foreach ($u in $unk) { if ([int]$u.tries -ge [int]$opts.maxPasswordTries) { continue }; $s = Test-FsLogin $u.ip $u.brand $typed; if ($s -eq 'ok') { $u.login = 'typed'; $pwFor[$u.ip] = $typed; $worked++; $cr = Fs-Cred $typed; $st = Get-FsStream $u.ip $u.brand $cr; if ($st) { $u.streams = [ordered]@{ codec = $st.codec; fps = $st.fps; width = $st.width; height = $st.height; bitrate = $st.bitrate; gop = $st.gop; smartCodec = $st.smartCodec; maxWidth = $st.maxWidth; maxHeight = $st.maxHeight } } } elseif ($s -eq 'locked') { $u.login = 'locked' } }
+      foreach ($u in $unk) { if ([int]$u.tries -ge [int]$opts.maxPasswordTries) { continue }; $s = Test-FsLogin $u.ip $u.brand $typed; if ($s -eq 'ok') { $u.login = 'typed'; $pwFor[$u.ip] = $typed; $worked++; $mk = ConvertTo-FsMac ([string]$u.mac); if ($mk) { $sec.cams[$mk] = $typed }; $cr = Fs-Cred $typed; $st = Get-FsStream $u.ip $u.brand $cr; if ($st) { $u.streams = [ordered]@{ codec = $st.codec; fps = $st.fps; width = $st.width; height = $st.height; bitrate = $st.bitrate; gop = $st.gop; smartCodec = $st.smartCodec; maxWidth = $st.maxWidth; maxHeight = $st.maxHeight } } } elseif ($s -eq 'locked') { $u.login = 'locked' } }
       if ($worked) { if (@($sec.known) -notcontains $typed) { $sec.known = @($sec.known) + @($typed) }; Save-FsSecrets $SecretsDir $sec; Say ('That password works on ' + $worked + ' of ' + $unk.Count + '. Saved to the site''s secret store (encrypted, this PC only).') 'Green' }
-      else { Say 'That password did not work on them (tried once each). They get the official reset.' 'Yellow' }
+      else { Say 'That password did not work on them (tried once each). Cameras with a problem get the official reset; ones whose video is fine are left alone.' 'Yellow' }
     }
   }
   ($observed | ConvertTo-Json -Depth 8) | Set-Content -Path (Join-Path $runDir 'scan.json') -Encoding UTF8   # no passwords in it: logins are labels only
@@ -389,7 +402,7 @@ foreach ($c in $ordered) {
     if (-not $stop) {
       $up = $false; $end = (Get-Date).AddSeconds([int]$opts.rebootWaitSec); do { Fs-Sleep 5; $s = Test-FsLogin $ip $c.brand ''; if ($s -ne 'noanswer') { $up = $true } } while (-not $up -and (Get-Date) -lt $end)
       if (-not $up) { & $step 'still not answering' $false; $stop = $true }
-      else { $fp = Find-FsPassword $ip $c.brand @(Get-FsPasswordCandidates $sec ([int]$opts.maxPasswordTries)) ([int]$opts.maxPasswordTries); if ($fp.state -eq 'ok') { $pw = $fp.value; if ($pw -ne $sitePw -and $c.steps -notcontains 'password') { $c.steps = @($c.steps | ForEach-Object { if ($_ -eq 'backup') { 'backup'; 'password' } else { $_ } }) } } else { $c.steps = @($c.steps) + @('reset') } }
+      else { $fp = Find-FsPassword $ip $c.brand @(Get-FsPasswordCandidates $sec ([int]$opts.maxPasswordTries) $c.mac) ([int]$opts.maxPasswordTries); if ($fp.state -eq 'ok') { $pw = $fp.value; if ($pw -ne $sitePw -and $c.steps -notcontains 'password') { $c.steps = @($c.steps | ForEach-Object { if ($_ -eq 'backup') { 'backup'; 'password' } else { $_ } }) } } else { $c.steps = @($c.steps) + @('reset') } }
     }
   }
   if (-not $stop -and ($c.steps -contains 'reset' -or $c.steps -contains 'activate')) {
@@ -406,7 +419,7 @@ foreach ($c in $ordered) {
     else {
       $sec.rollback[$stamp][$c.mac + '|' + $c.ip] = $pw; Save-FsSecrets $SecretsDir $sec
       $ok = Set-FsPassword $ip $c.brand $cr $sitePw
-      if ($ok -and (Test-FsLogin $ip $c.brand $sitePw) -eq 'ok') { $pw = $sitePw; $cr = Fs-Cred $pw; $rbc.password_changed = $true; & $step 'password set' $true } else { & $step 'password not changed (old one still works)' $false }
+      if ($ok -and (Test-FsLogin $ip $c.brand $sitePw) -eq 'ok') { $pw = $sitePw; $cr = Fs-Cred $pw; $rbc.password_changed = $true; $mk = ConvertTo-FsMac $c.mac; if ($mk) { $sec.cams[$mk] = $sitePw; Save-FsSecrets $SecretsDir $sec }; & $step 'password set' $true } else { & $step 'password not changed (old one still works)' $false }
     }
     Save-Rb
   }
@@ -493,7 +506,7 @@ Save-FsSecrets $SecretsDir $sec; Save-Rb
 Write-Host ''
 Say '----- Checklist -----' 'Cyan'
 foreach ($l in $results) { Say ('  ' + $l) $(if ($l -like ('*' + $script:FsBad + '*')) { 'Red' } else { 'Green' }) }
-if (@($plan.healthy).Count) { Say ('  ' + @($plan.healthy).Count + ' other camera(s) were already fine.') }
+if (@($plan.healthy).Count) { Say ('  OK, not touched: ' + @($plan.healthy).Count + ' working camera(s).') }
 Say ('Fixed: ' + $okCount + '   Still a problem: ' + $badCount) $(if ($badCount) { 'Yellow' } else { 'Green' })
 Say ('Backups and the undo file: ' + $runDir)
 ([ordered]@{ at = (Get-Date -Format 's'); site = $siteName; ok = $okCount; bad = $badCount; lines = $results } | ConvertTo-Json -Depth 4) | Set-Content -Path (Join-Path $runDir 'summary.json') -Encoding UTF8
