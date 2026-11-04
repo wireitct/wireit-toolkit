@@ -211,7 +211,8 @@ function Resolve-NewSite($devs, [string]$gw) {
   $k = Find-FsKnownSite @(Get-FsKnownSiteFiles $SitesDir $driveRoots) $devs
   if ($k) {
     $script:list = $k.list; $script:listFrom = $k.path; $script:siteName = $k.site; $script:NewSite = $false
-    if ($k.folder) { $script:siteFolder = $k.folder; $script:listPath = $k.path; $script:localList = Join-Path $SitesDir (Get-FsListFileName $k.site) } else { $script:localList = $k.path }
+    if ($k.folder) { $script:siteFolder = $k.folder; $script:listPath = $k.path; $script:localList = Join-Path $SitesDir (Get-FsListFileName $k.site) }
+    else { $script:localList = $k.path; $fd = Find-FsSiteFolder $k.site $driveRoots; if ($fd -and (Split-Path -Leaf $fd) -eq $k.site) { $script:siteFolder = $fd; $script:listPath = Join-Path (Join-Path $fd 'Docs') 'WireIt site list.json' } }
     if ($k.list.PSObject.Properties['siteId'] -and $k.list.siteId) { $script:siteId = [string]$k.list.siteId }
     Say ('This network was saved before on this PC as "' + $k.site + '" (its NVR / cameras match). Using that site and its list: ' + @($k.list.cameras).Count + ' camera(s).') 'Green'
   } else {
