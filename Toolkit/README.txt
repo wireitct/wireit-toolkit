@@ -1,9 +1,11 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.0.0, 2026-11-03
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.0.1, 2026-11-03
 ==============================================================================
 HOW TO USE (2.0)
   1. Double-click "WireIt Toolkit" on the desktop.
   2. Type the site (the Site ID on the QR sticker, like WI-061, or the address).
   3. Leave the camera settings as they are, or pick codec / frame rate / resolution / bitrate.
+     They go ONLY on the cameras with a problem. Working cameras are not touched.
+     To put them on every camera, tick "Apply settings to ALL cameras" (unticks itself after each run).
   4. Press the big green "Fix this site". Click Yes when Windows asks.
   5. Read the list of what is wrong and what it will change. Type YES to fix it all.
   6. Watch the checklist: a green check per camera. A red X says exactly what to go check.
@@ -12,13 +14,23 @@ WHAT "FIX THIS SITE" DOES (no order to remember, safe to run again)
   - Knows what SHOULD be there: the site's list from its Drive folder (Docs\WireIt site list.json),
     else this PC's copy, else the Fix NVR install snapshot. No list yet: at the end it offers
     "Save this as the site's list" (cameras, IPs, NVR channels, switch ports - no passwords).
-  - Shows only problems. Healthy cameras are one line. Missing cameras say which switch port to check.
+  - ONLY CAMERAS WITH A REAL PROBLEM ARE CHANGED (2.0.1): offline / no video on the NVR / hung /
+    wrong IP scheme / not on the NVR / password unknown / locked / not activated / missing.
+    A working camera gets NOTHING: no password, no settings, no I-frame, no address change.
+    The list starts with "Changes only the N cameras listed below. M working cameras will not be touched."
+    and working cameras are one "OK, not touched" line. A working camera on DHCP or outside .21-.99 is
+    named ("Working, left as is") but not moved.
+  - Two ticks (both off unless you tick them for that run; they untick after each run):
+      "Apply settings to ALL cameras"        - the drop-downs go on working cameras too (only what you picked).
+      "Set the site password on all cameras" - working cameras get the site password (+ their NVR channel).
+    When ticked, the list's first line says how many working cameras are included.
+  - Shows only problems. Missing cameras say which switch port to check.
   - WireIt IP scheme: router .100+, NVR .20, cameras .21-.99, other gear .10-.19.
-  - Per camera, one at a time: backup of its settings first, the site password, the camera settings,
+  - Per camera being fixed, one at a time: backup of its settings first, the site password, the camera settings,
     move to the right IP scheme, back on the NVR, restart / power-cycle its switch port if it hangs,
     then waits until the NVR shows video and it holds for 20 seconds.
-  - Camera settings: nothing picked = each camera keeps its own, except old/problem cameras
-    (Dahua on a Hikvision NVR, firmware 2020 or older) get H.264 and Smart Codec off. I-frame = frame rate.
+  - Camera settings (cameras being fixed): nothing picked = each camera keeps its own, except old/problem
+    cameras (Dahua on a Hikvision NVR, firmware 2020 or older) get H.264 and Smart Codec off. I-frame = frame rate.
   - Passwords: tries the site password, then WireIt's usual ones ("Usual passwords..."), at most 3 tries
     per camera - never guesses more. Unknown: one question; then the official Hikvision / Dahua reset
     with one plain step for you. A new strong site password is made once per site, kept encrypted on

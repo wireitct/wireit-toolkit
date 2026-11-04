@@ -20,8 +20,8 @@ $lo = J 'lieber-scan.json'; $ll = J 'lieber-site-list.json'; $bo = J 'byw-scan.j
 $p = New-FsPlan $null $lo
 Eq $p.scheme '192.168.1' 'scheme comes from the router this PC is on'
 $bad = @($p.cams | Where-Object { $_.state -eq 'fix' })
-Eq $bad.Count 3 'Lieber: 3 cameras to fix (2 wrong scheme + 1 outside the block), 2 healthy'
-Eq @($p.healthy).Count 2 'Lieber: 2 healthy collapse'
+Eq $bad.Count 2 'Lieber: 2 cameras to fix (the 2 on the wrong scheme); the 3 working ones are not touched (2.0.1)'
+Eq @($p.healthy).Count 3 'Lieber: 3 working cameras collapse into one line'
 $c64 = $p.cams | Where-Object { $_.ip -eq '192.168.0.64' }; $c65 = $p.cams | Where-Object { $_.ip -eq '192.168.0.65' }
 Eq $c64.target '192.168.1.23' 'wrong-scheme camera goes to the address its NVR channel (ch 3) already looks for'
 Eq $c65.target '192.168.1.24' 'second wrong-scheme camera -> .24 (ch 4)'
@@ -29,10 +29,59 @@ Check ($c65.steps -contains 'reset') 'unknown password -> official reset step'
 Check ($c64.steps -contains 'password') 'known-but-not-site password -> set the site password'
 Check ($c64.why -join ' ' -match 'by order') 'no list: the order-guess is flagged'
 $g = $p.cams | Where-Object { $_.ip -eq '192.168.1.150' }
-Eq $g.target '192.168.1.25' 'camera at .150 (router range) -> camera block'
+Eq $g.state 'ok' 'WORKING camera at .150 (DHCP, outside .21-.99, video on the NVR) is not touched (2.0.1)'
+Check (-not $g.target -and -not @($g.steps).Count) 'working .150: no move, no password, no settings'
+Check (@($p.leftAlone | Where-Object { $_ -match '192\.168\.1\.150' }).Count -eq 1) 'working .150: named once as "working, left as is" (address could be tidied by hand)'
+Check (@($p.cams | Where-Object { $_.ip -in @('192.168.1.21', '192.168.1.22') -and ($_.steps.Count -or $_.settings) }).Count -eq 0) 'working cameras: no password, no settings, no I-frame (2.0.1)'
+# the same .150 camera when it has NO video on the NVR: a real problem -> moved into the camera block, problem camera
+$lo5 = J 'lieber-scan.json'; ($lo5.nvrs[0].channels | Where-Object { $_.ip -eq '192.168.1.150' }).online = $false
+$g = (New-FsPlan $null $lo5).cams | Where-Object { $_.ip -eq '192.168.1.150' }
+Eq $g.target '192.168.1.25' 'broken camera at .150 (router range) -> camera block'
 Check ($g.problem) 'Dahua on a Hikvision NVR counts as a problem camera'
 Eq $g.settings.codec 'H.264' 'problem camera: codec auto -> H.264'
-Check (-not $p.cams[0].problem -and $p.cams[0].settings.codec -eq 'keep') 'healthy new camera: codec auto -> left alone (H.264 only for old/problem cameras)'
+Check ($g.steps -contains 'password') 'camera being fixed anyway gets the site password (no tick needed)'
+# 2.0.1: a working camera keeps its own password, so the password that last worked on it is tried first (no false "password unknown")
+$cs = [pscustomobject]@{ password = 'SITE'; known = @('K1', 'K2'); usual = @('U1'); cams = @{ 'aa:bb:cc:dd:ee:01' = 'U1' } }
+$cl = @(Get-FsPasswordCandidates $cs 2 'AA-BB-CC-DD-EE-01')
+Check ($cl[0].value -eq 'U1' -and $cl[0].label -eq 'WireIt usual 1' -and $cl[1].value -eq 'SITE') 'password candidates: the one that last worked on this camera first, labelled right'
+Eq ((@(Get-FsPasswordCandidates $cs 2 'aa:bb:cc:dd:ee:02') | ForEach-Object { $_.value }) -join ',') 'SITE,K1' 'password candidates: unknown camera -> site password first (unchanged)'
+# 2.0.1: password not known but its video is fine on the NVR -> working, NO official reset
+$lo6 = J 'lieber-scan.json'; ($lo6.devices | Where-Object { $_.ip -eq '192.168.1.22' }).login = 'unknown'
+$c22 = (New-FsPlan $null $lo6).cams | Where-Object { $_.ip -eq '192.168.1.22' }
+Check ($c22.state -eq 'ok' -and -not @($c22.steps).Count) 'password unknown but video fine on the NVR: left alone, no reset'
+$lo7 = J 'lieber-scan.json'; ($lo7.devices | Where-Object { $_.ip -eq '192.168.1.22' }).login = 'unknown'; ($lo7.nvrs[0].channels | Where-Object { $_.ip -eq '192.168.1.22' }).online = $false
+$c22 = (New-FsPlan $null $lo7).cams | Where-Object { $_.ip -eq '192.168.1.22' }
+Check ($c22.state -eq 'fix' -and $c22.steps -contains 'reset') 'password unknown AND no video: official reset offered'
+# 2.0.1: the plan screen says how many change and how many are not touched
+$fl = @(Format-FsPlan $p)
+Eq $fl[0] 'Changes only the 2 camera(s) listed below. 3 working camera(s) will not be touched.' 'plan screen: first line = how many change, how many not touched'
+Check (@($fl | Where-Object { $_ -like 'OK, not touched: 3 working camera(s)*' }).Count -eq 1) 'plan screen: one "OK, not touched" line'
+Check (-not @($fl | Where-Object { $_ -match 'Front Door|site password and I-frame' }).Count) 'plan screen: working cameras are not listed as getting anything'
+# drop-downs picked, box NOT ticked: only the broken cameras get them
+$pd = New-FsPlan $null $lo @{ settings = @{ fps = 12; bitrate = 2048 } }
+Check (@($pd.cams | Where-Object { $_.ip -in @('192.168.1.21', '192.168.1.22', '192.168.1.150') -and $_.steps.Count }).Count -eq 0) 'drop-downs without the tick: working cameras untouched'
+$c64d = $pd.cams | Where-Object { $_.ip -eq '192.168.0.64' }
+Check ($c64d.steps -contains 'settings' -and $c64d.settings.fps -eq 12 -and $c64d.settings.bitrate -eq 2048) 'drop-downs without the tick: the broken camera gets them'
+# "Apply settings to ALL cameras" ticked: working cameras get ONLY the drop-down settings
+$pa = New-FsPlan $null $lo @{ settingsAll = $true; settings = @{ fps = 12 } }
+$a21 = $pa.cams | Where-Object { $_.ip -eq '192.168.1.21' }
+Eq (@($a21.steps) -join ',') 'backup,settings,verify' 'ALL ticked: working camera gets settings only (no password, no move, no NVR)'
+Check ($a21.settings.fps -eq 12 -and $a21.settings.gop -eq -1 -and $a21.settings.codec -eq 'keep' -and $a21.settings.smartCodec -eq 'keep') 'ALL ticked: only what was picked (+ I-frame follows the picked frame rate), no automatic codec'
+$a150 = $pa.cams | Where-Object { $_.ip -eq '192.168.1.150' }
+Check (-not $a150.target -and $a150.steps -notcontains 'password' -and $a150.settings.codec -eq 'keep') 'ALL ticked: working Dahua not moved, no password, no automatic H.264'
+$fa = @(Format-FsPlan $pa)
+Check ($fa[0] -match '^Changes the 5 camera\(s\) listed below: 2 with a problem \+ 3 working one\(s\) because you ticked "Apply settings to ALL cameras"\. 0 working camera\(s\) will not be touched\.$') ('ALL ticked: first line says working ones are included (got: ' + $fa[0] + ')')
+Check (@($fa | Where-Object { $_ -like '3 working camera(s) get ONLY the drop-down settings*' }).Count -eq 1) 'ALL ticked: working cameras listed as getting ONLY the drop-down settings'
+$pn = New-FsPlan $null $lo @{ settingsAll = $true }
+Check (@($pn.cams | Where-Object { $_.ip -in @('192.168.1.21', '192.168.1.22', '192.168.1.150') -and $_.steps.Count }).Count -eq 0 -and ($pn.notes -join ' ') -match 'every drop-down is on "keep"') 'ALL ticked with nothing picked: nobody working touched, and it says so'
+# "Set the site password on all cameras" ticked
+$pp = New-FsPlan $null $lo @{ passwordAll = $true }
+$p150 = $pp.cams | Where-Object { $_.ip -eq '192.168.1.150' }
+Eq (@($p150.steps) -join ',') 'backup,password,nvr,verify' 'password ticked: working camera on another password gets the site password + its NVR channel, nothing else'
+Check (-not @(($pp.cams | Where-Object { $_.ip -eq '192.168.1.21' }).steps).Count) 'password ticked: camera already on the site password is untouched'
+Check ((@(Format-FsPlan $pp))[0] -match '1 working one\(s\) because you ticked "Set the site password on all cameras"') 'password ticked: first line says so'
+$w5 = Get-FsWantedSettings ([pscustomobject]@{ codec = 'auto'; fps = 0; bitrate = 2048; smartCodecOff = 'all'; gopIsFps = $true }) $true ([pscustomobject]@{ codec = 'H.264' }) $true
+Check ($w5.codec -eq 'keep' -and $w5.gop -eq 0 -and $w5.smartCodec -eq 'keep' -and $w5.bitrate -eq 2048) 'only-picked settings: no auto codec, no list settings, no smart codec, no I-frame without a picked frame rate'
 $used = @{}; foreach ($c in $p.cams) { $a = if ($c.target) { $c.target } else { $c.ip }; if ($used.ContainsKey($a)) { Check $false ('two cameras on one address ' + $a) }; $used[$a] = 1 }
 Check $true 'no two cameras get the same address'
 $p2 = New-FsPlan $ll $lo
@@ -112,9 +161,15 @@ $tmp = Join-Path ([IO.Path]::GetTempPath()) ('fstest-' + [guid]::NewGuid().ToStr
 $o = RunFix @('-Mode', 'DryRun', '-Site', 'Lieber', '-Recorded', (Join-Path $fx 'lieber-scan.json'), '-RunsRoot', "$tmp\runs", '-SecretsDir', "$tmp\sec", '-SitesDir', "$tmp\sites")
 Check ($o -match 'Nothing on the network is touched') 'dry run says it touches nothing'
 Check ($o -match 'moved \.64 -> \.23') 'dry run: Lieber camera moved .64 -> .23'
-Check ($o -match 'moved \.150 -> \.25') 'dry run: .150 -> .25'
+Check (-not ($o -match 'moved \.150')) 'dry run: working .150 is NOT moved (2.0.1)'
+Check ($o -match 'Changes only the 2 camera\(s\) listed below\. 3 working camera\(s\) will not be touched\.') 'dry run: plan screen says 2 change, 3 not touched'
 Check ($o -match 'official reset') 'dry run: unknown password -> official reset, one step'
-Check ($o -match '2 other camera\(s\) are fine') 'dry run: healthy cameras are one line'
+Check ($o -match 'OK, not touched: 3 working camera\(s\)') 'dry run: working cameras are one "OK, not touched" line'
+$oa = RunFix @('-Mode', 'DryRun', '-Site', 'Lieber', '-Recorded', (Join-Path $fx 'lieber-scan.json'), '-Fps', '12', '-AllCameras', '-RunsRoot', "$tmp\runs", '-SecretsDir', "$tmp\sec", '-SitesDir', "$tmp\sites")
+Check ($oa -match 'because you ticked "Apply settings to ALL cameras"') 'dry run -AllCameras: plan says working ones are included'
+Check (-not ($oa -match 'moved \.150')) 'dry run -AllCameras: still no move of a working camera'
+$op = RunFix @('-Mode', 'DryRun', '-Site', 'Lieber', '-Recorded', (Join-Path $fx 'lieber-scan.json'), '-PasswordAll', '-RunsRoot', "$tmp\runs", '-SecretsDir', "$tmp\sec", '-SitesDir', "$tmp\sites")
+Check ($op -match 'ticked "Set the site password on all cameras"') 'dry run -PasswordAll: plan says working ones get the site password'
 Check (-not ($o -match 'Front Door')) 'dry run: healthy cameras are not listed one by one'
 Check (-not (Test-Path "$tmp\sec\site-Lieber.dat")) 'dry run writes no secret file'
 $o = RunFix @('-Mode', 'DryRun', '-Site', 'BYW', '-Recorded', (Join-Path $fx 'byw-scan.json'), '-ListFile', (Join-Path $fx 'byw-site-list.json'), '-RunsRoot', "$tmp\runs", '-SecretsDir', "$tmp\sec", '-SitesDir', "$tmp\sites")
@@ -139,31 +194,58 @@ if (-not $NoEndToEnd -and $py) {
   try {
     [void](E2E $m @('Usual#Pw1', '') 'SetUsual' 'Lieber')
     $o = E2E $m @('NvrPass9', 'Typed#Pw77', 'YES', 'y', 'SAVED') 'Fix' 'Lieber'
-    Check ($o -match 'Fixed: 5   Still a problem: 0') 'Lieber e2e: all 5 cameras fixed'
+    # 2.0.1 default: only the 3 broken cameras (2 on the wrong scheme + the Dahua with no video) are changed; Front Door + Driveway work and are NOT touched
+    Check ($o -match 'Changes only the 3 camera\(s\) listed below\. 2 working camera\(s\) will not be touched\.') 'Lieber e2e: plan says 3 change, 2 working not touched'
+    Check ($o -match 'Fixed: 3   Still a problem: 0') 'Lieber e2e: the 3 broken cameras fixed'
     Check ($o -match 'Back Yard: password set .*moved \.64 -> \.23 .*back on NVR ch 3 .*video back') 'Lieber e2e: checklist line reads like the spec'
+    Check ($o -match 'OK, not touched: 2 working camera') 'Lieber e2e: checklist ends with "OK, not touched: 2"'
     $st = Mock-State $m.port
-    $sp = ($st.devices.PSObject.Properties | Where-Object { $_.Value.kind -eq 'camera' } | ForEach-Object { $_.Value.password } | Select-Object -Unique)
-    Eq @($sp).Count 1 'Lieber e2e: every camera has the SAME new site password'
-    Check ($sp -ne 'Usual#Pw1' -and $sp.Length -eq 14) 'Lieber e2e: new strong password set'
+    $sp = $st.devices.'192.168.1.23'.password
+    Check ($sp -ne 'Usual#Pw1' -and $sp.Length -eq 14) 'Lieber e2e: new strong site password on the fixed cameras'
+    Eq (@('192.168.1.23', '192.168.1.24', '192.168.1.25' | ForEach-Object { $st.devices.$_.password } | Select-Object -Unique) -join ',') $sp 'Lieber e2e: all 3 fixed cameras have the site password'
+    foreach ($ip in @('192.168.1.21', '192.168.1.22')) {
+      $wc = $st.devices.$ip
+      Check ($wc.password -eq 'Usual#Pw1' -and -not $wc.pw_changes) ('Lieber e2e: working ' + $ip + ' keeps its password (not touched)')
+      Check ($wc.stream.gop -eq 30 -and $wc.stream.codec -eq 'H.265' -and $wc.stream.fps -eq 15) ('Lieber e2e: working ' + $ip + ' keeps its settings and I-frame (not touched)')
+      Eq $wc.backups 0 ('Lieber e2e: working ' + $ip + ' not even logged into for a backup')
+    }
     Eq (@($st.devices.PSObject.Properties.Name | Where-Object { $_ -like '192.168.0.*' }).Count) 0 'Lieber e2e: nobody left on the wrong scheme'
     $chs = $st.devices.'192.168.1.20'.channels
-    Check (($chs.PSObject.Properties | Where-Object { $_.Value.password -ne $sp }).Count -eq 0) 'Lieber e2e: NVR channels hold the new password'
+    Check ($chs.'3'.password -eq $sp -and $chs.'4'.password -eq $sp -and $chs.'5'.password -eq $sp) 'Lieber e2e: NVR channels of the fixed cameras hold the new password'
+    Check ($chs.'1'.password -eq 'Usual#Pw1' -and $chs.'2'.password -eq 'Usual#Pw1') 'Lieber e2e: NVR channels of the working cameras untouched'
     Eq $st.devices.'192.168.1.23'.stream.codec 'H.264' 'Lieber e2e: old-firmware camera -> H.264'
-    Eq $st.devices.'192.168.1.21'.stream.codec 'H.265' 'Lieber e2e: healthy camera keeps H.265'
-    Eq $st.devices.'192.168.1.21'.stream.gop 15 'Lieber e2e: I-frame = FPS'
+    Eq $st.devices.'192.168.1.23'.stream.gop $st.devices.'192.168.1.23'.stream.fps 'Lieber e2e: fixed camera I-frame = FPS'
     Eq @($st.temps).Count 0 'Lieber e2e: temporary PC addresses all removed'
-    Check ($st.devices.'192.168.1.21'.backups -ge 1) 'Lieber e2e: config backup taken before changes'
+    Check ($st.devices.'192.168.1.23'.backups -ge 1) 'Lieber e2e: config backup taken before changes'
     $o2 = E2E $m @() 'Fix' 'Lieber'
     Check ($o2 -match 'Nothing for the Toolkit to change') 'Lieber e2e: running it AGAIN finds nothing to do (idempotent)'
     $st2 = Mock-State $m.port
-    Eq $st2.devices.'192.168.1.21'.pw_changes 1 'Lieber e2e: second run did not touch passwords again'
+    Eq $st2.devices.'192.168.1.23'.pw_changes 1 'Lieber e2e: second run did not touch passwords again'
+    # tick "Set the site password on all cameras": the 2 working ones get the site password + their NVR channel, nothing else
+    $o4 = E2E $m @('YES', 'n', 'n') 'Fix' 'Lieber' @('-PasswordAll')
+    Check ($o4 -match '2 working one\(s\) because you ticked "Set the site password on all cameras"') 'Lieber e2e -PasswordAll: plan says the working ones are included'
+    $st4 = Mock-State $m.port
+    Eq (@($st4.devices.PSObject.Properties | Where-Object { $_.Value.kind -eq 'camera' } | ForEach-Object { $_.Value.password } | Select-Object -Unique) -join ',') $sp 'Lieber e2e -PasswordAll: every camera has the SAME site password'
+    Check (($st4.devices.'192.168.1.20'.channels.PSObject.Properties | Where-Object { $_.Value.password -ne $sp }).Count -eq 0) 'Lieber e2e -PasswordAll: every NVR channel holds it'
+    Check ($st4.devices.'192.168.1.21'.stream.gop -eq 30) 'Lieber e2e -PasswordAll: password only, settings untouched'
+    # tick "Apply settings to ALL cameras" with frame rate 12: every camera gets 12 fps (+ I-frame 12), passwords untouched
+    $o5 = E2E $m @('YES', 'n', 'n') 'Fix' 'Lieber' @('-AllCameras', '-Fps', '12')
+    Check ($o5 -match 'because you ticked "Apply settings to ALL cameras"') 'Lieber e2e -AllCameras: plan says so'
+    $st5 = Mock-State $m.port
+    Check ($st5.devices.'192.168.1.21'.stream.fps -eq 12 -and $st5.devices.'192.168.1.21'.stream.gop -eq 12 -and $st5.devices.'192.168.1.21'.stream.codec -eq 'H.265') 'Lieber e2e -AllCameras: working camera gets only the picked frame rate (+ I-frame)'
+    Eq $st5.devices.'192.168.1.21'.pw_changes 1 'Lieber e2e -AllCameras: no password change'
+    Eq $st5.devices.'192.168.1.25'.stream.codec 'H.264' 'Lieber e2e -AllCameras: no codec change (Dahua stays H.264)'
     # no password anywhere in the logs / run files
     $hits = @(Get-ChildItem "$tmp\e" -Recurse -File | Where-Object { $_.Extension -ne '.dat' -and ($_.Name -notlike '*.bin') } | Select-String -SimpleMatch -Pattern ([string[]]@(@($sp) + @('Typed#Pw77', 'Usual#Pw1', 'NvrPass9'))) -List)
     Eq $hits.Count 0 'Lieber e2e: no password in any log, plan, scan or rollback file'
-    $rd = Get-ChildItem "$tmp\e\runs" -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'rollback.json') } | Sort-Object Name | Select-Object -Last 1
-    $o3 = E2E $m @('YES') 'Rollback' 'Lieber' @('-RollbackDir', $rd.FullName)
+    # undo the three fixing runs, newest first
+    $rds = @(Get-ChildItem "$tmp\e\runs" -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'rollback.json') } | Sort-Object Name -Descending)
+    $o3 = E2E $m @('YES') 'Rollback' 'Lieber' @('-RollbackDir', $rds[0].FullName)
     Check ($o3 -match 'Undo finished: everything is back') 'Lieber e2e: undo puts everything back'
+    Eq (Mock-State $m.port).devices.'192.168.1.21'.stream.fps 15 'undo -AllCameras run: frame rate back'
+    foreach ($rd in @($rds | Select-Object -Skip 1)) { [void](E2E $m @('YES') 'Rollback' 'Lieber' @('-RollbackDir', $rd.FullName)) }
     $st3 = Mock-State $m.port
+    Eq $st3.devices.'192.168.1.21'.password 'Usual#Pw1' 'undo -PasswordAll run: working camera password back'
     Eq $st3.devices.'192.168.0.64'.password 'Usual#Pw1' 'undo: old password back'
     Eq $st3.devices.'192.168.0.64'.stream.codec 'H.265' 'undo: old codec back'
     Eq $st3.devices.'192.168.1.20'.channels.'3'.ip '192.168.0.64' 'undo: NVR channel back to the old address'
@@ -171,7 +253,7 @@ if (-not $NoEndToEnd -and $py) {
   $m = Start-Mock 'mock-byw.json'
   try {
     [void](E2E $m @('Usual#Pw1', '') 'SetUsual' 'BYW')
-    $o = E2E $m @('NvrPass9', 'YES', 'SAVED') 'Fix' 'BYW' @('-ListFile', (Join-Path $fx 'byw-site-list.json'))
+    $o = E2E $m @('NvrPass9', 'YES', 'SAVED') 'Fix' 'BYW' @('-ListFile', (Join-Path $fx 'byw-site-list.json'), '-Bitrate', '2048')
     Check ($o -match 'DR Side: power-cycled Gym switch port 10 .*video back') 'BYW e2e: hung Dahua power-cycled through its port, then fixed'
     Check ($o -match 'Gym 2: power-cycled Gym switch port 11, still missing - go check port 11') 'BYW e2e: missing camera -> "go check port 11"'
     $st = Mock-State $m.port
@@ -179,7 +261,15 @@ if (-not $NoEndToEnd -and $py) {
     Eq $st.devices.'192.168.1.83'.stream.codec 'H.264' 'BYW e2e: Dahua main stream H.264'
     Eq $st.devices.'192.168.1.83'.reboots 1 'BYW e2e: the no-video Dahua was restarted once'
     Eq @($st.poe_calls).Count 2 'BYW e2e: exactly 2 port power-cycles'
-    Check ($o -match 'Fixed: 4   Still a problem: 1') 'BYW e2e: 4 fixed, 1 still needs a person (honest)'
+    Check ($o -match 'Fixed: 2   Still a problem: 1') 'BYW e2e: the 2 broken cameras fixed, 1 still needs a person (honest); the 2 working ones not touched (2.0.1)'
+    Eq $st.devices.'192.168.1.83'.stream.bitrate 2048 'BYW e2e: bitrate drop-down goes on the broken camera'
+    Check ($st.devices.'192.168.1.85'.stream.bitrate -eq 3584 -and -not $st.devices.'192.168.1.85'.pw_changes -and $st.devices.'192.168.1.85'.backups -eq 0) 'BYW e2e: working camera .85 untouched by the bitrate drop-down (no tick)'
+    Check ($st.devices.'192.168.1.31'.stream.bitrate -eq 4096 -and -not $st.devices.'192.168.1.31'.pw_changes) 'BYW e2e: working camera .31 untouched'
+    $o6 = E2E $m @('YES', 'n', 'n') 'Fix' 'BYW' @('-ListFile', (Join-Path $fx 'byw-site-list.json'), '-Bitrate', '2048', '-AllCameras')
+    $st6 = Mock-State $m.port
+    Check ($o6 -match 'because you ticked "Apply settings to ALL cameras"') 'BYW e2e -AllCameras: plan says working ones are included'
+    Check ($st6.devices.'192.168.1.85'.stream.bitrate -eq 2048 -and $st6.devices.'192.168.1.31'.stream.bitrate -eq 2048) 'BYW e2e -AllCameras: bitrate on the working cameras too'
+    Check (-not $st6.devices.'192.168.1.31'.pw_changes -and $st6.devices.'192.168.1.85'.stream.codec -eq 'H.264' -and $st6.devices.'192.168.1.31'.stream.codec -eq 'H.265') 'BYW e2e -AllCameras: nothing but the bitrate (no password, no codec)'
   } finally { try { $m.proc.Kill() } catch {} }
 } else { Write-Host '3. end to end: skipped (no python or -NoEndToEnd)' }
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue

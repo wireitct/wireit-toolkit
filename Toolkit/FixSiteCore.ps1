@@ -10,14 +10,15 @@
      cameras:[{name, brand, model, serial, mac, ip, channel, nvr, switch, port, settings:{codec,fps,resolution,bitrate}}] }
  No passwords are ever in it.
 #>
-$script:FsVersion = '2.0.0'
+$script:FsVersion = '2.0.1'
 $script:FsPoeNets = @('192.168.254')
 
 function Get-FsDefaults {
   [ordered]@{
     nvrHosts = @(20, 19, 18); camFirst = 21; camLast = 99; gearFirst = 10; gearLast = 19; routerFirst = 100; channelBase = 20
-    moveOutOfBlock = $true          # a camera on the right scheme but outside .21-.99 (e.g. .150 in the router's range) is moved too
-    passwordAll = $true             # every camera gets the site password, not only the ones we could not log in to
+    moveOutOfBlock = $true          # a camera WITH A REAL PROBLEM on the right scheme but outside .21-.99 (e.g. .150 in the router's range) is moved too; a working one is left where it is (2.0.1)
+    passwordAll = $false            # 2.0.1: only when 'Set the site password on all cameras' is ticked (FixSite.ps1 -PasswordAll); a working camera is otherwise never touched
+    settingsAll = $false            # 2.0.1: only when 'Apply settings to ALL cameras' is ticked (FixSite.ps1 -AllCameras); drop-downs otherwise go only on cameras with a real problem
     maxPasswordTries = 3            # per camera per run, all known passwords together (cameras lock after 5-7 wrong tries)
     verifyHoldSec = 20              # video must stay up this long before the camera gets its check mark
     moveWaitSec = 120; rebootWaitSec = 180
@@ -83,18 +84,28 @@ function Get-FsScheme($observed, $expected) {
 }
 
 # ---------------- password candidates (Moshe Nov 3 5:24 PM: saved ones first, then ONE question, then the official reset) ----------------
-function Get-FsPasswordCandidates($store, [int]$max = 3) {
-  # store: { password (the site's current one), known:[...] (typed on earlier runs, worked), usual:[...] (WireIt's usual ones) }
+function Get-FsPasswordCandidates($store, [int]$max = 3, [string]$mac = '') {
+  # store: { password (the site's current one), known:[...] (typed on earlier runs, worked), usual:[...] (WireIt's usual ones),
+  #          cams:{ mac: the password that last worked on that camera } (2.0.1: working cameras keep their own password now, so it is tried first) }
   # returns @(@{ label; value }) in the order to try, no duplicates, never more than $max. Values are only handed to the login call.
   $out = New-Object System.Collections.ArrayList; $seen = @{}
   $add = { param($label, $v) if ($v -and -not $seen.ContainsKey([string]$v) -and $out.Count -lt $max) { $seen[[string]$v] = 1; [void]$out.Add([pscustomobject]@{ label = $label; value = [string]$v }) } }
-  & $add 'site password' (Get-FsProp $store 'password' '')
-  $i = 0; foreach ($k in @(Get-FsProp $store 'known' @())) { $i++; & $add ('site password ' + $i) $k }
-  $i = 0; foreach ($u in @(Get-FsProp $store 'usual' @())) { $i++; & $add ('WireIt usual ' + $i) $u }
+  $sitePw = [string](Get-FsProp $store 'password' ''); $known = @(Get-FsProp $store 'known' @()); $usual = @(Get-FsProp $store 'usual' @())
+  $m = ConvertTo-FsMac $mac; $cams = Get-FsProp $store 'cams' $null
+  if ($m -and $cams) {
+    $last = [string]$(if ($cams -is [Collections.IDictionary]) { $cams[$m] } else { Get-FsProp $cams $m '' })
+    if ($last) {
+      $lbl = 'saved camera password'
+      if ($last -eq $sitePw) { $lbl = 'site password' } else { $ix = [array]::IndexOf([string[]]@($usual), $last); if ($ix -ge 0) { $lbl = 'WireIt usual ' + ($ix + 1) } else { $ix = [array]::IndexOf([string[]]@($known), $last); if ($ix -ge 0) { $lbl = 'site password ' + ($ix + 1) } } }
+      & $add $lbl $last
+    }
+  }
+  & $add 'site password' $sitePw
+  $i = 0; foreach ($k in $known) { $i++; & $add ('site password ' + $i) $k }
+  $i = 0; foreach ($u in $usual) { $i++; & $add ('WireIt usual ' + $i) $u }
   return @($out)
 }
 
-# ---------------- matching what is there with what should be there ----------------
 function Find-FsMatch($exp, $obsList, $used) {
   $mac = ConvertTo-FsMac ([string](Get-FsProp $exp 'mac' '')); $sn = [string](Get-FsProp $exp 'serial' ''); $ip = [string](Get-FsProp $exp 'ip' '')
   foreach ($o in $obsList) { if ($used.ContainsKey($o.key)) { continue }; if ($mac -and (ConvertTo-FsMac ([string]$o.mac)) -eq $mac) { return $o } }
@@ -164,12 +175,18 @@ function Test-FsProblemCam($cam, [string]$nvrBrand) {
   if (Test-FsOldFirmware $cam.firmware) { return $true }
   return $false
 }
-function Get-FsWantedSettings($choice, [bool]$problem, $perCam) {
+function Get-FsWantedSettings($choice, [bool]$problem, $perCam, [bool]$onlyPicked = $false) {
   # what this camera should get. Everything left at "keep" (0 / 'keep') is not touched.
+  # $onlyPicked (2.0.1): a WORKING camera when "Apply settings to ALL cameras" is ticked - it gets only what was picked in the
+  # drop-downs: no automatic H.264, no smart-codec change, no per-camera list settings, and I-frame = frame rate only when a frame rate was picked.
   $w = [ordered]@{ codec = 'keep'; fps = 0; resolution = 'keep'; bitrate = 0; gop = 0; smartCodec = 'keep' }
   $c = [string](Get-FsProp $choice 'codec' 'auto')
-  if ($c -eq 'auto') { if ($problem) { $w.codec = 'H.264' } } elseif ($c -in @('H.264', 'H.265')) { $w.codec = $c }
+  if ($c -eq 'auto') { if ($problem -and -not $onlyPicked) { $w.codec = 'H.264' } } elseif ($c -in @('H.264', 'H.265')) { $w.codec = $c }
   $w.fps = [int](Get-FsProp $choice 'fps' 0); $w.resolution = [string](Get-FsProp $choice 'resolution' 'keep'); $w.bitrate = [int](Get-FsProp $choice 'bitrate' 0)
+  if ($onlyPicked) {
+    if ([bool](Get-FsProp $choice 'gopIsFps' $true) -and $w.fps -gt 0) { $w.gop = -1 }
+    return [pscustomobject]$w
+  }
   $sc = [string](Get-FsProp $choice 'smartCodecOff' 'problem'); if ($sc -eq 'all' -or ($sc -eq 'problem' -and $problem)) { $w.smartCodec = 'off' }
   if ($perCam) {
     foreach ($k in @('codec', 'resolution')) { $v = [string](Get-FsProp $perCam $k ''); if ($v) { $w[$k] = $v } }
@@ -224,7 +241,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
   $pcIp = [string](Get-FsProp (Get-FsProp $observed 'pc' $null) 'ip' ''); if ((Get-FsP3 $pcIp) -eq $scheme) { $used[(Get-FsLast $pcIp)] = 1 }
   $gwIp = [string](Get-FsProp (Get-FsProp $observed 'pc' $null) 'gw' ''); if ($gwIp) { $used[(Get-FsLast $gwIp)] = 1 }
   $ports = Get-FsProp $observed 'ports' $null
-  $plan = [ordered]@{ version = $script:FsVersion; scheme = $scheme; site = [string](Get-FsProp $expected 'site' ''); hasList = $hasList; nvrs = @(); cams = @(); healthy = @(); missing = @(); unknownPw = @(); notes = @(); pc = (Get-FsProp $observed 'pc' $null) }
+  $plan = [ordered]@{ version = $script:FsVersion; scheme = $scheme; site = [string](Get-FsProp $expected 'site' ''); hasList = $hasList; nvrs = @(); cams = @(); healthy = @(); missing = @(); unknownPw = @(); notes = @(); leftAlone = @(); settingsAll = [bool]$o.settingsAll; passwordAll = [bool]$o.passwordAll; pc = (Get-FsProp $observed 'pc' $null) }
   if (-not $scheme) { $plan.notes += 'This PC has no router address, so the right IP scheme is unknown. Plug the PC into the site network and run again.' }
 
   # --- NVRs ---
@@ -270,7 +287,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
       brand = $(if ($d) { $d.brand } else { Get-FsBrand ([string](Get-FsProp $e 'brand' '')) ([string](Get-FsProp $e 'model' '')) }); model = $(if ($d) { $d.model } else { [string](Get-FsProp $e 'model' '') })
       mac = $mac; serial = $(if ($d) { $d.serial } else { [string](Get-FsProp $e 'serial' '') }); firmware = $(if ($d) { $d.firmware } else { '' })
       ip = $(if ($d) { $d.ip } else { '' }); listIp = [string](Get-FsProp $e 'ip' ''); target = ''; channel = $ch; nvr = $(if ($d -and $d.nvr) { $d.nvr } else { [string](Get-FsProp $e 'nvr' '') })
-      switch = $sw; port = $port; state = 'ok'; why = @(); steps = @(); login = $(if ($d) { $d.login } else { '' }); problem = $false; settings = $null; onList = [bool]$e; online = $(if ($d) { $d.online } else { $null }) }
+      switch = $sw; port = $port; state = 'ok'; why = @(); steps = @(); login = $(if ($d) { $d.login } else { '' }); problem = $false; broken = $true; settings = $null; onList = [bool]$e; online = $(if ($d) { $d.online } else { $null }) }
     $ownIp = ''; $chLooksAt = $null
     if ($d -and $guess.ContainsKey($d.key)) { $g = $guess[$d.key]; $c.channel = $g.ch.channel; $ch = $g.ch.channel; $c.nvr = $g.ch.nvr; $ownIp = $g.ch.ip; if ($g.ch.name -and $c.name -like 'Camera *') { $c.name = $g.ch.name }; $chLooksAt = $g.ch.ip; if (-not $g.sure) { $c.why += ('matched to NVR ch ' + $g.ch.channel + ' by order (no site list): check the picture name after') } }
     elseif ($e) { $ownIp = $c.listIp; if ($ch -and $d -and -not $d.nvr) { $ci = Get-FsChannelFor $observed '' $ch; if ($ci) { $c.nvr = $ci.nvr; $chLooksAt = [string](Get-FsProp $ci.ch 'ip' '') } } }
@@ -284,7 +301,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
       if ($null -ne $port -and $sw) { $c.steps += @('poe', 'verify') }
       $plan.missing += [pscustomobject]$c; $plan.cams += [pscustomobject]$c; continue
     }
-    if (Test-FsPoeNet $d.ip) { $c.state = 'ok'; $c.why += 'on the NVR''s own PoE ports (left as is)'; $plan.healthy += $c.name; $plan.cams += [pscustomobject]$c; continue }
+    if (Test-FsPoeNet $d.ip) { $c.state = 'ok'; $c.broken = $false; $c.why += 'on the NVR''s own PoE ports (left as is)'; $plan.healthy += $c.name; $plan.cams += [pscustomobject]$c; continue }
     # what is wrong
     $wrongScheme = ($scheme -and (Get-FsP3 $d.ip) -ne $scheme)
     $outOfBlock = (-not $wrongScheme -and $o.moveOutOfBlock -and ((Get-FsLast $d.ip) -lt [int]$o.camFirst -or (Get-FsLast $d.ip) -gt [int]$o.camLast))
@@ -298,12 +315,38 @@ function New-FsPlan($expected, $observed, $opts = $null) {
     if ($c.nvr -and $d.online -eq $false) { $c.why += ('no video on NVR ch ' + $ch) }
     if ($chLooksAt) { $c.why += ('no video on NVR ch ' + $ch + ' (it looks for ' + (Get-FsShort $chLooksAt) + ')') }
     elseif ($e -and $ch -and -not $d.nvr -and @(Get-FsProp $observed 'nvrs' @()).Count) { $c.why += ('not on the NVR (list says ch ' + $ch + ')') }
+    # 2.0.1 (Moshe, Nov 3 10:06 PM: "I definitely don't want to make across the board changes if everything is working besides for three cameras"):
+    # only a camera with a REAL problem gets any change. A working camera is not touched at all (no password, no settings, no I-frame, no address)
+    # unless the tech ticked "Set the site password on all cameras" / "Apply settings to ALL cameras" for this run.
+    $lg = $d.login
+    $notOnNvr = [bool]($e -and $ch -and -not $d.nvr -and -not $chLooksAt -and @(Get-FsProp $observed 'nvrs' @()).Count)
+    $hard = [bool]($wrongScheme -or $d.activated -eq $false -or $d.answers -eq $false -or ($c.nvr -and $d.online -eq $false) -or $chLooksAt -or $notOnNvr)
+    $pwBad = ($lg -in @('unknown', 'refused', 'locked'))
+    $videoOk = [bool]($c.nvr -and $d.online -eq $true)
+    # a camera whose password we do not know but whose video is fine on the NVR is WORKING: no official reset for it
+    $c.broken = [bool]($hard -or ($pwBad -and -not $videoOk))
+    if ($pwBad -and -not $c.broken) { $c.why += $(if ($lg -eq 'locked') { 'locked after wrong passwords, but its video is fine on the NVR' } else { 'password not known, but its video is fine on the NVR' }) }
+    if (-not $c.broken) {
+      $tidy = @($c.why | Where-Object { $_ -match 'outside the camera block|site list says|DHCP|video is fine on the NVR' } | ForEach-Object { $_ -replace ', will be set fixed', '' })
+      if ($tidy.Count) { $plan.leftAlone += ($c.name + ' (' + $d.ip + '): ' + ($tidy -join '; ')) }
+      $c.why = @()
+      if ($o.passwordAll -and $lg -and $lg -ne 'site password') { $c.steps += 'password' }
+      if ($o.settingsAll) {
+        $c.settings = Get-FsWantedSettings $o.settings $false $null $true
+        $wantsAny = ($c.settings.codec -ne 'keep' -or $c.settings.fps -gt 0 -or $c.settings.resolution -ne 'keep' -or $c.settings.bitrate -gt 0)
+        $diff = @(); if ($d.streams) { $diff = @(Get-FsSettingsDiff $d.streams $c.settings) }
+        if ($diff.Count -or (-not $d.streams -and $wantsAny)) { $c.steps += 'settings' }
+      }
+      if ($c.nvr -and $c.steps -contains 'password') { $c.steps += 'nvr' }   # the NVR channel gets the new password too, or the video drops
+      if ($c.steps.Count) { $c.steps = @('backup') + @($c.steps) + @('verify'); $c.state = 'fix' } else { $c.state = 'ok'; $plan.healthy += $c.name }
+      $plan.cams += [pscustomobject]$c; continue
+    }
     # password
     $lg = $d.login
     if ($d.activated -eq $false) { $c.steps += 'activate' }
     elseif ($lg -eq 'unknown' -or $lg -eq 'refused') { $c.why += 'password unknown'; $c.steps += 'reset'; $plan.unknownPw += $c.name }
     elseif ($lg -eq 'locked') { $c.why += 'locked after wrong passwords (wait 30 min, or official reset)'; $c.steps += 'reset'; $plan.unknownPw += $c.name }
-    elseif ($lg -and $lg -ne 'site password' -and $o.passwordAll) { $c.steps += 'password' }
+    elseif ($lg -and $lg -ne 'site password') { $c.steps += 'password' }   # a camera being fixed anyway gets the site password
     # settings
     $c.problem = Test-FsProblemCam ([pscustomobject]$c) $nvrBrand
     $c.settings = Get-FsWantedSettings $o.settings $c.problem (Get-FsProp $e 'settings' $null)
@@ -326,6 +369,8 @@ function New-FsPlan($expected, $observed, $opts = $null) {
     if (-not $e -and $hasList -and $c.state -ne 'ok') { $c.why += 'not on the site list' }
     $plan.cams += [pscustomobject]$c
   }
+  $sp = $o.settings
+  if ($o.settingsAll -and [int](Get-FsProp $sp 'fps' 0) -le 0 -and [int](Get-FsProp $sp 'bitrate' 0) -le 0 -and [string](Get-FsProp $sp 'resolution' 'keep') -eq 'keep' -and [string](Get-FsProp $sp 'codec' 'auto') -notin @('H.264', 'H.265')) { $plan.notes += 'You ticked "Apply settings to ALL cameras" but every drop-down is on "keep", so no working camera gets new settings.' }
   if (-not $hasList) { $plan.notes += 'This site has no camera list yet. At the end you can save what was found as the site''s list.' }
   return [pscustomobject]$plan
 }
@@ -351,23 +396,37 @@ function Get-FsStepWords($c) {
 }
 
 function Format-FsPlan($plan) {
-  # the confirm screen: only problems, healthy cameras in one line
+  # the confirm screen: only problems; working cameras in one "OK, not touched" line.
+  # 2.0.1: the first line says exactly how many cameras change and how many are not touched (Moshe, Nov 3 10:06 PM).
   $L = New-Object System.Collections.Generic.List[string]
   $fix = @($plan.cams | Where-Object { $_.state -eq 'fix' }); $miss = @($plan.cams | Where-Object { $_.state -eq 'missing' }); $man = @($plan.cams | Where-Object { $_.state -eq 'manual' })
+  $fixB = @($fix | Where-Object { $_.broken -ne $false }); $fixW = @($fix | Where-Object { $_.broken -eq $false })
+  $missPoe = @($miss | Where-Object { $_.steps -contains 'poe' })
   $nv = @($plan.nvrs | Where-Object { $_.steps.Count })
+  $hc = @($plan.healthy).Count
+  $okLine = 'OK, not touched: ' + $hc + ' working camera(s)'
   if (-not $fix.Count -and -not $miss.Count -and -not $man.Count -and -not $nv.Count) {
-    $L.Add('Nothing to fix. ' + @($plan.healthy).Count + ' cameras are fine.'); foreach ($n in $plan.notes) { $L.Add('Note: ' + $n) }; return $L
+    $L.Add('Nothing to fix. ' + $hc + ' cameras are fine - nothing will be touched.')
+    foreach ($x in @($plan.leftAlone)) { $L.Add('Working, left as is: ' + $x) }
+    foreach ($n in $plan.notes) { $L.Add('Note: ' + $n) }; return $L
   }
-  foreach ($n in $nv) { $L.Add('NVR ' + $n.ip + ': ' + ($n.why -join '; ') + $(if ($n.target) { '  ->  will move to ' + (Get-FsShort $n.target) } else { '' })) }
-  # simple ones (only the site password) collapse into one line
-  $simple = @($fix | Where-Object { (@($_.steps | Where-Object { $_ -notin @('backup', 'password', 'settings', 'nvr', 'verify') }).Count -eq 0) -and -not @($_.why | Where-Object { $_ }).Count })
-  $rest = @($fix | Where-Object { $simple -notcontains $_ })
-  foreach ($c in $rest) { $L.Add($c.name + ' (' + $(if ($c.ip) { $c.ip } else { 'no IP' }) + '): ' + (@($c.why) -join '; ') + '  ->  ' + (Get-FsStepWords $c)) }
-  if ($simple.Count) { $L.Add('' + $simple.Count + ' working camera(s) only get the site password' + $(if (@($simple | Where-Object { $_.steps -contains 'settings' }).Count) { ' and I-frame = frame rate' } else { '' }) + ': ' + (@($simple | ForEach-Object { $_.name }) -join ', ')) }
+  $n = $fix.Count + $missPoe.Count
+  $ticked = @(); if ($plan.passwordAll) { $ticked += '"Set the site password on all cameras"' }; if ($plan.settingsAll) { $ticked += '"Apply settings to ALL cameras"' }
+  if (-not $n) { $L.Add('No camera gets changed. ' + $hc + ' working camera(s) will not be touched.') }
+  elseif ($fixW.Count) { $L.Add('Changes the ' + $n + ' camera(s) listed below: ' + ($fixB.Count + $missPoe.Count) + ' with a problem + ' + $fixW.Count + ' working one(s) because you ticked ' + ($ticked -join ' and ') + '. ' + $hc + ' working camera(s) will not be touched.') }
+  else { $L.Add('Changes only the ' + $n + ' camera(s) listed below. ' + $hc + ' working camera(s) will not be touched.') }
+  $L.Add('')
+  foreach ($nn in $nv) { $L.Add('NVR ' + $nn.ip + ': ' + ($nn.why -join '; ') + $(if ($nn.target) { '  ->  will move to ' + (Get-FsShort $nn.target) } else { '' })) }
+  foreach ($c in $fixB) { $L.Add($c.name + ' (' + $(if ($c.ip) { $c.ip } else { 'no IP' }) + '): ' + (@($c.why) -join '; ') + '  ->  ' + (Get-FsStepWords $c)) }
   foreach ($c in $miss) { $L.Add($c.name + $(if ($c.listIp) { ' (' + $c.listIp + $(if ($c.channel) { ', NVR ch ' + $c.channel } else { '' }) + ')' } else { '' }) + ': ' + (@($c.why) -join '; ') + $(if ($c.steps -contains 'poe') { '  ->  will power-cycle that port, then look again' } else { '' })) }
   foreach ($c in $man) { $L.Add($c.name + ' (' + $c.ip + '): ' + (@($c.why) -join '; ') + '  ->  not changed, fix by hand') }
-  if (@($plan.healthy).Count) { $L.Add('' + @($plan.healthy).Count + ' other camera(s) are fine.') }
-  foreach ($n in $plan.notes) { $L.Add('Note: ' + $n) }
+  if ($fixW.Count) {
+    $what = @(); if (@($fixW | Where-Object { $_.steps -contains 'password' }).Count) { $what += 'the site password' }; if (@($fixW | Where-Object { $_.steps -contains 'settings' }).Count) { $what += 'the drop-down settings' }
+    $L.Add('' + $fixW.Count + ' working camera(s) get ONLY ' + ($what -join ' + ') + ' (you ticked it): ' + (@($fixW | ForEach-Object { $_.name }) -join ', '))
+  }
+  if ($hc) { $L.Add($okLine) }
+  foreach ($x in @($plan.leftAlone)) { $L.Add('Working, left as is: ' + $x) }
+  foreach ($nn in $plan.notes) { $L.Add('Note: ' + $nn) }
   return $L
 }
 
