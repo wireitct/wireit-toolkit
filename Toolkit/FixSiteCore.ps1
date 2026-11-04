@@ -10,7 +10,7 @@
      cameras:[{name, brand, model, serial, mac, ip, channel, nvr, switch, port, settings:{codec,fps,resolution,bitrate}}] }
  No passwords are ever in it.
 #>
-$script:FsVersion = '2.0.1'
+$script:FsVersion = '2.0.2'
 $script:FsPoeNets = @('192.168.254')
 
 function Get-FsDefaults {
@@ -18,6 +18,7 @@ function Get-FsDefaults {
     nvrHosts = @(20, 19, 18); camFirst = 21; camLast = 99; gearFirst = 10; gearLast = 19; routerFirst = 100; channelBase = 20
     moveOutOfBlock = $true          # a camera WITH A REAL PROBLEM on the right scheme but outside .21-.99 (e.g. .150 in the router's range) is moved too; a working one is left where it is (2.0.1)
     passwordAll = $false            # 2.0.1: only when 'Set the site password on all cameras' is ticked (FixSite.ps1 -PasswordAll); a working camera is otherwise never touched
+    newSite = $false                # 2.0.2: started with the "New site (not listed)" button: no list, no site secrets; the plan screen says so first
     settingsAll = $false            # 2.0.1: only when 'Apply settings to ALL cameras' is ticked (FixSite.ps1 -AllCameras); drop-downs otherwise go only on cameras with a real problem
     maxPasswordTries = 3            # per camera per run, all known passwords together (cameras lock after 5-7 wrong tries)
     verifyHoldSec = 20              # video must stay up this long before the camera gets its check mark
@@ -84,7 +85,11 @@ function Get-FsScheme($observed, $expected) {
 }
 
 # ---------------- password candidates (Moshe Nov 3 5:24 PM: saved ones first, then ONE question, then the official reset) ----------------
-function Get-FsPasswordCandidates($store, [int]$max = 3, [string]$mac = '') {
+function Get-FsFactoryPasswords([string]$brand) {
+  # 2.0.2 (new site): the makers' old factory passwords, tried LAST and inside the same try limit (cameras made since ~2017 have none: they must be activated)
+  switch ($brand) { 'Hikvision' { return @('12345') } 'Dahua' { return @('admin') } 'Uniview' { return @('123456') } default { return @() } }
+}
+function Get-FsPasswordCandidates($store, [int]$max = 3, [string]$mac = '', [string[]]$defaults = @()) {
   # store: { password (the site's current one), known:[...] (typed on earlier runs, worked), usual:[...] (WireIt's usual ones),
   #          cams:{ mac: the password that last worked on that camera } (2.0.1: working cameras keep their own password now, so it is tried first) }
   # returns @(@{ label; value }) in the order to try, no duplicates, never more than $max. Values are only handed to the login call.
@@ -103,6 +108,7 @@ function Get-FsPasswordCandidates($store, [int]$max = 3, [string]$mac = '') {
   & $add 'site password' $sitePw
   $i = 0; foreach ($k in $known) { $i++; & $add ('site password ' + $i) $k }
   $i = 0; foreach ($u in $usual) { $i++; & $add ('WireIt usual ' + $i) $u }
+  foreach ($f in @($defaults)) { & $add 'factory default' $f }   # 2.0.2: new site only, last, still capped at $max
   return @($out)
 }
 
@@ -241,7 +247,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
   $pcIp = [string](Get-FsProp (Get-FsProp $observed 'pc' $null) 'ip' ''); if ((Get-FsP3 $pcIp) -eq $scheme) { $used[(Get-FsLast $pcIp)] = 1 }
   $gwIp = [string](Get-FsProp (Get-FsProp $observed 'pc' $null) 'gw' ''); if ($gwIp) { $used[(Get-FsLast $gwIp)] = 1 }
   $ports = Get-FsProp $observed 'ports' $null
-  $plan = [ordered]@{ version = $script:FsVersion; scheme = $scheme; site = [string](Get-FsProp $expected 'site' ''); hasList = $hasList; nvrs = @(); cams = @(); healthy = @(); missing = @(); unknownPw = @(); notes = @(); leftAlone = @(); settingsAll = [bool]$o.settingsAll; passwordAll = [bool]$o.passwordAll; pc = (Get-FsProp $observed 'pc' $null) }
+  $plan = [ordered]@{ version = $script:FsVersion; scheme = $scheme; site = [string](Get-FsProp $expected 'site' ''); hasList = $hasList; nvrs = @(); cams = @(); healthy = @(); missing = @(); unknownPw = @(); notes = @(); leftAlone = @(); settingsAll = [bool]$o.settingsAll; passwordAll = [bool]$o.passwordAll; pc = (Get-FsProp $observed 'pc' $null); newSite = [bool]$o.newSite }
   if (-not $scheme) { $plan.notes += 'This PC has no router address, so the right IP scheme is unknown. Plug the PC into the site network and run again.' }
 
   # --- NVRs ---
@@ -249,13 +255,17 @@ function New-FsPlan($expected, $observed, $opts = $null) {
   $expNvrs = @(Get-FsProp $expected 'nvrs' @())
   foreach ($nv in @(Get-FsProp $observed 'nvrs' @())) {
     $ip = [string](Get-FsProp $nv 'ip' ''); $br = Get-FsBrand ([string](Get-FsProp $nv 'brand' '')) ([string](Get-FsProp $nv 'model' '')); if (-not $nvrBrand) { $nvrBrand = $br }
-    $item = [ordered]@{ ip = $ip; brand = $br; model = [string](Get-FsProp $nv 'model' ''); mac = (ConvertTo-FsMac ([string](Get-FsProp $nv 'mac' ''))); login = [string](Get-FsProp $nv 'login' ''); target = ''; why = @(); steps = @() }
+    $item = [ordered]@{ ip = $ip; brand = $br; model = [string](Get-FsProp $nv 'model' ''); mac = (ConvertTo-FsMac ([string](Get-FsProp $nv 'mac' ''))); login = [string](Get-FsProp $nv 'login' ''); target = ''; why = @(); steps = @(); chCount = @(Get-FsProp $nv 'channels' @()).Count }
     if ($scheme -and (Get-FsP3 $ip) -ne $scheme) {
       $t = ''; foreach ($h in $o.nvrHosts) { if (-not $used.ContainsKey([int]$h)) { $t = $scheme + '.' + $h; break } }
       foreach ($en in $expNvrs) { $eip = [string](Get-FsProp $en 'ip' ''); if ((ConvertTo-FsMac ([string](Get-FsProp $en 'mac' ''))) -eq $item.mac -and (Get-FsP3 $eip) -eq $scheme -and -not $used.ContainsKey((Get-FsLast $eip))) { $t = $eip } }
       if ($t) { $used[(Get-FsLast $t)] = 1; $item.target = $t; $item.why += ('NVR is on the wrong IP scheme (' + $ip + ', site is ' + $scheme + '.x)'); $item.steps += @('backup', 'move') }
       else { $item.why += 'NVR is on the wrong IP scheme and .20/.19/.18 are all taken'; $item.steps += 'manual' }
       if ($br -ne 'Hikvision') { $item.steps = @('manual'); $item.why += ('moving a ' + $br + ' NVR is not built yet: use Fix NVR / its own menu') }
+    }
+    elseif ($scheme -and (Get-FsLast $ip) -ge 0 -and @($o.nvrHosts | ForEach-Object { [int]$_ }) -notcontains (Get-FsLast $ip)) {
+      # 2.0.2: right scheme, but not where the WireIt standard puts an NVR (.20, or .19/.18). It works, so it is only named, never moved.
+      $plan.leftAlone += ('NVR ' + $ip + ': WireIt standard puts the NVR at .' + @($o.nvrHosts)[0] + ' (it works where it is, so it is not moved)')
     }
     if ($item.login -eq 'unknown') { $item.why += 'NVR password not known (asked once before the fixes)' }
     $plan.nvrs += [pscustomobject]$item
@@ -277,6 +287,8 @@ function New-FsPlan($expected, $observed, $opts = $null) {
     for ($i = 0; $i -lt $lostCams.Count; $i++) { $guess[$lostCams[$i].key] = [pscustomobject]@{ ch = $lostChs[$i]; sure = ($lostCams.Count -eq 1) }; if ((Get-FsP3 $lostChs[$i].ip) -eq $scheme -and -not $used.ContainsKey((Get-FsLast $lostChs[$i].ip))) { $used[(Get-FsLast $lostChs[$i].ip)] = 'own:' + $lostChs[$i].ip } }
   }
 
+  # 2.0.2: no list - the address an NVR channel with no video looks for stays free for that camera (nobody else is moved onto it)
+  if (-not $hasList) { foreach ($lc in $lostChs) { if ((Get-FsP3 $lc.ip) -eq $scheme -and -not $used.ContainsKey((Get-FsLast $lc.ip))) { $used[(Get-FsLast $lc.ip)] = 1 } } }
   foreach ($pr in $pairs) {
     $e = $pr[0]; $d = $pr[1]
     $ch = [int](Get-FsProp $d 'channel' 0); if (-not $ch) { $ch = [int](Get-FsProp $e 'channel' 0) }
@@ -307,6 +319,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
     $outOfBlock = (-not $wrongScheme -and $o.moveOutOfBlock -and ((Get-FsLast $d.ip) -lt [int]$o.camFirst -or (Get-FsLast $d.ip) -gt [int]$o.camLast))
     $listMove = (-not $wrongScheme -and -not $outOfBlock -and $c.listIp -and (Get-FsP3 $c.listIp) -eq $scheme -and $c.listIp -ne $d.ip -and -not (@($obs | Where-Object { $_.ip -eq $c.listIp -and $_.key -ne $d.key }).Count))
     if ($wrongScheme) { $c.why += ('wrong IP scheme (' + $d.ip + ', site is ' + $scheme + '.x)') }
+    if ($wrongScheme -and -not $hasList -and -not $c.nvr -and $lostChs.Count -and -not $guess.ContainsKey($d.key)) { $c.why += ('which NVR channel it belongs to is not clear (' + $lostChs.Count + ' channel(s) without video for ' + $lostCams.Count + ' camera(s) on the wrong scheme) - it gets a free address; put it on its NVR channel by hand') }   # 2.0.2
     elseif ($outOfBlock) { $c.why += ('address ' + (Get-FsShort $d.ip) + ' is outside the camera block .' + $o.camFirst + '-.' + $o.camLast) }
     elseif ($listMove) { $c.why += ('site list says ' + (Get-FsShort $c.listIp) + ', it is on ' + (Get-FsShort $d.ip)) }
     if ($d.dhcp -and -not $wrongScheme -and -not $outOfBlock -and -not $listMove) { $c.why += 'gets its address from the router (DHCP), will be set fixed' }
@@ -328,6 +341,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
     if ($pwBad -and -not $c.broken) { $c.why += $(if ($lg -eq 'locked') { 'locked after wrong passwords, but its video is fine on the NVR' } else { 'password not known, but its video is fine on the NVR' }) }
     if (-not $c.broken) {
       $tidy = @($c.why | Where-Object { $_ -match 'outside the camera block|site list says|DHCP|video is fine on the NVR' } | ForEach-Object { $_ -replace ', will be set fixed', '' })
+      if ($lg -eq 'factory default') { $tidy += 'still on the factory password (tick "Set the site password on all cameras" to change it)' }   # 2.0.2
       if ($tidy.Count) { $plan.leftAlone += ($c.name + ' (' + $d.ip + '): ' + ($tidy -join '; ')) }
       $c.why = @()
       if ($o.passwordAll -and $lg -and $lg -ne 'site password') { $c.steps += 'password' }
@@ -369,9 +383,28 @@ function New-FsPlan($expected, $observed, $opts = $null) {
     if (-not $e -and $hasList -and $c.state -ne 'ok') { $c.why += 'not on the site list' }
     $plan.cams += [pscustomobject]$c
   }
+  # 2.0.2: no list (a new site): "missing" = a camera the NVR has a channel for, with no video, that nothing answers for
+  #        (a camera on the wrong scheme already paired to that channel above is not missing: it is being moved back).
+  if (-not $hasList) {
+    $taken = @{}; foreach ($gk in @($guess.Keys)) { $gc = $guess[$gk].ch; $taken[[string]$gc.nvr + '|' + [string]$gc.channel] = 1 }
+    foreach ($lc in $lostChs) {
+      if ($taken.ContainsKey([string]$lc.nvr + '|' + [string]$lc.channel)) { continue }
+      $nvT = $(if ($nvrIpMap.ContainsKey([string]$lc.nvr)) { $nvrIpMap[[string]$lc.nvr] } else { [string]$lc.nvr })
+      $c = [ordered]@{ key = ('nvrch:' + $lc.nvr + ':' + $lc.channel); name = $(if ($lc.name) { [string]$lc.name } else { 'Camera ch ' + $lc.channel }); brand = ''; model = ''; mac = ''; serial = ''; firmware = ''
+        ip = ''; listIp = [string]$lc.ip; target = ''; channel = [int]$lc.channel; nvr = $nvT; switch = ''; port = $null; state = 'missing'
+        why = @('missing - NVR ch ' + $lc.channel + ' has no video and nothing answers at ' + $lc.ip + ': go check that camera (power, cable, switch port)')
+        steps = @(); login = ''; problem = $false; broken = $true; settings = $null; onList = $false; online = $false; fromNvr = $true }
+      $plan.missing += [pscustomobject]$c; $plan.cams += [pscustomobject]$c
+    }
+  }
+  # 2.0.2: the router's own range against the standard (router hands out .100 and up). Only named; the Toolkit never changes the router.
+  $pcO = Get-FsProp $observed 'pc' $null
+  if ($pcO -and [bool](Get-FsProp $pcO 'dhcp' $false) -and (Get-FsP3 $pcIp) -eq $scheme -and (Get-FsLast $pcIp) -ge [int]$o.gearFirst -and (Get-FsLast $pcIp) -lt [int]$o.routerFirst) {
+    $plan.notes += ('The router gave this PC ' + (Get-FsShort $pcIp) + '. WireIt standard: the router hands out .' + $o.routerFirst + ' and up, so it never gives away a camera or NVR address. Change the router''s DHCP range by hand (the Toolkit does not touch the router).')
+  }
   $sp = $o.settings
   if ($o.settingsAll -and [int](Get-FsProp $sp 'fps' 0) -le 0 -and [int](Get-FsProp $sp 'bitrate' 0) -le 0 -and [string](Get-FsProp $sp 'resolution' 'keep') -eq 'keep' -and [string](Get-FsProp $sp 'codec' 'auto') -notin @('H.264', 'H.265')) { $plan.notes += 'You ticked "Apply settings to ALL cameras" but every drop-down is on "keep", so no working camera gets new settings.' }
-  if (-not $hasList) { $plan.notes += 'This site has no camera list yet. At the end you can save what was found as the site''s list.' }
+  if (-not $hasList -and -not $o.newSite) { $plan.notes += 'This site has no camera list yet. At the end you can save what was found as the site''s list.' }
   return [pscustomobject]$plan
 }
 
@@ -395,6 +428,16 @@ function Get-FsStepWords($c) {
   return ($w -join ', ')
 }
 
+function Get-FsNewSiteLine($plan) {
+  # 2.0.2: "New site (no saved list): found 1 NVR (10.0.5.20, 6 channels) and 5 cameras on 10.0.5.x, router 10.0.5.1. 1 NVR channel has no camera answering."
+  $camsSeen = @($plan.cams | Where-Object { $_.state -ne 'missing' }); $chMiss = @($plan.cams | Where-Object { $_.state -eq 'missing' })
+  $nv = @($plan.nvrs); $gw = [string](Get-FsProp (Get-FsProp $plan 'pc' $null) 'gw' '')
+  $nvTxt = $(if (-not $nv.Count) { 'no NVR' } elseif ($nv.Count -eq 1) { '1 NVR (' + $nv[0].ip + $(if ([int]$nv[0].chCount) { ', ' + $nv[0].chCount + ' channels' } else { '' }) + ')' } else { '' + $nv.Count + ' NVRs (' + (@($nv | ForEach-Object { $_.ip }) -join ', ') + ')' })
+  $line = 'New site (no saved list): found ' + $nvTxt + ' and ' + $camsSeen.Count + ' camera(s)' + $(if ($plan.scheme) { ' on ' + $plan.scheme + '.x' } else { '' }) + $(if ($gw) { ', router ' + $gw } else { '' }) + '.'
+  if ($chMiss.Count) { $line += ' ' + $chMiss.Count + ' NVR channel(s) have no camera answering.' }
+  return $line
+}
+
 function Format-FsPlan($plan) {
   # the confirm screen: only problems; working cameras in one "OK, not touched" line.
   # 2.0.1: the first line says exactly how many cameras change and how many are not touched (Moshe, Nov 3 10:06 PM).
@@ -405,6 +448,7 @@ function Format-FsPlan($plan) {
   $nv = @($plan.nvrs | Where-Object { $_.steps.Count })
   $hc = @($plan.healthy).Count
   $okLine = 'OK, not touched: ' + $hc + ' working camera(s)'
+  if ($plan.PSObject.Properties['newSite'] -and $plan.newSite) { $L.Add((Get-FsNewSiteLine $plan)) }   # 2.0.2: first line on a new site
   if (-not $fix.Count -and -not $miss.Count -and -not $man.Count -and -not $nv.Count) {
     $L.Add('Nothing to fix. ' + $hc + ' cameras are fine - nothing will be touched.')
     foreach ($x in @($plan.leftAlone)) { $L.Add('Working, left as is: ' + $x) }
@@ -454,6 +498,46 @@ function New-FsSiteList([string]$site, [string]$siteId, $plan, $observed) {
   foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'missing' })) { $cams += [ordered]@{ name = $c.name; brand = $c.brand; model = $c.model; serial = $c.serial; mac = $c.mac; ip = $c.listIp; channel = $c.channel; nvr = $c.nvr; switch = $c.switch; port = $c.port } }
   $nvrs = @(); foreach ($n in @($plan.nvrs)) { $nvrs += [ordered]@{ brand = $n.brand; model = $n.model; mac = $n.mac; ip = $(if ($n.target) { $n.target } else { $n.ip }) } }
   return [ordered]@{ site = $site; siteId = $siteId; scheme = $plan.scheme; saved = (Get-Date -Format 's'); savedBy = ('WireIt Toolkit ' + $script:FsVersion + ' on ' + $env:COMPUTERNAME); note = 'No passwords in this file.'; nvrs = $nvrs; cameras = $cams }
+}
+
+# ---------------- 2.0.2: new site (no typing) ----------------
+function New-FsNewSiteName([string]$gw, [datetime]$when = (Get-Date)) {
+  # "New site 10.0.5.x 2026-11-04": what the scan sees (the router's network) + the day. The tech can give the address after the plan screen.
+  $p3 = Get-FsP3 $gw
+  return ('New site ' + $(if ($p3) { $p3 + '.x ' } else { '' }) + $when.ToString('yyyy-MM-dd'))
+}
+function Get-FsListFileName([string]$site) { return ((($site -replace '[^A-Za-z0-9_-]+', '_').Trim('_')) + '.json') }
+function Get-FsKnownSiteFiles([string]$sitesDir, [string[]]$driveRoots = @()) {
+  # every saved site list this PC can see: sites\*.json, and each Drive site folder's Docs\WireIt site list.json
+  $out = @()
+  if ($sitesDir -and (Test-Path -LiteralPath $sitesDir)) { $out += @(Get-ChildItem -LiteralPath $sitesDir -Filter '*.json' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) }
+  foreach ($root in @($driveRoots)) {
+    $r = [Environment]::ExpandEnvironmentVariables([string]$root); if (-not $r -or -not (Test-Path -LiteralPath $r)) { continue }
+    foreach ($d in @(Get-ChildItem -LiteralPath $r -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '_*' })) { $lp = Join-Path (Join-Path $d.FullName 'Docs') 'WireIt site list.json'; if (Test-Path -LiteralPath $lp) { $out += $lp } }
+  }
+  return $out
+}
+function Find-FsKnownSite($paths, $found) {
+  # a "New site" run at a site already saved (this PC's sites\ or a Drive site folder): the NVR's MAC, or 2+ camera MACs, match a saved list.
+  # $paths: list files, or a folder of them. Returns { path; list; site; score } or $null.
+  $files = @(); foreach ($p in @($paths)) { if (-not $p) { continue }; if (Test-Path -LiteralPath $p -PathType Container) { $files += @(Get-ChildItem -LiteralPath $p -Filter '*.json' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) } elseif (Test-Path -LiteralPath $p) { $files += [string]$p } }
+  if (-not $files.Count) { return $null }
+  $macs = @{}; foreach ($d in @($found)) { $m = ConvertTo-FsMac ([string](Get-FsProp $d 'mac' '')); if ($m) { $macs[$m] = [string](Get-FsProp $d 'kind' 'camera') } }
+  if (-not $macs.Count) { return $null }
+  $best = $null
+  foreach ($fp in $files) {
+    try { $l = Get-Content -LiteralPath $fp -Raw | ConvertFrom-Json } catch { continue }
+    if (-not $l) { continue }
+    $nvrHit = @(@(Get-FsProp $l 'nvrs' @()) | Where-Object { $m = ConvertTo-FsMac ([string](Get-FsProp $_ 'mac' '')); $m -and $macs.ContainsKey($m) }).Count
+    $camHit = @(@(Get-FsProp $l 'cameras' @()) | Where-Object { $m = ConvertTo-FsMac ([string](Get-FsProp $_ 'mac' '')); $m -and $macs.ContainsKey($m) }).Count
+    $score = 2 * $nvrHit + $camHit
+    if ($score -ge 2 -and (-not $best -or $score -gt $best.score)) {
+      $isDrive = ((Split-Path -Leaf $fp) -eq 'WireIt site list.json')
+      $nm = $(if ($isDrive) { Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent $fp)) } elseif ([string](Get-FsProp $l 'site' '')) { [string]$l.site } else { [IO.Path]::GetFileNameWithoutExtension($fp) })
+      $best = [pscustomobject]@{ path = $fp; list = $l; site = $nm; score = $score; folder = $(if ($isDrive) { Split-Path -Parent (Split-Path -Parent $fp) } else { '' }) }
+    }
+  }
+  return $best
 }
 
 function ConvertFrom-FsSnapshot($snap) {

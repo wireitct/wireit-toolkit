@@ -3,6 +3,8 @@
  Returns 'classic' when the user asks for the old numbered buttons ("More tools"); anything else = done.
  The work itself runs in FixSite.ps1 (a blue window asks Windows for permission, takes the YES, and does the fixing);
  this window shows the same checklist live and says when it is waiting for you. Passwords are only ever typed in that blue window.
+ 2.0.2: "New site (not listed)" beside the big button: one tap at a site with no saved list, nothing to type (FixSite.ps1 -NewSite).
+ Sites saved on this PC (sites\*.json, e.g. from a New site run) are in the site drop-down too.
 #>
 param([string]$ToolkitDir = '', [string]$Version = '', [string]$Note = '', [string]$Screenshot = '')   # -Screenshot <file.png>: tests, draw the window to a PNG, no screen
 $ErrorActionPreference = 'Continue'
@@ -17,7 +19,7 @@ function Px([double]$n) { return [int]($n * $sc) }
 function Fnt([double]$pt, [string]$style = 'Regular') { try { return New-Object Drawing.Font('Segoe UI', $pt, [Drawing.FontStyle]$style) } catch { return [Drawing.SystemFonts]::DefaultFont } }
 $cGreen = [Drawing.Color]::FromArgb(22, 140, 80); $cInk = [Drawing.Color]::FromArgb(30, 41, 59); $cMuted = [Drawing.Color]::FromArgb(100, 116, 139); $cBg = [Drawing.Color]::FromArgb(246, 248, 250)
 
-$st = @{ proc = $null; since = $null; runDir = ''; offset = 0; mode = '' }
+$st = @{ proc = $null; since = $null; runDir = ''; offset = 0; mode = ''; newSite = $false }
 $f = New-Object Windows.Forms.Form
 $f.Text = 'WireIt Toolkit  v' + $Version; $f.StartPosition = 'CenterScreen'; $f.BackColor = $cBg; $f.Font = Fnt 10
 $f.ClientSize = New-Object Drawing.Size((Px 820), (Px 640)); $f.MinimumSize = New-Object Drawing.Size((Px 700), (Px 560))
@@ -27,10 +29,12 @@ foreach ($rs in @('AutoSize', 'AutoSize', 'AutoSize', 'AutoSize', 'AutoSize', 'P
 $f.Controls.Add($t)
 function New-Label([string]$text, $font, $color, [int]$top = 0) { $l = New-Object Windows.Forms.Label; $l.Text = $text; $l.Font = $font; $l.ForeColor = $color; $l.AutoSize = $true; $l.MaximumSize = New-Object Drawing.Size((Px 760), 0); $l.Margin = New-Object Windows.Forms.Padding(0, (Px $top), 0, 0); return $l }
 $t.Controls.Add((New-Label 'WireIt Toolkit' (Fnt 20 'Bold') $cInk), 0, 0)
-$t.Controls.Add((New-Label ('Which site are you at? Type the Site ID from the QR sticker (like WI-061) or the address.' + $(if ($Note) { '     ' + $Note } else { '' })) (Fnt 10) $cMuted 2), 0, 1)
+$t.Controls.Add((New-Label ('Which site are you at? Type the Site ID from the QR sticker (like WI-061) or the address. Not listed? Press New site.' + $(if ($Note) { '     ' + $Note } else { '' })) (Fnt 10) $cMuted 2), 0, 1)
 $site = New-Object Windows.Forms.ComboBox; $site.DropDownStyle = 'DropDown'; $site.Font = Fnt 13; $site.Dock = 'Top'; $site.Margin = New-Object Windows.Forms.Padding(0, (Px 6), 0, (Px 8))
 $roots = @('G:\My Drive\WireIt Sites', '%USERPROFILE%\My Drive\WireIt Sites', 'C:\Users\admin\My Drive\WireIt Sites')
 foreach ($r in $roots) { $rr = [Environment]::ExpandEnvironmentVariables($r); if (Test-Path -LiteralPath $rr) { foreach ($d in @(Get-ChildItem -LiteralPath $rr -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '_*' } | Sort-Object Name)) { [void]$site.Items.Add($d.Name) }; break } }
+$sitesDirW = Join-Path $ToolkitDir 'sites'   # 2.0.2: sites saved on this PC (New site runs) are offered too
+foreach ($sf in @(Get-ChildItem -LiteralPath $sitesDirW -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name)) { $nm = ''; try { $nm = [string](Get-Content -LiteralPath $sf.FullName -Raw | ConvertFrom-Json).site } catch {}; if (-not $nm) { $nm = $sf.BaseName }; if (-not $site.Items.Contains($nm)) { [void]$site.Items.Add($nm) } }
 if (Test-Path $lastSiteFile) { $site.Text = (Get-Content $lastSiteFile -Raw).Trim() }
 $t.Controls.Add($site, 0, 2)
 # camera settings: drop-downs, no presets (Moshe Nov 3 2:14 PM). Left alone = the camera keeps what it has.
@@ -49,8 +53,14 @@ $kAll = New-Tick 'Apply settings to ALL cameras'; $kPw = New-Tick 'Set the site 
 $row.Controls.Add($kAll, 0, 1); $row.SetColumnSpan($kAll, 2); $row.Controls.Add($kPw, 2, 1); $row.SetColumnSpan($kPw, 2)
 $gb.Controls.Add($row); $t.Controls.Add($gb, 0, 3)
 $big = New-Object Windows.Forms.Button; $big.Text = 'Fix this site'; $big.Font = Fnt 26 'Bold'; $big.BackColor = $cGreen; $big.ForeColor = [Drawing.Color]::White; $big.FlatStyle = 'Flat'; $big.FlatAppearance.BorderSize = 0
-$big.Dock = 'Top'; $big.Height = Px 110; $big.Margin = New-Object Windows.Forms.Padding(0, (Px 10), 0, (Px 6)); $big.Cursor = 'Hand'
-$t.Controls.Add($big, 0, 4)
+$big.Dock = 'Fill'; $big.Height = Px 110; $big.Margin = New-Object Windows.Forms.Padding(0, 0, (Px 8), 0); $big.Cursor = 'Hand'
+# 2.0.2 (Moshe, Nov 4 2026): a site with no saved list - one tap, nothing to type
+$bNew = New-Object Windows.Forms.Button; $bNew.Text = "New site`r`n(not listed)"; $bNew.Font = Fnt 15 'Bold'; $bNew.BackColor = [Drawing.Color]::FromArgb(37, 99, 175); $bNew.ForeColor = [Drawing.Color]::White
+$bNew.FlatStyle = 'Flat'; $bNew.FlatAppearance.BorderSize = 0; $bNew.Dock = 'Fill'; $bNew.Margin = New-Object Windows.Forms.Padding(0); $bNew.Cursor = 'Hand'
+$bigRow = New-Object Windows.Forms.TableLayoutPanel; $bigRow.Dock = 'Top'; $bigRow.Height = Px 110; $bigRow.ColumnCount = 2; $bigRow.RowCount = 1; $bigRow.Margin = New-Object Windows.Forms.Padding(0, (Px 10), 0, (Px 6))
+[void]$bigRow.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 66))); [void]$bigRow.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 34))); [void]$bigRow.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
+$bigRow.Controls.Add($big, 0, 0); $bigRow.Controls.Add($bNew, 1, 0)
+$t.Controls.Add($bigRow, 0, 4)
 $status = New-Label 'It finds what is wrong, shows you the list, you type YES once, and it fixes only those cameras. Working cameras are not touched. Safe to run again.' (Fnt 10) $cMuted 0
 $out = New-Object Windows.Forms.TextBox; $out.Multiline = $true; $out.ReadOnly = $true; $out.ScrollBars = 'Vertical'; $out.Dock = 'Fill'; $out.Font = New-Object Drawing.Font('Consolas', 10); $out.BackColor = [Drawing.Color]::White; $out.Margin = New-Object Windows.Forms.Padding(0, (Px 4), 0, (Px 6))
 $pnl = New-Object Windows.Forms.TableLayoutPanel; $pnl.Dock = 'Fill'; $pnl.ColumnCount = 1; $pnl.RowCount = 2; [void]$pnl.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))); [void]$pnl.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
@@ -62,6 +72,7 @@ foreach ($b in @($bLook, $bUndo, $bUsual, $bMore)) { $bar.Controls.Add($b) }
 $t.Controls.Add($bar, 0, 6)
 $tips = New-Object Windows.Forms.ToolTip
 $tips.SetToolTip($big, 'Finds the cameras with a real problem (offline, no video, hung, wrong IP scheme, not on the NVR, password unknown) and fixes ONLY those: site password, the settings above, right address, back on the NVR, video checked. Working cameras are not touched.')
+$tips.SetToolTip($bNew, 'At a site with no saved list: nothing to type. It finds the router, NVR and cameras by itself, shows what is broken or missing, fixes ONLY those after you type YES (backups + undo), then saves the site on this PC under a name (you can type the address).')
 $tips.SetToolTip($kAll, 'Off (normal): the drop-downs go only on the cameras being fixed. On: they go on every camera, working ones too. Unticks itself after each run.')
 $tips.SetToolTip($kPw, 'Off (normal): only the cameras being fixed get the site password. On: every camera gets it (and its NVR channel). Unticks itself after each run.')
 $tips.SetToolTip($bLook, 'Shows what is wrong and what Fix would do. Changes nothing, asks for no YES.')
@@ -69,17 +80,18 @@ $tips.SetToolTip($bUndo, 'Puts the cameras and NVR back the way the last Fix fou
 $tips.SetToolTip($bUsual, 'WireIt''s usual camera passwords, tried first on every site (kept encrypted on this PC).')
 $result = 'done'
 
-function Set-Busy([bool]$busy) { foreach ($b in @($big, $bLook, $bUndo, $bUsual, $bMore, $site, $pCodec, $pFps, $pRes, $pBit, $kAll, $kPw)) { $b.Enabled = -not $busy } }
-function Start-Run([string]$mode, [string[]]$extra, [bool]$needSite) {
-  $s = $site.Text.Trim()
+function Set-Busy([bool]$busy) { foreach ($b in @($big, $bNew, $bLook, $bUndo, $bUsual, $bMore, $site, $pCodec, $pFps, $pRes, $pBit, $kAll, $kPw)) { $b.Enabled = -not $busy } }
+function Start-Run([string]$mode, [string[]]$extra, [bool]$needSite, [bool]$newSite = $false) {
+  $s = $site.Text.Trim(); if ($newSite) { $s = '' }   # 2.0.2: New site ignores the site box
   if ($needSite -and -not $s) { [void][Windows.Forms.MessageBox]::Show($f, 'Type the site first (the Site ID on the QR sticker, like WI-061, or the address).', 'WireIt Toolkit'); return }
   if ($s) { try { Set-Content -LiteralPath $lastSiteFile -Value $s -Encoding UTF8 } catch {} }
   $file = Join-Path $ToolkitDir 'FixSite.ps1'
   if (-not (Test-Path $file)) { $status.Text = 'FixSite.ps1 is missing from the Toolkit folder. Run the Toolkit installer again.'; return }
   $a = '-NoProfile -ExecutionPolicy Bypass -File "' + $file + '" -Mode ' + $mode
   if ($s) { $a += ' -Site "' + ($s -replace '"', '') + '"' }
+  if ($newSite) { $a += ' -NewSite' }
   foreach ($e in $extra) { if ($e) { $a += ' ' + $e } }
-  $out.Clear(); $st.since = Get-Date; $st.runDir = ''; $st.offset = 0; $st.mode = $mode
+  $out.Clear(); $st.since = Get-Date; $st.runDir = ''; $st.offset = 0; $st.mode = $mode; $st.newSite = $newSite
   $status.Text = 'A blue window opens (Windows asks permission first: click Yes). Everything you have to answer is asked there.'
   try { $st.proc = Start-Process -FilePath $psexe -ArgumentList $a -Verb RunAs -PassThru -WorkingDirectory $ToolkitDir -ErrorAction Stop }
   catch { $status.Text = 'Windows asked for permission and it was not given, so nothing ran.'; $st.proc = $null; return }
@@ -96,6 +108,7 @@ function Get-Settings {
   return $e
 }
 $big.Add_Click({ Start-Run 'Fix' (Get-Settings) $true })
+$bNew.Add_Click({ Start-Run 'Fix' (Get-Settings) $false $true })
 $bLook.Add_Click({ Start-Run 'Plan' (Get-Settings) $true })
 $bUsual.Add_Click({ Start-Run 'SetUsual' @() $false })
 $bUndo.Add_Click({
@@ -122,6 +135,8 @@ $timer.Add_Tick({
     $code = -1; try { $code = $st.proc.ExitCode } catch {}
     $st.proc = $null; Set-Busy $false; $status.Text = Get-FsExitWords $code
     $kAll.Checked = $false; $kPw.Checked = $false   # tick again each run (2.0.1)
+    # 2.0.2: a New site run that saved the site: its name goes in the site box (and the drop-down) for next time and for Undo
+    if ($st.newSite -and $st.runDir) { $sn = ''; try { $sn = (Get-Content -LiteralPath (Join-Path $st.runDir 'site.txt') -Raw).Trim() } catch {}; if ($sn) { $site.Text = $sn; if (-not $site.Items.Contains($sn)) { [void]$site.Items.Add($sn) }; try { Set-Content -LiteralPath $lastSiteFile -Value $sn -Encoding UTF8 } catch {} } }
     try { [Windows.Forms.SystemSounds]::Asterisk.Play() } catch {}
   }
 })

@@ -71,6 +71,11 @@ class H(BaseHTTPRequestHandler):
     def route(self, method, ip, path, q, body, rawq):
         if ip == '_pc': return self.pc(method, path, q, body)
         d = S['devices'].get(ip)
+        if d and reachable(ip) and not d['answers'] and d.get('wake_after'):
+            # 2.0.2: a hung camera that comes back after the tech unplugs it: answers again after N unanswered calls
+            d['wake_after'] -= 1
+            if d['wake_after'] <= 0: d['answers'] = True; d['fails'] = 0
+            return self.send(599, 'no answer')
         if not d or not reachable(ip) or not d['answers']: return self.send(599, 'no answer')
         S['log'].append('%s %s %s' % (method, ip, path + ('?' + rawq if rawq and 'pwd' not in rawq else '')))
         a = self.auth(d)

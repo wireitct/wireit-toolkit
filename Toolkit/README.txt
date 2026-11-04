@@ -1,4 +1,4 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.0.1, 2026-11-03
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.0.2, 2026-11-04
 ==============================================================================
 HOW TO USE (2.0)
   1. Double-click "WireIt Toolkit" on the desktop.
@@ -9,6 +9,19 @@ HOW TO USE (2.0)
   4. Press the big green "Fix this site". Click Yes when Windows asks.
   5. Read the list of what is wrong and what it will change. Type YES to fix it all.
   6. Watch the checklist: a green check per camera. A red X says exactly what to go check.
+
+NEW SITE, NOT LISTED (2.0.2): press the blue "New site (not listed)" beside the big button. Nothing to type.
+  - It finds the router, the NVR and the cameras by itself (SADP, Dahua search, ONVIF/sweep, the NVR's channels)
+    and names the site from what it sees, e.g. "New site 10.0.5.x 2026-11-04".
+  - Passwords tried: the one saved for that camera, then WireIt's usual ones, then the old factory default
+    (Hikvision 12345 / Dahua admin) - all inside the same limit of tries, so nothing locks.
+  - The list says "New site (no saved list): found 1 NVR (...) and N cameras ..." first. "Missing" on a new site =
+    a camera the NVR has a channel for but that has no video and does not answer.
+  - Same rule as always: ONLY problem cameras change (wrong IP scheme, hung, no video, not activated...);
+    working cameras are not touched; nothing happens until you type YES; backups + "Undo the last fix".
+  - After the list it asks for the address (optional; Enter keeps the automatic name). The site list and its
+    passwords are saved on this PC under that name. Next time pick it in the site box - or press New site again:
+    it recognises the NVR and uses the saved site.
 
 WHAT "FIX THIS SITE" DOES (no order to remember, safe to run again)
   - Knows what SHOULD be there: the site's list from its Drive folder (Docs\WireIt site list.json),

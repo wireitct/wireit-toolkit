@@ -122,6 +122,56 @@ Eq (($cand | ForEach-Object { $_.value }) -join ',') 'A,B,C' 'password order: si
 # generated passwords
 $ok = $true; for ($i = 0; $i -lt 200; $i++) { $pw = New-FsSitePassword; if ($pw.Length -ne 14 -or $pw -notmatch '[A-Z]' -or $pw -notmatch '[a-z]' -or $pw -notmatch '\d' -or $pw -notmatch '[@!*]' -or $pw -match '[^A-Za-z0-9@!*]' -or $pw -match '(?i)admin') { $ok = $false } }
 Check $ok 'site password: 14 chars, 4 kinds, only Hikvision+Dahua+URL-safe symbols, 200 samples'
+# 2.0.2 New site (not listed): no list, no site secrets, nothing typed
+$no = J 'newsite-scan.json'
+$pn2 = New-FsPlan $null $no ([ordered]@{ newSite = $true }); $nl2 = @(Format-FsPlan $pn2)
+Eq $nl2[0] 'New site (no saved list): found 1 NVR (10.0.5.64, 5 channels) and 5 camera(s) on 10.0.5.x, router 10.0.5.1. 1 NVR channel(s) have no camera answering.' 'new site: plan line 1 says it is a new site and what was found'
+Eq $nl2[1] 'Changes only the 2 camera(s) listed below. 3 working camera(s) will not be touched.' 'new site: line 2 = only the 2 problem cameras change (hung + not activated), 3 working not touched'
+$gar = $pn2.cams | Where-Object { $_.name -eq 'Garage' }
+Check ($gar.state -eq 'missing' -and $gar.listIp -eq '10.0.5.25' -and $gar.channel -eq 5 -and ($gar.why -join ' ') -match 'NVR ch 5 has no video') 'new site: "missing" = an NVR channel with no video that nothing answers for'
+Check (@($nl2 | Where-Object { $_ -like 'Garage (10.0.5.25, NVR ch 5): missing*' }).Count -eq 1) 'new site: the missing camera is on the plan screen by its NVR name'
+$hs = $pn2.cams | Where-Object { $_.ip -eq '10.0.5.24' }
+Check ($hs.state -eq 'fix' -and ($hs.why -join ' ') -match 'hung' -and $hs.steps -contains 'unplug' -and $hs.steps -contains 'nvr') 'new site: hung camera flagged; unplug step (no switch map at a new site), back on its NVR channel'
+$na = $pn2.cams | Where-Object { $_.ip -eq '10.0.5.150' }
+Check ($na.steps -contains 'activate' -and ($na.why -join ' ') -match 'not activated') 'new site: not-activated camera flagged -> activate'
+Check ($na.target -and $na.target -ne '10.0.5.25' -and (Get-FsLast $na.target) -ge 21 -and (Get-FsLast $na.target) -le 99) 'new site: it moves into .21-.99, and NOT onto the address the dead Garage channel looks for'
+Check (@($pn2.cams | Where-Object { $_.ip -in @('10.0.5.21', '10.0.5.22', '10.0.5.26') -and ($_.state -ne 'ok' -or @($_.steps).Count -or $_.target) }).Count -eq 0) 'new site: the 3 working cameras get nothing (2.0.1 rule)'
+Check (@($pn2.leftAlone | Where-Object { $_ -match '10\.0\.5\.22' -and $_ -match 'factory password' }).Count -eq 1) 'new site: a working camera still on the factory password is named, not changed'
+Check (@($pn2.leftAlone | Where-Object { $_ -match '^NVR 10\.0\.5\.64' -and $_ -match '\.20' }).Count -eq 1) 'new site: NVR off the standard (.64, standard .20) is named, not moved'
+Check (@($pn2.nvrs | Where-Object { @($_.steps).Count }).Count -eq 0) 'new site: a working NVR on the right scheme is never moved'
+Check (($pn2.notes -join ' ') -match 'router gave this PC \.57') 'new site: router handing out addresses below .100 is flagged (not changed)'
+Check (-not (($pn2.notes -join ' ') -match 'no camera list yet')) 'new site: no "you can save it at the end" note (it saves by itself)'
+Check (-not (((New-FsPlan $null $lo).notes -join ' ') -match 'router gave')) 'router note: not shown when the PC got .100 or higher (Lieber)'
+# a camera on the wrong scheme + one dead channel: paired; two dead channels: no guess, said plainly
+$wc64 = [pscustomobject]@{ kind = 'camera'; brand = 'Hikvision'; model = 'DS-2CD2043G2-I'; serial = 'DS-2CD2043G2-I20200505AAWRF59999999'; mac = '44:19:b6:05:00:99'; ip = '192.168.1.64'; firmware = 'V5.7.3 build 220112'; login = 'WireIt usual 1' }
+$no2 = J 'newsite-scan.json'; $no2.devices = @($no2.devices) + @($wc64)
+$pn3 = New-FsPlan $null $no2 ([ordered]@{ newSite = $true }); $w64 = $pn3.cams | Where-Object { $_.ip -eq '192.168.1.64' }
+Check ($w64.target -eq '10.0.5.25' -and $w64.channel -eq 5 -and $w64.steps -contains 'nvr' -and -not @($pn3.cams | Where-Object { $_.state -eq 'missing' }).Count) 'new site: wrong-scheme camera + one dead channel -> moved to that channel''s address, back on ch 5, nothing missing'
+$no3 = J 'newsite-scan.json'; $no3.devices = @($no3.devices) + @($wc64); $no3.nvrs[0].channels = @($no3.nvrs[0].channels) + @([pscustomobject]@{ channel = 7; ip = '10.0.5.27'; online = $false; name = 'Shed'; protocol = 'HIKVISION' })
+$pn4 = New-FsPlan $null $no3 ([ordered]@{ newSite = $true }); $w64b = $pn4.cams | Where-Object { $_.ip -eq '192.168.1.64' }
+Check ((($w64b.why -join ' ') -match 'not clear') -and $w64b.target -and $w64b.target -notin @('10.0.5.25', '10.0.5.27') -and @($pn4.cams | Where-Object { $_.state -eq 'missing' }).Count -eq 2) 'new site: 1 wrong-scheme camera, 2 dead channels -> no guess, said plainly, both channel addresses kept free'
+# passwords: per-camera, usual, then the old factory default - inside the same try limit
+$cd = @(Get-FsPasswordCandidates ([pscustomobject]@{ password = ''; known = @(); usual = @('U1') }) 2 '' @('12345'))
+Eq (($cd | ForEach-Object { $_.label + '=' + $_.value }) -join ',') 'WireIt usual 1=U1,factory default=12345' 'new site passwords: WireIt usual first, then the factory default'
+Eq @(Get-FsPasswordCandidates ([pscustomobject]@{ password = 'S'; known = @('K'); usual = @('U1') }) 2 '' @('12345')).Count 2 'factory default stays inside the try limit (never an extra guess)'
+$cd2 = @(Get-FsPasswordCandidates ([pscustomobject]@{ password = ''; known = @(); usual = @('U1'); cams = @{ 'aa:bb:cc:dd:ee:09' = 'P9' } }) 2 'aa:bb:cc:dd:ee:09' @('12345'))
+Eq (($cd2 | ForEach-Object { $_.value }) -join ',') 'P9,U1' 'new site passwords: the one stored for that camera comes first'
+Eq ((Get-FsFactoryPasswords 'Dahua') -join ',') 'admin' 'factory default per brand (Dahua)'; Eq @(Get-FsFactoryPasswords 'Unknown').Count 0 'no factory guess for an unknown brand'
+Eq @(Get-FsPasswordCandidates ([pscustomobject]@{ password = 'A'; known = @('B'); usual = @('C') }) 3).Count 3 'without defaults (a listed site) nothing changes'
+# name + the next visit
+Eq (New-FsNewSiteName '10.0.5.1' ([datetime]'2026-11-04')) 'New site 10.0.5.x 2026-11-04' 'new site name = the router''s network + the date'
+$ksd = Join-Path ([IO.Path]::GetTempPath()) ('fsks-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Force -Path $ksd | Out-Null
+$sl2 = New-FsSiteList 'New site 10.0.5.x 2026-11-04' '' $pn2 $no; ($sl2 | ConvertTo-Json -Depth 6) | Set-Content -Path (Join-Path $ksd (Get-FsListFileName 'New site 10.0.5.x 2026-11-04')) -Encoding UTF8
+Check (@($sl2.cameras | Where-Object { $_.ip -eq '10.0.5.25' -and $_.channel -eq 5 }).Count -eq 1) 'new site list keeps the dead Garage channel, so next time it is "missing" by name'
+Eq (Find-FsKnownSite $ksd $no.devices).site 'New site 10.0.5.x 2026-11-04' 'next visit: the NVR''s MAC finds the saved new site'
+Check (-not (Find-FsKnownSite $ksd @([pscustomobject]@{ mac = '44:19:b6:05:00:21'; kind = 'camera' }))) 'one camera MAC alone is not enough to call it the same site'
+Check (-not (Find-FsKnownSite $ksd @([pscustomobject]@{ mac = '44:19:b6:77:77:77'; kind = 'nvr' }))) 'another site''s NVR: not matched'
+$kdr = Join-Path $ksd 'drive'; New-Item -ItemType Directory -Force -Path (Join-Path $kdr '45 Oak Ave\Docs') | Out-Null
+($sl2 | ConvertTo-Json -Depth 6) | Set-Content -Path (Join-Path $kdr '45 Oak Ave\Docs\WireIt site list.json') -Encoding UTF8
+$kd = Find-FsKnownSite @(Get-FsKnownSiteFiles '' @($kdr)) $no.devices
+Check ($kd.site -eq '45 Oak Ave' -and $kd.folder -like '*45 Oak Ave') 'next visit: a site list in a Drive site folder is recognised too (named by its folder)'
+Remove-Item $ksd -Recurse -Force
+
 # settings diff
 $cur = [pscustomobject]@{ codec = 'H.265'; fps = 20; width = 2560; height = 1440; bitrate = 4096; gop = 40; smartCodec = 'on'; maxWidth = 2688; maxHeight = 1520 }
 $w = Get-FsWantedSettings ([pscustomobject]@{ codec = 'auto'; fps = 15; resolution = 'max'; bitrate = 0; smartCodecOff = 'problem'; gopIsFps = $true }) $true $null
@@ -177,6 +227,13 @@ Check ($o -match 'DR Side[^\r\n]*hung') 'dry run BYW: hung Dahua named'
 Check ($o -match 'power-cycled Gym switch port 10') 'dry run BYW: PoE power-cycle of port 10'
 Check ($o -match 'Gym 2[^\r\n]*go check port 11') 'dry run BYW: missing camera -> go check port 11'
 Check ($o -match 'H\.264 \(was H\.265\)') 'dry run BYW: H.264 for the problem Dahua'
+# 2.0.2 New site, dry run: nothing typed, named from the network, nothing saved
+$on = RunFix @('-Mode', 'DryRun', '-NewSite', '-Recorded', (Join-Path $fx 'newsite-scan.json'), '-RunsRoot', "$tmp\n0\runs", '-SecretsDir', "$tmp\n0\sec", '-SitesDir', "$tmp\n0\sites")
+Check ($on -match 'New site \(no saved list\): found 1 NVR \(10\.0\.5\.64, 5 channels\) and 5 camera\(s\)') 'dry run -NewSite: plan line 1 says new site + what was found'
+Check ($on -match 'Site: New site 10\.0\.5\.x \d{4}-\d\d-\d\d') 'dry run -NewSite: named from the network, no site typed'
+Check (-not ($on -match 'Which site\?')) 'dry run -NewSite: never asks which site'
+Check ($on -match 'would save this site as "New site 10\.0\.5\.x') 'dry run -NewSite: says it would save the site'
+Check (-not (Test-Path "$tmp\n0\sites") -and -not @(Get-ChildItem "$tmp\n0\sec" -Filter 'site-*' -ErrorAction SilentlyContinue).Count) 'dry run -NewSite: nothing saved'
 
 $py = $null; foreach ($n in $(if ($env:OS -eq 'Windows_NT') { @('python', 'py') } else { @('python3') })) { $cmd = Get-Command $n -ErrorAction SilentlyContinue; if ($cmd) { $py = $cmd.Source; break } }
 if (-not $NoEndToEnd -and $py) {
@@ -270,6 +327,60 @@ if (-not $NoEndToEnd -and $py) {
     Check ($o6 -match 'because you ticked "Apply settings to ALL cameras"') 'BYW e2e -AllCameras: plan says working ones are included'
     Check ($st6.devices.'192.168.1.85'.stream.bitrate -eq 2048 -and $st6.devices.'192.168.1.31'.stream.bitrate -eq 2048) 'BYW e2e -AllCameras: bitrate on the working cameras too'
     Check (-not $st6.devices.'192.168.1.31'.pw_changes -and $st6.devices.'192.168.1.85'.stream.codec -eq 'H.264' -and $st6.devices.'192.168.1.31'.stream.codec -eq 'H.265') 'BYW e2e -AllCameras: nothing but the bitrate (no password, no codec)'
+  } finally { try { $m.proc.Kill() } catch {} }
+  # 2.0.2: New site (not listed) - no list, no site secrets, no -Site; wrong-IP camera + hung camera fixed, the rest untouched
+  function E2EN($m, [string[]]$answers, [string]$mode, [string[]]$extra = @()) {
+    $ans = Join-Path $tmp 'ansn.txt'; Set-Content -Path $ans -Value $answers
+    return (RunFix (@('-Mode', $mode, '-MockUrl', ('http://127.0.0.1:' + $m.port), '-Answers', $ans, '-RunsRoot', "$tmp\n\runs", '-SecretsDir', "$tmp\n\sec", '-SitesDir', "$tmp\n\sites") + $extra))
+  }
+  $m = Start-Mock 'mock-newsite.json'
+  try {
+    [void](E2EN $m @('Usual#Pw1', '') 'SetUsual')
+    Check (-not @(Get-ChildItem "$tmp\n\sec" -Filter 'site-*' -ErrorAction SilentlyContinue).Count) 'new site e2e: starts with no site secrets and no list'
+    $on = E2EN $m @('12 Elm St', 'YES', '', 'SAVED') 'Fix' @('-NewSite')
+    Check ($on -match 'New site \(no saved list\): found 1 NVR \(10\.0\.5\.64, 5 channels\) and 5 camera\(s\) on 10\.0\.5\.x, router 10\.0\.5\.1\.') 'new site e2e: plan line 1 = new site + what it found'
+    Check ($on -match 'Changes only the 2 camera\(s\) listed below\. 3 working camera\(s\) will not be touched\.') 'new site e2e: only the 2 problem cameras change'
+    Check ($on -match 'Back \(192\.168\.1\.64\): wrong IP scheme') 'new site e2e: wrong IP scheme flagged'
+    Check ($on -match 'Side \(10\.0\.5\.24\): hung') 'new site e2e: hung camera flagged'
+    Check ($on -match 'Office \(10\.0\.5\.22\): still on the factory password') 'new site e2e: factory password found inside the try limit, named, not changed'
+    Check ($on -match 'Back: password set .*moved \.64 -> \.23 .*back on NVR ch 3 .*video back') 'new site e2e: wrong-IP camera moved to the address its NVR channel looks for, back on ch 3, video back'
+    Check ($on -match 'Side: unplugged and plugged back.*password set .*back on NVR ch 4 .*video back') 'new site e2e: hung camera came back after the unplug and was fixed'
+    Check ($on -match 'Fixed: 2   Still a problem: 0') 'new site e2e: 2 fixed, 0 left'
+    Check ($on -match 'Site name: 12 Elm St') 'new site e2e: the address typed after the plan names the site'
+    Check ($on.IndexOf('Optional: type this site') -gt $on.IndexOf('Changes only the 2 camera')) 'new site e2e: the address is asked only AFTER the plan screen'
+    Check ($on.IndexOf('Optional: type this site') -lt $on.IndexOf('Type YES to fix')) 'new site e2e: ... and before the YES'
+    $st = Mock-State $m.port
+    $sp = $st.devices.'10.0.5.23'.password
+    Check ($sp -ne 'Usual#Pw1' -and $sp.Length -eq 14) 'new site e2e: a new strong site password on the fixed cameras'
+    Eq $st.devices.'10.0.5.24'.password $sp 'new site e2e: hung camera has the site password too'
+    Eq (@($st.devices.PSObject.Properties.Name | Where-Object { $_ -like '192.168.*' }).Count) 0 'new site e2e: nobody left on the wrong scheme'
+    foreach ($wp in @(@('10.0.5.21', 'Usual#Pw1'), @('10.0.5.22', '12345'), @('10.0.5.26', 'Usual#Pw1'))) {
+      $wc = $st.devices.($wp[0])
+      Check ($wc.password -eq $wp[1] -and -not $wc.pw_changes -and $wc.backups -eq 0 -and $wc.stream.gop -eq 30 -and $wc.stream.codec -eq 'H.265' -and -not $wc.reboots) ('new site e2e: working ' + $wp[0] + ' untouched (password, settings, no backup login, no restart)')
+    }
+    $chs = $st.devices.'10.0.5.64'.channels
+    Check ($chs.'1'.password -eq 'Usual#Pw1' -and $chs.'2'.password -eq '12345' -and $chs.'5'.password -eq 'Usual#Pw1') 'new site e2e: NVR channels of the working cameras untouched'
+    Check ($chs.'3'.ip -eq '10.0.5.23' -and $chs.'3'.password -eq $sp -and $chs.'4'.password -eq $sp) 'new site e2e: NVR channels of the 2 fixed cameras hold the new password'
+    Eq $st.devices.'10.0.5.64'.net.ip '10.0.5.64' 'new site e2e: the NVR (working, off the standard) was not moved'
+    Eq @($st.temps).Count 0 'new site e2e: temporary PC addresses all removed'
+    $lf = Join-Path "$tmp\n\sites" '12_Elm_St.json'
+    Check (Test-Path $lf) 'new site e2e: site list saved under the typed address'
+    $sl3 = Get-Content $lf -Raw | ConvertFrom-Json
+    Check ($sl3.site -eq '12 Elm St' -and @($sl3.cameras).Count -eq 5 -and @($sl3.cameras | Where-Object { $_.ip -eq '10.0.5.23' -and $_.channel -eq 3 }).Count -eq 1) 'new site e2e: list = 5 cameras with their NEW addresses'
+    Check ((Test-Path "$tmp\n\sec\site-12_Elm_St.dat") -and -not @(Get-ChildItem "$tmp\n\sec" -Filter 'site-New_site*').Count) 'new site e2e: secrets file saved under the same name (no leftover auto-named file)'
+    $hits = @(Get-ChildItem "$tmp\n" -Recurse -File | Where-Object { $_.Extension -ne '.dat' } | Select-String -SimpleMatch -Pattern ([string[]]@($sp, 'Usual#Pw1')) -List)
+    Eq $hits.Count 0 'new site e2e: no password in any log, plan, scan, list or rollback file'
+    # next visit: New site again -> the NVR is recognised, its list + site password are used, nothing to do
+    $on2 = E2EN $m @() 'Fix' @('-NewSite')
+    Check ($on2 -match 'saved before on this PC as "12 Elm St"') 'new site e2e, next visit: recognised by the NVR, no new name'
+    Check ($on2 -match 'Nothing for the Toolkit to change') 'new site e2e, next visit: nothing to change (it logs in with the saved site password)'
+    Eq (Mock-State $m.port).devices.'10.0.5.23'.pw_changes 1 'new site e2e, next visit: no password touched again'
+    # undo with an empty site box: it uses the run's own site (its secrets hold the old passwords)
+    $rdn = @(Get-ChildItem "$tmp\n\runs" -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'rollback.json') } | Sort-Object Name -Descending)[0]
+    $ou = E2EN $m @('YES') 'Rollback' @('-RollbackDir', $rdn.FullName)
+    Check ($ou -match 'Undo finished: everything is back') 'new site e2e: undo works without typing the site'
+    $stu = Mock-State $m.port
+    Check ($stu.devices.'192.168.1.64'.password -eq 'Usual#Pw1' -and $stu.devices.'10.0.5.24'.password -eq 'Usual#Pw1') 'new site e2e: undo puts the old passwords and the old address back'
   } finally { try { $m.proc.Kill() } catch {} }
 } else { Write-Host '3. end to end: skipped (no python or -NoEndToEnd)' }
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
