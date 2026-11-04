@@ -32,6 +32,8 @@ def camera_online(nvr, ch):
     cam = S['devices'].get(ch['ip'])
     if not cam or cam['kind'] != 'camera' or not cam['answers'] or not cam['activated']: return False
     if ch.get('password') != cam['password']: return False
+    # 2.0.3 test: a camera whose picture only comes back on one password (the NVR cannot use it with any other)
+    if cam.get('video_needs_pw') and cam['password'] != cam['video_needs_pw']: return False
     if cam['brand'] == 'Dahua' and (cam['stream']['smart'] == 'on' or cam['stream']['codec'] == 'H.265') and S.get('nvr_strict', True): return False
     return True
 

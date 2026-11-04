@@ -60,7 +60,7 @@
    "mac": "44:19:b6:00:00:33",
    "ip": "192.168.0.64",
    "firmware": "V5.6.5 build 200316",
-   "login": "WireIt usual 1"
+   "login": "site password 1"
   },
   {
    "brand": "Hikvision",
@@ -79,7 +79,7 @@
    "ip": "192.168.1.150",
    "dhcp": true,
    "firmware": "V2.820.0000000.18.R build 2022-03-01",
-   "login": "WireIt usual 1"
+   "login": "site password 1"
   }
  ],
  "nvrs": [

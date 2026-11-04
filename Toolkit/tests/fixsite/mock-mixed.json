@@ -1,0 +1,68 @@
+{
+ "_about": "2.0.3 'Make every device use the site password': an existing site Moshe took over. Site password already saved (Testpw2468, test only). NVR on its own old password, Cam A + Cam B on different old passwords, Cam C already on the site password. Cam B's picture only works on its old password (the NVR channel cannot come back after the change) -> its old password must be put back. All cameras work; nothing has a problem.",
+ "pc": {
+  "ip": "192.168.1.105",
+  "gw": "192.168.1.1",
+  "mask": "255.255.255.0",
+  "dhcp": true
+ },
+ "devices": {
+  "192.168.1.20": {
+   "brand": "Hikvision",
+   "model": "DS-7608NI-K2",
+   "serial": "DS-7608NI-K20820209998WCVU",
+   "mac": "44:19:b6:07:00:20",
+   "kind": "nvr",
+   "password": "Nvr#Old33",
+   "firmware": "V5.7.3 build 220112",
+   "channels": {
+    "1": {
+     "ip": "192.168.1.21",
+     "password": "Old#CamA1",
+     "name": "Cam A",
+     "protocol": "HIKVISION"
+    },
+    "2": {
+     "ip": "192.168.1.22",
+     "password": "Old#CamB2",
+     "name": "Cam B",
+     "protocol": "HIKVISION"
+    },
+    "3": {
+     "ip": "192.168.1.23",
+     "password": "Testpw2468",
+     "name": "Cam C",
+     "protocol": "HIKVISION"
+    }
+   }
+  },
+  "192.168.1.21": {
+   "brand": "Hikvision",
+   "model": "DS-2CD2143G2-I",
+   "serial": "DS-2CD2143G2-I20210101AAWRF50000021",
+   "mac": "44:19:b6:07:00:21",
+   "kind": "camera",
+   "password": "Old#CamA1",
+   "firmware": "V5.7.3 build 220112"
+  },
+  "192.168.1.22": {
+   "brand": "Hikvision",
+   "model": "DS-2CD2143G2-I",
+   "serial": "DS-2CD2143G2-I20210101AAWRF50000022",
+   "mac": "44:19:b6:07:00:22",
+   "kind": "camera",
+   "password": "Old#CamB2",
+   "firmware": "V5.7.3 build 220112",
+   "video_needs_pw": "Old#CamB2"
+  },
+  "192.168.1.23": {
+   "brand": "Hikvision",
+   "model": "DS-2CD2143G2-I",
+   "serial": "DS-2CD2143G2-I20210101AAWRF50000023",
+   "mac": "44:19:b6:07:00:23",
+   "kind": "camera",
+   "password": "Testpw2468",
+   "firmware": "V5.7.3 build 220112"
+  }
+ }
+}

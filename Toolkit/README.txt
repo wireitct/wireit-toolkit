@@ -1,4 +1,4 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.0.2, 2026-11-04
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.0.3, 2026-11-04
 ==============================================================================
 HOW TO USE (2.0)
   1. Double-click "WireIt Toolkit" on the desktop.
@@ -10,11 +10,24 @@ HOW TO USE (2.0)
   5. Read the list of what is wrong and what it will change. Type YES to fix it all.
   6. Watch the checklist: a green check per camera. A red X says exactly what to go check.
 
+SITE PASSWORD (2.0.3) - every site has its own password, nothing is shared between sites.
+  - A site with no site password yet gets one when it is fixed: your word + 4 random digits (the word is
+    asked once on each PC). Devices still on a factory password (cameras + NVR) get it; their NVR channels
+    are updated and each picture is checked.
+  - "Make every device use the site password" (tick, off unless you tick it): for sites you took over with
+    mixed passwords. Every camera/NVR on a different password gets the site password, one at a time;
+    a camera whose picture does not come back gets its old password back and is listed. YES + backups + undo.
+  - Saved in Bitwarden as "<site> - site password" if Bitwarden's bw command is on this PC (logged in),
+    otherwise kept encrypted on this PC and shown once with a Copy button - save it in Bitwarden.
+  - "Site password..." button: show (with Copy), copy, save in Bitwarden, make one, or type the one in use.
+
 NEW SITE, NOT LISTED (2.0.2): press the blue "New site (not listed)" beside the big button. Nothing to type.
   - It finds the router, the NVR and the cameras by itself (SADP, Dahua search, ONVIF/sweep, the NVR's channels)
     and names the site from what it sees, e.g. "New site 10.0.5.x 2026-11-04".
-  - Passwords tried: the one saved for that camera, then WireIt's usual ones, then the old factory default
-    (Hikvision 12345 / Dahua admin) - all inside the same limit of tries, so nothing locks.
+  - Passwords tried: the one saved for that camera, then the old factory default (Hikvision 12345 /
+    Dahua admin / Uniview 123456) - all inside the same limit of tries, so nothing locks. No password is
+    shared between sites (2.0.3). Devices still on the factory password (cameras + NVR) get the new site
+    password, with their NVR channel updated and the picture checked.
   - The list says "New site (no saved list): found 1 NVR (...) and N cameras ..." first. "Missing" on a new site =
     a camera the NVR has a channel for but that has no video and does not answer.
   - Same rule as always: ONLY problem cameras change (wrong IP scheme, hung, no video, not activated...);
@@ -35,7 +48,9 @@ WHAT "FIX THIS SITE" DOES (no order to remember, safe to run again)
     named ("Working, left as is") but not moved.
   - Two ticks (both off unless you tick them for that run; they untick after each run):
       "Apply settings to ALL cameras"        - the drop-downs go on working cameras too (only what you picked).
-      "Set the site password on all cameras" - working cameras get the site password (+ their NVR channel).
+      "Make every device use the site password" - every camera and NVR on a different password gets this
+          site's password, one at a time: new password -> its NVR channel updated -> picture checked.
+          A picture that does not come back = that camera's old password is put back and it is reported.
     When ticked, the list's first line says how many working cameras are included.
   - Shows only problems. Missing cameras say which switch port to check.
   - WireIt IP scheme: router .100+, NVR .20, cameras .21-.99, other gear .10-.19.
@@ -44,10 +59,18 @@ WHAT "FIX THIS SITE" DOES (no order to remember, safe to run again)
     then waits until the NVR shows video and it holds for 20 seconds.
   - Camera settings (cameras being fixed): nothing picked = each camera keeps its own, except old/problem
     cameras (Dahua on a Hikvision NVR, firmware 2020 or older) get H.264 and Smart Codec off. I-frame = frame rate.
-  - Passwords: tries the site password, then WireIt's usual ones ("Usual passwords..."), at most 3 tries
-    per camera - never guesses more. Unknown: one question; then the official Hikvision / Dahua reset
-    with one plain step for you. A new strong site password is made once per site, kept encrypted on
-    this PC (secrets\) and you are asked to save it in Bitwarden. Never in Drive, logs or messages.
+  - Passwords (2.0.3): EVERY SITE HAS ITS OWN PASSWORD - nothing is shared between sites. Tries the
+    password that last worked on that camera, this site's password, ones typed at this site before, and
+    the makers' factory passwords (new sites only) - at most 3 tries per camera. Unknown: one question;
+    then the official Hikvision / Dahua reset with one plain step for you.
+    A site with no site password yet gets one: your word + 4 random digits (the word is asked once per PC,
+    or set in config.json "fixSite": {"sitePasswordPrefix": ...}). Every device still on its factory
+    password (cameras + the NVR) gets it, with its NVR channel updated and the picture checked.
+    It goes into Bitwarden as "<site> - site password" when the Bitwarden command (bw) is on this PC and
+    logged in; otherwise it stays encrypted on this PC (secrets\) and is shown once with a Copy button:
+    save it in Bitwarden. Never in Drive, logs, plan files or messages.
+  - Site password... (button): show it (Copy button), copy it, save it in Bitwarden, make one, or type
+    the one this site already uses.
   - Undo the last fix: puts every camera and the NVR back the way that run found them.
   - Just look (change nothing): the same list, no YES, nothing touched.
   - Every run: runs\FixSite-<date>\ (log, plan, backups, undo file).

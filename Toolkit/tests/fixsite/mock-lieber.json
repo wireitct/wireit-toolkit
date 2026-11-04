@@ -17,31 +17,31 @@
    "channels": {
     "1": {
      "ip": "192.168.1.21",
-     "password": "Usual#Pw1",
+     "password": "Old#Site1",
      "name": "Front Door",
      "protocol": "HIKVISION"
     },
     "2": {
      "ip": "192.168.1.22",
-     "password": "Usual#Pw1",
+     "password": "Old#Site1",
      "name": "Driveway",
      "protocol": "HIKVISION"
     },
     "3": {
      "ip": "192.168.1.23",
-     "password": "Usual#Pw1",
+     "password": "Old#Site1",
      "name": "Back Yard",
      "protocol": "HIKVISION"
     },
     "4": {
      "ip": "192.168.1.24",
-     "password": "Usual#Pw1",
+     "password": "Old#Site1",
      "name": "Side",
      "protocol": "HIKVISION"
     },
     "5": {
      "ip": "192.168.1.150",
-     "password": "Usual#Pw1",
+     "password": "Old#Site1",
      "name": "Garage",
      "protocol": "ONVIF"
     }
@@ -53,7 +53,7 @@
    "serial": "DS-2CD2143G2-I20210101AAWRF11111111",
    "mac": "44:19:b6:00:00:21",
    "kind": "camera",
-   "password": "Usual#Pw1",
+   "password": "Old#Site1",
    "firmware": "V5.7.3 build 220112"
   },
   "192.168.1.22": {
@@ -62,7 +62,7 @@
    "serial": "DS-2CD2143G2-I20210101AAWRF22222222",
    "mac": "44:19:b6:00:00:22",
    "kind": "camera",
-   "password": "Usual#Pw1",
+   "password": "Old#Site1",
    "firmware": "V5.7.3 build 220112"
   },
   "192.168.0.64": {
@@ -71,7 +71,7 @@
    "serial": "DS-2CD2043G2-I20200505AAWRF33333333",
    "mac": "44:19:b6:00:00:33",
    "kind": "camera",
-   "password": "Usual#Pw1",
+   "password": "Old#Site1",
    "firmware": "V5.6.5 build 200316"
   },
   "192.168.0.65": {
@@ -89,7 +89,7 @@
    "serial": "7J0ABCDPAG12345",
    "mac": "3c:ef:8c:00:00:55",
    "kind": "camera",
-   "password": "Usual#Pw1",
+   "password": "Old#Site1",
    "firmware": "V2.820.0000000.18.R build 2022-03-01",
    "dhcp": true
   }

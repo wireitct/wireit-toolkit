@@ -345,36 +345,88 @@ function Unprotect-FsText([string]$s) {
 }
 function Get-FsSecretPath([string]$dir, [string]$site) { return (Join-Path $dir ('site-' + (($site -replace '[^A-Za-z0-9_-]+', '_').Trim('_')) + '.dat')) }
 function Read-FsSecrets([string]$dir, [string]$site) {
-  $o = [ordered]@{ site = $site; password = ''; known = @(); usual = @(); nvr = @{}; cams = @{}; rollback = @{}; bitwardenSaved = $false }
+  $o = [ordered]@{ site = $site; password = ''; known = @(); nvr = @{}; cams = @{}; rollback = @{}; bitwardenSaved = $false; shownOnce = $false }
   $p = Get-FsSecretPath $dir $site
-  if (Test-Path $p) { try { $j = (Unprotect-FsText ((Get-Content $p -Raw).Trim())) | ConvertFrom-Json; foreach ($k in @('password', 'known', 'bitwardenSaved')) { if ($j.PSObject.Properties[$k]) { $o[$k] = $j.$k } }; foreach ($k in @('nvr', 'cams', 'rollback')) { if ($j.PSObject.Properties[$k] -and $j.$k) { $h = @{}; foreach ($q in $j.$k.PSObject.Properties) { $h[$q.Name] = $q.Value }; $o[$k] = $h } } } catch { Fs-LogLine ('secret store unreadable: ' + $_.Exception.Message) } }
-  $u = Join-Path $dir 'wireit-usual.dat'
-  if (Test-Path $u) { try { $uj = (Unprotect-FsText ((Get-Content $u -Raw).Trim())) | ConvertFrom-Json; $o.usual = @($uj) } catch {} }
+  if (Test-Path $p) { try { $j = (Unprotect-FsText ((Get-Content $p -Raw).Trim())) | ConvertFrom-Json; foreach ($k in @('password', 'known', 'bitwardenSaved', 'shownOnce')) { if ($j.PSObject.Properties[$k]) { $o[$k] = $j.$k } }; foreach ($k in @('nvr', 'cams', 'rollback')) { if ($j.PSObject.Properties[$k] -and $j.$k) { $h = @{}; foreach ($q in $j.$k.PSObject.Properties) { $h[$q.Name] = $q.Value }; $o[$k] = $h } } } catch { Fs-LogLine ('secret store unreadable: ' + $_.Exception.Message) } }
   $o.known = @($o.known | Where-Object { $_ }); return [pscustomobject]$o
 }
 function Save-FsSecrets([string]$dir, $sec) {
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
-  $keep = [ordered]@{ site = $sec.site; password = $sec.password; known = @($sec.known); nvr = $sec.nvr; cams = $(if ($sec.PSObject.Properties['cams'] -and $sec.cams) { $sec.cams } else { @{} }); rollback = $sec.rollback; bitwardenSaved = [bool]$sec.bitwardenSaved; updated = (Get-Date -Format 's') }
+  $keep = [ordered]@{ site = $sec.site; password = $sec.password; known = @($sec.known); nvr = $sec.nvr; cams = $(if ($sec.PSObject.Properties['cams'] -and $sec.cams) { $sec.cams } else { @{} }); rollback = $sec.rollback; bitwardenSaved = [bool]$sec.bitwardenSaved; shownOnce = [bool]$sec.shownOnce; updated = (Get-Date -Format 's') }
   $p = Get-FsSecretPath $dir $sec.site; $tmp = $p + '.tmp'
   [IO.File]::WriteAllText($tmp, (Protect-FsText ($keep | ConvertTo-Json -Depth 6 -Compress)))
   Move-Item -LiteralPath $tmp -Destination $p -Force
 }
-function Save-FsUsual([string]$dir, [string[]]$list) { New-Item -ItemType Directory -Force -Path $dir | Out-Null; [IO.File]::WriteAllText((Join-Path $dir 'wireit-usual.dat'), (Protect-FsText (ConvertTo-Json @($list) -Compress))) }
-function New-FsSitePassword([int]$length = 14) {
-  # Hikvision: 8-16 characters, 2+ kinds. Dahua: 8-32, no ' " ; : &. Only @ ! * as symbols (safe in a Dahua URL and in XML).
-  $sets = @('ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnpqrstuvwxyz', '23456789', '@!*'); $all = -join $sets
+# 2.0.3 (Moshe, Nov 4 2026: "There are no usual passwords. Every single password is specific to that site."): ONE password per site,
+# made as <his word> + 4 random digits, different for every site. The word is NOT in this public code: it comes from config.json
+# (fixSite.sitePasswordPrefix, never shipped by the updater) or is typed once and kept encrypted on this PC (secrets\password-word.dat).
+function Test-FsSitePrefix([string]$p) { return ($p -cmatch '^[A-Za-z][A-Za-z0-9]{3,15}$') }
+function Get-FsSitePrefix($cfg, [string]$dir) {
+  $p = ''
+  if ($cfg -and $cfg.PSObject.Properties['sitePasswordPrefix']) { $p = [string]$cfg.sitePasswordPrefix }
+  if (-not (Test-FsSitePrefix $p)) { $p = ''; $f = Join-Path $dir 'password-word.dat'; if (Test-Path $f) { try { $p = Unprotect-FsText ((Get-Content $f -Raw).Trim()) } catch { $p = '' } } }
+  if (-not (Test-FsSitePrefix $p)) { $p = '' }
+  return $p
+}
+function Save-FsSitePrefix([string]$dir, [string]$p) { New-Item -ItemType Directory -Force -Path $dir | Out-Null; [IO.File]::WriteAllText((Join-Path $dir 'password-word.dat'), (Protect-FsText $p)) }
+function New-FsSitePassword([string]$prefix) {
+  # <prefix> + 4 random digits (crypto random). No 3 same digits in a row and no straight run (1234 / 9876): cameras flag those as weak.
+  if (-not (Test-FsSitePrefix $prefix)) { throw 'site password prefix missing' }
   $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
   try {
-    for ($t = 0; $t -lt 50; $t++) {
-      $c = New-Object System.Collections.Generic.List[char]
-      foreach ($s in $sets) { $c.Add($s[(Get-FsRandom $rng $s.Length)]) }
-      while ($c.Count -lt $length) { $c.Add($all[(Get-FsRandom $rng $all.Length)]) }
-      for ($i = $c.Count - 1; $i -gt 0; $i--) { $j = Get-FsRandom $rng ($i + 1); $x = $c[$i]; $c[$i] = $c[$j]; $c[$j] = $x }
-      $pw = -join $c
-      if ($pw -notmatch '(?i)admin' -and $pw -notmatch '(.)\1\1' -and '@!*'.IndexOf($pw[0]) -lt 0) { return $pw }
+    for ($t = 0; $t -lt 100; $t++) {
+      $d = -join (1..4 | ForEach-Object { [string](Get-FsRandom $rng 10) })
+      $run = $true; $runDown = $true; for ($i = 1; $i -lt 4; $i++) { if ([int][string]$d[$i] -ne [int][string]$d[$i - 1] + 1) { $run = $false }; if ([int][string]$d[$i] -ne [int][string]$d[$i - 1] - 1) { $runDown = $false } }
+      if ($d -notmatch '(\d)\1\1' -and -not $run -and -not $runDown) { return ($prefix + $d) }
     }
-    return $pw
+    return ($prefix + $d)
   } finally { $rng.Dispose() }
+}
+
+# ---------------- Bitwarden (2.0.3): save the site password as "<site> - site password" when the bw command is on this PC ----------------
+function Find-FsBitwarden($cfg) {
+  if ($cfg -and $cfg.PSObject.Properties['bitwardenCli'] -and $cfg.bitwardenCli -and (Test-Path ([string]$cfg.bitwardenCli))) { return [string]$cfg.bitwardenCli }
+  foreach ($n in @('bw.exe', 'bw.cmd', 'bw')) { $c = Get-Command $n -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c -and $c.Source) { return $c.Source } }
+  foreach ($p in @((Join-Path $env:APPDATA 'npm\bw.cmd'), (Join-Path $env:LOCALAPPDATA 'Programs\Bitwarden CLI\bw.exe'))) { if ($p -and (Test-Path $p)) { return $p } }
+  return ''
+}
+function Invoke-FsBw([string]$bw, [string[]]$a, [string]$stdin = $null) {
+  try {
+    if ($null -ne $stdin) { $o = $stdin | & $bw @a 2>$null } else { $o = & $bw @a 2>$null }
+    return [pscustomobject]@{ code = $LASTEXITCODE; out = (@($o) -join "`n").Trim() }
+  } catch { return [pscustomobject]@{ code = 1; out = '' } }
+}
+function Get-FsBwStatus([string]$bw) {
+  # 'unlocked' | 'locked' | 'unauthenticated' | '' (no bw / no answer)
+  if (-not $bw) { return '' }
+  $r = Invoke-FsBw $bw @('status')
+  try { return [string](($r.out | ConvertFrom-Json).status) } catch { return '' }
+}
+function Get-FsBwItemName([string]$site) { return ($site + ' ' + [char]0x2013 + ' site password') }
+function Save-FsBitwarden([string]$bw, [string]$site, [string]$pw, [string]$session = '') {
+  # returns 'saved' | 'exists' | 'failed'. The password only goes to bw on its stdin (base64 item JSON), never on a command line or in a file.
+  if (-not $bw -or -not $pw) { return 'failed' }
+  $hadEnv = $env:BW_SESSION; if ($session) { $env:BW_SESSION = $session }
+  try {
+    $name = Get-FsBwItemName $site
+    $l = Invoke-FsBw $bw @('list', 'items', '--search', $name)
+    $plainName = $name -replace '[^\x20-\x7E]', ''   # Windows PowerShell may read bw's UTF-8 dash wrongly: compare without it
+    try { if (@(($l.out | ConvertFrom-Json) | Where-Object { ([string]$_.name -replace '[^\x20-\x7E]', '') -eq $plainName }).Count) { return 'exists' } } catch {}
+    $item = [ordered]@{ organizationId = $null; collectionIds = $null; folderId = $null; type = 1; name = $name
+      notes = ('Made by the WireIt Toolkit ' + $script:FsVersion + ' on ' + (Get-Date -Format 'yyyy-MM-dd') + '. Every camera and NVR at this site uses it. User: admin.')
+      favorite = $false; fields = @(); login = [ordered]@{ uris = @(); username = 'admin'; password = $pw; totp = $null }; secureNote = $null; card = $null; identity = $null; reprompt = 0 }
+    $enc = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($item | ConvertTo-Json -Depth 5 -Compress)))
+    $r = Invoke-FsBw $bw @('create', 'item') $enc
+    if ($r.code -eq 0 -and $r.out -match '"id"') { [void](Invoke-FsBw $bw @('sync')); return 'saved' }
+    return 'failed'
+  } finally { if ($session) { $env:BW_SESSION = $hadEnv } }
+}
+function Unlock-FsBitwarden([string]$bw, [string]$master) {
+  # bw unlock with the master password in a process-only variable (not on the command line); returns the session key or ''
+  if (-not $bw -or -not $master) { return '' }
+  $env:WIREIT_BWPW = $master
+  try { $r = Invoke-FsBw $bw @('unlock', '--passwordenv', 'WIREIT_BWPW', '--raw'); if ($r.code -eq 0 -and $r.out -and $r.out -notmatch '\s') { return $r.out }; return '' }
+  finally { Remove-Item Env:\WIREIT_BWPW -ErrorAction SilentlyContinue }
 }
 function Get-FsRandom($rng, [int]$n) { $b = New-Object byte[] 4; do { $rng.GetBytes($b); $v = [BitConverter]::ToUInt32($b, 0) } while ($v -ge ([uint32]::MaxValue - ([uint32]::MaxValue % [uint32]$n))); return [int]($v % [uint32]$n) }
 
