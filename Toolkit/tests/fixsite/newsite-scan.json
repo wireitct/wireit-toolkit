@@ -15,7 +15,7 @@
    "serial": "DS-7608NI-K20820209999WCVU",
    "mac": "44:19:b6:05:00:64",
    "ip": "10.0.5.64",
-   "login": "WireIt usual 1"
+   "login": "site password 1"
   },
   {
    "kind": "camera",
@@ -25,7 +25,7 @@
    "mac": "44:19:b6:05:00:21",
    "ip": "10.0.5.21",
    "firmware": "V5.7.3 build 220112",
-   "login": "WireIt usual 1",
+   "login": "site password 1",
    "streams": {
     "codec": "H.265",
     "fps": 15,
@@ -74,7 +74,7 @@
    "mac": "44:19:b6:05:00:26",
    "ip": "10.0.5.26",
    "firmware": "V5.7.3 build 220112",
-   "login": "WireIt usual 1",
+   "login": "site password 1",
    "streams": {
     "codec": "H.265",
     "fps": 15,
@@ -102,7 +102,7 @@
    "ip": "10.0.5.64",
    "brand": "Hikvision",
    "model": "DS-7608NI-K2",
-   "login": "WireIt usual 1",
+   "login": "site password 1",
    "channels": [
     {
      "channel": 1,

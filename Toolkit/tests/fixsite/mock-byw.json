@@ -17,25 +17,25 @@
    "channels": {
     "1": {
      "ip": "192.168.1.31",
-     "password": "Usual#Pw1",
+     "password": "Old#Site1",
      "name": "Hall 1",
      "protocol": "HIKVISION"
     },
     "19": {
      "ip": "192.168.1.83",
-     "password": "Usual#Pw1",
+     "password": "Old#Site1",
      "name": "Second Entrance",
      "protocol": "ONVIF"
     },
     "21": {
      "ip": "192.168.1.85",
-     "password": "Usual#Pw1",
+     "password": "Old#Site1",
      "name": "Lunch Room",
      "protocol": "ONVIF"
     },
     "22": {
      "ip": "192.168.1.87",
-     "password": "Usual#Pw1",
+     "password": "Old#Site1",
      "name": "DR Side",
      "protocol": "ONVIF"
     }
@@ -47,7 +47,7 @@
    "serial": "NC324G2XD0001",
    "mac": "c0:56:e3:00:00:31",
    "kind": "camera",
-   "password": "Usual#Pw1",
+   "password": "Old#Site1",
    "firmware": "V5.7.10 build 230101"
   },
   "192.168.1.83": {
@@ -56,7 +56,7 @@
    "serial": "8E0AB12PAZ00083",
    "mac": "9c:14:63:00:00:83",
    "kind": "camera",
-   "password": "Usual#Pw1",
+   "password": "Old#Site1",
    "firmware": "V2.800.12JW000.0.R build 2020-06-28",
    "stream": {
     "codec": "H.265",
@@ -76,7 +76,7 @@
    "serial": "8E0AB12PAZ00085",
    "mac": "9c:14:63:00:00:85",
    "kind": "camera",
-   "password": "Usual#Pw1",
+   "password": "Old#Site1",
    "firmware": "V2.800.12JW000.0.R build 2020-06-28",
    "stream": {
     "codec": "H.264",
@@ -96,7 +96,7 @@
    "serial": "8E0AB12PAZ00087",
    "mac": "9c:14:63:00:00:87",
    "kind": "camera",
-   "password": "Usual#Pw1",
+   "password": "Old#Site1",
    "firmware": "V2.800.12JW000.0.R build 2020-06-28",
    "answers": false,
    "stream": {

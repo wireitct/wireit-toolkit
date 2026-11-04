@@ -1,5 +1,5 @@
 {
- "_about": "2.0.2 New site (not listed): no site list, no site secrets. Router 10.0.5.1, PC got .57 from DHCP, NVR at .64 (not the standard .20). Front+Office+Gate work (Office still on the Hikvision factory password), Back is on the wrong scheme (192.168.1.64), Side is hung (answers after the unplug).",
+ "_about": "2.0.2 New site (not listed): no site list, no site secrets. Router 10.0.5.1, PC got .57 from DHCP, NVR at .64 (not the standard .20). Front+Office+Gate work (Office still on the Hikvision factory password), Back is on the wrong scheme (192.168.1.64), Side is hung (answers after the unplug). 2.0.3: the NVR is still on the Hikvision factory password too; nothing is shared with other sites (Old#Site1 is this site's old password, typed once).",
  "pc": {
   "ip": "10.0.5.57",
   "gw": "10.0.5.1",
@@ -13,12 +13,12 @@
    "serial": "DS-7608NI-K20820209999WCVU",
    "mac": "44:19:b6:05:00:64",
    "kind": "nvr",
-   "password": "Usual#Pw1",
+   "password": "12345",
    "firmware": "V5.7.3 build 220112",
    "channels": {
     "1": {
      "ip": "10.0.5.21",
-     "password": "Usual#Pw1",
+     "password": "Old#Site1",
      "name": "Front",
      "protocol": "HIKVISION"
     },
@@ -30,19 +30,19 @@
     },
     "3": {
      "ip": "10.0.5.23",
-     "password": "Usual#Pw1",
+     "password": "Old#Site1",
      "name": "Back",
      "protocol": "HIKVISION"
     },
     "4": {
      "ip": "10.0.5.24",
-     "password": "Usual#Pw1",
+     "password": "Old#Site1",
      "name": "Side",
      "protocol": "HIKVISION"
     },
     "5": {
      "ip": "10.0.5.26",
-     "password": "Usual#Pw1",
+     "password": "Old#Site1",
      "name": "Gate",
      "protocol": "HIKVISION"
     }
@@ -54,7 +54,7 @@
    "serial": "DS-2CD2143G2-I20210101AAWRF50000021",
    "mac": "44:19:b6:05:00:21",
    "kind": "camera",
-   "password": "Usual#Pw1",
+   "password": "Old#Site1",
    "firmware": "V5.7.3 build 220112"
   },
   "10.0.5.22": {
@@ -72,7 +72,7 @@
    "serial": "DS-2CD2043G2-I20200505AAWRF50000023",
    "mac": "44:19:b6:05:00:23",
    "kind": "camera",
-   "password": "Usual#Pw1",
+   "password": "Old#Site1",
    "firmware": "V5.7.3 build 220112"
   },
   "10.0.5.24": {
@@ -81,7 +81,7 @@
    "serial": "DS-2CD2143G2-I20210101AAWRF50000024",
    "mac": "44:19:b6:05:00:24",
    "kind": "camera",
-   "password": "Usual#Pw1",
+   "password": "Old#Site1",
    "firmware": "V5.7.3 build 220112",
    "answers": false,
    "wake_after": 2
@@ -92,7 +92,7 @@
    "serial": "DS-2CD2143G2-I20210101AAWRF50000026",
    "mac": "44:19:b6:05:00:26",
    "kind": "camera",
-   "password": "Usual#Pw1",
+   "password": "Old#Site1",
    "firmware": "V5.7.3 build 220112"
   }
  }

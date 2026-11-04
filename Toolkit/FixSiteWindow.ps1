@@ -49,7 +49,7 @@ $pBit = New-Pick @('Bitrate: keep as is', '1024', '2048', '3072', '4096', '6144'
 $row.Controls.Add($pCodec, 0, 0); $row.Controls.Add($pFps, 1, 0); $row.Controls.Add($pRes, 2, 0); $row.Controls.Add($pBit, 3, 0)
 # 2.0.1 (Moshe, Nov 3 10:06 PM): working cameras are never changed unless one of these is ticked. Both start unticked and untick again after every run.
 function New-Tick([string]$text) { $k = New-Object Windows.Forms.CheckBox; $k.Text = $text; $k.AutoSize = $true; $k.Font = Fnt 9.5; $k.Checked = $false; $k.Margin = New-Object Windows.Forms.Padding(0, (Px 6), 0, 0); return $k }
-$kAll = New-Tick 'Apply settings to ALL cameras'; $kPw = New-Tick 'Set the site password on all cameras'
+$kAll = New-Tick 'Apply settings to ALL cameras'; $kPw = New-Tick 'Make every device use the site password'
 $row.Controls.Add($kAll, 0, 1); $row.SetColumnSpan($kAll, 2); $row.Controls.Add($kPw, 2, 1); $row.SetColumnSpan($kPw, 2)
 $gb.Controls.Add($row); $t.Controls.Add($gb, 0, 3)
 $big = New-Object Windows.Forms.Button; $big.Text = 'Fix this site'; $big.Font = Fnt 26 'Bold'; $big.BackColor = $cGreen; $big.ForeColor = [Drawing.Color]::White; $big.FlatStyle = 'Flat'; $big.FlatAppearance.BorderSize = 0
@@ -67,20 +67,20 @@ $pnl = New-Object Windows.Forms.TableLayoutPanel; $pnl.Dock = 'Fill'; $pnl.Colum
 $pnl.Controls.Add($status, 0, 0); $pnl.Controls.Add($out, 0, 1); $t.Controls.Add($pnl, 0, 5)
 $bar = New-Object Windows.Forms.FlowLayoutPanel; $bar.Dock = 'Fill'; $bar.AutoSize = $true; $bar.FlowDirection = 'LeftToRight'
 function New-Small([string]$text) { $b = New-Object Windows.Forms.Button; $b.Text = $text; $b.AutoSize = $true; $b.Font = Fnt 9.5; $b.Padding = New-Object Windows.Forms.Padding((Px 6), (Px 2), (Px 6), (Px 2)); return $b }
-$bLook = New-Small 'Just look (change nothing)'; $bUndo = New-Small 'Undo the last fix'; $bUsual = New-Small 'Usual passwords...'; $bMore = New-Small 'More tools (old buttons)'
-foreach ($b in @($bLook, $bUndo, $bUsual, $bMore)) { $bar.Controls.Add($b) }
+$bLook = New-Small 'Just look (change nothing)'; $bUndo = New-Small 'Undo the last fix'; $bSitePw = New-Small 'Site password...'; $bMore = New-Small 'More tools (old buttons)'
+foreach ($b in @($bLook, $bUndo, $bSitePw, $bMore)) { $bar.Controls.Add($b) }
 $t.Controls.Add($bar, 0, 6)
 $tips = New-Object Windows.Forms.ToolTip
 $tips.SetToolTip($big, 'Finds the cameras with a real problem (offline, no video, hung, wrong IP scheme, not on the NVR, password unknown) and fixes ONLY those: site password, the settings above, right address, back on the NVR, video checked. Working cameras are not touched.')
 $tips.SetToolTip($bNew, 'At a site with no saved list: nothing to type. It finds the router, NVR and cameras by itself, shows what is broken or missing, fixes ONLY those after you type YES (backups + undo), then saves the site on this PC under a name (you can type the address).')
 $tips.SetToolTip($kAll, 'Off (normal): the drop-downs go only on the cameras being fixed. On: they go on every camera, working ones too. Unticks itself after each run.')
-$tips.SetToolTip($kPw, 'Off (normal): only the cameras being fixed get the site password. On: every camera gets it (and its NVR channel). Unticks itself after each run.')
+$tips.SetToolTip($kPw, 'Off (normal): only the cameras being fixed (and devices still on a factory password at a new site) get the site password. On: every camera and NVR on a different password gets this site''s password, one at a time: its NVR channel is updated and the picture checked; if a picture does not come back, that camera gets its old password back. YES + backups + undo as always. Unticks itself after each run.')
 $tips.SetToolTip($bLook, 'Shows what is wrong and what Fix would do. Changes nothing, asks for no YES.')
 $tips.SetToolTip($bUndo, 'Puts the cameras and NVR back the way the last Fix found them.')
-$tips.SetToolTip($bUsual, 'WireIt''s usual camera passwords, tried first on every site (kept encrypted on this PC).')
+$tips.SetToolTip($bSitePw, 'THIS site''s own password (every site has its own): show it with a Copy button, copy it, save it in Bitwarden, make one, or type the one the site already uses. Kept encrypted on this PC.')
 $result = 'done'
 
-function Set-Busy([bool]$busy) { foreach ($b in @($big, $bNew, $bLook, $bUndo, $bUsual, $bMore, $site, $pCodec, $pFps, $pRes, $pBit, $kAll, $kPw)) { $b.Enabled = -not $busy } }
+function Set-Busy([bool]$busy) { foreach ($b in @($big, $bNew, $bLook, $bUndo, $bSitePw, $bMore, $site, $pCodec, $pFps, $pRes, $pBit, $kAll, $kPw)) { $b.Enabled = -not $busy } }
 function Start-Run([string]$mode, [string[]]$extra, [bool]$needSite, [bool]$newSite = $false) {
   $s = $site.Text.Trim(); if ($newSite) { $s = '' }   # 2.0.2: New site ignores the site box
   if ($needSite -and -not $s) { [void][Windows.Forms.MessageBox]::Show($f, 'Type the site first (the Site ID on the QR sticker, like WI-061, or the address).', 'WireIt Toolkit'); return }
@@ -110,7 +110,7 @@ function Get-Settings {
 $big.Add_Click({ Start-Run 'Fix' (Get-Settings) $true })
 $bNew.Add_Click({ Start-Run 'Fix' (Get-Settings) $false $true })
 $bLook.Add_Click({ Start-Run 'Plan' (Get-Settings) $true })
-$bUsual.Add_Click({ Start-Run 'SetUsual' @() $false })
+$bSitePw.Add_Click({ Start-Run 'SitePassword' @() $true })   # 2.0.3: was "Usual passwords..." (no shared passwords between sites)
 $bUndo.Add_Click({
   $d = Get-FsLastRun $runsDir -Undoable
   if (-not $d) { [void][Windows.Forms.MessageBox]::Show($f, 'There is no fix to undo (no un-undone Fix this site run on this PC).', 'WireIt Toolkit'); return }
