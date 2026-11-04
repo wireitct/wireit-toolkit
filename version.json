@@ -1,9 +1,9 @@
 {
-  "version": "2.0.0",
+  "version": "2.0.1",
   "released": "2026-11-03",
-  "commit": "fb14128e6e9793da6f7cdfce8369e48be3246908",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/fb14128e6e9793da6f7cdfce8369e48be3246908/",
-  "notes": "2.0 \"Fix this site\": one screen, one big button. It reads the site's camera list, shows only what is wrong, you type YES once, and it fixes each camera (site password, settings from the drop-downs, move to the WireIt IP scheme, back on the NVR, restart or power-cycle hung cameras) with a check per camera when video is back. Missing cameras say which switch port to check. Undo the last fix in one click. The old buttons are under \"More tools\".",
+  "commit": "f2b841d5f02740df543c645b09e138097880d1ea",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/f2b841d5f02740df543c645b09e138097880d1ea/",
+  "notes": "2.0.1: \"Fix this site\" changes ONLY cameras with a real problem (offline, no video, hung, wrong IP scheme, not on the NVR, password unknown with no video, missing). Working cameras are not touched at all. The camera-setting drop-downs go only on the cameras being fixed, unless you tick \"Apply settings to ALL cameras\"; the site password goes on working cameras only if you tick \"Set the site password on all cameras\". The list now starts with \"Changes only the N cameras listed below. M working cameras will not be touched.\" 2.0 \"Fix this site\": one screen, one big button. It reads the site's camera list, shows only what is wrong, you type YES once, and it fixes each camera (site password, settings from the drop-downs, move to the WireIt IP scheme, back on the NVR, restart or power-cycle hung cameras) with a check per camera when video is back. Missing cameras say which switch port to check. Undo the last fix in one click. The old buttons are under \"More tools\".",
   "files": [
     {
       "path": "Toolkit/WireItToolkit.ps1",
@@ -27,8 +27,8 @@
     },
     {
       "path": "Toolkit/README.txt",
-      "sha256": "dff98e28f78babf80c98f14eb93c1f698bc95cfc8bed9d3c9694a3c628f84b81",
-      "size": 14637
+      "sha256": "5a0282a849fbe16fb6081cc29bb15913a3d772a9b0aadb099739a729fa4477e8",
+      "size": 15758
     },
     {
       "path": "Toolkit/wireit.ico",
@@ -172,28 +172,28 @@
     },
     {
       "path": "Toolkit/FixSite.ps1",
-      "sha256": "8477a9fa85ac869230984d9e6872661bae4933b8e448b14e9c68bc8abfb3a644",
-      "size": 47540
+      "sha256": "3bee0b8d154ef540ecff98d505ace034b10606e1dfa1152770d64497b1ddf458",
+      "size": 49799
     },
     {
       "path": "Toolkit/FixSiteCore.ps1",
-      "sha256": "a01b23ce4e9fd3377192f8e2aea214318bfd4dce2836550d24e147eae3d4144f",
-      "size": 38128
+      "sha256": "f7d948851a2a94007d77d042d0d7e282d03ca5252495d975b29a4963b53b8de7",
+      "size": 43634
     },
     {
       "path": "Toolkit/FixSiteDevices.ps1",
-      "sha256": "2834742275f1d764552224b9c15c2062d9311a869a2c23ede58794479f46dbec",
-      "size": 34508
+      "sha256": "eae79045b0bcbc77edb3a32556d8f0c1ee92aba3fd730aae20c41430df02d220",
+      "size": 34619
     },
     {
       "path": "Toolkit/FixSiteWindow.ps1",
-      "sha256": "13f1d556ad90c8e18b2cbe7e97ebdaa935c670d9e672f1ce9626af9583256cd4",
-      "size": 12195
+      "sha256": "920f09280ebbe6ae82ad9c1dc1b67ff88c8b5fe80edeea156a6d3c2fb883892c",
+      "size": 13484
     },
     {
       "path": "Toolkit/tests/Test-FixSite.ps1",
-      "sha256": "5aaab188b89a66998e60d4429dcf8072770dd3cc6b17cf03b220cec74c65520f",
-      "size": 17263
+      "sha256": "a7c15742e705a6d0ce81038ef0cb9da6f43714138e7f510ffce14e2ff8cc70b0",
+      "size": 28951
     },
     {
       "path": "Toolkit/tests/fixsite/mock_site.py",
