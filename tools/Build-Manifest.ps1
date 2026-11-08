@@ -32,7 +32,7 @@ function Get-BmDiskFiles([string]$root, [string[]]$tops) {
   foreach ($p in @(Get-Content -LiteralPath $inventory | Where-Object { $_ -and -not $_.StartsWith('#') })) {
     if ($p -match '\.\.|[\\:]|^/' -or $tops -notcontains ($p -split '/')[0]) { throw ('Invalid release inventory path: ' + $p) }
     if (-not (Test-Path -LiteralPath (Join-Path $root $p) -PathType Leaf)) { throw ('Release file missing: ' + $p) }
-    $p
+    [string]$p   # 2.2.6: a plain string. Get-Content's lines carry PSPath etc.; Windows PowerShell 5.1's ConvertTo-Json wrote each "path" as an object
   }
 }
 $list = $null
@@ -50,7 +50,7 @@ foreach ($p in ($list | Sort-Object)) {
   $full = Join-Path $Repo ($p -replace '/', [IO.Path]::DirectorySeparatorChar)
   $bytes = [IO.File]::ReadAllBytes($full)
   $h = -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
-  $files += [ordered]@{ path = $p; sha256 = $h; size = $bytes.Length }
+  $files += [ordered]@{ path = [string]$p; sha256 = $h; size = $bytes.Length }
 }
 $man = [ordered]@{ version = $version; released = $Released; commit = $Commit; base = ($RawBase + $Commit + '/'); notes = $Notes; files = $files }
 $json = ($man | ConvertTo-Json -Depth 5)

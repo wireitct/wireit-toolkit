@@ -357,6 +357,7 @@ Check ($hb.Count -eq 0) ('every listed hash is the file on this branch' + $(if (
 $bmOut = Join-Path $tmp 'version-built.json'
 & (Join-Path $repo 'tools/Build-Manifest.ps1') -Commit ([string]$man.commit) -Released ([string]$man.released) -Out $bmOut | Out-Null
 $bm = [IO.File]::ReadAllText($bmOut) | ConvertFrom-Json
+Check (@($bm.files).Count -gt 0 -and @($bm.files | Where-Object { -not ($_.path -is [string]) }).Count -eq 0) '2.2.6 reproduction: every file path the builder writes is plain text (on Windows PowerShell 5.1 without git, 2.2.5 wrote each path as an object)'
 Check ([string]$bm.version -eq '2.2.5' -and -not (Test-TkManifest $bm)) 'release package: tools\Build-Manifest.ps1 builds a manifest the Toolkit accepts, at the code''s own version'
 Check ((@($bm.files | ForEach-Object { $_.path + '=' + $_.sha256 } | Sort-Object) -join '|') -eq (@($man.files | ForEach-Object { $_.path + '=' + ([string]$_.sha256).ToLower() } | Sort-Object) -join '|')) 'release package: version.json is exactly what the builder makes from this branch (no file missed, no stale hash)'
 Check (@($man.files | Where-Object { -not (Test-Path (Join-Path $repo ([string]$_.path))) }).Count -eq 0) 'every listed file exists'
@@ -365,6 +366,7 @@ $ng = Join-Path $tmp 'nogit'; New-Item -ItemType Directory -Force -Path $ng | Ou
 $pshExe = (Get-Process -Id $PID).Path; $oldPath = $env:PATH
 try { $env:PATH = $(if ($env:OS -eq 'Windows_NT') { $env:SystemRoot + '\System32' } else { $ng }); $ngLog = & $pshExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'tools/Build-Manifest.ps1') -Commit ([string]$man.commit) -Released ([string]$man.released) -Out $ngOut 2>&1; $ngCode = $LASTEXITCODE } finally { $env:PATH = $oldPath }
 $ngm = $null; try { $ngm = [IO.File]::ReadAllText($ngOut) | ConvertFrom-Json } catch {}
+Check ($ngm -and @($ngm.files).Count -gt 0 -and @($ngm.files | Where-Object { -not ($_.path -is [string]) }).Count -eq 0) '2.2.6: ...without git too, every file path is plain text'
 Check ($ngCode -eq 0 -and $ngm -and (($ngLog | Out-String) -match 'listing the files on disk')) '2.2.5: without git, Build-Manifest still builds the manifest (from the files on disk) and says so'
 Check ($ngm -and (@($ngm.files | ForEach-Object { $_.path + '=' + $_.sha256 } | Sort-Object) -join '|') -eq (@($man.files | ForEach-Object { $_.path + '=' + ([string]$_.sha256).ToLower() } | Sort-Object) -join '|')) '2.2.5: ...and it is the same manifest as version.json (same files, same hashes)'
 } finally { foreach ($p in $procs) { try { $p.Kill() } catch {} }; $script:FsMockUrl = '' }
