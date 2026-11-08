@@ -82,7 +82,7 @@ if (-not $SitesDir) { $SitesDir = Join-Path $here 'sites' }
 $camResetDir = Join-Path $root 'CamReset'; $portMapDir = Join-Path $root 'PortMap'
 if ($MockUrl) { $script:FsMockUrl = $MockUrl; $script:FsTestSecrets = $true }
 if ($Mode -eq 'DryRun') { $script:FsTestSecrets = $true }
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'; $runStart = Get-Date
 $runDir = Join-Path $RunsRoot ('FixSite-' + $stamp); New-Item -ItemType Directory -Force -Path $runDir | Out-Null
 $logFile = Join-Path $runDir 'log.txt'
 $tempState = Join-Path (Join-Path $RunsRoot '_state') 'fixsite-temp-ips.json'; New-Item -ItemType Directory -Force -Path (Split-Path $tempState) | Out-Null   # 2.2.0: not in the Crew-writable state\
@@ -552,9 +552,14 @@ if ($Mode -eq 'DryRun') {
     $fc = Join-Path $camResetDir 'Find-Cameras.ps1'
     if (Test-Path $fc) {
       $psexe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-      $null = & $psexe -NoProfile -ExecutionPolicy Bypass -File $fc -NoLogin 2>&1
-      foreach ($d in @(Get-TkScanDevices $camResetDir)) { $found += [pscustomobject]@{ brand = $d.brand; model = $d.model; serial = $d.serial; mac = $d.mac; ip = $d.ip; firmware = $d.firmware; kind = $(if ($d.kind -eq 'recorder') { 'nvr' } else { $d.kind }); activated = $true } }
-      try { $raw = Get-Content (Join-Path $camResetDir 'out\latest.json') -Raw | ConvertFrom-Json; foreach ($d in @($raw.devices)) { if ([string]$d.Activated -match '(?i)false|no') { foreach ($f in $found) { if ($f.ip -eq $d.IP) { $f.activated = $false } } } } } catch {}
+      # 2.2.3 (Codex #8/#9): only the picked network is scanned, and only THIS run's scan is used: the old out\latest.json (another
+      # site's, maybe) is moved aside first, and a failed finder (exit code, or no new file) gives no devices instead of stale ones
+      $lj = Join-Path $camResetDir 'out\latest.json'; if (Test-Path -LiteralPath $lj) { Move-Item -LiteralPath $lj -Destination ($lj + '.prev') -Force -ErrorAction SilentlyContinue }
+      $null = & $psexe -NoProfile -ExecutionPolicy Bypass -File $fc -NoLogin -LocalIp ([string]$pc.ip) 2>&1; $fcExit = $LASTEXITCODE
+      $scanOk = (Test-FsFreshScan $lj $fcExit $runStart)
+      if (-not $scanOk) { Say ('Find cameras did not finish a scan on this network' + $(if ($fcExit) { ' (code ' + $fcExit + ')' } else { '' }) + ', so its results are not used (only the NVR and the site list).') 'Yellow' }
+      foreach ($d in @($(if ($scanOk) { Get-TkScanDevices $camResetDir } else { @() }))) { $found += [pscustomobject]@{ brand = $d.brand; model = $d.model; serial = $d.serial; mac = $d.mac; ip = $d.ip; firmware = $d.firmware; kind = $(if ($d.kind -eq 'recorder') { 'nvr' } else { $d.kind }); activated = $true } }
+      if ($scanOk) { try { $raw = Get-Content (Join-Path $camResetDir 'out\latest.json') -Raw | ConvertFrom-Json; foreach ($d in @($raw.devices)) { if ([string]$d.Activated -match '(?i)false|no') { foreach ($f in $found) { if ($f.ip -eq $d.IP) { $f.activated = $false } } } } } catch {} }
     } else { Say 'Find cameras is not on this PC (C:\WireIt\CamReset), so only the NVR''s list and the site list are used.' 'Yellow' }
     foreach ($d in @(Find-FsDahua)) { if (-not @($found | Where-Object { $_.ip -eq $d.ip }).Count) { $found += $d } }
   }
@@ -562,6 +567,7 @@ if ($Mode -eq 'DryRun') {
   # list addresses nobody answered for: try them too (a camera can miss the discovery)
   foreach ($c in @($(if ($list) { $list.cameras } else { @() }))) { $lip = [string]$c.ip; if ($lip -and -not @($found | Where-Object { $_.ip -eq $lip }).Count -and (Get-FsP3 $lip) -eq $scheme) { $s = Test-FsLogin $lip (Get-FsBrand ([string]$c.brand) ([string]$c.model)) ''; if ($s -ne 'noanswer') { $found += [pscustomobject]@{ brand = (Get-FsBrand ([string]$c.brand) ([string]$c.model)); model = [string]$c.model; serial = [string]$c.serial; mac = [string]$c.mac; ip = $lip; kind = 'camera'; activated = $true } } } }
   $found = @($found | Where-Object { $_.ip -and $_.ip -ne $pc.ip -and $_.ip -ne $pc.gw -and ($_.kind -in @('camera', 'nvr')) })
+  $found = @(Select-FsFoundOnNet $found $pc $pcAll)   # 2.2.3 (Codex #8): devices on the PC's OTHER network are not this site's
   foreach ($d in $found) { if ($d.model) { $script:FsModels[[string]$d.ip] = [string]$d.model } }   # 2.2.2 (H1): the no-HTTPS model list
   # 2. reach the wrong schemes (temporary PC address, removed at the end)
   $schemes = @($found | Where-Object { -not (Test-FsOnScheme $_.ip $scheme) } | ForEach-Object { Get-FsP3 $_.ip } | Where-Object { $_ -and $_ -ne $scheme -and -not (Test-FsPoeNet ($_ + '.1')) } | Select-Object -Unique | Select-Object -First 3)

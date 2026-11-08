@@ -116,6 +116,21 @@ function Get-FsScheme($observed, $expected) {
   return ''
 }
 
+# ---------------- 2.2.3 (Codex #8, #9): discovery belongs to THIS run and THIS network ----------------
+function Test-FsFreshScan([string]$file, $exitCode, [datetime]$since) {
+  # the finder's out\latest.json is used only when the finder ended OK and wrote it during this run
+  if ($null -ne $exitCode -and [int]$exitCode -ne 0) { return $false }
+  if (-not $file -or -not (Test-Path -LiteralPath $file)) { return $false }
+  return ((Get-Item -LiteralPath $file).LastWriteTime -ge $since.AddSeconds(-2))
+}
+function Select-FsFoundOnNet($found, $pc, $pcAll) {
+  # drops devices that sit inside one of this PC's OTHER networks (not the one the tech picked): they belong to that network
+  $others = @(@($pcAll) | Where-Object { $_ -and [string]$_.ip -and [string]$_.ip -ne [string]$pc.ip -and [int]$_.prefix -gt 0 })
+  return @(@($found) | Where-Object {
+    $ip = [string]$_.ip; $mine = ($pc -and [int]$pc.prefix -gt 0 -and (Test-FsInSubnet $ip ([string]$pc.ip) ([int]$pc.prefix)))
+    $mine -or -not @($others | Where-Object { Test-FsInSubnet $ip ([string]$_.ip) ([int]$_.prefix) }).Count })
+}
+
 # ---------------- password candidates (Moshe Nov 3 5:24 PM: saved ones first, then ONE question, then the official reset) ----------------
 function Get-FsFactoryPasswords([string]$brand) {
   # 2.0.2 (new site): the makers' old factory passwords, tried LAST and inside the same try limit (cameras made since ~2017 have none: they must be activated)

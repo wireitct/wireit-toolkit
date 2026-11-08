@@ -21,7 +21,7 @@
 #>
 param([switch]$NoLogin, [int]$ListenSeconds = 0, [string]$ConfigPath = '', [switch]$SelfTest,
   [switch]$NoSweep, [switch]$NoMulticast, [string[]]$SweepTargets = @(), [int[]]$SweepPorts = @(80, 554, 8000, 7001),
-  [int]$SweepTimeoutMs = 400, [switch]$NoPing, [string]$TestAnswersFile = '', [int]$OnvifUnicastPort = 3702)
+  [int]$SweepTimeoutMs = 400, [switch]$NoPing, [string]$TestAnswersFile = '', [int]$OnvifUnicastPort = 3702, [string[]]$LocalIp = @())
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -39,9 +39,14 @@ function Say($s) { Write-Host $s; $sum.Add($s) }
 function Log($s) { Add-Content -Path (Join-Path $here 'camreset.log') -Value ((Get-Date -Format 's') + ' FIND ' + $s) }
 
 # ---- local IPv4 addresses to probe from (skip loopback, link-local, Tailscale 100.64/10, cellular) ----
-$locals = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
-  $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.InterfaceAlias -notmatch 'Tailscale|Cellular|Bluetooth|Loopback|vEthernet' -and
+$allLocals = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+  $_.IPAddress -notlike '127.*' -and $_.InterfaceAlias -notmatch 'Tailscale|Cellular|Bluetooth|Loopback|vEthernet' -and
   -not ($_.IPAddress -match '^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.') })
+# 2.2.3 (Codex #8): -LocalIp = only the network the tech picked (Fix this site passes it): a second camera-bearing Wi-Fi is not scanned.
+# 2.2.3 (Codex #35): an isolated camera switch with no DHCP leaves only a 169.254 address: SADP multicast still works from it.
+$locals = @($allLocals | Where-Object { $_.IPAddress -notlike '169.254.*' })
+if (@($LocalIp | Where-Object { $_ }).Count) { $locals = @($allLocals | Where-Object { $LocalIp -contains $_.IPAddress }) }
+elseif (-not $locals) { $locals = @($allLocals | Where-Object { $_.IPAddress -like '169.254.*' }); if ($locals) { Write-Host 'Only a 169.254 address on this PC (camera switch with no router): looking from it.' } }
 Say ('=== Camera finder ' + (Get-Date -Format 'yyyy-MM-dd HH:mm') + ' on ' + $env:COMPUTERNAME + ' ===')
 foreach ($l in $locals) { Say ('This PC: ' + $l.InterfaceAlias + ' ' + $l.IPAddress + '/' + $l.PrefixLength) }
 if (-not $locals -and -not @($SweepTargets).Count) { Say 'No wired/Wi-Fi network address on this PC. Plug into the site network and run again.'; exit 1 }

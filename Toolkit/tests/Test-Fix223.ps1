@@ -124,6 +124,24 @@ Check ($fs -match 'reads them back as they were' -and $fs -match '\$okS = \[bool
 Check ($fs -match "\[void\]\(Set-FsPassword \`$ip \`$c\.brand \`$cr \`$oldPw\); \(Test-FsLogin \`$ip \`$c\.brand \`$oldPw\) -eq 'ok'") 'camera password back = the old password logs in'
 Check ($fs -match "\`$ok = \(\(Test-FsLogin \`$nip 'Hikvision' \`$oldN\) -eq 'ok'\)") 'NVR password back = the old password logs in'
 Check ($fs -match "Restart-FsDevice \(\[string\]\`$n\.target\)" -and $fs -match "if \(\`$backN\) \{ & \`$markDone \('nvrmove") 'NVR move-back: restart when asked, done only when it answers on its old address'
+Write-Host '#8 discovery and repairs stay on the network the tech picked'
+$pcA = [pscustomobject]@{ ip = '192.168.1.105'; prefix = 24 }; $pcB = [pscustomobject]@{ ip = '10.0.5.20'; prefix = 24 }
+$f = @([pscustomobject]@{ ip = '192.168.1.50' }, [pscustomobject]@{ ip = '10.0.5.77' }, [pscustomobject]@{ ip = '192.168.0.64' })
+$k = @(Select-FsFoundOnNet $f $pcA @($pcA, $pcB) | ForEach-Object { $_.ip })
+Check ($k -notcontains '10.0.5.77') 'reproduction: a camera on the PC''s other (Wi-Fi) network is not planned for relocation'
+Check ($k -contains '192.168.1.50' -and $k -contains '192.168.0.64') 'cameras on the picked network and wrong-scheme cameras on the same wire stay'
+$fc = Read-Src 'CamReset/Find-Cameras.ps1'; $fs = Read-Src 'Toolkit/FixSite.ps1'
+Check ($fc -match '\[string\[\]\]\$LocalIp' -and $fs -match '-LocalIp \(\[string\]\$pc\.ip\)') 'Find cameras scans only the picked network (-LocalIp)'
+Write-Host '#9 a failed discovery never reuses an older scan'
+$lj = Join-Path $tmp 'latest.json'; Set-Content -Path $lj -Value '{}'; (Get-Item $lj).LastWriteTime = (Get-Date).AddDays(-2)
+Check (-not (Test-FsFreshScan $lj 0 (Get-Date))) 'reproduction: latest.json from an earlier run (another site) is not used'
+Set-Content -Path $lj -Value '{}'
+Check (-not (Test-FsFreshScan $lj 1 (Get-Date).AddMinutes(-1))) 'the finder failed (exit 1) -> not used'
+Check (Test-FsFreshScan $lj 0 (Get-Date).AddMinutes(-1)) 'written by this run, exit 0 -> used'
+Check (-not (Test-FsFreshScan (Join-Path $tmp 'none.json') 0 (Get-Date))) 'no file -> not used'
+Check ($fs -match "Move-Item -LiteralPath \`$lj -Destination \(\`$lj \+ '\.prev'\)" -and $fs -match 'if \(\$scanOk\) \{ Get-TkScanDevices') 'FixSite moves the old scan aside and uses the finder only when this run''s scan is good'
+Write-Host '#35 an APIPA-only isolated switch is still scanned'
+Check ($fc -match "elseif \(-not \`$locals\) \{ \`$locals = @\(\`$allLocals \| Where-Object \{ \`$_\.IPAddress -like '169\.254\.\*' \}\)") 'reproduction: only a 169.254 address -> the finder looks from it (2.2.2 exited "no network")'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
