@@ -5,7 +5,7 @@
  (import + login check); with no run going, the next Fix this site uses it. Only a file (2 MB at most) or a code of letters/digits is taken.
 #>
 function Get-HikInboxDir([string]$ToolkitDir) { return (Join-Path $ToolkitDir 'inbox\hik') }
-# the devices waiting for Hikvision's reply: the live run's list first (ipc\s-<id>\hik.json), else inbox\hik\waiting.json from the last run
+# the devices waiting for Hikvision's reply: inbox\hik\waiting.json from the last run (2.2.3: -SessionDir is only an optional extra list; nothing writes ipc\ any more)
 function Get-HikWaitingDevices([string]$ToolkitDir, [string]$SessionDir = '') {
   $list = @()
   if ($SessionDir) { $f = Join-Path $SessionDir 'hik.json'; if (Test-Path -LiteralPath $f) { try { $j = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json; $list = @($j.waiting | Where-Object { $_ }) } catch {} } }

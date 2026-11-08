@@ -68,12 +68,12 @@ $fsCfg = $null; if ($cfgAll -and $cfgAll.PSObject.Properties['fixSite']) { $fsCf
 if ($fsCfg -and $fsCfg.PSObject.Properties['noHttpsModels']) { $script:FsNoTlsModels = @($script:FsNoTlsModels) + @($fsCfg.noHttpsModels | ForEach-Object { [string]$_ } | Where-Object { $_ }) }
 $driveRoots = @('G:\My Drive\WireIt Sites', '%USERPROFILE%\My Drive\WireIt Sites', 'C:\Users\admin\My Drive\WireIt Sites')
 if ($fsCfg -and $fsCfg.PSObject.Properties['driveRoots']) { $driveRoots = @($fsCfg.driveRoots) }
-# 2.2.0: the "Fix this site" task runs as SYSTEM, which has no G: drive and no profile of its own: look in every user's My Drive too
+# 2.2.0: also every user's My Drive (2.2.3: the run is on the tech's login now, so their own G: is found first)
 try { if ([Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) { foreach ($u in @(Get-ChildItem -LiteralPath (Join-Path $env:SystemDrive 'Users') -Directory -ErrorAction SilentlyContinue)) { $driveRoots += (Join-Path $u.FullName 'My Drive\WireIt Sites') } } } catch {}
 $opts = Merge-FsOptions $fsCfg
 $opts.settings.codec = $Codec; $opts.settings.fps = $Fps; $opts.settings.resolution = $Resolution; $opts.settings.bitrate = $Bitrate
 $opts.settingsAll = [bool]$AllCameras; $opts.passwordAll = [bool]$PasswordAll   # per run, never from config: a working camera is only touched when the tech ticks it this time
-# 2.2.0: the site password store is vault\ (Administrators + SYSTEM only, machine-wide DPAPI); 2.1's secrets\ is read once and moved
+# 2.2.0: the site password store is vault\ (machine-wide DPAPI); 2.1's secrets\ is read once and moved
 if (-not $SecretsDir) { $SecretsDir = Join-Path $here 'vault'; $script:FsLegacySecretsDir = Join-Path $here 'secrets' }
 if (-not $RunsRoot) { $RunsRoot = Join-Path $here 'fixsite-runs' }
 if (-not $SitesDir) { $SitesDir = Join-Path $here 'sites' }
