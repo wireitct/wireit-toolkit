@@ -193,6 +193,14 @@ $r6 = Import-HikUnlock $dev6 ([pscustomobject]@{ code = 'LONGERCODE123456' }) 'N
 Check ($script:SadpSent.Count -gt 0) 'config opt-in (hikReset.sadpLegacyPlainPassword = true) still allows them'
 $script:SadpAllowPlainPassword = $false
 Check ((Read-Src 'Toolkit/HikResetFlow.ps1') -match 'sadpLegacyPlainPassword') 'the opt-in is read from config'
+Write-Host '#7 no password to a Basic-only challenge over plain HTTP; device certificates pinned'
+Check (-not (Test-FsDigestOffered @('Basic realm="x"'))) 'reproduction: a Basic-only challenge over HTTP is refused (2.2.2 answered it with the password)'
+Check (Test-FsDigestOffered @('Basic realm="x"', 'Digest realm="x", nonce="1", qop="auth"')) 'Digest offered -> the login goes ahead (password never on the wire)'
+$src7 = Read-Src 'Toolkit/FixSiteDevices.ps1'
+Check ($src7 -match "err = 'basic-over-http'" -and $src7 -match 'if \(\$Cred -and -not \$Tls -and -not \$script:FsMockUrl\)') 'Fs-Http checks the challenge before any plain-HTTP login'
+Check ($src7 -match 'Pins\.TryGetValue\(host, out seen\)\) return seen == tp') 'Windows PowerShell 5.1: a device''s certificate is pinned for the run; a different one on the same address is refused'
+$cs = $script:WireItLanTlsCode
+try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $cs -IgnoreWarnings -WarningAction SilentlyContinue -ErrorAction Stop }; Check ([bool]('WireItLanTls' -as [type])) 'the pinning helper compiles' } catch { Check $false ('the pinning helper compiles: ' + $_.Exception.Message) }
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

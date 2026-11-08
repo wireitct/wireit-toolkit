@@ -25,11 +25,17 @@ public static class WireItLanTls {
     if (b[0] == 169 && b[1] == 254) return true;
     return false;
   }
+  // 2.2.3 (Codex #7): a device's own certificate is accepted once, then PINNED for this run: another certificate on the same
+  // address (an impersonating box on the LAN) is refused. Only in this FixSiteDevices copy (Fix this site sends passwords).
+  public static readonly System.Collections.Generic.Dictionary<string, string> Pins = new System.Collections.Generic.Dictionary<string, string>();
   public static bool Check(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors) {
     if (errors == SslPolicyErrors.None) return true;
     string host = null;
     HttpWebRequest r = sender as HttpWebRequest; if (r != null) { host = r.RequestUri.Host; } else { string s = sender as string; if (s != null) host = s; }
-    return IsLanHost(host);
+    if (!IsLanHost(host) || cert == null) return false;
+    string tp = cert.GetCertHashString(); string seen;
+    lock (Pins) { if (Pins.TryGetValue(host, out seen)) return seen == tp; Pins[host] = tp; }
+    return true;
   }
   public static readonly RemoteCertificateValidationCallback Callback = new RemoteCertificateValidationCallback(Check);
   public static void Install() { ServicePointManager.ServerCertificateValidationCallback = Callback; }
@@ -55,8 +61,23 @@ function Fs-LogLine([string]$s) { if (Get-Command Fs-Log -ErrorAction SilentlyCo
 function Fs-Cred([string]$pw, [string]$user = 'admin') { if (-not $pw) { return $null }; return New-Object PSCredential($user, (ConvertTo-SecureString $pw -AsPlainText -Force)) }
 function Fs-Plain($cred) { if (-not $cred) { return '' }; return $cred.GetNetworkCredential().Password }
 function Fs-Xml([string]$s) { return [Security.SecurityElement]::Escape([string]$s) }
+# 2.2.3 (Codex #7): over plain HTTP a password is only ever answered to a Digest challenge (the password itself never crosses the
+# wire). A device - or a box pretending to be one - that asks only for Basic gets no password over plain HTTP.
+$script:FsAuthScheme = @{}
+function Test-FsDigestOffered([string[]]$challenges) { return [bool](@($challenges | Where-Object { [string]$_ -match '(?i)^\s*digest\b' }).Count) }
+function Get-FsHttpChallenge([string]$ip, [string]$path) {
+  if ($script:FsAuthScheme.ContainsKey($ip)) { return $script:FsAuthScheme[$ip] }
+  $ch = @()
+  try { [void](Invoke-WebRequest -Uri ('http://' + $ip + $path) -UseBasicParsing -TimeoutSec 6 -ErrorAction Stop); $ch = @('none') }
+  catch { try { $h = $_.Exception.Response.Headers; $v = $null; try { $v = $h['WWW-Authenticate'] } catch {}; if (-not $v) { try { $v = @($h.WwwAuthenticate | ForEach-Object { $_.ToString() }) } catch {} }; $ch = @($v | ForEach-Object { [string]$_ -split '(?i),\s*(?=(basic|digest)\b)' } | Where-Object { $_ -match '(?i)^\s*(basic|digest)\b' }) } catch {} }
+  $script:FsAuthScheme[$ip] = $ch; return $ch
+}
 function Fs-Http {
   param([string]$Ip, [string]$Path, [string]$Method = 'GET', [string]$Body = '', [string]$ContentType = 'application/xml', $Cred = $null, [int]$Timeout = 8, [string]$OutFile = '', [switch]$Secret, [switch]$Tls)
+  if ($Cred -and -not $Tls -and -not $script:FsMockUrl) {
+    $chs = @(Get-FsHttpChallenge $Ip $Path)
+    if ($chs.Count -and $chs[0] -ne 'none' -and -not (Test-FsDigestOffered $chs)) { Fs-LogLine ($Method + ' ' + $Ip + ' refused: plain HTTP with Basic login only (the password is not sent)'); return [pscustomobject]@{ code = 0; body = ''; err = 'basic-over-http' } }
+  }
   $base = $(if ($script:FsMockUrl) { $script:FsMockUrl.TrimEnd('/') + $(if ($Tls) { '/tls/' } else { '/dev/' }) + $Ip } elseif ($Tls) { 'https://' + $Ip } else { 'http://' + $Ip })
   $a = @{ Uri = ($base + $Path); Method = $Method; UseBasicParsing = $true; TimeoutSec = $Timeout; ErrorAction = 'Stop' }
   if ($Tls -and -not $script:FsIsPs5 -and -not $script:FsMockUrl -and (Test-WireItLanHost $Ip)) { $a.SkipCertificateCheck = $true }   # this one device call only (PS 5.1: Enable-WireItLanTls)
