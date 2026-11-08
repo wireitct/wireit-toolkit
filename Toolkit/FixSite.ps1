@@ -721,7 +721,16 @@ elseif (-not $sec.password) { Say 'This site has no site password, so nothing wa
 $sitePw = $sec.password; Remember-Secret $sitePw
 $rb = [ordered]@{ tool = ('WireIt Toolkit ' + $script:FsVersion + ' Fix this site'); site = $siteName; run = $stamp; taken_on = $env:COMPUTERNAME; note = 'Old passwords are NOT in this file: they are in the site secret store on this PC (encrypted), under this run.'; pc = $(if ($pc) { [ordered]@{ ifIndex = [int]$pc.ifIndex; name = [string]$pc.name; ip = [string]$pc.ip; prefix = [int]$pc.prefix } } else { $null }); nvrs = @(); cameras = @() }
 $rbPath = Join-Path $runDir 'rollback.json'
-function Save-Rb { ($rb | ConvertTo-Json -Depth 8) | Set-Content -Path $rbPath -Encoding UTF8 }
+# 2.2.6 (Codex file-by-file D): the undo file is written BEFORE each change it describes. A write that fails is never ignored: the run
+# stops right there (exit 7), so nothing is changed that Undo would not know about (2.2.5 wrote it with Set-Content and went on).
+function Save-Rb {
+  try { [IO.File]::WriteAllText($rbPath, ($rb | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($true))) }
+  catch {
+    $ex = $_.Exception; if ($ex.InnerException) { $ex = $ex.InnerException }
+    Say ('The undo file could not be saved (' + $ex.Message + '), so the run stopped here: nothing more was changed.') 'Red'
+    Fs-Log ('undo file write failed: ' + $ex.Message); Done 7
+  }
+}
 if (-not $sec.rollback) { $sec.rollback = @{} }
 $sec.rollback[$stamp] = @{}
 $results = @(); $okCount = 0; $badCount = 0
@@ -749,6 +758,7 @@ if ($Mode -eq 'DryRun') {
   Offer-List
   Say ''; Say 'Dry run done: nothing was changed.' 'Green'; Done 0
 }
+Save-Rb   # 2.2.6: the undo file exists (and can be written) before the first change; if not, nothing is changed
 
 # =====================================================================================
 #  2.1.0  HIKVISION OFFICIAL RESET: every Hik device nobody can log in to (NVR and cameras), automatic up to the page's picture check

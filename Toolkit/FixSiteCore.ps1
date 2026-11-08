@@ -780,6 +780,7 @@ function Get-FsExitWords([int]$code) {
     0 { return 'Done. Everything is fixed.' }
     4 { return 'Done, but some things still need you: see the lines marked with a red X.' }
     2 { return 'Stopped. Nothing was changed.' }
+    7 { return 'Stopped: the undo file could not be saved, so nothing more was changed (see the red line). What was already done is in the undo file.' }   # 2.2.6
     6 { return 'Finished, but THIS PC''s network could not be put back the way it was (see the red line). Restart the PC, or press Fix this site again: it tries again first.' }   # 2.2.2 (H4)
     default { return ('It stopped unexpectedly (code ' + $code + '). Nothing is half-done: the run folder has the log and the undo file.') }
   }
