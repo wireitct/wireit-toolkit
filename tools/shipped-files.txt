@@ -46,12 +46,15 @@ Toolkit/tests/Test-Fix222.ps1
 Toolkit/tests/Test-Fix223.ps1
 Toolkit/tests/Test-Fix224.ps1
 Toolkit/tests/Test-Fix225.ps1
+Toolkit/tests/Test-Fix226.ps1
 Toolkit/tests/Test-FixIt.ps1
 Toolkit/tests/Test-FixSite.ps1
 Toolkit/tests/Test-HikReset.ps1
 Toolkit/tests/Test-Review225.ps1
 Toolkit/tests/Test-Toolkit.ps1
 Toolkit/tests/TestPython.ps1
+Toolkit/tests/fix226/ok_server.py
+Toolkit/tests/fix226/scenarios.py
 Toolkit/tests/fixsite/byw-scan.json
 Toolkit/tests/fixsite/byw-site-list.json
 Toolkit/tests/fixsite/fakebw.py

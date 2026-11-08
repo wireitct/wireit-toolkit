@@ -138,11 +138,13 @@ try {
   Check ($queued.Count -eq 2 -and $queued -contains 'A B' -and $queued -contains 'A_B') 'different site names keep independent offline scan lists'
 
   # A controlled wrong MAC parser forces assertions in the actual SiteCheck suite to fail; its process must return those failures.
+  # 2.2.6: SiteCheck needs the Windows drawing library (GDI+), so this one runs on Windows only.
+  if ($env:OS -ne 'Windows_NT') { Write-Host 'SKIP SiteCheck exit-code check (Windows only: SiteCheck needs the Windows drawing library)' } else {
   $shim = Join-Path $tmp 'sitecheck-shim.ps1'; $sc = (Join-Path $repo 'sitecheck/SiteCheck.ps1').Replace("'", "''")
   Set-Content $shim ("param([switch]`$LoadOnly)`n. '$sc' -LoadOnly`nfunction ConvertTo-ScMac { 'BROKEN' }")
   $oldTemp = $env:TEMP; $env:TEMP = $tmp
   try { $badSuite = & $exe -NoProfile -File (Join-Path $repo 'sitecheck/tests/Test-SiteCheck.ps1') -Script $shim 2>&1 | Out-String; $exitCode = $LASTEXITCODE } finally { $env:TEMP=$oldTemp }
-  Check ($badSuite -match 'RESULT \d+ passed, ([1-9]\d*) failed' -and $exitCode -eq [int]$Matches[1]) 'SiteCheck assertion failures become a nonzero suite exit code'
+  Check ($badSuite -match 'RESULT \d+ passed, ([1-9]\d*) failed' -and $exitCode -eq [int]$Matches[1]) 'SiteCheck assertion failures become a nonzero suite exit code' }
 
   . (Join-Path $PSScriptRoot 'TestPython.ps1'); $py = Get-TestPython
   $scenario = & $py (Join-Path $PSScriptRoot 'review225/scenarios.py') --repo $repo --powershell $exe 2>&1 | Out-String
