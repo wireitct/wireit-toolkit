@@ -47,6 +47,36 @@ Write-Host '#11 OEM / other-brand recorders are recorders, not cameras'
 . (Join-Path $tk 'ToolkitCore.ps1')
 foreach ($m in @('ERI-K108-P8', 'HWN-4108MH-8P', 'DHI-NVR4108HS-8P-4KS2', 'NVR4216-16P-4KS2', 'XVR5108HS', 'NVR301-08S', 'DS-7608NI-K2/8P', 'iDS-7204HUHI-M1/S', 'DS-9632NI-I8')) { Eq (Get-TkDeviceKind $m) 'recorder' ('reproduction: ' + $m + ' is a recorder') }
 foreach ($m in @('DS-2CD2143G2-I', 'IPC2124LB-SF28KM-G', 'ECI-T44F2', 'IPC-HFW2431S-S-S2', 'DS-2DE4425IW-DE')) { Eq (Get-TkDeviceKind $m) 'camera' ($m + ' stays a camera') }
+Write-Host '#12 a recorder move checks the target address live first'
+$script:FsNetOps = @{ free = { param($a) return ($a.ip -ne '192.168.1.20') } }
+Eq (Get-FsNvrMoveTarget '192.168.1.20' '192.168.1' @(20, 19, 18) @()) '192.168.1.19' 'reproduction: .20 answers (an undiscovered printer) -> the NVR goes to .19, not onto the printer'
+$script:FsNetOps = @{ free = { param($a) return $false } }
+Eq (Get-FsNvrMoveTarget '192.168.1.20' '192.168.1' @(20, 19, 18) @()) '' 'every NVR address answers -> not moved'
+$script:FsNetOps = @{ free = { param($a) return $true } }
+Eq (Get-FsNvrMoveTarget '192.168.1.20' '192.168.1' @(20, 19, 18) @('192.168.1.20')) '192.168.1.19' 'an address given to another device in this run is skipped'
+$script:FsNetOps = $null
+$fs = Read-Src 'Toolkit/FixSite.ps1'
+Check ($fs -match 'Get-FsNvrMoveTarget') 'FixSite NVR move uses the live target check'
+Write-Host '#18 "backup saved" needs a backup that can bring the device back'
+$script:Fake = @{ 'GET 10.0.0.5/ISAPI/System/time' = '<Time/>' }
+$bf = @(Save-FsBackup '10.0.0.5' 'Hikvision' $null (Join-Path $tmp 'bk1'))
+Eq $bf.Count 1 'the device gave only time.xml'
+Check (-not (Test-FsBackupComplete $bf 'Hikvision')) 'reproduction: only time.xml -> NOT a backup (2.2.2 passed it)'
+$script:Fake = @{ 'GET 10.0.0.6/ISAPI/System/configurationData' = 'BIN'; 'GET 10.0.0.6/ISAPI/System/Network/interfaces' = '<x/>'; 'GET 10.0.0.6/ISAPI/Streaming/channels/101' = '<s/>' }
+$bf = @(Save-FsBackup '10.0.0.6' 'Hikvision' $null (Join-Path $tmp 'bk2'))
+Check (Test-FsBackupComplete $bf 'Hikvision') 'config export + network + main stream = a backup'
+Check (-not (Test-FsBackupComplete @($bf | Where-Object { $_ -notlike '*stream-101*' }) 'Hikvision')) 'a camera without its stream settings is not'
+Check (Test-FsBackupComplete @($bf | Where-Object { $_ -notlike '*stream-101*' }) 'Hikvision' -Nvr) 'an NVR needs config + network'
+Check ($fs -match 'Test-FsBackupComplete \$bf \$c\.brand' -and $fs -match 'Test-FsBackupComplete \$nbf') 'FixSite: camera AND NVR changes need a complete backup'
+Write-Host '#17 a failed NVR move is a problem in the checklist and the exit code'
+$fs = Read-Src 'Toolkit/FixSite.ps1'
+$mv = $fs.Substring($fs.IndexOf("foreach (`$n in @(`$plan.nvrs | Where-Object { `$_.steps -contains 'move' })) {`n  # 2.2.3"))
+$mv = $mv.Substring(0, $mv.IndexOf('# 2.0.3: NVR password'))
+Check ($mv -match '\$badCount\+\+' -and $mv -match '\$results \+= \$l' -and $mv -match "nvrFail 'not moved \(no NVR login\)'") 'reproduction: NVR move failures (no login, refused, not back) add a red checklist line and count as a problem'
+Write-Host '#13 no camera password change when its NVR cannot be updated; no direct-picture pass for an NVR camera'
+$fs = Read-Src 'Toolkit/FixSite.ps1'
+Check ($fs -match "if \(\`$c\.nvr -and -not \`$nvrCred\.ContainsKey\(\`$c\.nvr\)\) \{ & \`$step \('password not changed: NVR") 'reproduction: camera on an NVR with unknown login -> password not changed (2.2.2 changed it first)'
+Check ($fs -match "video not checked on NVR") '...and its video is not "verified" from the camera picture alone'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

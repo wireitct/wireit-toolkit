@@ -796,16 +796,26 @@ if ($hikFlowOk -and $Mode -ne 'DryRun' -and -not $MockUrl) {
 #  FIX: NVRs on the wrong scheme first (cameras are put back on them)
 # =====================================================================================
 foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'move' })) {
-  if (-not $nvrPw.ContainsKey($n.ip)) { Say ('NVR ' + $n.ip + ': not moved (no NVR login).') 'Yellow'; continue }
+  # 2.2.3 (Codex #12/#17/#18): every way an NVR move can fail is a red checklist line and counts as a problem (exit code 4);
+  # the move needs a backup that can bring it back, and its new address is checked LIVE first (no duplicate .20).
+  $nvrFail = { param($why) $l = 'NVR ' + $n.ip + ': ' + $why + ' ' + $script:FsBad; Say $l 'Red'; $script:results += $l; $script:badCount++ }
+  if (-not $nvrPw.ContainsKey($n.ip)) { & $nvrFail 'not moved (no NVR login)'; continue }
   $cr = Fs-Cred $nvrPw[$n.ip]; [void](Add-FsTempIp (Get-FsP3 $n.ip) $pc $tempState)
-  [void](Save-FsBackup $n.ip 'Hikvision' $cr (Join-Path $runDir ('backup\NVR-' + $n.ip)))
+  $nbf = @(Save-FsBackup $n.ip 'Hikvision' $cr (Join-Path $runDir ('backup\NVR-' + $n.ip)))
+  if (-not (Test-FsBackupComplete $nbf 'Hikvision' -Nvr)) { & $nvrFail 'backup could not be read - NVR not moved'; continue }
   $net = Get-FsNet $n.ip 'Hikvision' $cr
-  $rb.nvrs += [ordered]@{ ip = $n.ip; target = $n.target; old = [ordered]@{ ip = $net.ip; mask = $net.mask; gw = $net.gw; dhcp = $net.dhcp; dns1 = $net.dns1; dns2 = $net.dns2 } }; Save-Rb
+  if (-not $net) { & $nvrFail 'its address settings could not be read - not moved'; continue }
+  $taken = @($plan.cams | ForEach-Object { [string]$_.target; [string]$_.ip }) + @($plan.nvrs | Where-Object { $_ -ne $n } | ForEach-Object { [string]$_.target; [string]$_.ip })
+  $t = Get-FsNvrMoveTarget $n.target $plan.scheme $opts.nvrHosts $taken
+  if (-not $t) { & $nvrFail ('not moved: ' + $n.target + ' (and the other NVR addresses) already answer on the network'); continue }
+  if ($t -ne $n.target) { Say ('NVR ' + $n.ip + ': ' + $n.target + ' is already used by another device - moving it to ' + $t + ' instead') 'Yellow'; $n.target = $t }
+  $rb.nvrs += [ordered]@{ ip = $n.ip; target = $n.target; iface = $net.iface; old = [ordered]@{ ip = $net.ip; mask = $net.mask; gw = $net.gw; dhcp = $net.dhcp; dns1 = $net.dns1; dns2 = $net.dns2 } }; Save-Rb
   $w = Set-FsNet $n.ip 'Hikvision' $cr $net $n.target $devNet.mask $devNet.gw
   if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $n.ip 'Hikvision' $cr) }
   $back = $w.ok -and (Wait-FsDevice $n.target 'Hikvision' $nvrPw[$n.ip] ([int]$opts.rebootWaitSec))
-  Say (Format-FsCheckLine ('NVR ' + $n.ip) @([pscustomobject]@{ text = ('moved -> ' + (Get-FsShort $n.target)); ok = $back })) $(if ($back) { 'Green' } else { 'Red' })
-  if ($back) { $nvrPw[$n.target] = $nvrPw[$n.ip]; $sec.nvr[$n.target] = $nvrPw[$n.ip]; Save-FsSecrets $SecretsDir $sec }
+  $l = Format-FsCheckLine ('NVR ' + $n.ip) @([pscustomobject]@{ text = $(if ($w.ok) { 'moved -> ' + (Get-FsShort $n.target) } else { 'the NVR refused the new address' }); ok = $back })
+  Say $l $(if ($back) { 'Green' } else { 'Red' }); $results += $l
+  if ($back) { $okCount++; $nvrPw[$n.target] = $nvrPw[$n.ip]; $sec.nvr[$n.target] = $nvrPw[$n.ip]; Save-FsSecrets $SecretsDir $sec; $n.moved = $true } else { $badCount++; $n.moved = $false }
 }
 # 2.0.3: NVR password -> the site password (factory password at a new site, or the option ticked). Channels keep the camera logins.
 $rb.nvr_passwords = @()
@@ -884,11 +894,14 @@ foreach ($c in $ordered) {
   if (-not $stop -and -not $pw) { & $step 'no password that works' $false; $stop = $true }
   $cr = Fs-Cred $pw
   # backup
-  if (-not $stop) { $bd = Join-Path $runDir ('backup\' + (($c.name -replace '[^A-Za-z0-9_-]+', '_') + '-' + ($c.mac -replace ':', ''))); $bf = @(Save-FsBackup $ip $c.brand $cr $bd); $rbc.backup = $bd; if ($bf.Count) { & $step 'backup saved' $true } else { & $step 'backup could not be read - camera left alone' $false; $stop = $true } }
+  if (-not $stop) { $bd = Join-Path $runDir ('backup\' + (($c.name -replace '[^A-Za-z0-9_-]+', '_') + '-' + ($c.mac -replace ':', ''))); $bf = @(Save-FsBackup $ip $c.brand $cr $bd); $rbc.backup = $bd; if (Test-FsBackupComplete $bf $c.brand) { & $step 'backup saved' $true } else { & $step 'backup could not be read - camera left alone' $false; $stop = $true } }
   if (-not $stop) { $nb = Get-FsNet $ip $c.brand $cr; if ($nb) { $rbc.net_before = [ordered]@{ ip = $nb.ip; mask = $nb.mask; gw = $nb.gw; dhcp = $nb.dhcp; dns1 = $nb.dns1; dns2 = $nb.dns2; iface = $nb.iface } }; Save-Rb }
   # password
   if (-not $stop -and $pw -ne $sitePw -and ($c.steps -contains 'password' -or $opts.passwordAll)) {
-    if ((Test-FsLogin $ip $c.brand $sitePw) -eq 'ok') { $pw = $sitePw; $cr = Fs-Cred $pw; & $step 'password already set' $true }
+    # 2.2.3 (Codex #13): a camera recorded by an NVR keeps its password unless that NVR can be updated too (its login is known);
+    # otherwise the NVR loses the picture and recording while a direct camera picture still looks fine.
+    if ($c.nvr -and -not $nvrCred.ContainsKey($c.nvr)) { & $step ('password not changed: NVR ' + $c.nvr + ' records this camera and its login is unknown') $false }
+    elseif ((Test-FsLogin $ip $c.brand $sitePw) -eq 'ok') { $pw = $sitePw; $cr = Fs-Cred $pw; & $step 'password already set' $true }
     else {
       $sec.rollback[$stamp][$c.mac + '|' + $c.ip] = $pw; Save-FsSecrets $SecretsDir $sec; $pwBefore = $pw
       $ok = Set-FsPassword $ip $c.brand $cr $sitePw
@@ -949,7 +962,11 @@ foreach ($c in $ordered) {
     }
   }
   # video back and held
-  if (-not $stop) {
+  if (-not $stop -and $c.nvr -and -not $nvrCred.ContainsKey($c.nvr)) {
+    # 2.2.3 (Codex #13): the camera's own picture is no proof its NVR still records it
+    & $step ('video not checked on NVR ' + $c.nvr + ' (its login is unknown) - check ch ' + $c.channel + ' in the NVR') $false
+  }
+  elseif (-not $stop) {
     $vok = $false; $end = (Get-Date).AddSeconds($(if ($script:FsMockUrl) { 8 } else { 150 }))
     do {
       if (Test-FsVideo $c.nvr $(if ($c.nvr -and $nvrCred.ContainsKey($c.nvr)) { $nvrCred[$c.nvr] } else { $null }) $(if ($c.nvr -and $nvrCred.ContainsKey($c.nvr)) { [int]$c.channel } else { 0 }) $ip $c.brand $cr) {

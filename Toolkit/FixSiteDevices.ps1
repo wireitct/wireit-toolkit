@@ -215,6 +215,26 @@ function Save-FsBackup([string]$ip, [string]$brand, $cred, [string]$dir) {
   return $files
 }
 
+# ---------------- 2.2.3 (Codex #12, #18): live checks before a recorder or camera is changed ----------------
+function Get-FsNvrMoveTarget([string]$planned, [string]$scheme, $nvrHosts, $taken) {
+  # the planned NVR address is checked LIVE (ping + ARP) right before the move: a printer or router device nobody discovered may
+  # sit on .20. Taken -> the next standard NVR address that is free; none free -> '' (the NVR is not moved).
+  # $taken: addresses other devices of this run already have or were given.
+  $cands = @(); if ($planned) { $cands += $planned }
+  foreach ($h in @($nvrHosts)) { $a = $scheme + '.' + [int]$h; if ($cands -notcontains $a) { $cands += $a } }
+  foreach ($a in $cands) { if (@($taken) -contains $a) { continue }; if (Test-FsIpFree $a) { return $a } }
+  return ''
+}
+function Test-FsBackupComplete($files, [string]$brand, [switch]$Nvr) {
+  # a backup counts only when it can bring the device back: the device's own config export AND its network settings
+  # (cameras: AND the main stream). One stray file (time.xml) is not a backup.
+  $names = @(@($files) | ForEach-Object { if ($_) { (Split-Path -Leaf ([string]$_)).ToLower() } })
+  if ($brand -eq 'Dahua') { $need = @('config-export.backup', 'network.txt'); if (-not $Nvr) { $need += 'encode.txt' } }
+  else { $need = @('configurationdata.bin', 'network.xml'); if (-not $Nvr) { $need += 'stream-101.xml' } }
+  foreach ($n in $need) { if ($names -notcontains $n) { return $false } }
+  return $true
+}
+
 # ---------------- network ----------------
 function Get-FsNet([string]$ip, [string]$brand, $cred) {
   if ($brand -eq 'Dahua') {
