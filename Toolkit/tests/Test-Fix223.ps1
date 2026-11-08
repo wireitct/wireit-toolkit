@@ -164,6 +164,21 @@ Eq $ml.Count 2 'reproduction: a manual NVR step and a manual camera are both lis
 Check (($ml -join ' ') -like ('*' + $script:FsBad + '*')) '...as red lines'
 $fs = Read-Src 'Toolkit/FixSite.ps1'
 Check ($fs -match 'foreach \(\$l in @\(Get-FsManualLines \$plan\)\) \{ \$results \+= \$l; \$badCount\+\+ \}' -and $fs -match '@\(Get-FsManualLines \$plan\)\.Count\) \{ 4 \}') 'FixSite counts them in "Still a problem" and the exit code, also when nothing else had to be done'
+Write-Host '#24 distinct site names never share a password store or list file'
+Check ((Get-FsSecretPath $tmp 'A/B') -ne (Get-FsSecretPath $tmp 'A.B')) 'reproduction: "A/B" and "A.B" get different password stores (2.2.2: both site-A_B.dat)'
+Check ((Get-FsListFileName 'A/B') -ne (Get-FsListFileName 'A.B')) '...and different list files'
+Eq (Get-FsListFileName '12 Elm St') '12_Elm_St.json' 'plain names keep their 2.2.2 file name'
+Eq (Get-FsListFileName '12 Elm St.') (Get-FsListFileName '12 elm st.') 'the same site typed in another case is the same site'
+$script:FsTestSecrets = $true
+$sd = Join-Path $tmp 'sec24'; $sA = Read-FsSecrets $sd 'A/B'; $sA.password = 'PwOfAB1'; Save-FsSecrets $sd $sA
+Check (-not (Read-FsSecrets $sd 'A.B').password) 'A.B does not read A/B''s password'
+Eq (Read-FsSecrets $sd 'A/B').password 'PwOfAB1' 'A/B reads its own'
+# a 2.2.2 store under the old shared name: used only by the site it names
+$sL = Read-FsSecrets $sd 'Old Site'; $sL.site = 'C.D'; $sL.password = 'PwOfCD1'; New-Item -ItemType Directory -Force -Path $sd | Out-Null
+[IO.File]::WriteAllText((Get-FsSecretPath $sd 'C.D' -Legacy), (Protect-FsText ([ordered]@{ site = 'C.D'; password = 'PwOfCD1' } | ConvertTo-Json -Compress)))
+Check (-not (Read-FsSecrets $sd 'C/D').password) 'reproduction: the old-name store of C.D is not used for C/D (stored site identity checked)'
+Eq (Read-FsSecrets $sd 'C.D').password 'PwOfCD1' 'C.D still finds its 2.2.2 store'
+$script:FsTestSecrets = $false
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

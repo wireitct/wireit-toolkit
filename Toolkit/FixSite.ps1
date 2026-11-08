@@ -183,7 +183,7 @@ if ($NewSite) {
   $siteName = $(if ($siteFolder) { Split-Path -Leaf $siteFolder } else { $Site })
   $siteId = $(if ($Site -match '^(?i)WI-\d+$') { $Site.ToUpper() } else { '' })
   $listPath = $(if ($siteFolder) { Join-Path (Join-Path $siteFolder 'Docs') 'WireIt site list.json' } else { '' })
-  $localList = Join-Path $SitesDir ((($siteName -replace '[^A-Za-z0-9_-]+', '_').Trim('_')) + '.json')
+  $localList = Resolve-FsLocalList $SitesDir $siteName   # 2.2.3 (Codex #24)
   $list = $null; $listFrom = ''
   foreach ($cand in @($ListFile, $listPath, $localList)) { if ($cand -and (Test-Path -LiteralPath $cand)) { try { $list = Get-Content -LiteralPath $cand -Raw | ConvertFrom-Json; $listFrom = $cand; break } catch {} } }
   if (-not $list -and $siteFolder) {
@@ -784,7 +784,7 @@ if ($hikFlowOk -and $Mode -ne 'DryRun' -and -not $MockUrl) {
     $script:HkAsk = { param($t) Ask $t }
     $script:SadpLog = { param($l) Fs-Log $l }
     $hikCfg = Get-HikConfig $cfgAll $here   # 2.2.0: reply relay (no mail password on this PC) + the "I got Hik's email" button
-    $hikState = Join-Path $SecretsDir ('hikreset-' + ($siteName -replace '[^A-Za-z0-9_-]+', '_'))
+    $hikState = Join-Path $SecretsDir ('hikreset-' + (Get-FsSiteSlug $siteName))
     $verify = { param($ip, $p) return ((Test-FsLogin $ip 'Hikvision' $p) -eq 'ok') }
     if ($Ipc) {
       # 2.2.0: this run has no screen (the "Fix this site" task): Hikvision's page opens in the Toolkit window's login, the waiting state is shown there

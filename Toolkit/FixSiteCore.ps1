@@ -604,7 +604,24 @@ function New-FsNewSiteName([string]$gw, [datetime]$when = (Get-Date)) {
   $p3 = Get-FsP3 $gw
   return ('New site ' + $(if ($p3) { $p3 + '.x ' } else { '' }) + $when.ToString('yyyy-MM-dd'))
 }
-function Get-FsListFileName([string]$site) { return ((($site -replace '[^A-Za-z0-9_-]+', '_').Trim('_')) + '.json') }
+# 2.2.3 (Codex #24): "A/B" and "A.B" are two sites: a name with punctuation gets a short fingerprint of its exact (case-folded) text,
+# so two sites never share a password store or a list file. Names of letters, digits, spaces, _ and - keep the 2.2.2 file name.
+function Get-FsLegacySlug([string]$site) { return (($site -replace '[^A-Za-z0-9_-]+', '_').Trim('_')) }
+function Get-FsSiteSlug([string]$site) {
+  $b = Get-FsLegacySlug $site; $t = ([string]$site).Trim()
+  if ($t -notmatch '[^A-Za-z0-9_\- ]') { return $b }
+  $sha = [Security.Cryptography.SHA256]::Create(); try { $h = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($t.ToLowerInvariant())) } finally { $sha.Dispose() }
+  return ($b + '-' + (-join ($h[0..2] | ForEach-Object { $_.ToString('x2') })))
+}
+function Test-FsSameSite([string]$a, [string]$b) { return ((([string]$a).Trim() -replace '\s+', ' ') -eq (([string]$b).Trim() -replace '\s+', ' ')) }
+function Get-FsListFileName([string]$site) { return ((Get-FsSiteSlug $site) + '.json') }
+function Resolve-FsLocalList([string]$dir, [string]$site) {
+  # the list file for exactly this site; a 2.2.2 file under the old name is used only when it says it is this site
+  $p = Join-Path $dir (Get-FsListFileName $site); if (Test-Path -LiteralPath $p) { return $p }
+  $lp = Join-Path $dir ((Get-FsLegacySlug $site) + '.json')
+  if ($lp -ne $p -and (Test-Path -LiteralPath $lp)) { try { $l = Get-Content -LiteralPath $lp -Raw | ConvertFrom-Json; if (Test-FsSameSite ([string](Get-FsProp $l 'site' '')) $site) { return $lp } } catch {} }
+  return $p
+}
 function Get-FsKnownSiteFiles([string]$sitesDir, [string[]]$driveRoots = @()) {
   # every saved site list this PC can see: sites\*.json, and each Drive site folder's Docs\WireIt site list.json
   $out = @()

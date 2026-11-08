@@ -694,19 +694,25 @@ function Get-FsUnreadableText([string]$why) {
   if ($why -match 'FS_OTHER_PC') { return 'This site''s saved password file was made on another PC, so this PC cannot read it.' }
   return 'This site''s saved password was saved by another Windows account, so this PC cannot read it here.'
 }
-function Get-FsSecretPath([string]$dir, [string]$site) { return (Join-Path $dir ('site-' + (($site -replace '[^A-Za-z0-9_-]+', '_').Trim('_')) + '.dat')) }
+function Get-FsSecretPath([string]$dir, [string]$site, [switch]$Legacy) { return (Join-Path $dir ('site-' + $(if ($Legacy) { Get-FsLegacySlug $site } else { Get-FsSiteSlug $site }) + '.dat')) }   # 2.2.3 (Codex #24)
 function Read-FsSecrets([string]$dir, [string]$site) {
   $o = [ordered]@{ site = $site; password = ''; known = @(); nvr = @{}; cams = @{}; rollback = @{}; bitwardenSaved = $false; shownOnce = $false; unreadable = $false; unreadableWhy = '' }
   $p = Get-FsSecretPath $dir $site
   $fromLegacy = $false
-  if (-not (Test-Path -LiteralPath $p) -and $script:FsLegacySecretsDir) { $lp = Get-FsSecretPath $script:FsLegacySecretsDir $site; if (Test-Path -LiteralPath $lp) { $p = $lp; $fromLegacy = $true } }
+  $oldName = $false
+  if (-not (Test-Path -LiteralPath $p)) { $lp = Get-FsSecretPath $dir $site -Legacy; if ($lp -ne $p -and (Test-Path -LiteralPath $lp)) { $p = $lp; $oldName = $true } }
+  if (-not (Test-Path -LiteralPath $p) -and $script:FsLegacySecretsDir) { $lp = Get-FsSecretPath $script:FsLegacySecretsDir $site; if (-not (Test-Path -LiteralPath $lp)) { $lp = Get-FsSecretPath $script:FsLegacySecretsDir $site -Legacy }; if (Test-Path -LiteralPath $lp) { $p = $lp; $fromLegacy = $true } }
   $script:FsLastWasLegacy = $false
   if (Test-Path -LiteralPath $p) {
-    try { $j = (Unprotect-FsText ((Get-Content -LiteralPath $p -Raw).Trim())) | ConvertFrom-Json; foreach ($k in @('password', 'known', 'bitwardenSaved', 'shownOnce')) { if ($j.PSObject.Properties[$k]) { $o[$k] = $j.$k } }; foreach ($k in @('nvr', 'cams', 'rollback')) { if ($j.PSObject.Properties[$k] -and $j.$k) { $h = @{}; foreach ($q in $j.$k.PSObject.Properties) { $h[$q.Name] = $q.Value }; $o[$k] = $h } } }
+    try { $j = (Unprotect-FsText ((Get-Content -LiteralPath $p -Raw).Trim())) | ConvertFrom-Json
+      # 2.2.3 (Codex #24): the store says which site it is: another site's store is never used for this one
+      if ($j -and $j.PSObject.Properties['site'] -and [string]$j.site -and -not (Test-FsSameSite ([string]$j.site) $site)) { Fs-LogLine 'secret store belongs to another site name: not used'; $j = $null; $oldName = $false; $fromLegacy = $false }
+      if ($j) { foreach ($k in @('password', 'known', 'bitwardenSaved', 'shownOnce')) { if ($j.PSObject.Properties[$k]) { $o[$k] = $j.$k } }; foreach ($k in @('nvr', 'cams', 'rollback')) { if ($j.PSObject.Properties[$k] -and $j.$k) { $h = @{}; foreach ($q in $j.$k.PSObject.Properties) { $h[$q.Name] = $q.Value }; $o[$k] = $h } } } }
     catch { $o.unreadable = $true; $o.unreadableWhy = [string]$_.Exception.Message; Fs-LogLine ('secret store unreadable: ' + $_.Exception.Message) }
   }
   $o.known = @($o.known | Where-Object { $_ }); $r = [pscustomobject]$o
   # 2.2.0: a 2.1 file (CurrentUser) or one still in secrets\ is moved into vault\ as LocalMachine the first time it is read
+  if (-not $r.unreadable -and $oldName) { try { Save-FsSecrets $dir $r; Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue } catch {} }   # 2.2.3: old file name -> the exact-site name
   if (-not $r.unreadable -and ($script:FsLastWasLegacy -or $fromLegacy) -and -not $script:FsTestSecrets) { try { Save-FsSecrets $dir $r; if ($fromLegacy) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }; Fs-LogLine 'secret store moved to the machine-wide (LocalMachine) store' } catch {} }
   return $r
 }
