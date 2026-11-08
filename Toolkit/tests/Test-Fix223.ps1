@@ -327,6 +327,22 @@ Write-Host '#43 the router line says only what the UPnP check can see'
 $tc = Read-Src 'Toolkit/ToolkitCore.ps1'
 Check ($tc -notmatch 'nothing opened to the internet' -and $tc -notmatch 'off or blocked\) - good' -and $tc -notmatch 'off or blocked - good') 'reproduction: no "nothing opened to the internet" / "UPnP off or blocked - good" (2.2.2 overclaimed)'
 Check (([regex]::Matches($tc, 'Port forwards made by hand (are|need)')).Count -ge 3) 'every no-UPnP line says port forwards made by hand are not checked'
+Write-Host '#44 earlier results are compared only for the same site / network'
+$nc = Read-Src 'Toolkit/NvrCheck.ps1'
+Check ($nc -match "\`$Site -and \(\[string\]\`$scan\.site\)\.Trim\(\) -eq \`$Site\.Trim\(\)") 'reproduction: NVR site check uses the last upload only when it is this site''s (2.2.2: any site''s within 30 min)'
+$scs = Read-Src 'sitecheck/SiteCheck.ps1'
+$i44 = $scs.IndexOf('function Get-ScNetKeys'); $j44 = $scs.IndexOf('# Upload to the site page', $i44)   # the core functions live in a here-string (run in the scan runspace)
+Invoke-Expression $scs.Substring($i44, $j44 - $i44)
+$d44 = Join-Path $tmp 'sc44'; New-Item -ItemType Directory -Force -Path $d44 | Out-Null
+[IO.File]::WriteAllText((Join-Path $d44 'last-scan.json'), (@{ when = '2026-11-07T10:00:00'; nets = @('10.0.5.0/24'); devices = @(@{ ip = '10.0.5.21' }) } | ConvertTo-Json -Depth 4))
+$R44 = [ordered]@{ nets = @(@{ ip = '192.168.1.50'; prefix = 24 }); previous = $null }
+Read-ScPrevious $R44 $d44
+Check (-not $R44.previous) 'reproduction: last scan from another site''s network is not compared (2.2.2: devices reported missing)'
+$R44 = [ordered]@{ nets = @(@{ ip = '10.0.5.77'; prefix = 24 }); previous = $null }
+Read-ScPrevious $R44 $d44
+Eq @($R44.previous).Count 1 'same network: compared'
+$cmd = [IO.File]::ReadAllText((Join-Path $repo 'sitecheck\WireIt-SiteCheck.cmd')); $ci = $cmd.IndexOf('##PSSTART')
+Check ($cmd.Substring($ci + 11).Trim() -eq $scs.Trim()) 'the Site check launcher .cmd carries the same SiteCheck.ps1'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

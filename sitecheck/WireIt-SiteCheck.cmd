@@ -474,12 +474,20 @@ function Save-ScReport($R, $D, [string]$dir) {
   $o = [ordered]@{}; foreach ($k in $R.Keys) { if ($k -ne 'previous') { $o[$k] = $R[$k] } }; $o.headline = $D.Headline; $o.findings = @($D.Findings)
   [IO.File]::WriteAllText($base + '.json', ($o | ConvertTo-Json -Depth 6))
   $prev = @($R.devices | Where-Object { $_.Ok -gt 0 } | ForEach-Object { [ordered]@{ ip = $_.Ip; mac = $_.Mac; vendor = $_.Vendor } })
-  [IO.File]::WriteAllText((Join-Path $dir 'last-scan.json'), ([ordered]@{ when = $R.started; devices = $prev } | ConvertTo-Json -Depth 4))
+  [IO.File]::WriteAllText((Join-Path $dir 'last-scan.json'), ([ordered]@{ when = $R.started; nets = @(Get-ScNetKeys $R.nets); devices = $prev } | ConvertTo-Json -Depth 4))
   return [pscustomobject]@{ Txt = $base + '.txt'; Json = $base + '.json'; Text = $txt }
+}
+# 2.2.3 (Codex #44): the previous scan is compared only when it was taken on the SAME network(s): another site's devices are not "missing" here
+function Get-ScNetKeys($nets) {
+  $k = @(); foreach ($n in @($nets)) { try { $a = ([Net.IPAddress]::Parse([string]$n.ip)).GetAddressBytes(); $p = [int]$n.prefix; for ($i = 0; $i -lt 4; $i++) { $m = [Math]::Max(0, [Math]::Min(8, $p - 8 * $i)); $a[$i] = $a[$i] -band ((0xFF -shl (8 - $m)) -band 0xFF) }; $k += ((($a | ForEach-Object { [string]$_ }) -join '.') + '/' + $p) } catch {} }
+  return @($k | Sort-Object -Unique)
 }
 function Read-ScPrevious($R, [string]$dir) {
   $p = Join-Path $dir 'last-scan.json'
-  if (Test-Path $p) { try { $j = Get-Content $p -Raw | ConvertFrom-Json; $R.previous = @($j.devices); $R.previousWhen = ([string]$j.when).Replace('T', ' ') } catch {} }
+  if (Test-Path $p) { try { $j = Get-Content $p -Raw | ConvertFrom-Json
+    $now = @(Get-ScNetKeys $R.nets); $then = @($j.nets | Where-Object { $_ })
+    if ($then.Count -and $now.Count -and @($now | Where-Object { $then -contains $_ }).Count) { $R.previous = @($j.devices); $R.previousWhen = ([string]$j.when).Replace('T', ' ') }
+  } catch {} }
 }
 # Upload to the site page: OFF until the server side exists (see INTEGRATION.md). Never sends passwords.
 function Send-ScReport($R, $D, [string]$siteCode, [string]$uploadCode) {

@@ -57,7 +57,8 @@ if ($Mode -eq 'Site') {
   Say2 'Read-only: nothing on the recorder, cameras or router is changed. Fixes are separate buttons.' 'Yellow'
   Say2 ''; Say2 'Step 1 of 3: camera list (from Find cameras just now)' 'Cyan'
   $scan = Read-TkJson (Join-Path $here 'logs\scan-upload-last.json')
-  if (-not ($scan -and $scan.at -and ((Get-Date) - [datetime]$scan.at).TotalMinutes -lt 30 -and -not $scan.snapshot)) {
+  # 2.2.3 (Codex #44): the last upload counts only when it is THIS site's (same site name), fresh, and not a snapshot
+  if (-not ($scan -and $scan.at -and ((Get-Date) - [datetime]$scan.at).TotalMinutes -lt 30 -and -not $scan.snapshot -and $Site -and ([string]$scan.site).Trim() -eq $Site.Trim())) {
     # 1.6.1: nothing uploaded (no Site ID) - use the list Find cameras just made on this PC
     $scan = $null; try { $scan = Get-TkFreshScan $CamResetDir 30 } catch { $scan = $null }
   }
