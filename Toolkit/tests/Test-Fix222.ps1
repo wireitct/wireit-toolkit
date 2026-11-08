@@ -369,6 +369,9 @@ Eq ([string]@((Get-Content (Join-Path $sd 'state.json') -Raw | ConvertFrom-Json)
 Remove-Item Function:\Start-Sleep
 
 # =====================================================================================
+$scc = [IO.File]::ReadAllText((Join-Path $repo 'sitecheck/WireIt-SiteCheck.cmd')); $sci = $scc.IndexOf('##' + 'PSSTART')
+Check ($sci -gt 0 -and $scc.Substring($sci + 11).Trim() -eq (Read-Src 'sitecheck/SiteCheck.ps1').Trim()) 'reproduction (2.2.2 WIP): the Site check launcher .cmd carries the 2.2.2 SiteCheck.ps1 (the WIP changed the .ps1 only)'
+# =====================================================================================
 Write-Host 'Version. never 0.0.0, never a downgrade; 2.2.2 everywhere; the manifest lists every shipped file'
 . (Join-Path $tk 'ToolkitCore.ps1')
 $vt = Join-Path $tmp 'ver/WireIt/Toolkit'; New-Item -ItemType Directory -Force -Path $vt | Out-Null
