@@ -1,8 +1,8 @@
 {
   "version": "2.2.3",
   "released": "2026-11-08",
-  "commit": "0e006d4ffea6b2941abcf0aabbad44beeb77c61e",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/0e006d4ffea6b2941abcf0aabbad44beeb77c61e/",
+  "commit": "6010e7d1326a40e44f4a3722f1b277b438ea7b3f",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/6010e7d1326a40e44f4a3722f1b277b438ea7b3f/",
   "notes": "2.2.3 (not released): fixes from Codex's full review of 2.2.2 (5e465b9), findings #6-64; the Crew/SYSTEM split is removed (Crew is a local admin): no SYSTEM task, IPC folder or ACL lock. See files/pc-setup/toolkit-2.2.3-fixes.md.",
   "files": [
     {
@@ -127,13 +127,13 @@
     },
     {
       "path": "Toolkit/HikResetFlow.ps1",
-      "sha256": "48706a374b5537af6f01be9b48fe0be3fdb1f18d2cf0a4d47742b865b359e2a6",
-      "size": 30757
+      "sha256": "b4a56be09510da0ff862128a3ce519170b1bb5c51fafddc0450a965643b1474a",
+      "size": 30893
     },
     {
       "path": "Toolkit/HikSadp.ps1",
-      "sha256": "2656afc12aa0a3f5b12e5955c20cce727bb5066772b4a7a3a72e03c30b6604fa",
-      "size": 21879
+      "sha256": "e5508c39c80a316940370b52cbcc6dc4829872366847533f8b3787c90ed5e31c",
+      "size": 22960
     },
     {
       "path": "Toolkit/Install-Toolkit.ps1",
@@ -261,6 +261,11 @@
       "size": 5513
     },
     {
+      "path": "Toolkit/tests/hikreset/minicrypto.py",
+      "sha256": "4c17bc9817eb96d46ba31b427a585a231288e7e37bbf13f29710bbbdc2b3ad76",
+      "size": 4006
+    },
+    {
       "path": "Toolkit/tests/hikreset/mock_relay.py",
       "sha256": "9f82d924f4c6f0f5d6e85ee0f96f39898f9b48123c9f88b1fd6194397581c3a8",
       "size": 2821
@@ -307,8 +312,8 @@
     },
     {
       "path": "Toolkit/tests/Test-HikReset.ps1",
-      "sha256": "de3ff103a883761624d161a64ed36906ee25415741915d2a3072d007188eb492",
-      "size": 30399
+      "sha256": "579a1d637cc9c10bba88e2feb7737046ca2235174821e8e1cbfab13bd863f67e",
+      "size": 31299
     },
     {
       "path": "Toolkit/tests/Test-Toolkit.ps1",
