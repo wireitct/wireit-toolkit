@@ -264,6 +264,7 @@ function Get-HikConfig($CfgAll, [string]$ToolkitDir = '') {
     if ($h.PSObject.Properties['relay'] -and $h.relay) { foreach ($p in $h.relay.PSObject.Properties) { if ($relay.PSObject.Properties[$p.Name]) { $relay.($p.Name) = $p.Value } } }
     if ($h.PSObject.Properties['waitMinutes'] -and [int]$h.waitMinutes -gt 0) { $wait = [int]$h.waitMinutes }
     if ($h.PSObject.Properties['replyDir']) { $replyDir = [string]$h.replyDir }
+    if ($h.PSObject.Properties['sadpLegacyPlainPassword'] -and $h.sadpLegacyPlainPassword -eq $true) { $script:SadpAllowPlainPassword = $true }   # 2.2.3 (Codex #6): Admin's explicit opt-in only
   }
   if ([string]$relay.url -and -not (Test-HikRelayUrl ([string]$relay.url))) { $relay.url = '' }   # http:// or junk = off (never send the key in clear)
   if (-not [string]$relay.address) { $relay.address = 'hikreset@wireitct.com' }

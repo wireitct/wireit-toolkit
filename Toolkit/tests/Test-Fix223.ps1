@@ -179,6 +179,20 @@ $sL = Read-FsSecrets $sd 'Old Site'; $sL.site = 'C.D'; $sL.password = 'PwOfCD1';
 Check (-not (Read-FsSecrets $sd 'C/D').password) 'reproduction: the old-name store of C.D is not used for C/D (stored site identity checked)'
 Eq (Read-FsSecrets $sd 'C.D').password 'PwOfCD1' 'C.D still finds its 2.2.2 store'
 $script:FsTestSecrets = $false
+Write-Host '#6 the old SADP import forms (new password in plain multicast) are off by default'
+. (Join-Path $tk 'HikSadp.ps1')
+$script:SadpSent = @(); function Invoke-SadpExchange { param($probes) $script:SadpSent += @($probes); return @() }
+function Import-HikUnlockReset { return [pscustomobject]@{ ok = $false; result = ''; form = ''; tries = 1; error = 'no answer' } }
+$dev6 = [pscustomobject]@{ mac = 'aa:bb:cc:dd:ee:ff'; serial = 'DS123' }
+$r6 = Import-HikUnlock $dev6 ([pscustomobject]@{ code = 'ABCD1234' }) 'NewSitePw9' 0.1
+Check (-not $r6.ok -and -not @($script:SadpSent | Where-Object { [string]$_ -match 'NewSitePw9' }).Count) 'reproduction: no plain-password probe is multicast when the encrypted reset gets no answer (2.2.2 fell back to the old forms)'
+$r6 = Import-HikUnlock $dev6 ([pscustomobject]@{ code = 'LONGERCODE123456' }) 'NewSitePw9' 0.1
+Check (-not $r6.ok -and $r6.error -match 'unencrypted' -and -not $script:SadpSent.Count) 'a code only the old forms take: not sent, plain words why'
+$script:SadpAllowPlainPassword = $true
+$r6 = Import-HikUnlock $dev6 ([pscustomobject]@{ code = 'LONGERCODE123456' }) 'NewSitePw9' 0.1
+Check ($script:SadpSent.Count -gt 0) 'config opt-in (hikReset.sadpLegacyPlainPassword = true) still allows them'
+$script:SadpAllowPlainPassword = $false
+Check ((Read-Src 'Toolkit/HikResetFlow.ps1') -match 'sadpLegacyPlainPassword') 'the opt-in is read from config'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

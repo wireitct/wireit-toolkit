@@ -161,6 +161,7 @@ function Read-HikUnlock([string]$Path = '', [string]$Key = '') {
   if (-not $c) { $c = $raw }
   return [pscustomobject]@{ kind = 'file'; code = $c; file = $Path }
 }
+$script:SadpAllowPlainPassword = $false   # 2.2.3 (Codex #6): see Import-HikUnlock
 $script:SadpImportForms = @(
   @{ name = 'resetPassword'; type = 'resetPassword'; codeTag = 'Code' },
   @{ name = 'securityCode'; type = 'securityCode'; codeTag = 'SecurityCode' },
@@ -236,7 +237,10 @@ function Import-HikUnlockReset($dev, $unlock, [string]$NewPassword, [double]$Sec
 function Import-HikUnlock($dev, $unlock, [string]$NewPassword, [double]$Seconds = 5.0) {
   # Returns { ok; result; form; tries; error }. Code and password are never logged.
   # SADP's own way first: the key Hikvision mailed (8 characters, also what the mailed file holds), after a key exchange
-  if ($unlock.code -match '^[0-9A-Za-z]{8}$' -and -not $script:SadpOldForms) { $rr = Import-HikUnlockReset $dev $unlock $NewPassword $Seconds; if ($rr.ok -or $rr.result -or $script:SadpNoLegacy) { return $rr } }
+  if ($unlock.code -match '^[0-9A-Za-z]{8}$' -and -not $script:SadpOldForms) { $rr = Import-HikUnlockReset $dev $unlock $NewPassword $Seconds; if ($rr.ok -or $rr.result -or $script:SadpNoLegacy -or -not $script:SadpAllowPlainPassword) { return $rr } }
+  # 2.2.3 (Codex #6): the old import forms put the NEW password in the multicast packet in plain text (anyone on the network, or on
+  # another connected interface, can read it). They are off unless config fixSite.sadpLegacyPlainPassword = true (Admin's choice).
+  if (-not $script:SadpAllowPlainPassword) { return [pscustomobject]@{ ok = $false; result = ''; form = ''; tries = 0; error = 'this unlock file needs the old SADP form, which would send the new password unencrypted over the network: not used. Import it in Hikvision SADP by hand.' } }
   $tries = 0; $last = ''
   foreach ($f in $script:SadpImportForms) {
     if ($tries -ge $script:SadpImportMax) { break }; $tries++
