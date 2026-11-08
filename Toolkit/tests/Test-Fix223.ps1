@@ -62,7 +62,7 @@ $script:Fake = @{ 'GET 10.0.0.5/ISAPI/System/time' = '<Time/>' }
 $bf = @(Save-FsBackup '10.0.0.5' 'Hikvision' $null (Join-Path $tmp 'bk1'))
 Eq $bf.Count 1 'the device gave only time.xml'
 Check (-not (Test-FsBackupComplete $bf 'Hikvision')) 'reproduction: only time.xml -> NOT a backup (2.2.2 passed it)'
-$script:Fake = @{ 'GET 10.0.0.6/ISAPI/System/configurationData' = 'BIN'; 'GET 10.0.0.6/ISAPI/System/Network/interfaces' = '<x/>'; 'GET 10.0.0.6/ISAPI/Streaming/channels/101' = '<s/>' }
+$script:Fake = @{ 'GET 10.0.0.6/ISAPI/System/configurationData' = ('BIN' * 700); 'GET 10.0.0.6/ISAPI/System/Network/interfaces' = '<x/>'; 'GET 10.0.0.6/ISAPI/Streaming/channels/101' = '<s/>' }
 $bf = @(Save-FsBackup '10.0.0.6' 'Hikvision' $null (Join-Path $tmp 'bk2'))
 Check (Test-FsBackupComplete $bf 'Hikvision') 'config export + network + main stream = a backup'
 Check (-not (Test-FsBackupComplete @($bf | Where-Object { $_ -notlike '*stream-101*' }) 'Hikvision')) 'a camera without its stream settings is not'

@@ -228,19 +228,52 @@ function Get-FsInfo([string]$ip, [string]$brand, $cred) {
   $x = Fs-XmlDoc (Fs-Http -Ip $ip -Path '/ISAPI/System/deviceInfo' -Cred $cred).body
   return [pscustomobject]@{ brand = 'Hikvision'; model = (Fs-XText $x 'model'); serial = (Fs-XText $x 'serialNumber'); mac = (Fs-XText $x 'macAddress'); firmware = ((Fs-XText $x 'firmwareVersion') + ' ' + (Fs-XText $x 'firmwareReleasedDate')).Trim() }
 }
+# 2.2.4 (Codex re-review): a backup file counts only when its CONTENT is what the device exports: a login or HTML page, an
+# error answer, or a file too small to be a config export is FAILED (2.2.3 counted any non-empty file, so a login page was "backup saved").
+function Get-FsFileHead([string]$path, [int]$n = 4096) {
+  $fs = [IO.File]::OpenRead($path); try { $b = New-Object byte[] ([Math]::Min([int64]$n, $fs.Length)); [void]$fs.Read($b, 0, $b.Length) } finally { $fs.Dispose() }
+  return [Text.Encoding]::UTF8.GetString($b)
+}
+function Test-FsHtmlText([string]$t) { return ($t -match '(?is)^\s*(\xEF\xBB\xBF|\uFEFF)?\s*(<!doctype\s+html|<html)' -or $t -match '(?is)<html[\s>]|<body[\s>]|<form[^>]*>|type\s*=\s*["'']?password|<title>[^<]*(log\s*in|sign\s*in)') }
+function Test-FsBackupFile([string]$path, [string]$kind) {
+  # returns '' when the file is a real backup of that kind, else why not. kind: config (the device's own export), xml, text (Dahua key=value)
+  if (-not $path -or -not (Test-Path -LiteralPath $path)) { return 'missing' }
+  $len = (Get-Item -LiteralPath $path).Length; if ($len -le 0) { return 'empty' }
+  $head = Get-FsFileHead $path
+  if (Test-FsHtmlText $head) { return 'the device answered with a login/HTML page, not its settings' }
+  if ($kind -eq 'config') {
+    if ($head -match '(?is)^\s*<\?xml[^>]*>\s*<ResponseStatus|^\s*<ResponseStatus') { return 'the device answered with an error, not its settings' }
+    if ($len -lt 512) { return ('too small to be a settings export (' + $len + ' bytes)') }
+    return ''
+  }
+  if ($kind -eq 'xml') {
+    try { $x = New-Object Xml.XmlDocument; $x.XmlResolver = $null; $x.LoadXml([IO.File]::ReadAllText($path)) } catch { return 'not valid XML' }
+    $root = [string]$x.DocumentElement.LocalName; if ($root -in @('html', 'ResponseStatus')) { return ('the device answered ' + $root + ', not its settings') }
+    return ''
+  }
+  if ($kind -eq 'text') { if ([IO.File]::ReadAllText($path) -notmatch '(?m)^[A-Za-z][\w.\[\]]*=') { return 'not the device''s key=value settings' }; return '' }
+  return ''
+}
+function Get-FsBackupKind([string]$leaf) { $l = $leaf.ToLower(); if ($l -in @('configurationdata.bin', 'config-export.backup')) { return 'config' }; if ($l -like '*.xml') { return 'xml' }; return 'text' }
+function Add-FsBackupFile([string]$f, $r) {
+  # keep the file only when the answer was 200 and the content checks out; otherwise delete it and log FAILED
+  $why = $(if ($r -and $r.PSObject.Properties['code'] -and [int]$r.code -ne 200) { 'answer ' + $r.code } else { Test-FsBackupFile $f (Get-FsBackupKind (Split-Path -Leaf $f)) })
+  if ($why) { Fs-LogLine ('backup FAILED: ' + (Split-Path -Leaf $f) + ' - ' + $why); $script:FsBackupFailed += ((Split-Path -Leaf $f) + ': ' + $why); Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue; return $false }
+  return $true
+}
 function Save-FsBackup([string]$ip, [string]$brand, $cred, [string]$dir) {
   # the camera's own config export (its import format) + readable network / video settings. Stays on this PC (run folder).
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
-  $files = @()
+  $files = @(); $script:FsBackupFailed = @()
   if ($brand -eq 'Dahua') {
     $f = Join-Path $dir 'config-export.backup'; $r = Fs-Http -Ip $ip -Path '/cgi-bin/Config.backup?action=All' -Cred $cred -OutFile $f -Timeout 20
-    if ((Test-Path $f) -and (Get-Item $f).Length -gt 0) { $files += $f } else { Remove-Item $f -ErrorAction SilentlyContinue }
-    foreach ($n in @('Network', 'Encode', 'SmartEncode', 'NTP')) { $r = Fs-Http -Ip $ip -Path ('/cgi-bin/configManager.cgi?action=getConfig&name=' + $n) -Cred $cred; if ($r.code -eq 200) { $p = Join-Path $dir ($n + '.txt'); [IO.File]::WriteAllText($p, $r.body); $files += $p } }
+    if (Add-FsBackupFile $f $r) { $files += $f }
+    foreach ($n in @('Network', 'Encode', 'SmartEncode', 'NTP')) { $r = Fs-Http -Ip $ip -Path ('/cgi-bin/configManager.cgi?action=getConfig&name=' + $n) -Cred $cred; if ($r.code -eq 200) { $p = Join-Path $dir ($n + '.txt'); [IO.File]::WriteAllText($p, $r.body); if (Add-FsBackupFile $p $r) { $files += $p } } }
   } else {
     $f = Join-Path $dir 'configurationData.bin'; $r = Fs-Http -Ip $ip -Path '/ISAPI/System/configurationData' -Cred $cred -OutFile $f -Timeout 30
-    if ((Test-Path $f) -and (Get-Item $f).Length -gt 0) { $files += $f } else { Remove-Item $f -ErrorAction SilentlyContinue }
+    if (Add-FsBackupFile $f $r) { $files += $f }
     foreach ($pp in @(@('network.xml', '/ISAPI/System/Network/interfaces'), @('stream-101.xml', '/ISAPI/Streaming/channels/101'), @('stream-102.xml', '/ISAPI/Streaming/channels/102'), @('time.xml', '/ISAPI/System/time'))) {
-      $r = Fs-Http -Ip $ip -Path $pp[1] -Cred $cred; if ($r.code -eq 200) { $p = Join-Path $dir $pp[0]; [IO.File]::WriteAllText($p, $r.body); $files += $p }
+      $r = Fs-Http -Ip $ip -Path $pp[1] -Cred $cred; if ($r.code -eq 200) { $p = Join-Path $dir $pp[0]; [IO.File]::WriteAllText($p, $r.body); if (Add-FsBackupFile $p $r) { $files += $p } }
     }
   }
   return $files
@@ -258,11 +291,16 @@ function Get-FsNvrMoveTarget([string]$planned, [string]$scheme, $nvrHosts, $take
 }
 function Test-FsBackupComplete($files, [string]$brand, [switch]$Nvr) {
   # a backup counts only when it can bring the device back: the device's own config export AND its network settings
-  # (cameras: AND the main stream). One stray file (time.xml) is not a backup.
-  $names = @(@($files) | ForEach-Object { if ($_) { (Split-Path -Leaf ([string]$_)).ToLower() } })
+  # (cameras: AND the main stream). One stray file (time.xml) is not a backup. 2.2.4: each needed file's CONTENT is checked too
+  # (a login/HTML page or an error answer saved under the right name is FAILED); $script:FsBackupWhy says why.
+  $script:FsBackupWhy = ''
+  $byName = @{}; foreach ($f in @($files)) { if ($f) { $byName[(Split-Path -Leaf ([string]$f)).ToLower()] = [string]$f } }
   if ($brand -eq 'Dahua') { $need = @('config-export.backup', 'network.txt'); if (-not $Nvr) { $need += 'encode.txt' } }
   else { $need = @('configurationdata.bin', 'network.xml'); if (-not $Nvr) { $need += 'stream-101.xml' } }
-  foreach ($n in $need) { if ($names -notcontains $n) { return $false } }
+  foreach ($n in $need) {
+    if (-not $byName.ContainsKey($n)) { $fw = @(@($script:FsBackupFailed) | Where-Object { ([string]$_).ToLower().StartsWith($n + ':') }); $script:FsBackupWhy = $(if ($fw.Count) { [string]$fw[0] } else { $n + ': not saved' }); return $false }
+    $why = Test-FsBackupFile $byName[$n] (Get-FsBackupKind $n); if ($why) { $script:FsBackupWhy = $n + ': ' + $why; return $false }
+  }
   return $true
 }
 

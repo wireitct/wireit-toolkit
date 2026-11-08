@@ -181,7 +181,7 @@ class H(BaseHTTPRequestHandler):
             npw = tag(b, 'password')
             if not npw: return self.send(400, ok_xml())
             d['pw'] = npw; return self.send(200, ok_xml())
-        if p == '/ISAPI/System/configurationData' and method == 'GET': return self.send(200, 'MOCKCONFIG-' + d['serial'], 'application/octet-stream')
+        if p == '/ISAPI/System/configurationData' and method == 'GET': return self.send(200, ('MOCKCONFIG-' + d['serial']).ljust(2048, '.'), 'application/octet-stream')   # 2.2.4: an export is KBs; a few bytes is FAILED
         if p == '/ISAPI/System/updateFirmware' and method == 'PUT':
             if not b: return self.send(400, ok_xml())
             d['fw'] = ('V9.9.9', 'build 999999'); return self.send(200, ok_xml())

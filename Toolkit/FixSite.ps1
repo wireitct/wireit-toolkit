@@ -773,7 +773,7 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'move' })) {
   if (-not $nvrPw.ContainsKey($n.ip)) { & $nvrFail 'not moved (no NVR login)'; continue }
   $cr = Fs-Cred $nvrPw[$n.ip]; [void](Add-FsTempIp (Get-FsP3 $n.ip) $pc $tempState)
   $nbf = @(Save-FsBackup $n.ip 'Hikvision' $cr (Join-Path $runDir ('backup\NVR-' + $n.ip)))
-  if (-not (Test-FsBackupComplete $nbf 'Hikvision' -Nvr)) { & $nvrFail 'backup could not be read - NVR not moved'; continue }
+  if (-not (Test-FsBackupComplete $nbf 'Hikvision' -Nvr)) { & $nvrFail ('backup FAILED (' + $script:FsBackupWhy + ') - NVR not moved'); continue }
   $net = Get-FsNet $n.ip 'Hikvision' $cr
   if (-not $net) { & $nvrFail 'its address settings could not be read - not moved'; continue }
   $taken = @($plan.cams | ForEach-Object { [string]$_.target; [string]$_.ip }) + @($plan.nvrs | Where-Object { $_ -ne $n } | ForEach-Object { [string]$_.target; [string]$_.ip })
@@ -868,7 +868,7 @@ foreach ($c in $ordered) {
   if (-not $stop -and -not $pw) { & $step 'no password that works' $false; $stop = $true }
   $cr = Fs-Cred $pw
   # backup
-  if (-not $stop) { $bd = Join-Path $runDir ('backup\' + (($c.name -replace '[^A-Za-z0-9_-]+', '_') + '-' + ($c.mac -replace ':', ''))); $bf = @(Save-FsBackup $ip $c.brand $cr $bd); $rbc.backup = $bd; if (Test-FsBackupComplete $bf $c.brand) { & $step 'backup saved' $true } else { & $step 'backup could not be read - camera left alone' $false; $stop = $true } }
+  if (-not $stop) { $bd = Join-Path $runDir ('backup\' + (($c.name -replace '[^A-Za-z0-9_-]+', '_') + '-' + ($c.mac -replace ':', ''))); $bf = @(Save-FsBackup $ip $c.brand $cr $bd); $rbc.backup = $bd; if (Test-FsBackupComplete $bf $c.brand) { & $step 'backup saved' $true } else { & $step ('backup FAILED (' + $script:FsBackupWhy + ') - camera left alone') $false; $stop = $true } }
   if (-not $stop) { $nb = Get-FsNet $ip $c.brand $cr; if ($nb) { $rbc.net_before = [ordered]@{ ip = $nb.ip; mask = $nb.mask; gw = $nb.gw; dhcp = $nb.dhcp; dns1 = $nb.dns1; dns2 = $nb.dns2; iface = $nb.iface } }; Save-Rb }
   # password
   if (-not $stop -and $pw -cne $sitePw -and ($c.steps -contains 'password' -or $opts.passwordAll)) {   # 2.2.3 (Codex #37): -cne
