@@ -271,7 +271,7 @@ $osp = RunFix $spArgs
 function Read-SpSec { $f = @(Get-ChildItem $spd -Filter 'site-*.dat')[0]; if (-not $f) { return [pscustomobject]@{ password = ''; known = @(); shownOnce = $false; bitwardenSaved = $false } }; $script:FsTestSecrets = $true; try { return ((Unprotect-FsText ((Get-Content $f.FullName -Raw).Trim())) | ConvertFrom-Json) } finally { $script:FsTestSecrets = $false } }
 $sx = Read-SpSec
 Check ($osp -match 'This site has no site password yet\. Do you know the site password\?' -and $osp -match 'SHOWN ONCE' -and $osp -match 'Save this in Bitwarden') 'Site password...: no password yet, "No, make one" -> made, shown once with Copy, "Save this in Bitwarden"'
-Check ($sx.password -cmatch '^Testpw\d{4}$' -and $sx.shownOnce -and -not $sx.bitwardenSaved) 'Site password...: made = word + 4 digits, kept encrypted on this PC'
+Check (($sx.password -cmatch '^[A-HJ-NP-Za-km-z2-9]{14}$' -and $sx.password -cmatch '[A-Z]' -and $sx.password -cmatch '[a-z]' -and $sx.password -match '\d' -and $sx.password -notmatch 'Testpw') -and $sx.shownOnce -and -not $sx.bitwardenSaved) 'Site password...: made = 14 random characters, no word in it (2.2.1, review M1), kept encrypted on this PC'
 Check ($sx.password -and -not ($osp -match [regex]::Escape([string]$sx.password)) -and -not @(Get-ChildItem "$tmp\sp\runs" -Recurse -File | Select-String -SimpleMatch -Pattern ([string]$sx.password) -List).Count) 'Site password...: never printed in the console or a log'
 $oldSp = [string]$sx.password
 Set-Content -Path $ansp -Value @('T', 'Typed#Site9', 'Typed#Site9', '')
@@ -364,7 +364,8 @@ if (-not $NoEndToEnd -and $py) {
     Eq $st3.devices.'192.168.1.21'.password 'Old#Site1' 'undo -PasswordAll run: working camera password back'
     Eq $st3.devices.'192.168.0.64'.password 'Old#Site1' 'undo: old password back'
     Eq $st3.devices.'192.168.0.64'.stream.codec 'H.265' 'undo: old codec back'
-    Eq $st3.devices.'192.168.1.20'.channels.'3'.ip '192.168.0.64' 'undo: NVR channel back to the old address'
+    # 2.2.1 (review H8): undo is EXACT - the channel goes back to what the NVR had before the fix (it pointed at .23 while the camera sat on .0.64)
+    Eq $st3.devices.'192.168.1.20'.channels.'3'.ip '192.168.1.23' 'undo: NVR channel back exactly as it was before the fix'
     Eq $st3.devices.'192.168.1.20'.password 'NvrPass9' 'undo -PasswordAll run: the NVR''s old password back'
   } finally { try { $m.proc.Kill() } catch {} }
   $m = Start-Mock 'mock-byw.json'
@@ -415,7 +416,7 @@ if (-not $NoEndToEnd -and $py) {
     Check ($on.IndexOf('Optional: type this site') -lt $on.IndexOf('Type YES to fix')) 'new site e2e: ... and before the YES'
     $st = Mock-State $m.port
     $sp = $st.devices.'10.0.5.23'.password
-    Check ($sp -cmatch '^Testpw\d{4}$') 'new site e2e: made site password = the word + 4 random digits'
+    Check ($sp -cmatch '^[A-HJ-NP-Za-km-z2-9]{14}$' -and $sp -cmatch '[A-Z]' -and $sp -cmatch '[a-z]' -and $sp -match '\d' -and $sp -notmatch 'Testpw') 'new site e2e: made site password = 14 random characters (2.2.1, review M1)'
     Eq $st.devices.'10.0.5.24'.password $sp 'new site e2e: hung camera has the site password too'
     Eq (@($st.devices.PSObject.Properties.Name | Where-Object { $_ -like '192.168.*' }).Count) 0 'new site e2e: nobody left on the wrong scheme'
     Eq $st.devices.'10.0.5.22'.password $sp 'new site e2e: Office (was factory 12345) has the site password'
@@ -502,7 +503,7 @@ if (-not $NoEndToEnd -and $py) {
     Check ($su.devices.'192.168.1.21'.password -eq 'Old#CamA1' -and $su.devices.'192.168.1.20'.channels.'1'.password -eq 'Old#CamA1' -and $su.devices.'192.168.1.20'.password -eq 'Nvr#Old33' -and $su.devices.'192.168.1.22'.password -eq 'Old#CamB2') 'option ticked: Undo puts Cam A, its channel and the NVR back; Cam B stays on its own'
   } finally { try { $m.proc.Kill() } catch {} }
 } else { Write-Host '3. end to end: skipped (no python or -NoEndToEnd)' }
-Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+if (-not $env:FS_KEEP) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue } else { Write-Host ('kept: ' + $tmp) }
 Write-Host ''
 Write-Host ('FixSite tests: ' + $script:pass + ' passed, ' + $script:fail + ' failed') -ForegroundColor $(if ($script:fail) { 'Red' } else { 'Green' })
 exit $script:fail

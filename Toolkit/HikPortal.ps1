@@ -17,7 +17,7 @@ function Portal-Log([string]$s) { if ($script:PortalLog) { try { & $script:Porta
 function Find-HikBrowser {
   if ($script:PortalBrowser) { return $script:PortalBrowser }
   $c = @()
-  foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
+  foreach ($base in @($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {   # ProgramW6432: the 64-bit folder, also from a 32-bit PowerShell
     if (-not $base) { continue }
     $c += (Join-Path $base 'Google\Chrome\Application\chrome.exe'); $c += (Join-Path $base 'Microsoft\Edge\Application\msedge.exe')
   }

@@ -22,7 +22,35 @@ param(
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-[Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+# 2.2.1 (review H2): certificate checks are skipped ONLY for devices on the local network (a private IPv4 address: cameras, NVRs).
+# Anything with a name (the service log, Google, the download service) keeps Windows' normal certificate check. Same code in
+# FixSiteDevices.ps1, NvrHealth.psm1, SiteCheck.ps1, FixNVR.ps1 and NetCheck.ps1 (it is compiled once per PowerShell).
+$script:WireItLanTlsCode = @"
+using System; using System.Net; using System.Net.Security; using System.Security.Cryptography.X509Certificates;
+public static class WireItLanTls {
+  public static bool IsLanHost(string h) {
+    if (string.IsNullOrEmpty(h)) return false;
+    IPAddress a; if (!IPAddress.TryParse(h.Trim('[', ']'), out a)) return false;
+    if (a.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) return false;
+    byte[] b = a.GetAddressBytes();
+    if (b[0] == 10 || b[0] == 127) return true;
+    if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+    if (b[0] == 192 && b[1] == 168) return true;
+    if (b[0] == 169 && b[1] == 254) return true;
+    return false;
+  }
+  public static bool Check(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors) {
+    if (errors == SslPolicyErrors.None) return true;
+    string host = null;
+    HttpWebRequest r = sender as HttpWebRequest; if (r != null) { host = r.RequestUri.Host; } else { string s = sender as string; if (s != null) host = s; }
+    return IsLanHost(host);
+  }
+  public static readonly RemoteCertificateValidationCallback Callback = new RemoteCertificateValidationCallback(Check);
+  public static void Install() { ServicePointManager.ServerCertificateValidationCallback = Callback; }
+}
+"@
+function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
+[void](Enable-WireItLanTls)   # 2.2.1 (review H2): devices on private addresses only
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 if (-not $OutDir) { $OutDir = Join-Path (Get-Location) ('NetCheck-' + $stamp) }
 New-Item -ItemType Directory -Force -Path $OutDir, (Join-Path $OutDir 'raw') | Out-Null

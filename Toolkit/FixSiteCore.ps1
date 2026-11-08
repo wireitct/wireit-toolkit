@@ -51,6 +51,37 @@ function ConvertTo-FsMac([string]$m) {
 function Get-FsP3([string]$ip) { if (-not $ip -or $ip -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { return '' }; return (($ip -split '\.')[0..2] -join '.') }
 function Get-FsLast([string]$ip) { if (-not $ip -or $ip -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { return -1 }; return [int](($ip -split '\.')[3]) }
 function Get-FsShort([string]$ip) { $l = Get-FsLast $ip; if ($l -lt 0) { return $ip }; return ('.' + $l) }
+# 2.2.1 (review H9): the PC's REAL subnet (not always /24). $script:FsSubnet = { ip; prefix } of the site adapter, set by New-FsPlan / FixSite.
+$script:FsSubnet = $null
+function ConvertTo-FsIpNum([string]$ip) { if (-not $ip -or $ip -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { return $null }; $o = $ip -split '\.'; foreach ($x in $o) { if ([int]$x -gt 255) { return $null } }; return ([uint32]([uint32]$o[0] * 16777216 + [uint32]$o[1] * 65536 + [uint32]$o[2] * 256 + [uint32]$o[3])) }
+function ConvertTo-FsMask([int]$prefix) {
+  # 24 -> 255.255.255.0, 22 -> 255.255.252.0 (anything out of 1..32 = /24)
+  if ($prefix -lt 1 -or $prefix -gt 32) { $prefix = 24 }
+  $m = [uint32]0; for ($i = 0; $i -lt $prefix; $i++) { $m = [uint32]($m + [uint32][math]::Pow(2, 31 - $i)) }
+  return ('' + (($m -shr 24) -band 255) + '.' + (($m -shr 16) -band 255) + '.' + (($m -shr 8) -band 255) + '.' + ($m -band 255))
+}
+function ConvertTo-FsPrefix([string]$mask) { $n = ConvertTo-FsIpNum $mask; if ($null -eq $n) { return 0 }; $c = 0; for ($i = 31; $i -ge 0; $i--) { if (($n -band [uint32][math]::Pow(2, $i)) -ne 0) { $c++ } else { break } }; return $c }
+function Test-FsInSubnet([string]$ip, [string]$netIp, [int]$prefix) {
+  $a = ConvertTo-FsIpNum $ip; $b = ConvertTo-FsIpNum $netIp; if ($null -eq $a -or $null -eq $b -or $prefix -lt 1 -or $prefix -gt 32) { return $false }
+  $sh = 32 - $prefix; if ($sh -ge 32) { return $true }
+  return ([math]::Floor($a / [math]::Pow(2, $sh)) -eq [math]::Floor($b / [math]::Pow(2, $sh)))
+}
+# "on the site's scheme" = the same /24 as the router (WireIt standard) OR anywhere inside the PC's real subnet when it is bigger than /24
+# (a /22 office: 192.168.5.x is NOT on a wrong scheme when the router is 192.168.4.1). Smaller than /24: the /24 AND inside the subnet.
+function Test-FsOnScheme([string]$ip, [string]$scheme) {
+  if (-not $ip -or -not $scheme) { return $false }
+  $sn = $script:FsSubnet; $pre = 24; if ($sn -and [int]$sn.prefix -gt 0) { $pre = [int]$sn.prefix }
+  if ($pre -lt 24) { return ((Get-FsP3 $ip) -eq $scheme -or (Test-FsInSubnet $ip ([string]$sn.ip) $pre)) }
+  if ($pre -gt 24) { return ((Get-FsP3 $ip) -eq $scheme -and (Test-FsInSubnet $ip ([string]$sn.ip) $pre)) }
+  return ((Get-FsP3 $ip) -eq $scheme)
+}
+# 2.2.1 (review M6): the main window always fits the screen's working area (768-pixel-high laptops at 150%), and scrolls if it must
+function Get-FsWindowFit([double]$scale, [int]$workW, [int]$workH, [int]$wantW = 820, [int]$wantH = 640, [int]$minW = 700, [int]$minH = 560) {
+  $w = [int]($wantW * $scale); $h = [int]($wantH * $scale); $mw = [int]($minW * $scale); $mh = [int]($minH * $scale)
+  $roomW = [math]::Max(320, $workW - 16); $roomH = [math]::Max(240, $workH - 48)   # 48 = the title bar and borders
+  $scroll = ($mw -gt $roomW -or $mh -gt $roomH)
+  return [pscustomobject]@{ width = [int][math]::Min($w, $roomW); height = [int][math]::Min($h, $roomH); minWidth = [int][math]::Min($mw, $roomW); minHeight = [int][math]::Min($mh, $roomH); scroll = $scroll; scrollWidth = $mw; scrollHeight = $mh }
+}
 function Test-FsPoeNet([string]$ip) { return ($script:FsPoeNets -contains (Get-FsP3 $ip)) }
 function Get-FsProp($o, [string]$name, $default = $null) {
   if ($null -eq $o) { return $default }
@@ -239,6 +270,9 @@ function New-FsPlan($expected, $observed, $opts = $null) {
      steps: backup, password, reset (official, needs a human step), activate (human), settings, move, nvr, reboot, poe, verify #>
   $o = Merge-FsOptions $opts
   $scheme = Get-FsScheme $observed $expected
+  # 2.2.1 (review H9): the PC's real subnet decides what is "on the right scheme" (a /22 is not four wrong /24s)
+  $pc0 = Get-FsProp $observed 'pc' $null; $pre0 = [int](Get-FsProp $pc0 'prefix' 0); if (-not $pre0) { $pre0 = ConvertTo-FsPrefix ([string](Get-FsProp $pc0 'mask' '')) }
+  $script:FsSubnet = $(if ($pre0 -gt 0 -and [string](Get-FsProp $pc0 'ip' '')) { [pscustomobject]@{ ip = [string](Get-FsProp $pc0 'ip' ''); prefix = $pre0 } } else { $null })
   $obs = @(ConvertTo-FsObserved $observed)
   $hasList = [bool]($expected -and @(Get-FsProp $expected 'cameras' @()).Count)
   $used = @{}   # last octets on the right scheme that are taken
@@ -256,7 +290,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
   foreach ($nv in @(Get-FsProp $observed 'nvrs' @())) {
     $ip = [string](Get-FsProp $nv 'ip' ''); $br = Get-FsBrand ([string](Get-FsProp $nv 'brand' '')) ([string](Get-FsProp $nv 'model' '')); if (-not $nvrBrand) { $nvrBrand = $br }
     $item = [ordered]@{ ip = $ip; brand = $br; model = [string](Get-FsProp $nv 'model' ''); mac = (ConvertTo-FsMac ([string](Get-FsProp $nv 'mac' ''))); login = [string](Get-FsProp $nv 'login' ''); target = ''; why = @(); steps = @(); chCount = @(Get-FsProp $nv 'channels' @()).Count }
-    if ($scheme -and (Get-FsP3 $ip) -ne $scheme) {
+    if ($scheme -and -not (Test-FsOnScheme $ip $scheme)) {
       $t = ''; foreach ($h in $o.nvrHosts) { if (-not $used.ContainsKey([int]$h)) { $t = $scheme + '.' + $h; break } }
       foreach ($en in $expNvrs) { $eip = [string](Get-FsProp $en 'ip' ''); if ((ConvertTo-FsMac ([string](Get-FsProp $en 'mac' ''))) -eq $item.mac -and (Get-FsP3 $eip) -eq $scheme -and -not $used.ContainsKey((Get-FsLast $eip))) { $t = $eip } }
       if ($t) { $used[(Get-FsLast $t)] = 1; $item.target = $t; $item.why += ('NVR is on the wrong IP scheme (' + $ip + ', site is ' + $scheme + '.x)'); $item.steps += @('backup', 'move') }
@@ -285,7 +319,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
   foreach ($pr in $pairs) { $e = $pr[0]; if ($e) { $lip = [string](Get-FsProp $e 'ip' ''); if ((Get-FsP3 $lip) -eq $scheme -and -not $used.ContainsKey((Get-FsLast $lip))) { $used[(Get-FsLast $lip)] = 'own:' + $lip } } }
   # no list: a camera on the wrong scheme and an NVR channel with no video are paired when it is one-to-one (or in order, marked as a guess)
   $guess = @{}
-  $lostCams = @($pairs | Where-Object { -not $_[0] -and $_[1] -and $scheme -and (Get-FsP3 $_[1].ip) -ne $scheme -and -not $_[1].nvr -and -not (Test-FsPoeNet $_[1].ip) } | ForEach-Object { $_[1] } | Sort-Object { [version]$_.ip })
+  $lostCams = @($pairs | Where-Object { -not $_[0] -and $_[1] -and $scheme -and -not (Test-FsOnScheme $_[1].ip $scheme) -and -not $_[1].nvr -and -not (Test-FsPoeNet $_[1].ip) } | ForEach-Object { $_[1] } | Sort-Object { [version]$_.ip })
   $lostChs = @(); foreach ($nv in @(Get-FsProp $observed 'nvrs' @())) { foreach ($cc in @(Get-FsProp $nv 'channels' @())) { $cip = [string](Get-FsProp $cc 'ip' ''); if ((Get-FsProp $cc 'online' $true) -eq $false -and $cip -and -not @($obs | Where-Object { $_.ip -eq $cip }).Count -and -not @($pairs | Where-Object { $_[0] -and [string](Get-FsProp $_[0] 'ip' '') -eq $cip }).Count) { $lostChs += [pscustomobject]@{ nvr = [string](Get-FsProp $nv 'ip' ''); channel = [int](Get-FsProp $cc 'channel' 0); ip = $cip; name = [string](Get-FsProp $cc 'name' '') } } } }
   $lostChs = @($lostChs | Sort-Object channel)
   if ($lostCams.Count -and $lostCams.Count -eq $lostChs.Count) {
@@ -320,7 +354,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
     }
     if (Test-FsPoeNet $d.ip) { $c.state = 'ok'; $c.broken = $false; $c.why += 'on the NVR''s own PoE ports (left as is)'; $plan.healthy += $c.name; $plan.cams += [pscustomobject]$c; continue }
     # what is wrong
-    $wrongScheme = ($scheme -and (Get-FsP3 $d.ip) -ne $scheme)
+    $wrongScheme = ($scheme -and -not (Test-FsOnScheme $d.ip $scheme))
     $outOfBlock = (-not $wrongScheme -and $o.moveOutOfBlock -and ((Get-FsLast $d.ip) -lt [int]$o.camFirst -or (Get-FsLast $d.ip) -gt [int]$o.camLast))
     $listMove = (-not $wrongScheme -and -not $outOfBlock -and $c.listIp -and (Get-FsP3 $c.listIp) -eq $scheme -and $c.listIp -ne $d.ip -and -not (@($obs | Where-Object { $_.ip -eq $c.listIp -and $_.key -ne $d.key }).Count))
     if ($wrongScheme) { $c.why += ('wrong IP scheme (' + $d.ip + ', site is ' + $scheme + '.x)') }
@@ -408,6 +442,10 @@ function New-FsPlan($expected, $observed, $opts = $null) {
   $pcO = Get-FsProp $observed 'pc' $null
   if ($pcO -and [bool](Get-FsProp $pcO 'dhcp' $false) -and (Get-FsP3 $pcIp) -eq $scheme -and (Get-FsLast $pcIp) -ge [int]$o.gearFirst -and (Get-FsLast $pcIp) -lt [int]$o.routerFirst) {
     $plan.notes += ('The router gave this PC ' + (Get-FsShort $pcIp) + '. WireIt standard: the router hands out .' + $o.routerFirst + ' and up, so it never gives away a camera or NVR address. Change the router''s DHCP range by hand (the Toolkit does not touch the router).')
+  }
+  # 2.2.1 (review H9): a site network smaller than a /24 - the Toolkit's .21-.99 / .20 standard does not fit inside it, so it moves nothing there
+  if ($script:FsSubnet -and [int]$script:FsSubnet.prefix -gt 24) {
+    foreach ($x in @(@($plan.cams) + @($plan.nvrs))) { if ($x.steps -contains 'move') { $x.steps = @('manual'); $x.why += ('this network is smaller than the usual one (mask ' + (ConvertTo-FsMask ([int]$script:FsSubnet.prefix)) + '), so its address is not changed by the Toolkit: set it by hand'); if ($x.PSObject.Properties['state']) { $x.state = 'manual' }; $x.target = '' } }
   }
   $sp = $o.settings
   if ($o.settingsAll -and [int](Get-FsProp $sp 'fps' 0) -le 0 -and [int](Get-FsProp $sp 'bitrate' 0) -le 0 -and [string](Get-FsProp $sp 'resolution' 'keep') -eq 'keep' -and [string](Get-FsProp $sp 'codec' 'auto') -notin @('H.264', 'H.265')) { $plan.notes += 'You ticked "Apply settings to ALL cameras" but every drop-down is on "keep", so no working camera gets new settings.' }

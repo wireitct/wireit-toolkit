@@ -26,9 +26,14 @@ $st = @{ proc = $null; since = $null; runDir = ''; offset = 0; mode = ''; newSit
 $siteRootsW = @()
 $f = New-Object Windows.Forms.Form
 $f.Text = 'WireIt Toolkit  v' + $Version; $f.StartPosition = 'CenterScreen'; $f.BackColor = $cBg; $f.Font = Fnt 10
-$f.ClientSize = New-Object Drawing.Size((Px 820), (Px 640)); $f.MinimumSize = New-Object Drawing.Size((Px 700), (Px 560))
+# 2.2.1 (review M6): never taller or wider than the screen's working area (a 768-pixel laptop at 150%); below the minimum it scrolls
+$wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea; $fit = Get-FsWindowFit $sc $wa.Width $wa.Height
+$f.ClientSize = New-Object Drawing.Size($fit.width, $fit.height); $f.MinimumSize = New-Object Drawing.Size([math]::Min($fit.minWidth + 16, $wa.Width), [math]::Min($fit.minHeight + 40, $wa.Height))
+$f.MaximumSize = New-Object Drawing.Size($wa.Width, $wa.Height)
 $ico = Join-Path $ToolkitDir 'wireit.ico'; if (Test-Path $ico) { try { $f.Icon = New-Object Drawing.Icon($ico) } catch {} }
-$t = New-Object Windows.Forms.TableLayoutPanel; $t.Dock = 'Fill'; $t.ColumnCount = 1; $t.RowCount = 7; $t.Padding = New-Object Windows.Forms.Padding((Px 22), (Px 14), (Px 22), (Px 12))
+$t = New-Object Windows.Forms.TableLayoutPanel; $t.Dock = 'Fill'; $t.ColumnCount = 1; $t.RowCount = 7
+if ($fit.scroll) { $f.AutoScroll = $true; $f.AutoScrollMinSize = New-Object Drawing.Size($fit.scrollWidth, $fit.scrollHeight) }   # the layout keeps its full size and the window scrolls to the bottom buttons
+$t.MinimumSize = New-Object Drawing.Size(0, $(if ($fit.scroll) { $fit.scrollHeight } else { 0 })); $t.Padding = New-Object Windows.Forms.Padding((Px 22), (Px 14), (Px 22), (Px 12))
 foreach ($rs in @('AutoSize', 'AutoSize', 'AutoSize', 'AutoSize', 'AutoSize', 'Percent', 'AutoSize')) { if ($rs -eq 'Percent') { [void]$t.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100))) } else { [void]$t.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))) } }
 $f.Controls.Add($t)
 function New-Label([string]$text, $font, $color, [int]$top = 0) { $l = New-Object Windows.Forms.Label; $l.Text = $text; $l.Font = $font; $l.ForeColor = $color; $l.AutoSize = $true; $l.MaximumSize = New-Object Drawing.Size((Px 760), 0); $l.Margin = New-Object Windows.Forms.Padding(0, (Px $top), 0, 0); return $l }
@@ -68,14 +73,14 @@ $t.Controls.Add($bigRow, 0, 4)
 $status = New-Label 'It finds what is wrong, shows you the list, you type YES once, and it fixes only those cameras. Working cameras are not touched. Safe to run again.' (Fnt 10) $cMuted 0
 $out = New-Object Windows.Forms.TextBox; $out.Multiline = $true; $out.ReadOnly = $true; $out.ScrollBars = 'Vertical'; $out.Dock = 'Fill'; $out.Font = New-Object Drawing.Font('Consolas', 10); $out.BackColor = [Drawing.Color]::White; $out.Margin = New-Object Windows.Forms.Padding(0, (Px 4), 0, (Px 6))
 $pnl = New-Object Windows.Forms.TableLayoutPanel; $pnl.Dock = 'Fill'; $pnl.ColumnCount = 1; $pnl.RowCount = 3; [void]$pnl.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))); [void]$pnl.RowStyles.Add((New-Object Windows.Forms.RowStyle('AutoSize'))); [void]$pnl.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
+# 2.2.0 (2.2.1: made before it is placed - it was added to the layout as nothing): a yellow line while Hikvision's reply is awaited (or the reply mailbox could not be checked)
+$hikBanner = New-Label '' (Fnt 10 'Bold') ([Drawing.Color]::FromArgb(146, 64, 14)) 0; $hikBanner.BackColor = [Drawing.Color]::FromArgb(254, 243, 199); $hikBanner.Visible = $false; $hikBanner.Padding = New-Object Windows.Forms.Padding((Px 6))
 $pnl.Controls.Add($status, 0, 0); $pnl.Controls.Add($hikBanner, 0, 1); $pnl.Controls.Add($out, 0, 2); $t.Controls.Add($pnl, 0, 5)
 $bar = New-Object Windows.Forms.FlowLayoutPanel; $bar.Dock = 'Fill'; $bar.AutoSize = $true; $bar.FlowDirection = 'LeftToRight'
 function New-Small([string]$text) { $b = New-Object Windows.Forms.Button; $b.Text = $text; $b.AutoSize = $true; $b.Font = Fnt 9.5; $b.Padding = New-Object Windows.Forms.Padding((Px 6), (Px 2), (Px 6), (Px 2)); return $b }
 $bLook = New-Small 'Just look (change nothing)'; $bUndo = New-Small 'Undo the last fix'; $bSitePw = New-Small 'Site password...'; $bMore = New-Small 'More tools (old buttons)'
 $bHik = New-Small "I got Hik's email"; $bHik.ForeColor = [Drawing.Color]::FromArgb(37, 99, 175); $bHik.Font = Fnt 9.5 'Bold'   # 2.2.0: backup for the reply relay
 foreach ($b in @($bLook, $bUndo, $bSitePw, $bHik, $bMore)) { $bar.Controls.Add($b) }
-# 2.2.0: a yellow line while Hikvision's reply is awaited (or the reply mailbox could not be checked)
-$hikBanner = New-Label '' (Fnt 10 'Bold') ([Drawing.Color]::FromArgb(146, 64, 14)) 0; $hikBanner.BackColor = [Drawing.Color]::FromArgb(254, 243, 199); $hikBanner.Visible = $false; $hikBanner.Padding = New-Object Windows.Forms.Padding((Px 6))
 $t.Controls.Add($bar, 0, 6)
 $tips = New-Object Windows.Forms.ToolTip
 $tips.SetToolTip($big, 'Finds the cameras with a real problem (offline, no video, hung, wrong IP scheme, not on the NVR, password unknown) and fixes ONLY those: site password, the settings above, right address, back on the NVR, video checked. Working cameras are not touched.')

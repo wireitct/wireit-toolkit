@@ -22,6 +22,34 @@ $script:SC_VERSION = '1.1.0'
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
+# 2.2.1 (review H2): certificate checks are skipped ONLY for devices on the local network (a private IPv4 address: cameras, NVRs).
+# Anything with a name (the service log, Google, the download service) keeps Windows' normal certificate check. Same code in
+# FixSiteDevices.ps1, NvrHealth.psm1, SiteCheck.ps1, FixNVR.ps1 and NetCheck.ps1 (it is compiled once per PowerShell).
+$script:WireItLanTlsCode = @"
+using System; using System.Net; using System.Net.Security; using System.Security.Cryptography.X509Certificates;
+public static class WireItLanTls {
+  public static bool IsLanHost(string h) {
+    if (string.IsNullOrEmpty(h)) return false;
+    IPAddress a; if (!IPAddress.TryParse(h.Trim('[', ']'), out a)) return false;
+    if (a.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) return false;
+    byte[] b = a.GetAddressBytes();
+    if (b[0] == 10 || b[0] == 127) return true;
+    if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+    if (b[0] == 192 && b[1] == 168) return true;
+    if (b[0] == 169 && b[1] == 254) return true;
+    return false;
+  }
+  public static bool Check(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors) {
+    if (errors == SslPolicyErrors.None) return true;
+    string host = null;
+    HttpWebRequest r = sender as HttpWebRequest; if (r != null) { host = r.RequestUri.Host; } else { string s = sender as string; if (s != null) host = s; }
+    return IsLanHost(host);
+  }
+  public static readonly RemoteCertificateValidationCallback Callback = new RemoteCertificateValidationCallback(Check);
+  public static void Install() { ServicePointManager.ServerCertificateValidationCallback = Callback; }
+}
+"@
+function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
 
 $script:OUI = @{
  'DC-07-F8'='Hikvision';'28-57-BE'='Hikvision';'44-19-B6'='Hikvision';'4C-BD-8F'='Hikvision';'54-C4-15'='Hikvision';'58-03-FB'='Hikvision';'BC-AD-28'='Hikvision';'C0-56-E3'='Hikvision';'C4-2F-90'='Hikvision';'18-68-CB'='Hikvision';'24-48-45'='Hikvision';'80-BE-AF'='Hikvision';'A4-14-37'='Hikvision';'8C-E7-48'='Hikvision';'94-E1-AC'='Hikvision';'BC-BA-C2'='Hikvision';'64-DB-8B'='Hikvision';'98-DF-82'='Hikvision';'E0-CA-3C'='Hikvision';'08-A1-89'='Hikvision';'24-0F-9B'='Hikvision';'2C-A5-9C'='Hikvision';'40-AC-BF'='Hikvision';'44-47-CC'='Hikvision';'4C-F5-DC'='Hikvision';'68-6D-BC'='Hikvision';'84-94-37'='Hikvision';'AC-B9-2F'='Hikvision';'B4-A3-82'='Hikvision';'C8-A7-02'='Hikvision';'10-12-FB'='Hikvision';'AC-CB-51'='Hikvision';'E8-A0-ED'='Hikvision';'F8-4D-FC'='Hikvision';'0C-75-D2'='Hikvision';
@@ -166,6 +194,7 @@ function Invoke-ScPorts([string[]]$ips, [int[]]$ports, [int]$timeoutMs = 1200) {
 function Invoke-ScHttpGet([string]$url, $cred, [int]$timeoutMs = 8000) {
   try {
     $rq = [Net.HttpWebRequest]::Create($url); $rq.Method = 'GET'; $rq.Timeout = $timeoutMs; $rq.ReadWriteTimeout = $timeoutMs; $rq.AllowAutoRedirect = $false
+    if (Enable-WireItLanTls) { try { $rq.ServerCertificateValidationCallback = [WireItLanTls]::Callback } catch {} }   # this request only: a self-made NVR certificate on a private address
     if ($cred) { $cc = New-Object Net.CredentialCache; $u = [uri]$url; $base = [uri]($u.Scheme + '://' + $u.Authority); $nc = $cred.GetNetworkCredential(); $cc.Add($base, 'Digest', $nc); $cc.Add($base, 'Basic', $nc); $rq.Credentials = $cc; $rq.PreAuthenticate = $false }
     $rs = $rq.GetResponse(); $sr = New-Object IO.StreamReader($rs.GetResponseStream()); $body = $sr.ReadToEnd(); $sr.Close(); $code = [int]$rs.StatusCode; $rs.Close()
     return [pscustomobject]@{ Code = $code; Body = $body }
@@ -207,7 +236,7 @@ function ConvertFrom-ScDahuaStatus([string]$stateText, [string]$remoteText, [str
 function Get-ScNvrChannels([string]$nvr, $cred, [int[]]$openPorts) {
   $r = [pscustomobject]@{ Brand = ''; Model = ''; Ok = $false; Msg = ''; Channels = @(); Scheme = '' }
   $schemes = @(); if ($openPorts -contains 80 -or -not $openPorts) { $schemes += 'http' }; if ($openPorts -contains 443) { $schemes += 'https' }; if (-not $schemes) { $schemes = @('http') }
-  [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+  [void](Enable-WireItLanTls)   # 2.2.1: NVRs (private addresses) only; the upload to the service log keeps the normal certificate check
   $dahuaFirst = ($openPorts -contains 37777) -and -not ($openPorts -contains 8000)
   foreach ($sc in $schemes) {
     $base = $sc + '://' + $nvr

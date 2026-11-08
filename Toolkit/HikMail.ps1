@@ -143,7 +143,7 @@ function Find-HikReplyMatches($Devices, $Messages) {
       }
       if (-not $hit) { foreach ($d in @($Devices)) { $sh = [string]$d.shortSerial; if ($sh -and ($c.name -like ('*' + $sh + '*') -or $txt -like ('*' + $sh + '*'))) { if ($hit) { $hit = $null; $how = 'ambiguous'; break }; $hit = $d; $how = 'short serial' } } }
       if (-not $hit) { foreach ($d in @($Devices)) { $mac = ([string]$d.mac) -replace '[-:]', ''; if ($mac -and (($txt -replace '[-:]', '') -match ('(?i)' + $mac))) { $hit = $d; $how = 'MAC'; break } } }
-      if (-not $hit -and $how -ne 'ambiguous' -and $m.text) {
+      if (-not $hit -and $how -ne 'ambiguous' -and $m.text -and ([string]$c.name) -notmatch '(?i)\.(png|jpe?g|gif|bmp|pdf|html?)$') {   # 2.2.1: never a picture or a PDF as the unlock file
         # 2.2.0: else the mail's own text (a code mail names the serial in its text, the attachment is only the code)
         $mt = [string]$m.text; $cnt = 0
         foreach ($d in @($Devices)) { $sn = [string]$d.serial; $sh = [string]$d.shortSerial; if (($sn -and $mt -like ('*' + $sn + '*')) -or ($sh -and $mt -like ('*' + $sh + '*'))) { $cnt++; $hit = $d; $how = 'serial in the mail text' } }
@@ -172,7 +172,8 @@ function Get-HikFolderMessages([string]$Dir, [datetime]$Since) {
       try {
         $mm = Read-MimeMessage ([IO.File]::ReadAllBytes($f.FullName)); $text = [string]$mm.text
         foreach ($a in @($mm.attachments)) { [void]$att.Add([pscustomobject]@{ name = ($f.BaseName + '-' + $a.name); bytes = $a.bytes; type = $a.type }) }
-        if (-not $att.Count) { $code = Get-HikCodeFromText $text; if ($code) { [void]$att.Add([pscustomobject]@{ name = ($f.BaseName + '-code.txt'); bytes = [Text.Encoding]::ASCII.GetBytes($code); type = 'text/plain' }) } }
+        # 2.2.1 (review M5): a code written in the mail's text counts too - also when the mail has other attachments (a logo, a PDF)
+        $code = Get-HikCodeFromText $text; if ($code) { [void]$att.Add([pscustomobject]@{ name = ($f.BaseName + '-code.txt'); bytes = [Text.Encoding]::ASCII.GetBytes($code); type = 'text/plain' }) }
       } catch {}
     }
     else { [void]$att.Add([pscustomobject]@{ name = $f.Name; bytes = [IO.File]::ReadAllBytes($f.FullName); type = 'file' }) }

@@ -202,7 +202,7 @@ try {
   $hc = Get-HikConfig $cfgAll $tmp
   Check ($hc.relay.url -eq $relay.url -and $hc.waitMinutes -eq 20 -and $hc.replyTo -eq 'hikreset@wireitct.com') 'config: relay on -> replies go to the relay address'
   Eq (Get-HikFormFor $hc).email 'hikreset@wireitct.com' 'form: Hikvision''s reply address is the relay''s when the relay is on'
-  Eq (Get-HikFormFor $h0).email '' 'form: with no relay, the form keeps its own email (none in an empty config)'
+  Eq (Get-HikFormFor $h0).email 'moshe@wireitct.com' 'form: with no relay and no "form" in config.json, the Toolkit''s default form details are used (2.2.1, review M5)'
   Eq (Get-HikFormFor (Get-HikConfig ([pscustomobject]@{ form = $cfgAll.form }))).email 'moshe@wireitct.com' 'form: relay off -> the configured email stays'
   # the whole path: Receive-HikReplies asks the relay for each waiting device and files the reply
   $stm = Read-HikState (Join-Path $tmp 's4.json'); $nvrd = Add-HikStateDevice $stm $nvr (Join-Path $tmp 'req2\x.xml') $nvr.bootTime; $nvrd.status = 'submitted'

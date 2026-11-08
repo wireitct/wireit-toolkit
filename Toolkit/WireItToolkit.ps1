@@ -545,6 +545,10 @@ function Start-Fix([string]$name, [string]$mode, [string[]]$extra, [scriptblock]
   $a = '-NoProfile -ExecutionPolicy Bypass -File "' + $file + '" -Mode ' + $mode
   if ($TK.bw) { $a += ' -BitwardenExport "' + $TK.bw + '"' }
   foreach ($e in $extra) { if ($e) { $a += ' ' + $e } }
+  # 2.2.1 (review H3): the old Fix NVR tools need an admin login; the Crew login is told so instead of an admin-password box it cannot answer
+  $isAdmF = $false; try { $isAdmF = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch {}
+  $inAdmins = $true; try { $wg = (& whoami.exe /groups 2>$null) -join "`n"; if ($wg) { $inAdmins = ($wg -match 'S-1-5-32-544') } } catch {}   # an admin behind UAC lists it as "deny only": still an admin
+  if (-not $isAdmF -and -not $inAdmins) { Add-Out ($name + ' needs an admin login on this PC. On the Crew login use the big "Fix this site" button - it needs no admin password.'); End-Run 2 ''; return }
   Add-Out 'A blue tool window opens (Windows asks permission first: click Yes).'
   Add-Out 'Type passwords there - they are hidden and never saved. Results show up here as it works.'
   Add-Out ''

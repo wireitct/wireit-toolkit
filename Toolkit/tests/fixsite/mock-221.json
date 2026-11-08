@@ -1,0 +1,59 @@
+{
+ "pc": {
+  "ip": "192.168.1.105",
+  "gw": "192.168.1.1",
+  "mask": "255.255.255.0",
+  "dhcp": true
+ },
+ "devices": {
+  "192.168.1.20": {
+   "brand": "Hikvision",
+   "kind": "nvr",
+   "model": "DS-7608NI-K2",
+   "serial": "NVRSERIAL1",
+   "mac": "c4:2f:90:00:00:20",
+   "password": "Nvrpass2468",
+   "https": true,
+   "channels": {
+    "1": {
+     "ip": "192.168.1.21",
+     "password": "Campass1357",
+     "protocol": "HIKVISION",
+     "name": "Front"
+    },
+    "2": {
+     "ip": "192.168.1.22",
+     "password": "Dahua1357x",
+     "protocol": "ONVIF",
+     "name": "Yard"
+    }
+   }
+  },
+  "192.168.1.21": {
+   "brand": "Hikvision",
+   "kind": "camera",
+   "model": "DS-2CD2143G2-I",
+   "serial": "CAMSERIAL1",
+   "mac": "c4:2f:90:00:00:21",
+   "password": "Campass1357",
+   "https": true
+  },
+  "192.168.1.22": {
+   "brand": "Dahua",
+   "kind": "camera",
+   "model": "IPC-HDW2431T",
+   "serial": "DHSERIAL1",
+   "mac": "e0:50:8b:00:00:22",
+   "password": "Dahua1357x"
+  },
+  "192.168.1.23": {
+   "brand": "Hikvision",
+   "kind": "camera",
+   "model": "DS-2CD2043G0-I",
+   "serial": "CAMSERIAL3",
+   "mac": "c4:2f:90:00:00:23",
+   "password": "Oldcam9753",
+   "dhcp": true
+  }
+ }
+}

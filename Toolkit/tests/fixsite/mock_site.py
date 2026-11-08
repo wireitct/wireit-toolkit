@@ -51,11 +51,22 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self): self.handle_all('GET')
     def do_PUT(self): self.handle_all('PUT')
     def do_POST(self): self.handle_all('POST')
+    def do_DELETE(self): self.handle_all('DELETE')
     def handle_all(self, method):
         n = int(self.headers.get('Content-Length') or 0); body = self.rfile.read(n).decode('utf-8', 'replace') if n else ''
-        u = urlparse(self.path); m = re.match(r'^/dev/([^/]+)(/.*)?$', u.path)
+        u = urlparse(self.path); m = re.match(r'^/(dev|tls)/([^/]+)(/.*)?$', u.path)
         if not m: return self.send(404)
-        ip, path = m.group(1), (m.group(2) or '/'); q = {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}
+        tls, ip, path = (m.group(1) == 'tls'), m.group(2), (m.group(3) or '/'); q = {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}
+        self.tls = tls
+        if tls:
+            # 2.2.1: /tls/<ip>/... = the device's HTTPS port. A device without "https": true has none: the connection just closes
+            d0 = S['devices'].get(ip)
+            if not d0 or not d0.get('https') or not reachable(ip) or not d0['answers']:
+                with LOCK: S['log'].append('TLS-NONE %s %s' % (method, ip))
+                self.close_connection = True
+                try: self.connection.shutdown(2)
+                except Exception: pass
+                return
         with LOCK:
             try: self.route(method, ip, path, q, body, u.query)
             except Exception as e:
@@ -79,7 +90,8 @@ class H(BaseHTTPRequestHandler):
             if d['wake_after'] <= 0: d['answers'] = True; d['fails'] = 0
             return self.send(599, 'no answer')
         if not d or not reachable(ip) or not d['answers']: return self.send(599, 'no answer')
-        S['log'].append('%s %s %s' % (method, ip, path + ('?' + rawq if rawq and 'pwd' not in rawq else '')))
+        S['log'].append(('TLS ' if getattr(self, 'tls', False) else '') + '%s %s %s' % (method, ip, path + ('?' + rawq if rawq and 'pwd' not in rawq else '')))
+        if not getattr(self, 'tls', False) and ('pwd=' in rawq or (method in ('PUT', 'POST') and '<password>' in body)): S.setdefault('plain_secrets', []).append(ip)
         a = self.auth(d)
         if a is None or a is False or a == 'locked':
             return self.send(401, 'locked' if a == 'locked' else 'Unauthorized', headers={'WWW-Authenticate': 'Basic realm="x"'})
@@ -161,7 +173,11 @@ class H(BaseHTTPRequestHandler):
                 if method == 'PUT' and k in chs:
                     chs[k]['ip'] = xml_text(body, 'ipAddress'); pw = xml_text(body, 'password')
                     if pw: chs[k]['password'] = pw
+                    v = xml_text(body, 'proxyProtocol')
+                    if v: chs[k]['protocol'] = v
                     return self.send(200, '<ResponseStatus><statusCode>1</statusCode></ResponseStatus>', X)
+                if method == 'DELETE' and k in chs:
+                    del chs[k]; return self.send(200, '<ResponseStatus><statusCode>1</statusCode></ResponseStatus>', X)
             if path == '/ISAPI/ContentMgmt/InputProxy/channels' and method == 'POST':
                 k = xml_text(body, 'id'); chs[k] = {'ip': xml_text(body, 'ipAddress'), 'password': xml_text(body, 'password'), 'protocol': xml_text(body, 'proxyProtocol'), 'name': ''}
                 return self.send(200, '<ResponseStatus><statusCode>1</statusCode></ResponseStatus>', X)

@@ -61,8 +61,9 @@ function Export-HikRequests($Devices, [string]$OutDir, $State, [string]$StatePat
 }
 
 # ---------------- 2. Hikvision's page ----------------
-function Submit-HikRequests($State, [string]$StatePath, $Form, [int]$PerDeviceTimeoutSec = 900) {
-  $todo = @($State.devices | Where-Object { $_.status -eq 'exported' })
+function Submit-HikRequests($State, [string]$StatePath, $Form, [int]$PerDeviceTimeoutSec = 900, $Only = $null) {
+  # 2.2.1 (review H7): $Only = the serials this run may act on (the approved targets); an old saved device outside it is left alone
+  $todo = @($State.devices | Where-Object { $_.status -eq 'exported' -and ($null -eq $Only -or @($Only) -contains [string]$_.serial) })
   if (-not $todo.Count) { Hk-Say 'Nothing waiting to be sent to Hikvision.'; return @() }
   $sent = @(); $n = 0
   $exe = Find-HikBrowser
@@ -207,9 +208,9 @@ function Format-HikWaitLine($Cfg, [int]$Count, [int]$MinutesLeft) {
 # ---------------- 4. import + check ----------------
 # $VerifyLogin = scriptblock { param($ip, $password) -> $true when the password logs in } (the caller supplies Test-FsLogin).
 # $FindIp = scriptblock { param($dev) -> the device's current IP (it may have moved) }.
-function Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [scriptblock]$VerifyLogin, [string]$Only = '') {
+function Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [scriptblock]$VerifyLogin, [string]$Only = '', $OnlySerials = $null) {
   $done = @()
-  foreach ($d in @($State.devices | Where-Object { $_.status -eq 'replied' -and (-not $Only -or $_.serial -like ('*' + $Only + '*') -or $_.ip -eq $Only -or $_.mac -eq $Only) })) {
+  foreach ($d in @($State.devices | Where-Object { $_.status -eq 'replied' -and ($null -eq $OnlySerials -or @($OnlySerials) -contains [string]$_.serial) -and (-not $Only -or $_.serial -like ('*' + $Only + '*') -or $_.ip -eq $Only -or $_.mac -eq $Only) })) {
     Hk-Say ''; Hk-Say ('Importing the unlock file into ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ')') 'Cyan'
     $live = @(Find-HikSadp 3 | Where-Object { $_.mac -eq $d.mac })[0]
     if (-not $live) { Hk-Say '  The device does not answer on the network right now.' 'Yellow'; Set-HikStateField $d 'note' 'not answering'; continue }
@@ -244,6 +245,17 @@ function Format-HikStatus($State) {
 # 2.2.0: "hikReset": { "relay": { "url": "", "address": "hikreset@wireitct.com", "everySec": 60 }, "waitMinutes": 15, "replyDir": "" }
 # No url (or an empty config) = no relay: the flow waits with the "I got Hik's email" button only, and the form keeps config "form.email".
 # With a url, Hikvision's form gets relay.address as the email, so the reply lands where the relay reads it.
+$script:HkDefaultForm = [ordered]@{ firstName = 'Moshe'; lastName = 'Reichman'; email = 'moshe@wireitct.com'; company = 'WireIt CT LLC'; state = 'Connecticut'; zip = '06710'; businessType = 'Installer' }
+# 2.2.1 (review M5): what the official reset still needs, in plain words, said BEFORE the run starts (empty = ready)
+function Get-HikReadiness($Cfg, [string]$ToolkitDir = '') {
+  $w = @()
+  $f = Get-HikFormFor $Cfg
+  if (-not $f -or -not [string]$f.email -or -not [string]$f.firstName) { $w += 'Hikvision''s form needs a name and an email (config.json "form").' }
+  if (-not [string]$Cfg.relay.url) { $w += 'no reply relay is set up on this PC: when Hikvision''s email comes, press "I got Hik''s email" (the reply goes to ' + $(if ($f) { [string]$f.email } else { 'the form''s email' }) + ').' }
+  elseif ($ToolkitDir -and -not (Get-HikRelayKey $ToolkitDir)) { $w += 'this PC has no upload key, so the reply relay cannot be asked (an admin runs "Set upload key.cmd" once); until then use "I got Hik''s email".' }
+  try { if (-not (Find-HikBrowser)) { $w += 'Chrome or Edge is not on this PC: Hikvision''s page cannot open here.' } } catch {}
+  return @($w)
+}
 function Get-HikConfig($CfgAll, [string]$ToolkitDir = '') {
   $relay = [pscustomobject]@{ url = ''; address = 'hikreset@wireitct.com'; everySec = 60 }
   $wait = 15; $replyDir = ''
@@ -256,6 +268,8 @@ function Get-HikConfig($CfgAll, [string]$ToolkitDir = '') {
   if ([string]$relay.url -and -not (Test-HikRelayUrl ([string]$relay.url))) { $relay.url = '' }   # http:// or junk = off (never send the key in clear)
   if (-not [string]$relay.address) { $relay.address = 'hikreset@wireitct.com' }
   $form = $null; if ($CfgAll -and $CfgAll.PSObject.Properties['form']) { $form = $CfgAll.form }
+  # 2.2.1 (review M5): no "form" in config.json = the Toolkit's own default details (the same ones ToolkitCore uses), not "no reset"
+  if (-not $form) { if (Get-Command Get-TkConfig -ErrorAction SilentlyContinue) { try { $form = [pscustomobject](Get-TkConfig $ToolkitDir).form } catch {} }; if (-not $form) { $form = [pscustomobject]$script:HkDefaultForm } }
   $replyTo = $(if ($form -and $form.PSObject.Properties['email']) { [string]$form.email } else { '' })
   if ([string]$relay.url) { $replyTo = [string]$relay.address }
   return [pscustomobject]@{ form = $form; relay = $relay; waitMinutes = $wait; replyDir = $replyDir; replyTo = $replyTo }
@@ -289,8 +303,15 @@ function Invoke-HikResetStage {
   [void](Export-HikRequests $todo $reqDir $state $statePath)
   $form = Get-HikFormFor $Config
   if (-not $form) { return [pscustomobject]@{ fixed = @(); pending = @($pending) + @($todo | ForEach-Object { [pscustomobject]@{ mac = $_.mac; reason = 'config.json has no "form" (name, email, company)' } }) } }
-  $forMine = { param($st) @($st.devices | Where-Object { $want.ContainsKey($_.mac) }) }
-  [void](Submit-HikRequests $state $statePath $form $SubmitTimeoutSec)
+  $forMine = { param($st) @($st.devices | Where-Object { $want.ContainsKey((ConvertTo-SadpMac ([string]$_.mac))) }) }
+  $mine = @(& $forMine $state | ForEach-Object { [string]$_.serial })
+  # 2.2.1: a device whose unlock file was imported in an earlier run that stopped before the check: check its login now (once)
+  foreach ($d in @(& $forMine $state | Where-Object { $_.status -eq 'imported' })) {
+    $okv = $false; try { $okv = [bool](& $VerifyLogin ([string]$d.ip) $SitePassword) } catch {}
+    if ($okv) { Set-HikStateField $d 'status' 'verified'; Set-HikStateField $d 'verifiedAt' (Get-Date -Format 's'); Save-HikState $statePath $state; $fixed += (ConvertTo-SadpMac ([string]$d.mac)); Hk-Say ('  ' + $d.model + ' ' + $d.ip + ': the earlier reset worked - the site password logs in.') 'Green' }
+  }
+  foreach ($d in @(& $forMine $state | Where-Object { $_.status -eq 'verified' })) { $mv = ConvertTo-SadpMac ([string]$d.mac); if ($fixed -notcontains $mv) { $fixed += $mv } }
+  [void](Submit-HikRequests $state $statePath $form $SubmitTimeoutSec $mine)
   Save-HikWaitingList $InboxDir $state $Site ([string]$Config.replyTo)
   $end = (Get-Date).AddMinutes($WaitMinutes); $lastLine = ''; $lastSaid = [datetime]::MinValue; $first = $true
   do {
@@ -309,11 +330,11 @@ function Invoke-HikResetStage {
     Start-Sleep -Seconds ([math]::Max(1, $InboxEverySec))
   } while ($true)
   $ready = @(& $forMine $state | Where-Object { $_.status -eq 'replied' })
-  if ($ready.Count) { $done = @(Import-HikReplies $state $statePath $SitePassword $VerifyLogin); foreach ($d in $done) { $fixed += $d.mac } }
+  if ($ready.Count) { $done = @(Import-HikReplies $state $statePath $SitePassword $VerifyLogin '' $mine); foreach ($d in $done) { $fixed += (ConvertTo-SadpMac ([string]$d.mac)) } }
   Save-HikWaitingList $InboxDir $state $Site ([string]$Config.replyTo)
   if ($script:HkStatus) { try { & $script:HkStatus ([pscustomobject]@{ waiting = @(); relay = $script:HkRelayStatus; replyTo = [string]$Config.replyTo; minutesLeft = 0; line = ''; done = $true }) } catch {} }
   foreach ($d in @(& $forMine $state)) {
-    if ($fixed -contains $d.mac) { continue }
+    if ($fixed -contains (ConvertTo-SadpMac ([string]$d.mac))) { continue }
     $why = switch ($d.status) { 'submitted' { 'sent to Hikvision, waiting for the unlock email (it can take a few hours). When it comes: press "I got Hik''s email" (or, with the reply mailbox set up, just press Fix this site again). The device must NOT restart meanwhile.' } 'exported' { 'request file made, not sent to Hikvision yet' } 'replied' { 'unlock file arrived but the import did not work' + $(if ($d.note) { ' (' + $d.note + ')' } else { '' }) } 'expired' { 'the request is no longer valid (' + $d.note + '): it needs a new one' } default { [string]$d.status } }
     $pending += [pscustomobject]@{ mac = $d.mac; reason = $why }
   }

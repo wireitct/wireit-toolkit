@@ -130,10 +130,22 @@ function Ask-Choice([string]$q, [string]$yes, [string]$no) {
   } catch { $a = Ask ($q + '  (type Y for "' + $yes + '", N for "' + $no + '")'); return ([string]$a).Trim() -match '^(?i)y' }
 }
 function Remember-Secret([string]$p) { if ($p) { $script:Secrets += $p } }
+# 2.2.1 (review H1): said once per device whose password had to go over plain HTTP (it has no HTTPS)
+$script:PlainWarned = @{}
+function Say-PlainWarning([string]$ip) {
+  if (-not (Test-FsSentPlain $ip) -or $script:PlainWarned.ContainsKey($ip)) { return }
+  $script:PlainWarned[$ip] = 1
+  Say ('    WARNING: ' + $ip + ' has no HTTPS, so its password went over plain HTTP on this network. Turn on HTTPS on it when you can.') 'Yellow'
+}
 function Set-Clip([string]$s) { if (-not $Ipc -and ($MockUrl -or $Answers)) { return }; if ($Ipc) { [void](Send-FsIpc $Ipc @{ kind = 'clip'; value = $s }); return }; try { Set-Clipboard -Value $s } catch {} }
 function Clear-Clip { if (-not $Ipc -and ($MockUrl -or $Answers)) { return }; if ($Ipc) { [void](Send-FsIpc $Ipc @{ kind = 'clipclear' }); return }; try { Set-Clipboard -Value ' ' } catch {} }
+function Say-NetRestore($r) {
+  # 2.2.1 (review H4): the tech hears it when this PC's own network could not be put back
+  if (-not $r -or $r.ok) { return }
+  Say ('THIS PC''S NETWORK IS NOT BACK TO NORMAL: ' + (@($r.problems) -join '; ') + '. The Toolkit tries again the next time it runs; restarting the PC also clears the temporary addresses.') 'Red'
+}
 function Done([int]$code) {
-  Remove-FsTempIps $tempState
+  $nr = $null; try { $nr = Remove-FsTempIps $tempState } catch {}; Say-NetRestore $nr
   if ($Ipc) { }
   elseif ($CloseAfter -gt 0) { Write-Host ''; Write-Host ('This window closes in ' + $CloseAfter + ' seconds.'); Start-Sleep -Seconds $CloseAfter }
   elseif (-not $Answers -and -not $MockUrl -and $Mode -ne 'DryRun') { Write-Host ''; [void](Read-Host 'Press Enter to close this window') }
@@ -147,7 +159,9 @@ if ($NewSite) { $Site = '' }
 if ($Mode -eq 'Rollback' -and $RollbackDir) { try { $rbSite = [string]((Get-Content -LiteralPath (Join-Path $RollbackDir 'rollback.json') -Raw | ConvertFrom-Json).site); if ($rbSite) { $Site = $rbSite } } catch {} }
 Write-Host ('=== WireIt Toolkit ' + $script:FsVersion + ' - Fix this site' + $(if ($NewSite) { ' - New site' } elseif ($Site) { ' - ' + $Site } else { '' }) + ' ===') -ForegroundColor Cyan
 Fs-Log ('start mode=' + $Mode + ' site=' + $Site + ' newsite=' + [bool]$NewSite + ' ps=' + $PSVersionTable.PSVersion + ' pc=' + $env:COMPUTERNAME)
-Clear-FsLeftoverTemps $tempState
+$lr = Clear-FsLeftoverTemps $tempState; if ($lr) { if ($lr.ok) { Say 'A temporary address a stopped run left on this PC was taken off, and its network settings are back.' 'Yellow' } else { Say-NetRestore $lr } }
+# 2.2.1 (review H4): whatever stops this run, this PC's network goes back first (the "Fix this site" task also does it after the run)
+trap { try { [void](Remove-FsTempIps $tempState) } catch {}; break }
 
 # ---------------- the site and its list ----------------
 $pmSite = $null
@@ -218,10 +232,14 @@ function Ask-SitePassword {
 function Complete-SitePassword {
   # after the scan: a "No, make one" answer gets its password now (never tried as a login during the scan)
   if (-not $script:sitePwMake -or $sec.password) { return }
-  $pfx = Get-SitePrefix
-  if (-not $pfx) { Say 'No site password word was typed, so nothing was changed. Press the button again and type it when asked.' 'Yellow'; Done 2 }
-  $sec.password = New-FsSitePassword $pfx; $sec.bitwardenSaved = $false; $sec.shownOnce = $false; Remember-Secret $sec.password; $script:sitePwPending = $true
-  Say 'A new site password was made (your word + 4 random digits). It is saved after you type YES and offered for Bitwarden at the end.' 'Green'
+  $sec.password = New-SitePasswordNow; $sec.bitwardenSaved = $false; $sec.shownOnce = $false; Remember-Secret $sec.password; $script:sitePwPending = $true
+  Say 'A new site password was made (14 random characters, different from every other site). It is saved after you type YES and offered for Bitwarden at the end.' 'Green'
+}
+# 2.2.1 (review M1): a made site password is fully random and unique on this PC (no shared word: one site's password tells nothing about another's)
+function New-SitePasswordNow {
+  $avoid = @(Get-FsOtherSitePasswords $SecretsDir $siteName)
+  if ($Mode -eq 'DryRun') { return 'Dryrun-not-a-password' }
+  return (New-FsRandomSitePassword $avoid)
 }
 # ---------------- 2.0.3: the site password - its word, Bitwarden, shown once ----------------
 function Get-SitePrefix {
@@ -279,9 +297,10 @@ function Save-SitePasswordAway([string]$pw, [switch]$ShowAgain) {
   }
   if ($st -eq 'unlocked') {
     $r = Save-FsBitwarden $bw $siteName $pw $session
-    if ($r -eq 'saved' -or $r -eq 'exists') { $sec.bitwardenSaved = $true; Save-FsSecrets $SecretsDir $sec; $shown = $siteName + ' - site password'   # the console shows a plain dash; the Bitwarden item has the real one
-    Say $(if ($r -eq 'saved') { 'Saved in Bitwarden: "' + $shown + '" (user admin).' } else { 'Bitwarden already has "' + $shown + '" - not added twice.' }) 'Green'; return }
-    Say 'Bitwarden did not take it.' 'Yellow'
+    # 2.2.1 (review H11): every answer here was read back from Bitwarden after a sync, so "saved" means the office has THIS password
+    if ($r -in @('saved', 'updated', 'exists')) { $sec.bitwardenSaved = $true; Save-FsSecrets $SecretsDir $sec; $shown = $siteName + ' - site password'   # the console shows a plain dash; the Bitwarden item has the real one
+    Say $(switch ($r) { 'saved' { 'Saved in Bitwarden and checked: "' + $shown + '" (user admin). The office can see it.' } 'updated' { 'Bitwarden had an OLDER password in "' + $shown + '": changed to this one and checked (the old one stays in the item''s history).' } default { 'Bitwarden already has exactly this password in "' + $shown + '" (checked) - not added twice.' } }) 'Green'; return }
+    Say 'Bitwarden did not take it, or it could not be checked: it is NOT in Bitwarden yet (only on this PC).' 'Yellow'
   } elseif ($bw -and $st -eq 'unauthenticated') { Say 'Bitwarden is on this PC but not logged in (bw login), so it could not be saved there.' 'Yellow' }
   Say 'The site password is kept encrypted on this PC. Save this in Bitwarden.' 'Yellow'
   if (-not $sec.shownOnce -or $ShowAgain) { Show-SitePasswordOnce $pw; $sec.shownOnce = $true; Save-FsSecrets $SecretsDir $sec }
@@ -305,7 +324,7 @@ if ($Mode -eq 'SitePassword') {
       $a = (Ask 'S = show it (window with a Copy button)   C = copy it   B = save it in Bitwarden   T = type the one this site really uses   Enter = close').Trim()
     } else {
       Say 'This site has no site password yet. Do you know the site password?' 'Yellow'
-      $a = (Ask 'Y = yes, I know it (type it once)   N = no, make one for me (your word + 4 random digits)   Enter = close').Trim()
+      $a = (Ask 'Y = yes, I know it (type it once)   N = no, make one for me (random, different from every other site)   Enter = close').Trim()
       if ($a -match '^(?i)y(es)?$') { $a = 'T' } elseif ($a -match '^(?i)no?$') { $a = 'M' }
     }
     if (-not $a) { break }
@@ -313,8 +332,7 @@ if ($Mode -eq 'SitePassword') {
     elseif ($a -match '^(?i)c$' -and $sec.password) { Set-Clip $sec.password; Say 'Copied. It is cleared from the clipboard when this window closes.' 'Green' }
     elseif ($a -match '^(?i)b$' -and $sec.password) { $sec.shownOnce = $true; Save-SitePasswordAway $sec.password }
     elseif ($a -match '^(?i)m$' -and -not $sec.password) {
-      $pfx = Get-SitePrefix; if (-not $pfx) { Say 'No word typed - no password made.' 'Yellow'; continue }
-      $sec.password = New-FsSitePassword $pfx; $sec.bitwardenSaved = $false; $sec.shownOnce = $false; Remember-Secret $sec.password; Save-FsSecrets $SecretsDir $sec
+      $sec.password = New-SitePasswordNow; $sec.bitwardenSaved = $false; $sec.shownOnce = $false; Remember-Secret $sec.password; Save-FsSecrets $SecretsDir $sec
       Say 'Made and kept encrypted on this PC. The devices get it on the next "Fix this site".' 'Green'
       Save-SitePasswordAway $sec.password
     }
@@ -343,58 +361,96 @@ if ($Mode -eq 'Rollback') {
   $r0 = Get-Content $rf -Raw | ConvertFrom-Json; $run = [string]$r0.run
   $old = @{}; if ($sec.rollback -and $sec.rollback.ContainsKey($run)) { $o = $sec.rollback[$run]; if ($o -is [Collections.IDictionary]) { foreach ($k in $o.Keys) { $old[$k] = $o[$k] } } else { foreach ($q in $o.PSObject.Properties) { $old[$q.Name] = $q.Value } } }
   foreach ($v in $old.Values) { Remember-Secret ([string]$v) }
-  Say ('Undo of the run from ' + $run + ' on ' + [string]$r0.taken_on + ': ' + @($r0.cameras).Count + ' camera(s), ' + @($r0.nvrs).Count + ' NVR move(s).')
+  # 2.2.1 (review H8): every undo step that worked is written down (undo-progress.json), so pressing Undo again after a problem only
+  # redoes what is still left; "undone" is written only when EVERYTHING went back.
+  $progF = Join-Path $RollbackDir 'undo-progress.json'; $prog = @{}
+  if (Test-Path -LiteralPath $progF) { try { foreach ($q in (Get-Content -LiteralPath $progF -Raw | ConvertFrom-Json).PSObject.Properties) { $prog[$q.Name] = $q.Value } } catch {} }
+  $isDone = { param($k) return $prog.ContainsKey($k) }
+  $markDone = { param($k) $prog[$k] = (Get-Date -Format 's'); try { ($prog | ConvertTo-Json -Depth 3) | Set-Content -LiteralPath $progF -Encoding UTF8 } catch {} }
+  Say ('Undo of the run from ' + $run + ' on ' + [string]$r0.taken_on + ': ' + @($r0.cameras).Count + ' camera(s), ' + @($r0.nvrs).Count + ' NVR move(s).' + $(if ($prog.Count) { ' (' + $prog.Count + ' step(s) were already put back by an earlier undo; they are skipped.)' } else { '' }))
   if ((Ask 'Type YES to put them back the way that run found them.').Trim() -notmatch '^(?i)yes$') { Say 'Stopped - nothing changed.'; Done 2 }
-  $pc = $(if ($Mode -ne 'DryRun') { Get-FsPcNet } else { $null })
+  $pcIx = -1; if ($r0.PSObject.Properties['pc'] -and $r0.pc -and $r0.pc.PSObject.Properties['ifIndex']) { $pcIx = [int]$r0.pc.ifIndex }
+  $pc = $(if ($Mode -ne 'DryRun') { Get-FsPcNet $pcIx } else { $null })
+  if ($pc) { $script:FsSubnet = [pscustomobject]@{ ip = $pc.ip; prefix = [int]$pc.prefix } }
+  $pcScheme = $(if ($pc) { Get-FsP3 $pc.gw } else { '' })
   $nvrPwR = @{}; foreach ($k in @($sec.nvr.Keys)) { $nvrPwR[$k] = [string]$sec.nvr[$k] }
   $bad = 0
   $rcams = @($r0.cameras); [array]::Reverse($rcams)
   foreach ($c in $rcams) {
     if (-not $c) { continue }
-    $ip = $(if ($c.ip_after) { [string]$c.ip_after } else { [string]$c.ip_before }); $res = @()
-    if ((Get-FsP3 $ip) -ne (Get-FsP3 $pc.gw)) { [void](Add-FsTempIp (Get-FsP3 $ip) $pc $tempState) }
+    $ck = 'cam|' + [string]$c.mac + '|' + [string]$c.ip_before
+    $netDone = & $isDone ($ck + '|net')
+    $ip = $(if ($c.ip_after -and -not $netDone) { [string]$c.ip_after } else { [string]$c.ip_before }); $res = @()
+    if (-not (Test-FsOnScheme $ip $pcScheme)) { [void](Add-FsTempIp (Get-FsP3 $ip) $pc $tempState) }
     $oldPw = $(if ($old.ContainsKey([string]$c.mac + '|' + [string]$c.ip_before)) { [string]$old[[string]$c.mac + '|' + [string]$c.ip_before] } else { '' })
     $mkR = ConvertTo-FsMac ([string]$c.mac); $lastPw = $(if ($mkR -and $sec.cams -and $sec.cams.ContainsKey($mkR)) { [string]$sec.cams[$mkR] } else { '' })
     $candsR = @(@($lastPw, $sec.password, $oldPw) + @($sec.known) | Where-Object { $_ } | Select-Object -Unique | Select-Object -First ([int]$opts.maxPasswordTries))   # 2.0.1: a working camera kept its own password
     $pw = ''; foreach ($cand in $candsR) { if ($cand -and (Test-FsLogin $ip $c.brand $cand) -eq 'ok') { $pw = $cand; break } }
     if (-not $pw) { Say ('  ' + $c.name + ': cannot log in at ' + $ip + ' - not undone ' + $script:FsBad) 'Red'; $bad++; continue }
     $cr = Fs-Cred $pw
-    if ($c.stream_before) { $cur = Get-FsStream $ip $c.brand $cr; $want = [pscustomobject]@{ codec = [string]$c.stream_before.codec; fps = [int]$c.stream_before.fps; resolution = $(if ($c.stream_before.width) { '' + $c.stream_before.width + 'x' + $c.stream_before.height } else { 'keep' }); bitrate = [int]$c.stream_before.bitrate; gop = 0; smartCodec = 'keep' }
+    if ($c.stream_before -and -not (& $isDone ($ck + '|settings'))) { $cur = Get-FsStream $ip $c.brand $cr; $want = [pscustomobject]@{ codec = [string]$c.stream_before.codec; fps = [int]$c.stream_before.fps; resolution = $(if ($c.stream_before.width) { '' + $c.stream_before.width + 'x' + $c.stream_before.height } else { 'keep' }); bitrate = [int]$c.stream_before.bitrate; gop = 0; smartCodec = 'keep' }
       $diff = @(Get-FsSettingsDiff $cur $want); if ([int]$c.stream_before.gop -and $cur -and [int]$cur.gop -ne [int]$c.stream_before.gop) { $diff += [pscustomobject]@{ field = 'gop'; from = $cur.gop; to = [int]$c.stream_before.gop } }
       if ([string]$c.stream_before.smartCodec -eq 'on' -and $cur.smartCodec -eq 'off') { $diff += [pscustomobject]@{ field = 'smartCodecOn'; from = 'off'; to = 'on' } }
       $diff = @($diff | Where-Object { $_.field -ne 'smartCodecOn' })   # Smart Codec back on: by hand (it was the cause on BYW)
-      if ($diff.Count) { $w = Set-FsStream $ip $c.brand $cr $cur $diff; $res += [pscustomobject]@{ text = 'settings back'; ok = [bool]$w.ok } } }
-    if ($c.password_changed -and $oldPw) { $ok = Set-FsPassword $ip $c.brand $cr $oldPw; if ($ok) { $pw = $oldPw; $cr = Fs-Cred $pw; $mk = ConvertTo-FsMac ([string]$c.mac); if ($mk) { $sec.cams[$mk] = $oldPw } }; $res += [pscustomobject]@{ text = 'old password back'; ok = $ok } }
-    if ($c.net_before -and $c.ip_after -and $c.ip_after -ne $c.ip_before) {
-      $net = Get-FsNet $ip $c.brand $cr; [void](Add-FsTempIp (Get-FsP3 ([string]$c.net_before.ip)) $pc $tempState)
-      $w = Set-FsNet $ip $c.brand $cr $net ([string]$c.net_before.ip) ([string]$c.net_before.mask) ([string]$c.net_before.gw) ([string]$c.net_before.dns1) ([string]$c.net_before.dns2)
-      if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $ip $c.brand $cr) }
-      $back = $w.ok -and (Wait-FsDevice ([string]$c.net_before.ip) $c.brand $pw ([int]$opts.moveWaitSec)); $res += [pscustomobject]@{ text = ('address back to ' + $c.net_before.ip); ok = $back }
+      if ($diff.Count) { $w = Set-FsStream $ip $c.brand $cr $cur $diff; $res += [pscustomobject]@{ text = 'settings back'; ok = [bool]$w.ok }; if ($w.ok) { & $markDone ($ck + '|settings') } } else { & $markDone ($ck + '|settings') } }
+    if ($c.password_changed -and $oldPw -and -not (& $isDone ($ck + '|password'))) {
+      $ok = $(if ($pw -ceq $oldPw) { $true } else { Set-FsPassword $ip $c.brand $cr $oldPw })
+      if ($ok) { $pw = $oldPw; $cr = Fs-Cred $pw; $mk = ConvertTo-FsMac ([string]$c.mac); if ($mk) { $sec.cams[$mk] = $oldPw }; & $markDone ($ck + '|password') }
+      $res += [pscustomobject]@{ text = 'old password back'; ok = $ok }
     }
-    if ($c.nvr -and $c.nvr.nvr -and $nvrPwR.ContainsKey([string]$c.nvr.nvr)) {
-      $w = Set-FsNvrChannel ([string]$c.nvr.nvr) (Fs-Cred $nvrPwR[[string]$c.nvr.nvr]) ([int]$c.nvr.channel) ([string]$c.ip_before) $pw $c.brand ''
-      $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' back to ' + $c.ip_before); ok = [bool]$w.ok }
+    # 2.2.1 (review H8): the address goes back as it was - a camera that had DHCP gets DHCP again (also when only "set fixed" on the same address)
+    $nb = $c.net_before
+    if ($nb -and $c.ip_after -and -not $netDone -and ($c.ip_after -ne $c.ip_before -or [bool]$nb.dhcp)) {
+      $net = Get-FsNet $ip $c.brand $cr
+      if ((Get-FsP3 ([string]$nb.ip)) -ne $pcScheme) { [void](Add-FsTempIp (Get-FsP3 ([string]$nb.ip)) $pc $tempState) }
+      if (-not $net) { $res += [pscustomobject]@{ text = 'address could not be read - not put back'; ok = $false } }
+      else {
+        $w = Set-FsNet $ip $c.brand $cr $net ([string]$nb.ip) ([string]$nb.mask) ([string]$nb.gw) ([string]$nb.dns1) ([string]$nb.dns2) -Dhcp:([bool]$nb.dhcp)
+        if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $ip $c.brand $cr) }
+        $back = $w.ok -and (Wait-FsDevice ([string]$nb.ip) $c.brand $pw ([int]$opts.moveWaitSec))
+        if ($back) { & $markDone ($ck + '|net'); $ip = [string]$nb.ip; $res += [pscustomobject]@{ text = $(if ($nb.dhcp) { 'back on DHCP (answers on ' + $nb.ip + ')' } else { 'address back to ' + $nb.ip }); ok = $true } }
+        elseif ($w.ok -and $nb.dhcp) { & $markDone ($ck + '|net'); $res += [pscustomobject]@{ text = ('back on DHCP: the router picks its address now (not on ' + $nb.ip + ' yet - use Find cameras to see it)'); ok = $null } }
+        else { $res += [pscustomobject]@{ text = ('address back to ' + $nb.ip); ok = $false } }
+      }
     }
+    # 2.2.1 (review H8): the NVR channel exactly as the backup has it; a channel this run ADDED is deleted again
+    if ($c.nvr -and $c.nvr.nvr -and -not (& $isDone ($ck + '|nvr'))) {
+      $nv = [string]$c.nvr.nvr
+      if (-not $nvrPwR.ContainsKey($nv)) { $res += [pscustomobject]@{ text = ('NVR ' + $nv + ': no saved login - put ch ' + $c.nvr.channel + ' back by hand'); ok = $false } }
+      else {
+        $ncr = Fs-Cred $nvrPwR[$nv]; $bfile = $(if ($c.nvr.PSObject.Properties['before_file'] -and [string]$c.nvr.before_file) { Join-Path $RollbackDir (([string]$c.nvr.before_file) -replace '[\\/]', [string][IO.Path]::DirectorySeparatorChar) } else { '' })
+        if ([string]$c.nvr.action -eq 'added') { $ok = Remove-FsNvrChannel $nv $ncr ([int]$c.nvr.channel); $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' that the run added: removed'); ok = $ok } }
+        elseif ($bfile -and (Test-Path -LiteralPath $bfile)) { $w = Restore-FsNvrChannel $nv $ncr ([int]$c.nvr.channel) ([IO.File]::ReadAllText($bfile)) $pw; $ok = [bool]$w.ok; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' back exactly as it was'); ok = $ok } }
+        else { $w = Set-FsNvrChannel $nv $ncr ([int]$c.nvr.channel) ([string]$c.ip_before) $pw $c.brand ''; $ok = [bool]$w.ok; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' back to ' + $c.ip_before + ' (no saved copy of the channel)'); ok = $ok } }
+        Say-PlainWarning $nv
+        if ($ok) { & $markDone ($ck + '|nvr') }
+      }
+    }
+    if (-not $res.Count) { Say ('  ' + $c.name + ': already put back by an earlier undo ' + $script:FsOk); continue }
     $line = Format-FsCheckLine $c.name $res; if ($line -like ('*' + $script:FsBad + '*')) { $bad++ }; Say ('  ' + $line)
   }
   # 2.0.3: NVR passwords back (before the NVR moves back, at the address the change was made on)
   foreach ($np in @($r0.nvr_passwords | Where-Object { $_ -and $_.changed })) {
-    $nip = [string]$np.ip; $oldN = $(if ($old.ContainsKey('nvr|' + $nip)) { [string]$old['nvr|' + $nip] } else { '' })
+    $nip = [string]$np.ip; if (& $isDone ('nvrpw|' + $nip)) { continue }
+    $oldN = $(if ($old.ContainsKey('nvr|' + $nip)) { [string]$old['nvr|' + $nip] } else { '' })
     if (-not $oldN -or -not $nvrPwR.ContainsKey($nip)) { Say ('  NVR ' + $nip + ': its old password is not on this PC - not undone ' + $script:FsBad) 'Red'; $bad++; continue }
-    $ok = Set-FsPassword $nip 'Hikvision' (Fs-Cred $nvrPwR[$nip]) $oldN
-    if ($ok) { $nvrPwR[$nip] = $oldN; $sec.nvr[$nip] = $oldN } else { $bad++ }
+    $ok = Set-FsPassword $nip 'Hikvision' (Fs-Cred $nvrPwR[$nip]) $oldN; Say-PlainWarning $nip
+    if ($ok) { $nvrPwR[$nip] = $oldN; $sec.nvr[$nip] = $oldN; & $markDone ('nvrpw|' + $nip) } else { $bad++ }
     Say ('  NVR ' + $nip + ': old password back ' + $(if ($ok) { $script:FsOk } else { $script:FsBad }))
   }
   foreach ($n in @($r0.nvrs)) {
+    if (& $isDone ('nvrmove|' + [string]$n.ip)) { continue }
     if (-not $nvrPwR.ContainsKey([string]$n.target)) { Say ('  NVR ' + $n.target + ': no saved login - move it back by hand to ' + $n.old.ip) 'Yellow'; $bad++; continue }
     $cr = Fs-Cred $nvrPwR[[string]$n.target]; $net = Get-FsNet ([string]$n.target) 'Hikvision' $cr; [void](Add-FsTempIp (Get-FsP3 ([string]$n.old.ip)) $pc $tempState)
-    $w = Set-FsNet ([string]$n.target) 'Hikvision' $cr $net ([string]$n.old.ip) ([string]$n.old.mask) ([string]$n.old.gw) ([string]$n.old.dns1) ([string]$n.old.dns2)
-    Say ('  NVR: back to ' + $n.old.ip + ' ' + $(if ($w.ok) { $script:FsOk } else { $script:FsBad }))
+    $w = Set-FsNet ([string]$n.target) 'Hikvision' $cr $net ([string]$n.old.ip) ([string]$n.old.mask) ([string]$n.old.gw) ([string]$n.old.dns1) ([string]$n.old.dns2) -Dhcp:([bool]$n.old.dhcp)
+    if ($w.ok) { & $markDone ('nvrmove|' + [string]$n.ip) } else { $bad++ }
+    Say ('  NVR: back to ' + $n.old.ip + $(if ($n.old.dhcp) { ' (DHCP)' } else { '' }) + ' ' + $(if ($w.ok) { $script:FsOk } else { $script:FsBad }))
   }
-  Remove-FsTempIps $tempState
+  Say-NetRestore (Remove-FsTempIps $tempState)
   try { Save-FsSecrets $SecretsDir $sec } catch {}
-  [IO.File]::WriteAllText((Join-Path $RollbackDir 'undone.txt'), (Get-Date -Format 's'))
-  Say $(if ($bad) { 'Undo finished with ' + $bad + ' problem(s) above.' } else { 'Undo finished: everything is back.' }) $(if ($bad) { 'Yellow' } else { 'Green' })
+  if (-not $bad) { [IO.File]::WriteAllText((Join-Path $RollbackDir 'undone.txt'), (Get-Date -Format 's')) }
+  else { [IO.File]::WriteAllText((Join-Path $RollbackDir 'undo-incomplete.txt'), ((Get-Date -Format 's') + ' ' + $bad + ' problem(s); Undo can be pressed again')) }
+  Say $(if ($bad) { 'Undo finished with ' + $bad + ' problem(s) above. Press Undo again after fixing them: what already went back is not done twice.' } else { 'Undo finished: everything is back.' }) $(if ($bad) { 'Yellow' } else { 'Green' })
   Done $(if ($bad) { 4 } else { 0 })
 }
 # =====================================================================================
@@ -436,10 +492,17 @@ if ($Mode -eq 'DryRun') {
   }
   if ($Mode -eq 'Fix' -and -not $NewSite -and -not $sec.password) { [void](Ask-SitePassword) }   # 2.1.0: asked once, at the start
   Say 'Looking at the site network (about a minute). Nothing is changed yet.'
-  $pc = Get-FsPcNet
+  # 2.2.1 (review H9): the tech picks the camera network when this PC is on more than one (Wi-Fi for internet + Ethernet for the cameras)
+  $pcAll = @(Get-FsPcNets); $pc = Get-FsPcNet
+  if ($pcAll.Count -gt 1) {
+    Say 'This PC is on more than one network:'
+    foreach ($l in (Format-FsPcNetChoice $pcAll)) { Say ('  ' + $l) }
+    for ($k = 0; $k -lt 3; $k++) { $sel = Select-FsPcNet $pcAll (Ask ('Which one are the cameras on? Type its number (Enter = 1).')); if ($sel) { $pc = $sel; break }; Say 'Type one of the numbers shown.' 'Yellow' }
+  }
+  if ($pc) { $script:FsSubnet = [pscustomobject]@{ ip = $pc.ip; prefix = [int]$pc.prefix }; Say ('Camera network: ' + $(if ($pc.name) { $pc.name + ', ' } else { '' }) + 'this PC ' + $pc.ip + ', mask ' + $pc.mask + $(if ($pc.gw) { ', router ' + $pc.gw } else { '' }) + '.') }
   if (-not $pc -or -not $pc.gw) { Say 'This PC is not on a network with a router. Plug it into the site network (or its Wi-Fi) and press the button again.' 'Red'; Done 2 }
   $scheme = Get-FsP3 $pc.gw
-  $observed = [ordered]@{ taken = (Get-Date -Format 's'); pc = [ordered]@{ ip = $pc.ip; gw = $pc.gw; mask = $pc.mask; dhcp = $pc.dhcp }; devices = @(); nvrs = @(); ports = @{} }
+  $observed = [ordered]@{ taken = (Get-Date -Format 's'); pc = [ordered]@{ ip = $pc.ip; gw = $pc.gw; mask = $pc.mask; prefix = [int]$pc.prefix; dhcp = $pc.dhcp; ifIndex = [int]$pc.ifIndex; name = [string]$pc.name }; devices = @(); nvrs = @(); ports = @{} }
   # 1. discovery: Find cameras (SADP + ONVIF + sweep) and the Dahua search
   $found = @()
   if ($MockUrl) { $fj = (Fs-Http -Ip '_pc' -Path '/scan').body | ConvertFrom-Json; $found = @($fj) }   # PS 5.1: @(json-array | ConvertFrom-Json) is ONE item
@@ -458,9 +521,9 @@ if ($Mode -eq 'DryRun') {
   foreach ($c in @($(if ($list) { $list.cameras } else { @() }))) { $lip = [string]$c.ip; if ($lip -and -not @($found | Where-Object { $_.ip -eq $lip }).Count -and (Get-FsP3 $lip) -eq $scheme) { $s = Test-FsLogin $lip (Get-FsBrand ([string]$c.brand) ([string]$c.model)) ''; if ($s -ne 'noanswer') { $found += [pscustomobject]@{ brand = (Get-FsBrand ([string]$c.brand) ([string]$c.model)); model = [string]$c.model; serial = [string]$c.serial; mac = [string]$c.mac; ip = $lip; kind = 'camera'; activated = $true } } } }
   $found = @($found | Where-Object { $_.ip -and $_.ip -ne $pc.ip -and $_.ip -ne $pc.gw -and ($_.kind -in @('camera', 'nvr')) })
   # 2. reach the wrong schemes (temporary PC address, removed at the end)
-  $schemes = @($found | ForEach-Object { Get-FsP3 $_.ip } | Where-Object { $_ -and $_ -ne $scheme -and -not (Test-FsPoeNet ($_ + '.1')) } | Select-Object -Unique | Select-Object -First 3)
+  $schemes = @($found | Where-Object { -not (Test-FsOnScheme $_.ip $scheme) } | ForEach-Object { Get-FsP3 $_.ip } | Where-Object { $_ -and $_ -ne $scheme -and -not (Test-FsPoeNet ($_ + '.1')) } | Select-Object -Unique | Select-Object -First 3)
   foreach ($p3 in $schemes) { $t = Add-FsTempIp $p3 $pc $tempState; if ($t) { Fs-Log ('temp address ' + $t + ' added') } else { Say ('Could not give this PC a temporary address on ' + $p3 + '.x - cameras there can only be listed.') 'Yellow' } }
-  $reach = { param($ip) $p3 = Get-FsP3 $ip; return ($p3 -eq $scheme -or @($script:FsTemps | Where-Object { $_.p3 -eq $p3 }).Count -gt 0) }
+  $reach = { param($ip) $p3 = Get-FsP3 $ip; return ((Test-FsOnScheme $ip $scheme) -or @($script:FsTemps | Where-Object { $_.p3 -eq $p3 }).Count -gt 0) }
   # 3. NVRs: log in (saved passwords, then ONE question), read the channel list
   $nvrIps = @($found | Where-Object { $_.kind -eq 'nvr' } | ForEach-Object { $_.ip })
   if ($list) { foreach ($n in @($list.nvrs)) { if ($n.ip -and $nvrIps -notcontains [string]$n.ip -and (& $reach ([string]$n.ip)) -and (Test-FsLogin ([string]$n.ip) 'Hikvision' '') -ne 'noanswer') { $nvrIps += [string]$n.ip } } }
@@ -576,7 +639,8 @@ if ($NewSite -and $Mode -eq 'Fix') {
   $addr = [string](Ask ('Optional: type this site''s address to name it (like 12 Main St), or just press Enter to keep "' + $siteName + '".'))
   if ($addr.Trim()) { Rename-NewSite $addr.Trim() }
 }
-$work = @($plan.cams | Where-Object { $_.state -eq 'fix' -or ($_.state -eq 'missing' -and $_.steps.Count) }) + @($plan.nvrs | Where-Object { $_.steps -contains 'move' -or $_.steps -contains 'password' })
+# 2.2.1 (review H6): an NVR that only needs Hikvision's official password reset is work too (it was left out, so the run said "Nothing to change")
+$work = @($plan.cams | Where-Object { $_.state -eq 'fix' -or ($_.state -eq 'missing' -and $_.steps.Count) }) + @($plan.nvrs | Where-Object { $_.steps -contains 'move' -or $_.steps -contains 'password' -or $_.steps -contains 'reset' })
 function Save-NewSite {
   # 2.0.2: a new site is saved without asking (a list on this PC, no passwords; the secrets file under the same name), so the next visit finds it
   $nl = New-FsSiteList $siteName '' $plan $observed
@@ -601,6 +665,9 @@ function Offer-List {
   if ($listPath) { try { New-Item -ItemType Directory -Force -Path (Split-Path $listPath) | Out-Null; $json | Set-Content -LiteralPath $listPath -Encoding UTF8; Say ('Saved the site list to the site''s Drive folder (Docs\WireIt site list.json).') 'Green' } catch { Say ('Could not write to the Drive folder - saved on this PC: ' + $localList) 'Yellow' } }
   else { Say ('Saved on this PC (no Drive folder found for "' + $Site + '"): ' + $localList + '. Copy it into the site''s Drive folder, Docs.') 'Yellow' }
 }
+# 2.2.1 (review M5): what Hikvision's official reset needs (form details, reply relay, upload key, a browser) is said on the plan screen, before the YES
+$hikNeed = @(@($plan.nvrs | Where-Object { $_.steps -contains 'reset' }) + @($plan.cams | Where-Object { $_.state -eq 'fix' -and $_.steps -contains 'reset' -and $_.brand -eq 'Hikvision' }))
+if ($hikNeed.Count -and $hikFlowOk -and $Mode -in @('Fix', 'Plan')) { foreach ($hw in @(Get-HikReadiness (Get-HikConfig $cfgAll $here) $here)) { Say ('  Hikvision reset: ' + $hw) 'Yellow' } }
 if (-not $work.Count) {
   Say ''; Say 'Nothing for the Toolkit to change.' 'Green'
   foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'missing' })) { Say ('  Go check: ' + $c.name + ' - ' + ($c.why -join '; ')) 'Yellow' }
@@ -621,7 +688,7 @@ if ($Mode -eq 'DryRun' -and -not $sec.password) { $sec.password = 'Dryrun-not-a-
 elseif ($sitePwPending) { $newPw = $true; Save-FsSecrets $SecretsDir $sec }
 elseif (-not $sec.password) { Say 'This site has no site password, so nothing was changed. Press the button again.' 'Yellow'; Done 2 }
 $sitePw = $sec.password; Remember-Secret $sitePw
-$rb = [ordered]@{ tool = ('WireIt Toolkit ' + $script:FsVersion + ' Fix this site'); site = $siteName; run = $stamp; taken_on = $env:COMPUTERNAME; note = 'Old passwords are NOT in this file: they are in the site secret store on this PC (encrypted), under this run.'; nvrs = @(); cameras = @() }
+$rb = [ordered]@{ tool = ('WireIt Toolkit ' + $script:FsVersion + ' Fix this site'); site = $siteName; run = $stamp; taken_on = $env:COMPUTERNAME; note = 'Old passwords are NOT in this file: they are in the site secret store on this PC (encrypted), under this run.'; pc = $(if ($pc) { [ordered]@{ ifIndex = [int]$pc.ifIndex; name = [string]$pc.name; ip = [string]$pc.ip; prefix = [int]$pc.prefix } } else { $null }); nvrs = @(); cameras = @() }
 $rbPath = Join-Path $runDir 'rollback.json'
 function Save-Rb { ($rb | ConvertTo-Json -Depth 8) | Set-Content -Path $rbPath -Encoding UTF8 }
 if (-not $sec.rollback) { $sec.rollback = @{} }
@@ -646,6 +713,7 @@ if ($Mode -eq 'DryRun') {
   }
   foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'missing' })) { Say ('  ' + $c.name + ': ' + $(if ($c.steps -contains 'poe') { 'power-cycle ' + $c.switch + ' port ' + $c.port + ', look again; if still gone: ' } else { '' }) + 'go check ' + $(if ($null -ne $c.port) { 'port ' + $c.port } else { 'its cable' })) }
   foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'password' })) { Say ('  NVR ' + $n.ip + ': site password set') }
+  foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'reset' })) { Say ('  NVR ' + $n.ip + ': Hikvision''s official password reset, then the site password') }
   if ($newPw) { Say '  The site password (typed, or made for you) would be kept encrypted on this PC and offered for saving in Bitwarden.' }
   Offer-List
   Say ''; Say 'Dry run done: nothing was changed.' 'Green'; Done 0
@@ -679,8 +747,9 @@ if ($hikFlowOk -and $Mode -ne 'DryRun' -and -not $MockUrl) {
       $script:HkStatus = { param($st) try { Write-FsIpcJson (Join-Path $Ipc 'hik.json') $st } catch {} }
     }
     $hs = Invoke-HikResetStage -Targets $hikT -SitePassword $sitePw -StateDir $hikState -Config $hikCfg -ToolkitDir $here -VerifyLogin $verify -WaitMinutes ([int]$hikCfg.waitMinutes) -InboxDir (Join-Path $here 'inbox\hik') -Site $siteName
-    foreach ($m in @($hs.fixed)) { $hikFixed[$m] = $true }
-    foreach ($p in @($hs.pending)) { $hikPending[[string]$p.mac] = [string]$p.reason }
+    # 2.2.1 (review H5): the reset module names MACs aa-bb-cc-..., this script aa:bb:cc:...: one form (ConvertTo-FsMac) for every key
+    foreach ($m in @($hs.fixed)) { $mk = ConvertTo-FsMac ([string]$m); if ($mk) { $hikFixed[$mk] = $true } }
+    foreach ($p in @($hs.pending)) { $mk = ConvertTo-FsMac ([string]$p.mac); if ($mk) { $hikPending[$mk] = [string]$p.reason } }
     foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'reset' })) {
       if ($hikFixed.ContainsKey((ConvertTo-FsMac ([string]$n.mac)))) { $nvrPw[$n.ip] = $sitePw; $sec.nvr[$n.ip] = $sitePw; Save-FsSecrets $SecretsDir $sec; $l = Format-FsCheckLine ('NVR ' + $n.ip) @([pscustomobject]@{ text = 'official reset done, site password set'; ok = $true }); Say $l 'Green'; $results += $l; $okCount++ }
       else { $l = Format-FsCheckLine ('NVR ' + $n.ip) @([pscustomobject]@{ text = $(if ($hikPending.ContainsKey((ConvertTo-FsMac ([string]$n.mac)))) { $hikPending[(ConvertTo-FsMac ([string]$n.mac))] } else { 'official reset not finished' }); ok = $false }); Say $l 'Yellow'; $results += $l; $badCount++ }
@@ -713,6 +782,7 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'password' })) {
   $sec.rollback[$stamp]['nvr|' + $nip] = $oldN; Save-FsSecrets $SecretsDir $sec
   $np = [ordered]@{ ip = $nip; changed = $false }; $rb.nvr_passwords += $np; Save-Rb
   $ok = Set-FsPassword $nip 'Hikvision' (Fs-Cred $oldN) $sitePw
+  Say-PlainWarning $nip
   if ($ok -and (Test-FsLogin $nip 'Hikvision' $sitePw) -eq 'ok') { $nvrPw[$nip] = $sitePw; $sec.nvr[$nip] = $sitePw; $np.changed = $true; Save-FsSecrets $SecretsDir $sec; Save-Rb; $l = Format-FsCheckLine ('NVR ' + $nip) @([pscustomobject]@{ text = 'site password set'; ok = $true }); $okCount++ }
   else { $l = Format-FsCheckLine ('NVR ' + $nip) @([pscustomobject]@{ text = 'the NVR refused the new password - it keeps its old one'; ok = $false }); $badCount++ }
   $results += $l; Say $l $(if ($np.changed) { 'Green' } else { 'Red' })
@@ -761,7 +831,7 @@ foreach ($c in $ordered) {
   $rbc = [ordered]@{ name = $c.name; mac = $c.mac; brand = $c.brand; ip_before = $c.ip; ip_after = ''; net_before = $null; stream_before = $null; password_changed = $false; nvr = $null; backup = '' }
   $rb.cameras += $rbc
   $step = { param($text, $ok) [void]$res.Add([pscustomobject]@{ text = $text; ok = $ok }); Say ('    ' + $text + ' ' + $(if ($ok -eq $true) { $script:FsOk } elseif ($ok -eq $false) { $script:FsBad } else { '' })) }
-  if ((Get-FsP3 $ip) -ne $plan.scheme) { [void](Add-FsTempIp (Get-FsP3 $ip) $pc $tempState) }
+  if (-not (Test-FsOnScheme $ip $plan.scheme)) { [void](Add-FsTempIp (Get-FsP3 $ip) $pc $tempState) }
   # hung: power first
   if ($c.steps -contains 'poe' -or $c.steps -contains 'unplug') {
     $done = $false
@@ -787,7 +857,8 @@ foreach ($c in $ordered) {
     else {
       $sec.rollback[$stamp][$c.mac + '|' + $c.ip] = $pw; Save-FsSecrets $SecretsDir $sec; $pwBefore = $pw
       $ok = Set-FsPassword $ip $c.brand $cr $sitePw
-      if ($ok -and (Test-FsLogin $ip $c.brand $sitePw) -eq 'ok') { $pw = $sitePw; $cr = Fs-Cred $pw; $rbc.password_changed = $true; $mk = ConvertTo-FsMac $c.mac; if ($mk) { $sec.cams[$mk] = $sitePw; Save-FsSecrets $SecretsDir $sec }; & $step 'password set' $true } else { & $step 'password not changed (old one still works)' $false }
+      if ($ok -and (Test-FsLogin $ip $c.brand $sitePw) -eq 'ok') { $pw = $sitePw; $cr = Fs-Cred $pw; $rbc.password_changed = $true; $mk = ConvertTo-FsMac $c.mac; if ($mk) { $sec.cams[$mk] = $sitePw; Save-FsSecrets $SecretsDir $sec }; & $step $(if (Test-FsSentPlain $ip) { 'password set' } else { 'password set (over HTTPS)' }) $true } else { & $step 'password not changed (old one still works)' $false }
+      Say-PlainWarning $ip
     }
     Save-Rb
   }
@@ -837,7 +908,7 @@ foreach ($c in $ordered) {
     else {
       $ch = [int]$c.channel
       if (-not $ch) { $chs = @(Get-FsNvrChannels $c.nvr $nvrCred[$c.nvr]); $ch = Get-FsFreeNvrChannel $chs $ip ([string]$c.ip_before); if (-not $ch) { $used = @($chs | ForEach-Object { $_.channel }); for ($k = 1; $k -le 64; $k++) { if ($used -notcontains $k) { $ch = $k; break } } } }
-      $w = Set-FsNvrChannel $c.nvr $nvrCred[$c.nvr] $ch $ip $pw $c.brand (Join-Path $runDir 'backup')
+      $w = Set-FsNvrChannel $c.nvr $nvrCred[$c.nvr] $ch $ip $pw $c.brand (Join-Path $runDir 'backup'); Say-PlainWarning $c.nvr
       $rbc.nvr = [ordered]@{ nvr = $c.nvr; channel = $ch; action = $w.action; before_file = $(if ($w.before) { 'backup\nvr-' + $c.nvr + '-ch' + $ch + '.xml' } else { '' }) }; Save-Rb
       & $step ('back on NVR ch ' + $ch) ([bool]$w.ok); $c.channel = $ch
     }
@@ -881,7 +952,7 @@ foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'missing' })) {
   if ($line -like ('*' + $script:FsOk + '*') -and $line -notlike ('*' + $script:FsBad + '*')) { $okCount++ } else { $badCount++ }
   $results += $line; Say ('  ' + $line) $(if ($line -like ('*' + $script:FsBad + '*')) { 'Red' } else { 'Green' })
 }
-Remove-FsTempIps $tempState
+Say-NetRestore (Remove-FsTempIps $tempState)
 Save-FsSecrets $SecretsDir $sec; Save-Rb
 
 # =====================================================================================

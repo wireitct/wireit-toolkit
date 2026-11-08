@@ -155,8 +155,9 @@ try { if (-not $rp.HasExited) { $rp.Kill() } } catch {}
 if ($env:F22DBG) { 'SEEN: ' + ($seen -join ' || '); Get-ChildItem (Join-Path $tkd 'fixsite-runs') -Recurse -File | ForEach-Object { '--- ' + $_.FullName; Get-Content $_.FullName -TotalCount 40 } }
 Eq $state 'ended' 'the runner ran the request and said when it ended'
 Check (@($seen | Where-Object { $_ -like 'text:Y = yes, I know it*N = no, make one*' }).Count -eq 1) 'the Yes / No question (Site password... button) came to the window and the answer went back'
-Check (@($seen | Where-Object { $_ -like 'secret:*your word*' }).Count -eq 1 -and @($seen | Where-Object { $_ -like 'secret:*again to confirm*' }).Count -eq 1) 'the word was asked HIDDEN, twice (review H2)'
-Check ($shown -cmatch '^Zebraword\d{4}$') 'the made site password (word + 4 digits) went to the window to show once'
+# 2.2.1 (review M1): a made site password is fully random - no word is asked any more
+Check (@($seen | Where-Object { $_ -like 'secret:*your word*' -or $_ -like 'secret:*again to confirm*' }).Count -eq 0) 'no site-password word is asked any more (2.2.1: fully random, review M1)'
+Check ($shown -cmatch '^[A-HJ-NP-Za-km-z2-9]{14}$' -and $shown -cmatch '[A-Z]' -and $shown -cmatch '[a-z]' -and $shown -cmatch '\d') 'the made site password (14 random characters) went to the window to show once'
 $runLogs = @(Get-ChildItem (Join-Path $tkd 'fixsite-runs') -Recurse -File -ErrorAction SilentlyContinue)
 Check ($runLogs.Count -ge 1) 'the run wrote its log in the admin-owned fixsite-runs folder'
 Check (-not @($runLogs | Select-String -SimpleMatch -Pattern 'Zebraword' -List).Count) 'the word is in no log file (not even inside the made password)'

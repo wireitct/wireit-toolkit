@@ -70,6 +70,11 @@ try {
   Rn-Log ('runner error: ' + $_.Exception.Message); $code = 9
   try { $c0 = Read-FsIpcJson (Join-Path $root 'current.json'); if ($c0 -and [string]$c0.state -eq 'running') { $c0.state = 'ended'; $c0 | Add-Member -NotePropertyName code -NotePropertyValue 9 -Force; Write-FsIpcJson (Join-Path $root 'current.json') $c0 } } catch {}
 } finally {
+  # 2.2.1 (review H4): whatever happened to the run (stopped, crashed, killed after 4 hours), this PC's network is put back here too
+  try {
+    $ts = Join-Path (Join-Path $runs '_state') 'fixsite-temp-ips.json'
+    if (Test-Path -LiteralPath $ts) { . (Join-Path $ToolkitDir 'FixSiteDevices.ps1'); $nr = Clear-FsLeftoverTemps $ts; if ($nr) { Rn-Log ('network put back after the run: ' + $(if ($nr.ok) { 'ok' } else { 'NOT ok: ' + (@($nr.problems) -join '; ') })) } }
+  } catch { Rn-Log ('network clean-up error: ' + $_.Exception.Message) }
   if ($sess) { Clear-FsIpcSession $sess }
   if ($lock) { $lock.Close() }
 }

@@ -8,8 +8,37 @@
 $script:FsMockUrl = ''
 $script:FsIsPs5 = $PSVersionTable.PSVersion.Major -lt 6
 $script:FsTestSecrets = $false
+# 2.2.1 (review H2): certificate checks are skipped ONLY for devices on the local network (a private IPv4 address: cameras, NVRs).
+# Anything with a name (the service log, Google, the download service) keeps Windows' normal certificate check. Same code in
+# FixSiteDevices.ps1, NvrHealth.psm1, SiteCheck.ps1, FixNVR.ps1 and NetCheck.ps1 (it is compiled once per PowerShell).
+$script:WireItLanTlsCode = @"
+using System; using System.Net; using System.Net.Security; using System.Security.Cryptography.X509Certificates;
+public static class WireItLanTls {
+  public static bool IsLanHost(string h) {
+    if (string.IsNullOrEmpty(h)) return false;
+    IPAddress a; if (!IPAddress.TryParse(h.Trim('[', ']'), out a)) return false;
+    if (a.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) return false;
+    byte[] b = a.GetAddressBytes();
+    if (b[0] == 10 || b[0] == 127) return true;
+    if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+    if (b[0] == 192 && b[1] == 168) return true;
+    if (b[0] == 169 && b[1] == 254) return true;
+    return false;
+  }
+  public static bool Check(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors) {
+    if (errors == SslPolicyErrors.None) return true;
+    string host = null;
+    HttpWebRequest r = sender as HttpWebRequest; if (r != null) { host = r.RequestUri.Host; } else { string s = sender as string; if (s != null) host = s; }
+    return IsLanHost(host);
+  }
+  public static readonly RemoteCertificateValidationCallback Callback = new RemoteCertificateValidationCallback(Check);
+  public static void Install() { ServicePointManager.ServerCertificateValidationCallback = Callback; }
+}
+"@
+function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
 if ($script:FsIsPs5) {
   try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; [Net.ServicePointManager]::Expect100Continue = $false } catch {}
+  [void](Enable-WireItLanTls)   # devices answer HTTPS with their own (self-made) certificate
 }
 function Fs-LogLine([string]$s) { if (Get-Command Fs-Log -ErrorAction SilentlyContinue) { Fs-Log $s } }
 
@@ -18,14 +47,15 @@ function Fs-Cred([string]$pw, [string]$user = 'admin') { if (-not $pw) { return 
 function Fs-Plain($cred) { if (-not $cred) { return '' }; return $cred.GetNetworkCredential().Password }
 function Fs-Xml([string]$s) { return [Security.SecurityElement]::Escape([string]$s) }
 function Fs-Http {
-  param([string]$Ip, [string]$Path, [string]$Method = 'GET', [string]$Body = '', [string]$ContentType = 'application/xml', $Cred = $null, [int]$Timeout = 8, [string]$OutFile = '', [switch]$Secret)
-  $base = $(if ($script:FsMockUrl) { $script:FsMockUrl.TrimEnd('/') + '/dev/' + $Ip } else { 'http://' + $Ip })
+  param([string]$Ip, [string]$Path, [string]$Method = 'GET', [string]$Body = '', [string]$ContentType = 'application/xml', $Cred = $null, [int]$Timeout = 8, [string]$OutFile = '', [switch]$Secret, [switch]$Tls)
+  $base = $(if ($script:FsMockUrl) { $script:FsMockUrl.TrimEnd('/') + $(if ($Tls) { '/tls/' } else { '/dev/' }) + $Ip } elseif ($Tls) { 'https://' + $Ip } else { 'http://' + $Ip })
   $a = @{ Uri = ($base + $Path); Method = $Method; UseBasicParsing = $true; TimeoutSec = $Timeout; ErrorAction = 'Stop' }
+  if ($Tls -and -not $script:FsIsPs5 -and -not $script:FsMockUrl) { $a.SkipCertificateCheck = $true }   # this one device call only (PS 5.1: Enable-WireItLanTls)
   if ($Cred) { $a.Credential = $Cred; if (-not $script:FsIsPs5) { $a.AllowUnencryptedAuthentication = $true } }
   if ($Body) { $a.Body = [Text.Encoding]::UTF8.GetBytes($Body); $a.ContentType = $ContentType }
   if ($OutFile) { $a.OutFile = $OutFile }
   $shown = $(if ($Secret) { ($Path -replace '\?.*$', '?(hidden)') } else { $Path })
-  Fs-LogLine ($Method + ' ' + $Ip + $shown + $(if ($Body -and -not $Secret) { ' BODY ' + $(if ($Body.Length -gt 300) { $Body.Substring(0, 300) + '...' } else { $Body }) } elseif ($Body) { ' BODY (hidden)' } else { '' }))
+  Fs-LogLine ($Method + ' ' + $(if ($Tls) { 'https ' } else { '' }) + $Ip + $shown + $(if ($Body -and -not $Secret) { ' BODY ' + $(if ($Body.Length -gt 300) { $Body.Substring(0, 300) + '...' } else { $Body }) } elseif ($Body) { ' BODY (hidden)' } else { '' }))
   try {
     $r = Invoke-WebRequest @a
     $c = ''; if (-not $OutFile) { $c = [string]$r.Content; if ($r.Content -is [byte[]]) { $c = [Text.Encoding]::UTF8.GetString($r.Content) } }
@@ -39,6 +69,27 @@ function Fs-Http {
     return [pscustomobject]@{ code = $code; body = $eb }
   }
 }
+# 2.2.1 (review H1): a call that carries a password (a new password, the NVR's copy of a camera password) goes over HTTPS first.
+# Plain HTTP only when the device has no HTTPS at all (nothing answers on 443), and then with a warning the tech sees.
+# A device that answered HTTPS once is never asked over plain HTTP again in this run.
+$script:FsTlsState = @{}                                     # ip -> 'yes' | 'no'
+$script:FsPlainSecret = New-Object System.Collections.ArrayList   # devices that got a password over plain HTTP in this run
+$script:FsNoPlainSecrets = $false                            # $true = never fall back (refuse instead)
+function Fs-HttpSecret {
+  param([string]$Ip, [string]$Path, [string]$Method = 'GET', [string]$Body = '', [string]$ContentType = 'application/xml', $Cred = $null, [int]$Timeout = 8)
+  $st = [string]$script:FsTlsState[$Ip]
+  if ($st -ne 'no') {
+    $r = Fs-Http -Ip $Ip -Path $Path -Method $Method -Body $Body -ContentType $ContentType -Cred $Cred -Timeout $Timeout -Secret -Tls
+    if ($r.code -ne 0) { $script:FsTlsState[$Ip] = 'yes'; return $r }
+    if ($st -eq 'yes') { return $r }   # it has HTTPS: a failed answer is a failure, never a reason to send the password in clear
+    $script:FsTlsState[$Ip] = 'no'
+  }
+  if ($script:FsNoPlainSecrets) { Fs-LogLine ('  ' + $Ip + ': no HTTPS - password NOT sent (plain HTTP is switched off)'); return [pscustomobject]@{ code = 0; body = '' } }
+  if (-not $script:FsPlainSecret.Contains($Ip)) { [void]$script:FsPlainSecret.Add($Ip) }
+  Fs-LogLine ('  WARNING ' + $Ip + ': this device has no HTTPS - the password goes over plain HTTP on the site network')
+  return (Fs-Http -Ip $Ip -Path $Path -Method $Method -Body $Body -ContentType $ContentType -Cred $Cred -Timeout $Timeout -Secret)
+}
+function Test-FsSentPlain([string]$ip) { return $script:FsPlainSecret.Contains($ip) }
 function Fs-XmlDoc([string]$s) { if (-not $s) { return $null }; try { [xml]$x = $s; return $x } catch { return $null } }
 function Fs-XFind($node, [string]$name) { if (-not $node) { return @() }; return @($node.SelectNodes(".//*[local-name()='" + $name + "']")) }
 function Fs-XText($node, [string]$name) { $n = @(Fs-XFind $node $name); if ($n.Count -and $n[0]) { return ([string]$n[0].InnerText).Trim() }; return '' }
@@ -127,15 +178,17 @@ function Get-FsNet([string]$ip, [string]$brand, $cred) {
   $d1 = @(Fs-XFind $x 'PrimaryDNS'); $d2 = @(Fs-XFind $x 'SecondaryDNS')
   return [pscustomobject]@{ iface = $id; ip = (Fs-XText $x 'ipAddress'); mask = (Fs-XText $x 'subnetMask'); gw = $gw; dhcp = ((Fs-XText $x 'addressingType') -eq 'dynamic'); dns1 = $(if ($d1.Count) { Fs-XText $d1[0] 'ipAddress' } else { '' }); dns2 = $(if ($d2.Count) { Fs-XText $d2[0] 'ipAddress' } else { '' }); raw = $r.body }
 }
-function Set-FsNet([string]$ip, [string]$brand, $cred, $net, [string]$newIp, [string]$mask, [string]$gw, [string]$dns1 = '8.8.8.8', [string]$dns2 = '1.1.1.1') {
+function Set-FsNet([string]$ip, [string]$brand, $cred, $net, [string]$newIp, [string]$mask, [string]$gw, [string]$dns1 = '8.8.8.8', [string]$dns2 = '1.1.1.1', [switch]$Dhcp) {
   # returns { ok; reboot } . The device answers on the NEW address afterwards (or after its own restart).
+  # 2.2.1 (review H8): -Dhcp = undo of a device that got its address from the router: it goes back to DHCP (address fields as saved).
+  if (-not $mask) { $mask = '255.255.255.0' }
   if ($brand -eq 'Dahua') {
     $pre = 'Network.' + $net.iface + '.'
-    $ok = Fs-DhSet $ip $cred @{ ($pre + 'IPAddress') = $newIp; ($pre + 'SubnetMask') = $mask; ($pre + 'DefaultGateway') = $gw; ($pre + 'DhcpEnable') = 'false'; ($pre + 'DnsServers[0]') = $dns1; ($pre + 'DnsServers[1]') = $dns2 }
+    $ok = Fs-DhSet $ip $cred @{ ($pre + 'IPAddress') = $newIp; ($pre + 'SubnetMask') = $mask; ($pre + 'DefaultGateway') = $gw; ($pre + 'DhcpEnable') = $(if ($Dhcp) { 'true' } else { 'false' }); ($pre + 'DnsServers[0]') = $dns1; ($pre + 'DnsServers[1]') = $dns2 }
     return [pscustomobject]@{ ok = $ok; reboot = $false }
   }
   $x = Fs-XmlDoc $net.raw; if (-not $x) { return [pscustomobject]@{ ok = $false; reboot = $false } }
-  [void](Fs-XSet $x 'addressingType' 'static')
+  [void](Fs-XSet $x 'addressingType' $(if ($Dhcp) { 'dynamic' } else { 'static' }))
   $top = @(Fs-XFind $x 'IPAddress')[0]
   foreach ($n in @($top.ChildNodes)) { if ($n.LocalName -eq 'ipAddress') { $n.InnerText = $newIp }; if ($n.LocalName -eq 'subnetMask') { $n.InnerText = $mask } }
   $g = @(Fs-XFind $x 'DefaultGateway'); if ($g.Count) { [void](Fs-XSet $g[0] 'ipAddress' $gw) }
@@ -148,11 +201,12 @@ function Set-FsNet([string]$ip, [string]$brand, $cred, $net, [string]$newIp, [st
 # ---------------- password ----------------
 function Set-FsPassword([string]$ip, [string]$brand, $oldCred, [string]$newPw) {
   if ($brand -eq 'Dahua') {
-    $r = Fs-Http -Ip $ip -Path ('/cgi-bin/userManager.cgi?action=modifyPassword&name=admin&pwd=' + [uri]::EscapeDataString($newPw) + '&pwdOld=' + [uri]::EscapeDataString((Fs-Plain $oldCred))) -Cred $oldCred -Secret
+    # Dahua's password CGI only takes the passwords in its address: over HTTPS that address is encrypted too (2.2.1, review H1)
+    $r = Fs-HttpSecret -Ip $ip -Path ('/cgi-bin/userManager.cgi?action=modifyPassword&name=admin&pwd=' + [uri]::EscapeDataString($newPw) + '&pwdOld=' + [uri]::EscapeDataString((Fs-Plain $oldCred))) -Cred $oldCred
     return ($r.code -eq 200 -and $r.body -match '(?i)OK')
   }
   $xml = '<?xml version="1.0" encoding="UTF-8"?><User version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema"><id>1</id><userName>admin</userName><password>' + (Fs-Xml $newPw) + '</password><loginPassword>' + (Fs-Xml (Fs-Plain $oldCred)) + '</loginPassword></User>'
-  $r = Fs-Http -Ip $ip -Method 'PUT' -Path '/ISAPI/Security/users/1' -Body $xml -Cred $oldCred -Secret
+  $r = Fs-HttpSecret -Ip $ip -Method 'PUT' -Path '/ISAPI/Security/users/1' -Body $xml -Cred $oldCred
   return (Fs-HikOk $r)
 }
 
@@ -240,7 +294,8 @@ function Set-FsNvrChannel([string]$nvrIp, $nvrCred, [int]$ch, [string]$camIp, [s
   $r = Fs-Http -Ip $nvrIp -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $ch) -Cred $nvrCred
   $proto = $(if ($camBrand -eq 'Hikvision') { 'HIKVISION' } else { 'ONVIF' }); $port = $(if ($proto -eq 'HIKVISION') { '8000' } else { '80' })
   if ($r.code -eq 200 -and ($x = Fs-XmlDoc $r.body)) {
-    if ($backupDir) { New-Item -ItemType Directory -Force -Path $backupDir | Out-Null; [IO.File]::WriteAllText((Join-Path $backupDir ('nvr-' + $nvrIp + '-ch' + $ch + '.xml')), $r.body) }
+    # 2.2.1: the FIRST state of the channel in this run is kept (a second change in the same run must not overwrite it: undo uses it)
+    if ($backupDir) { New-Item -ItemType Directory -Force -Path $backupDir | Out-Null; $bkf = Join-Path $backupDir ('nvr-' + $nvrIp + '-ch' + $ch + '.xml'); if (-not (Test-Path -LiteralPath $bkf)) { [IO.File]::WriteAllText($bkf, $r.body) } }
     $before = $r.body
     $cur = Fs-XText $x 'proxyProtocol'; if ($cur) { $proto = $cur; $port = Fs-XText $x 'managePortNo' }
     [void](Fs-XSet $x 'ipAddress' $camIp); [void](Fs-XSet $x 'userName' 'admin')
@@ -249,12 +304,26 @@ function Set-FsNvrChannel([string]$nvrIp, $nvrCred, [int]$ch, [string]$camIp, [s
     if (-not (Fs-XSet $x 'password' $camPw)) {
       $sd = @(Fs-XFind $x 'sourceInputPortDescriptor')[0]; if ($sd) { $e = $x.CreateElement('password', $sd.NamespaceURI); $e.InnerText = $camPw; [void]$sd.AppendChild($e) }
     }
-    $w = Fs-Http -Ip $nvrIp -Method 'PUT' -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $ch) -Body $x.OuterXml -Cred $nvrCred -Secret
+    $w = Fs-HttpSecret -Ip $nvrIp -Method 'PUT' -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $ch) -Body $x.OuterXml -Cred $nvrCred
     return [pscustomobject]@{ ok = (Fs-HikOk $w); action = 'updated'; before = $before; protocol = $proto }
   }
   $xml = '<?xml version="1.0" encoding="UTF-8"?><InputProxyChannel version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema"><id>' + $ch + '</id><sourceInputPortDescriptor><proxyProtocol>' + $proto + '</proxyProtocol><addressingFormatType>ipaddress</addressingFormatType><ipAddress>' + $camIp + '</ipAddress><managePortNo>' + $port + '</managePortNo><srcInputPort>1</srcInputPort><userName>admin</userName><password>' + (Fs-Xml $camPw) + '</password><streamType>auto</streamType></sourceInputPortDescriptor></InputProxyChannel>'
-  $w = Fs-Http -Ip $nvrIp -Method 'POST' -Path '/ISAPI/ContentMgmt/InputProxy/channels' -Body $xml -Cred $nvrCred -Secret
+  $w = Fs-HttpSecret -Ip $nvrIp -Method 'POST' -Path '/ISAPI/ContentMgmt/InputProxy/channels' -Body $xml -Cred $nvrCred
   return [pscustomobject]@{ ok = (Fs-HikOk $w); action = 'added'; before = ''; protocol = $proto }
+}
+# 2.2.1 (review H8): undo puts the channel back EXACTLY as the backup has it (address, port, protocol, plug-and-play mode, name),
+# with the camera's password added (the NVR never hands its copy out, so the backup has none). A channel the run ADDED is deleted.
+function Restore-FsNvrChannel([string]$nvrIp, $nvrCred, [int]$ch, [string]$beforeXml, [string]$camPw) {
+  $x = Fs-XmlDoc $beforeXml; if (-not $x) { return [pscustomobject]@{ ok = $false; why = 'the saved channel file is unreadable' } }
+  if ($camPw) {
+    if (-not (Fs-XSet $x 'password' $camPw)) { $sd = @(Fs-XFind $x 'sourceInputPortDescriptor')[0]; if ($sd) { $e = $x.CreateElement('password', $sd.NamespaceURI); $e.InnerText = $camPw; [void]$sd.AppendChild($e) } }
+  }
+  $w = Fs-HttpSecret -Ip $nvrIp -Method 'PUT' -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $ch) -Body $x.OuterXml -Cred $nvrCred
+  return [pscustomobject]@{ ok = (Fs-HikOk $w); why = $(if (Fs-HikOk $w) { '' } else { 'the NVR refused the saved channel (HTTP ' + $w.code + ')' }) }
+}
+function Remove-FsNvrChannel([string]$nvrIp, $nvrCred, [int]$ch) {
+  $w = Fs-Http -Ip $nvrIp -Method 'DELETE' -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $ch) -Cred $nvrCred
+  return (Fs-HikOk $w)
 }
 function Test-FsVideo([string]$nvrIp, $nvrCred, [int]$ch, [string]$camIp, [string]$camBrand, $camCred) {
   # video is back = NVR says the channel is online AND hands out a picture of it (or, with no NVR, the camera itself does)
@@ -269,52 +338,180 @@ function Test-FsVideo([string]$nvrIp, $nvrCred, [int]$ch, [string]$camIp, [strin
   return (Test-FsPicture $camIp '/ISAPI/Streaming/channels/101/picture' $camCred)
 }
 
-# ---------------- this PC: a temporary extra address to reach a camera on the wrong scheme ----------------
+# ---------------- this PC: which network adapter, and a temporary extra address to reach a camera on the wrong scheme ----------------
+# 2.2.1 (review H9): the adapter's REAL prefix and mask (not always /24), and every usable adapter is listed so the tech can pick the
+# camera network when the PC is on two (Wi-Fi for internet + Ethernet for the cameras).
+# 2.2.1 (review H4): before the first temporary address, this PC's adapter settings are saved (DHCP on/off, DHCP+static coexistence,
+# its own addresses, its default gateway) in fixsite-runs\_state; they are put back at the end - also after a crash (next start, and the
+# "Fix this site" task's own finally) - and the saved state is only deleted once everything checked back to normal.
 $script:FsTemps = New-Object System.Collections.ArrayList
-function Get-FsPcNet {
-  if ($script:FsMockUrl) { $r = Fs-Http -Ip '_pc' -Path '/net'; return ($r.body | ConvertFrom-Json) }
-  $r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue | Sort-Object { $_.RouteMetric + $_.InterfaceMetric } |
-       Where-Object { $ad = Get-NetAdapter -InterfaceIndex $_.ifIndex -ErrorAction SilentlyContinue; $ad -and $ad.Status -eq 'Up' -and $ad.InterfaceDescription -notmatch 'Tailscale|WireGuard|TAP|VPN|Cellular|Mobile Broadband|Hyper-V' } | Select-Object -First 1
-  if (-not $r) { return $null }
-  $a = Get-NetIPAddress -InterfaceIndex $r.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.SkipAsSource -ne $true -and $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1
-  $dh = (Get-NetIPInterface -InterfaceIndex $r.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).Dhcp -eq 'Enabled'
-  return [pscustomobject]@{ ip = $a.IPAddress; prefix = $a.PrefixLength; mask = '255.255.255.0'; gw = $r.NextHop; ifIndex = $r.ifIndex; dhcp = $dh }
+$script:FsPcBefore = $null        # the adapter as it was before the first temporary address (null = nothing changed yet)
+$script:FsCoexistChanged = $false
+$script:FsNetOps = $null          # TESTS ONLY: a hashtable of scriptblocks standing in for Windows' network commands (see Invoke-FsNetOp)
+$script:FsLastRestore = $null     # { ok; problems } of the last Restore-FsPcNet
+function Invoke-FsNetOp([string]$op, [hashtable]$a) {
+  if ($script:FsNetOps -and $script:FsNetOps.ContainsKey($op)) { return (& $script:FsNetOps[$op] $a) }
+  $ix = [int]$a.ifIndex
+  switch ($op) {
+    'state' {
+      $ipi = Get-NetIPInterface -InterfaceIndex $ix -AddressFamily IPv4 -ErrorAction SilentlyContinue
+      $co = 'unknown'; try { $t = (netsh interface ipv4 show interface ([string]$ix)) -join "`n"; $m = [regex]::Match($t, '(?i)DHCP/Static IP coexistence\s*:\s*(\w+)'); if ($m.Success) { $co = $m.Groups[1].Value.ToLower() } } catch {}
+      $ad = @(Get-NetIPAddress -InterfaceIndex $ix -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ ip = [string]$_.IPAddress; prefix = [int]$_.PrefixLength; origin = [string]$_.PrefixOrigin; skip = [bool]$_.SkipAsSource; store = [string]$_.PolicyStore; addrState = [string]$_.AddressState } })
+      $gw = @(Get-NetRoute -InterfaceIndex $ix -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.NextHop } | Select-Object -Unique)
+      return [pscustomobject]@{ dhcp = ($ipi -and [string]$ipi.Dhcp -eq 'Enabled'); coexist = $co; addrs = $ad; gw = $gw }
+    }
+    'coexist' { $null = netsh interface ipv4 set interface ([string]$ix) ('dhcpstaticipcoexistence=' + $(if ($a.on) { 'enabled' } else { 'disabled' })); return ($LASTEXITCODE -eq 0) }
+    'dhcp' { Set-NetIPInterface -InterfaceIndex $ix -AddressFamily IPv4 -Dhcp $(if ($a.on) { 'Enabled' } else { 'Disabled' }) -ErrorAction Stop; return $true }
+    'addtemp' {
+      New-NetIPAddress -InterfaceIndex $ix -IPAddress $a.ip -PrefixLength ([int]$a.prefix) -SkipAsSource $true -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
+      $st = 'Tentative'; for ($w = 0; $w -lt 8 -and $st -eq 'Tentative'; $w++) { Start-Sleep -Seconds 1; $st = [string](Get-NetIPAddress -InterfaceIndex $ix -IPAddress $a.ip -ErrorAction SilentlyContinue).AddressState }
+      return $st
+    }
+    'remove' { Remove-NetIPAddress -IPAddress $a.ip -InterfaceIndex $ix -Confirm:$false -ErrorAction SilentlyContinue; Remove-NetIPAddress -IPAddress $a.ip -InterfaceIndex $ix -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue; return $true }
+    'addstatic' {
+      $p = @{ InterfaceIndex = $ix; IPAddress = $a.ip; PrefixLength = [int]$a.prefix; ErrorAction = 'Stop' }; if ($a.gw) { $p.DefaultGateway = $a.gw }
+      New-NetIPAddress @p | Out-Null; return $true
+    }
+    'addroute' { New-NetRoute -InterfaceIndex $ix -DestinationPrefix '0.0.0.0/0' -NextHop $a.gw -ErrorAction Stop | Out-Null; return $true }
+  }
+  return $null
+}
+function Get-FsPcNets {
+  # every adapter this PC could reach the cameras on: up, IPv4, not a VPN/virtual one. Sorted: the internet one (lowest route metric) first.
+  if ($script:FsNetOps -and $script:FsNetOps.ContainsKey('adapters')) { $l = @(& $script:FsNetOps['adapters'] @{}) }
+  elseif ($script:FsMockUrl) {
+    $r = Fs-Http -Ip '_pc' -Path '/net'; $o = $r.body | ConvertFrom-Json; $l = @()
+    foreach ($x in @($o)) { $pre = 24; if ($x.PSObject.Properties['prefix'] -and [int]$x.prefix) { $pre = [int]$x.prefix }; $l += [pscustomobject]@{ ip = [string]$x.ip; prefix = $pre; mask = (ConvertTo-FsMask $pre); gw = [string]$x.gw; ifIndex = $(if ($x.PSObject.Properties['ifIndex']) { [int]$x.ifIndex } else { 0 }); dhcp = [bool]$x.dhcp; name = $(if ($x.PSObject.Properties['name']) { [string]$x.name } else { 'Ethernet' }); metric = 0 } }
+  } else {
+    $l = @()
+    foreach ($ad in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch 'Tailscale|WireGuard|TAP|VPN|Cellular|Mobile Broadband|Hyper-V|Loopback' })) {
+      $a = Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.SkipAsSource -ne $true -and $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1
+      if (-not $a) { continue }
+      $rt = Get-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1
+      $ipi = Get-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+      $l += [pscustomobject]@{ ip = [string]$a.IPAddress; prefix = [int]$a.PrefixLength; mask = (ConvertTo-FsMask ([int]$a.PrefixLength)); gw = $(if ($rt) { [string]$rt.NextHop } else { '' }); ifIndex = [int]$ad.ifIndex; dhcp = ($ipi -and [string]$ipi.Dhcp -eq 'Enabled'); name = [string]$ad.Name; metric = $(if ($rt) { [int]$rt.RouteMetric + [int]$ipi.InterfaceMetric } else { 99999 }) }
+    }
+  }
+  return @($l | Where-Object { $_.ip } | Sort-Object @{ Expression = { if ($_.gw) { 0 } else { 1 } } }, metric)
+}
+function Get-FsPcNet([int]$IfIndex = -1) {
+  $all = @(Get-FsPcNets)
+  if ($IfIndex -ge 0) { $m = @($all | Where-Object { [int]$_.ifIndex -eq $IfIndex })[0]; if ($m) { return $m } }
+  $g = @($all | Where-Object { $_.gw })[0]; if ($g) { return $g }
+  return $null
+}
+# the words for the "which network are the cameras on?" question (one line per adapter)
+function Format-FsPcNetChoice($nets) { $i = 0; return @($nets | ForEach-Object { $i++; '' + $i + ' = ' + $_.name + ' (this PC ' + $_.ip + '/' + $_.prefix + $(if ($_.gw) { ', router ' + $_.gw } else { ', no router' }) + ')' }) }
+function Select-FsPcNet($nets, [string]$answer) {
+  # Enter = the first one (the internet one); a number picks that line; anything else = $null (asked again)
+  $nets = @($nets); if (-not $nets.Count) { return $null }
+  $a = ([string]$answer).Trim(); if (-not $a) { return $nets[0] }
+  if ($a -match '^\d+$' -and [int]$a -ge 1 -and [int]$a -le $nets.Count) { return $nets[[int]$a - 1] }
+  return $null
 }
 function Test-FsIpFree([string]$ip) {
+  if ($script:FsNetOps -and $script:FsNetOps.ContainsKey('free')) { return [bool](& $script:FsNetOps['free'] @{ ip = $ip }) }
   if ($script:FsMockUrl) { $r = Fs-Http -Ip '_pc' -Path ('/free?ip=' + $ip); return ($r.body -match 'true') }
   try { if ((New-Object Net.NetworkInformation.Ping).Send($ip, 700).Status -eq 'Success') { return $false } } catch {}
   $n = Get-NetNeighbor -IPAddress $ip -ErrorAction SilentlyContinue | Where-Object { $_.State -in @('Reachable', 'Stale', 'Permanent') -and $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' }
   return (-not $n)
 }
+function Save-FsNetState([string]$stateFile) {
+  if (-not $stateFile) { return }
+  $o = [ordered]@{ version = 2; written = (Get-Date -Format 's'); before = $script:FsPcBefore; coexistChanged = [bool]$script:FsCoexistChanged; temps = @($script:FsTemps) }
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stateFile) | Out-Null
+  $tmp = $stateFile + '.tmp'; [IO.File]::WriteAllText($tmp, ($o | ConvertTo-Json -Depth 6)); Move-Item -LiteralPath $tmp -Destination $stateFile -Force
+}
 function Add-FsTempIp([string]$p3, $pc, [string]$stateFile) {
   # memory-only (ActiveStore) extra address on the old scheme; never used as a source for normal traffic; removed at the end
   foreach ($t in $script:FsTemps) { if ($t.p3 -eq $p3) { return $t.ip } }
-  if ($script:FsMockUrl) { $r = Fs-Http -Ip '_pc' -Path ('/addtemp?p3=' + $p3); $ip = $p3 + '.253'; [void]$script:FsTemps.Add([pscustomobject]@{ p3 = $p3; ip = $ip; ifIndex = 0 }); return $ip }
+  if ($script:FsMockUrl -and -not $script:FsNetOps) { $r = Fs-Http -Ip '_pc' -Path ('/addtemp?p3=' + $p3); $ip = $p3 + '.253'; [void]$script:FsTemps.Add([pscustomobject]@{ p3 = $p3; ip = $ip; ifIndex = 0 }); return $ip }
+  if (-not $pc) { return '' }
+  # 1) the adapter as it is now, saved BEFORE anything changes
+  if (-not $script:FsPcBefore) {
+    try { $st = Invoke-FsNetOp 'state' @{ ifIndex = $pc.ifIndex } } catch { Fs-LogLine ('could not read this PC''s network settings - no temporary address added: ' + $_.Exception.Message); return '' }
+    $script:FsPcBefore = [pscustomobject]@{ ifIndex = [int]$pc.ifIndex; name = [string]$pc.name; dhcp = [bool]$st.dhcp; coexist = [string]$st.coexist; addrs = @($st.addrs | Where-Object { -not $_.skip }); gw = @($st.gw) }
+    Save-FsNetState $stateFile
+  }
+  # 2) a DHCP adapter keeps DHCP while it has an extra fixed address (Windows can switch DHCP off otherwise: review H4)
+  if ($script:FsPcBefore.dhcp -and $script:FsPcBefore.coexist -ne 'enabled' -and -not $script:FsCoexistChanged) {
+    $okc = $false; try { $okc = [bool](Invoke-FsNetOp 'coexist' @{ ifIndex = $pc.ifIndex; on = $true }) } catch {}
+    if (-not $okc) { Fs-LogLine 'could not turn on DHCP+static coexistence on this PC - no temporary address added (DHCP would be lost)'; return '' }
+    $script:FsCoexistChanged = $true; Save-FsNetState $stateFile
+  }
   foreach ($h in @(253, 252, 247, 246, 245)) {
     $ip = $p3 + '.' + $h; if (-not (Test-FsIpFree $ip)) { continue }
+    $t = [pscustomobject]@{ p3 = $p3; ip = $ip; ifIndex = [int]$pc.ifIndex }
+    [void]$script:FsTemps.Add($t); Save-FsNetState $stateFile   # written BEFORE the address goes on: a crash in between is still cleaned up
     try {
-      New-NetIPAddress -InterfaceIndex $pc.ifIndex -IPAddress $ip -PrefixLength 24 -SkipAsSource $true -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
-      [void]$script:FsTemps.Add([pscustomobject]@{ p3 = $p3; ip = $ip; ifIndex = $pc.ifIndex })
-      if ($stateFile) { ($script:FsTemps | ConvertTo-Json -Depth 3) | Set-Content -Path $stateFile -Encoding UTF8 }
-      Start-Sleep -Seconds 2
+      $st = [string](Invoke-FsNetOp 'addtemp' @{ ifIndex = $pc.ifIndex; ip = $ip; prefix = 24 })
+      if ($st -eq 'Duplicate') { Fs-LogLine ('temp IP ' + $ip + ' is used by another device - trying the next'); [void](Invoke-FsNetOp 'remove' @{ ifIndex = $pc.ifIndex; ip = $ip }); [void]$script:FsTemps.Remove($t); Save-FsNetState $stateFile; continue }
+      if (-not $script:FsNetOps) { Start-Sleep -Seconds 1 }
       return $ip
-    } catch { Fs-LogLine ('temp IP ' + $ip + ' failed: ' + $_.Exception.Message) }
+    } catch { Fs-LogLine ('temp IP ' + $ip + ' failed: ' + $_.Exception.Message); try { [void](Invoke-FsNetOp 'remove' @{ ifIndex = $pc.ifIndex; ip = $ip }) } catch {}; [void]$script:FsTemps.Remove($t); Save-FsNetState $stateFile }
   }
   return ''
 }
-function Remove-FsTempIps([string]$stateFile) {
-  foreach ($t in @($script:FsTemps)) {
-    if ($script:FsMockUrl) { [void](Fs-Http -Ip '_pc' -Path ('/deltemp?p3=' + $t.p3)); continue }
-    try { Remove-NetIPAddress -IPAddress $t.ip -InterfaceIndex $t.ifIndex -PolicyStore ActiveStore -Confirm:$false -ErrorAction Stop } catch {}
+function Restore-FsPcNet([string]$stateFile) {
+  # takes every temporary address off, then puts the adapter back the way it was (DHCP, coexistence, its own addresses, its router).
+  # Returns { ok; problems }. The saved state is kept (and tried again next start) unless every part checked back to normal.
+  $problems = @()
+  $ix = $(if ($script:FsPcBefore) { [int]$script:FsPcBefore.ifIndex } else { -1 })
+  foreach ($t in @($script:FsTemps)) { try { [void](Invoke-FsNetOp 'remove' @{ ifIndex = $t.ifIndex; ip = $t.ip }) } catch {}; if ($ix -lt 0) { $ix = [int]$t.ifIndex } }
+  if ($ix -ge 0 -and ($script:FsPcBefore -or @($script:FsTemps).Count)) {
+    $now = $null; try { $now = Invoke-FsNetOp 'state' @{ ifIndex = $ix } } catch { $problems += ('could not read the network settings back: ' + $_.Exception.Message) }
+    if ($now) {
+      $left = @(); foreach ($t in @($script:FsTemps)) { if (@($now.addrs | Where-Object { $_.ip -eq $t.ip }).Count) { $left += $t; $problems += ('the temporary address ' + $t.ip + ' is still on the adapter') } }
+      $script:FsTemps.Clear(); foreach ($t in $left) { [void]$script:FsTemps.Add($t) }
+      $b = $script:FsPcBefore
+      if ($b) {
+        if ($b.dhcp -and -not $now.dhcp) { try { [void](Invoke-FsNetOp 'dhcp' @{ ifIndex = $ix; on = $true }); Fs-LogLine 'DHCP switched back on for this PC' } catch { $problems += ('DHCP could not be switched back on: ' + $_.Exception.Message) } }
+        if (-not $b.dhcp) {
+          foreach ($ad in @($b.addrs)) { if (-not @($now.addrs | Where-Object { $_.ip -eq $ad.ip }).Count) { try { [void](Invoke-FsNetOp 'addstatic' @{ ifIndex = $ix; ip = $ad.ip; prefix = $ad.prefix; gw = '' }); Fs-LogLine ('this PC''s own address ' + $ad.ip + ' put back') } catch { $problems += ('this PC''s own address ' + $ad.ip + ' could not be put back: ' + $_.Exception.Message) } } }
+          foreach ($g in @($b.gw)) { if ($g -and @($now.gw) -notcontains $g) { try { [void](Invoke-FsNetOp 'addroute' @{ ifIndex = $ix; gw = $g }); Fs-LogLine ('this PC''s router ' + $g + ' put back') } catch { $problems += ('the router route ' + $g + ' could not be put back: ' + $_.Exception.Message) } } }
+        }
+        if ($script:FsCoexistChanged) { $okc = $false; try { $okc = [bool](Invoke-FsNetOp 'coexist' @{ ifIndex = $ix; on = $false }) } catch {}; if ($okc) { $script:FsCoexistChanged = $false } else { $problems += 'the DHCP+static coexistence setting could not be put back' } }
+        # check it again: DHCP on (when it was), own addresses back (when fixed)
+        $chk = $null; try { $chk = Invoke-FsNetOp 'state' @{ ifIndex = $ix } } catch {}
+        if ($chk) {
+          if ($b.dhcp -and -not $chk.dhcp) { $problems += 'DHCP is still off on this PC' }
+          if (-not $b.dhcp) { foreach ($ad in @($b.addrs)) { if (-not @($chk.addrs | Where-Object { $_.ip -eq $ad.ip }).Count) { $problems += ('this PC''s address ' + $ad.ip + ' is still missing') } } }
+        }
+      }
+    }
+  } else { $script:FsTemps.Clear() }
+  $problems = @($problems | Select-Object -Unique)
+  if (-not $problems.Count) {
+    $script:FsPcBefore = $null; $script:FsCoexistChanged = $false; $script:FsTemps.Clear()
+    if ($stateFile -and (Test-Path -LiteralPath $stateFile)) { Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue }
+  } else {
+    foreach ($pb in $problems) { Fs-LogLine ('NETWORK NOT BACK TO NORMAL: ' + $pb) }
+    try { Save-FsNetState $stateFile } catch {}
   }
-  $script:FsTemps.Clear()
-  if ($stateFile -and (Test-Path $stateFile)) { Remove-Item $stateFile -Force -ErrorAction SilentlyContinue }
+  $script:FsLastRestore = [pscustomobject]@{ ok = (-not $problems.Count); problems = @($problems) }
+  return $script:FsLastRestore
+}
+function Remove-FsTempIps([string]$stateFile) {
+  if ($script:FsMockUrl -and -not $script:FsNetOps) {
+    foreach ($t in @($script:FsTemps)) { [void](Fs-Http -Ip '_pc' -Path ('/deltemp?p3=' + $t.p3)) }
+    $script:FsTemps.Clear(); if ($stateFile -and (Test-Path $stateFile)) { Remove-Item $stateFile -Force -ErrorAction SilentlyContinue }
+    $script:FsLastRestore = [pscustomobject]@{ ok = $true; problems = @() }; return $script:FsLastRestore
+  }
+  if (-not $script:FsPcBefore -and -not @($script:FsTemps).Count) { $script:FsLastRestore = [pscustomobject]@{ ok = $true; problems = @() }; return $script:FsLastRestore }
+  return (Restore-FsPcNet $stateFile)
 }
 function Clear-FsLeftoverTemps([string]$stateFile) {
-  # a crashed run left a temporary address behind: remove it at the next start
-  if ($script:FsMockUrl -or -not $stateFile -or -not (Test-Path $stateFile)) { return }
-  try { $tj = Get-Content $stateFile -Raw | ConvertFrom-Json; foreach ($t in @($tj)) { try { Remove-NetIPAddress -IPAddress $t.ip -InterfaceIndex $t.ifIndex -PolicyStore ActiveStore -Confirm:$false -ErrorAction Stop } catch {} } } catch {}
-  Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
+  # a run that crashed or was stopped left this PC changed: put it back at the next start (and from the "Fix this site" task's finally)
+  if (($script:FsMockUrl -and -not $script:FsNetOps) -or -not $stateFile -or -not (Test-Path -LiteralPath $stateFile)) { return $null }
+  $tj = $null; try { $tj = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json } catch {}
+  if (-not $tj) { Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue; return $null }
+  $script:FsTemps.Clear()
+  if ($tj.PSObject.Properties['version'] -and [int]$tj.version -ge 2) {
+    $script:FsPcBefore = $tj.before; $script:FsCoexistChanged = [bool]$tj.coexistChanged
+    foreach ($t in @($tj.temps)) { if ($t) { [void]$script:FsTemps.Add($t) } }
+  } else { foreach ($t in @($tj)) { if ($t -and $t.ip) { [void]$script:FsTemps.Add($t) } } }   # 2.2.0 and older: a plain list of addresses
+  Fs-LogLine 'a previous run left this PC''s network changed - putting it back'
+  return (Restore-FsPcNet $stateFile)
 }
 function Wait-FsDevice([string]$ip, [string]$brand, [string]$pw, [int]$seconds) {
   $end = (Get-Date).AddSeconds($seconds)
@@ -440,6 +637,39 @@ function New-FsSitePassword([string]$prefix) {
   } finally { $rng.Dispose() }
 }
 
+# 2.2.1 (review M1): a made site password is fully random (no shared word, no shared part with any other site), 14 characters
+# (inside every camera's 8-16 limit), upper + lower + digits, no look-alike characters, no symbols (some Dahua/ONVIF screens refuse them),
+# and never the same as a password any other site on this PC has (checked against every store this PC can read).
+$script:FsPwSets = @('ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnpqrstuvwxyz', '23456789')
+function New-FsRandomSitePassword([string[]]$Avoid = @(), [int]$Length = 14) {
+  if ($Length -lt 10) { $Length = 10 }; if ($Length -gt 16) { $Length = 16 }
+  $all = -join $script:FsPwSets
+  $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    for ($t = 0; $t -lt 200; $t++) {
+      $c = New-Object System.Collections.Generic.List[char]
+      foreach ($set in $script:FsPwSets) { $c.Add($set[(Get-FsRandom $rng $set.Length)]) }
+      while ($c.Count -lt $Length) { $c.Add($all[(Get-FsRandom $rng $all.Length)]) }
+      for ($i = $c.Count - 1; $i -gt 0; $i--) { $j = Get-FsRandom $rng ($i + 1); $x = $c[$i]; $c[$i] = $c[$j]; $c[$j] = $x }
+      $pw = -join $c
+      if ($pw -cmatch '(.)\1\1') { continue }                  # no 3 of the same in a row (cameras call that weak)
+      if (@($Avoid | Where-Object { $_ -and $_ -ceq $pw }).Count) { continue }
+      return $pw
+    }
+    throw 'could not make a unique site password'
+  } finally { $rng.Dispose() }
+}
+# every password the OTHER sites saved on this PC use (their site password and the ones typed there): a new one must differ from all
+function Get-FsOtherSitePasswords([string]$dir, [string]$site) {
+  $out = New-Object System.Collections.Generic.List[string]
+  if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { return @() }
+  $mine = Split-Path -Leaf (Get-FsSecretPath $dir $site)
+  foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter 'site-*.dat' -File -ErrorAction SilentlyContinue)) {
+    if ($f.Name -eq $mine) { continue }
+    try { $j = (Unprotect-FsText ((Get-Content -LiteralPath $f.FullName -Raw).Trim())) | ConvertFrom-Json; foreach ($p in @($j.password) + @($j.known)) { if ($p) { $out.Add([string]$p) } } } catch {}
+  }
+  return @($out)
+}
 # ---------------- Bitwarden (2.0.3): save the site password as "<site> - site password" when the bw command is on this PC ----------------
 function Find-FsBitwarden($cfg) {
   if ($cfg -and $cfg.PSObject.Properties['bitwardenCli'] -and $cfg.bitwardenCli -and (Test-Path ([string]$cfg.bitwardenCli))) { return [string]$cfg.bitwardenCli }
@@ -460,21 +690,41 @@ function Get-FsBwStatus([string]$bw) {
   try { return [string](($r.out | ConvertFrom-Json).status) } catch { return '' }
 }
 function Get-FsBwItemName([string]$site) { return ($site + ' ' + [char]0x2013 + ' site password') }
+function Get-FsBwItem([string]$bw, [string]$id) { $g = Invoke-FsBw $bw @('get', 'item', $id); if ($g.code -ne 0 -or -not $g.out) { return $null }; try { return ($g.out | ConvertFrom-Json) } catch { return $null } }
 function Save-FsBitwarden([string]$bw, [string]$site, [string]$pw, [string]$session = '') {
-  # returns 'saved' | 'exists' | 'failed'. The password only goes to bw on its stdin (base64 item JSON), never on a command line or in a file.
+  # returns 'saved' (new item) | 'updated' (the item had an older password) | 'exists' (it already had exactly this one) | 'failed'.
+  # 2.2.1 (review H11): an item with the same name is no longer taken as "saved": its password is compared, changed when different,
+  # and every answer except 'failed' is checked by reading the item back after a sync with the Bitwarden server (= the office sees it).
+  # The password only goes to bw on its stdin (base64 item JSON), never on a command line or in a file.
   if (-not $bw -or -not $pw) { return 'failed' }
   $hadEnv = $env:BW_SESSION; if ($session) { $env:BW_SESSION = $session }
   try {
     $name = Get-FsBwItemName $site
+    [void](Invoke-FsBw $bw @('sync'))   # the newest copy from the server first: a stale local copy must not decide
     $l = Invoke-FsBw $bw @('list', 'items', '--search', $name)
     $plainName = $name -replace '[^\x20-\x7E]', ''   # Windows PowerShell may read bw's UTF-8 dash wrongly: compare without it
-    try { if (@(($l.out | ConvertFrom-Json) | Where-Object { ([string]$_.name -replace '[^\x20-\x7E]', '') -eq $plainName }).Count) { return 'exists' } } catch {}
+    $found = @(); try { $found = @(($l.out | ConvertFrom-Json) | Where-Object { ([string]$_.name -replace '[^\x20-\x7E]', '') -eq $plainName -and [int]$_.type -eq 1 }) } catch {}
+    $verify = { param($id) [void](Invoke-FsBw $bw @('sync')); $it = Get-FsBwItem $bw $id; return ($it -and $it.login -and ([string]$it.login.password) -ceq $pw) }
+    if ($found.Count) {
+      $it0 = $found[0]
+      if ($it0.login -and ([string]$it0.login.password) -ceq $pw) { if (& $verify ([string]$it0.id)) { return 'exists' }; return 'failed' }
+      $full = Get-FsBwItem $bw ([string]$it0.id); if (-not $full) { $full = $it0 }
+      if (-not $full.login) { return 'failed' }
+      $full.login.password = $pw
+      $n0 = [string]$full.notes; $full.notes = (($n0.TrimEnd() + "`n" + 'Password changed by the WireIt Toolkit ' + $script:FsVersion + ' on ' + (Get-Date -Format 'yyyy-MM-dd') + ' (the old one is in this item''s password history).').Trim())
+      $enc = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($full | ConvertTo-Json -Depth 8 -Compress)))
+      $r = Invoke-FsBw $bw @('edit', 'item', ([string]$it0.id)) $enc
+      if ($r.code -ne 0) { return 'failed' }
+      if (& $verify ([string]$it0.id)) { return 'updated' }; return 'failed'
+    }
     $item = [ordered]@{ organizationId = $null; collectionIds = $null; folderId = $null; type = 1; name = $name
       notes = ('Made by the WireIt Toolkit ' + $script:FsVersion + ' on ' + (Get-Date -Format 'yyyy-MM-dd') + '. Every camera and NVR at this site uses it. User: admin.')
       favorite = $false; fields = @(); login = [ordered]@{ uris = @(); username = 'admin'; password = $pw; totp = $null }; secureNote = $null; card = $null; identity = $null; reprompt = 0 }
     $enc = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($item | ConvertTo-Json -Depth 5 -Compress)))
     $r = Invoke-FsBw $bw @('create', 'item') $enc
-    if ($r.code -eq 0 -and $r.out -match '"id"') { [void](Invoke-FsBw $bw @('sync')); return 'saved' }
+    if ($r.code -ne 0 -or $r.out -notmatch '"id"') { return 'failed' }
+    $nid = ''; try { $nid = [string](($r.out | ConvertFrom-Json).id) } catch {}
+    if ($nid -and (& $verify $nid)) { return 'saved' }
     return 'failed'
   } finally { if ($session) { $env:BW_SESSION = $hadEnv } }
 }

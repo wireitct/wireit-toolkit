@@ -270,22 +270,48 @@ function Save-CameraViews {
 
 # ---- automatic refresh on a PC that stays on the site's network (daily task, hidden) ----
 function Get-CvSites { $p = Join-Path $script:CvHere 'camviews-sites.json'; if (Test-Path $p) { return @(Get-Content $p -Raw | ConvertFrom-Json) } else { return @() } }
-function Save-CvSite([string]$nvr, [string]$site, [string]$user, [string]$vendor, [int]$rec, $pw) {
+# 2.2.1 (review M2): a remembered NVR login is machine-wide DPAPI (the daily task runs as SYSTEM), so anyone who can READ the file can
+# decrypt it on this PC. It now lives in vault\ (Administrators + SYSTEM only, set by the installer) AND the file itself gets its own
+# Administrators + SYSTEM-only permissions when it is written - it is never left behind readable: if that fails it is deleted.
+$script:CvDpapi = $null    # TESTS ONLY: { param([string]$op, [byte[]]$data) } stands in for DPAPI
+$script:CvAclRun = $null   # TESTS ONLY: { param([string[]]$icaclsArgs) -> exit code }
+function Invoke-CvDpapi([string]$op, [byte[]]$data) {
+  if ($script:CvDpapi) { return [byte[]](& $script:CvDpapi $op $data) }
   Add-Type -AssemblyName System.Security
-  $dir = Join-Path $script:CvHere 'secrets'; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $ent = [Text.Encoding]::ASCII.GetBytes('WireIt-Toolkit-nvr-v1')
+  if ($op -eq 'protect') { return [Security.Cryptography.ProtectedData]::Protect($data, $ent, [Security.Cryptography.DataProtectionScope]::LocalMachine) }
+  return [Security.Cryptography.ProtectedData]::Unprotect($data, $ent, [Security.Cryptography.DataProtectionScope]::LocalMachine)
+}
+function Get-CvPrivateAclArgs([string]$path) { return @($path, '/inheritance:r', '/grant:r', '*S-1-5-32-544:F', '*S-1-5-18:F') }
+function Set-CvPrivateFile([string]$path) {
+  $a = Get-CvPrivateAclArgs $path
+  if ($script:CvAclRun) { return ([int](& $script:CvAclRun $a) -eq 0) }
+  try { $null = & icacls.exe @a 2>&1; return ($LASTEXITCODE -eq 0) } catch { return $false }
+}
+function Get-CvCredFile([string]$nvr, [switch]$Legacy) { return (Join-Path (Join-Path $script:CvHere $(if ($Legacy) { 'secrets' } else { 'vault' })) ('nvr-' + ($nvr -replace '[^0-9A-Za-z.]', '_') + '.bin')) }
+function Save-CvSite([string]$nvr, [string]$site, [string]$user, [string]$vendor, [int]$rec, $pw) {
+  $f = Get-CvCredFile $nvr; New-Item -ItemType Directory -Force -Path (Split-Path -Parent $f) | Out-Null
   $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($pw))
-  $b = [Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes((@{ user = $user; pw = $plain } | ConvertTo-Json -Compress)), [Text.Encoding]::ASCII.GetBytes('WireIt-Toolkit-nvr-v1'), [Security.Cryptography.DataProtectionScope]::LocalMachine)
+  $b = Invoke-CvDpapi 'protect' ([Text.Encoding]::UTF8.GetBytes((@{ user = $user; pw = $plain } | ConvertTo-Json -Compress)))
   $plain = $null
-  [IO.File]::WriteAllBytes((Join-Path $dir ('nvr-' + ($nvr -replace '[^0-9A-Za-z.]', '_') + '.bin')), $b)
+  $tmp = $f + '.tmp'
+  [IO.File]::WriteAllBytes($tmp, $b)
+  if (-not (Set-CvPrivateFile $tmp)) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw 'the NVR login was NOT remembered: its file could not be locked to Administrators (run it as an admin)' }
+  Move-Item -LiteralPath $tmp -Destination $f -Force
+  $lf = Get-CvCredFile $nvr -Legacy; if (Test-Path -LiteralPath $lf) { Remove-Item -LiteralPath $lf -Force -ErrorAction SilentlyContinue }   # the 2.2.0 copy in secrets\ (Crew could read that folder)
   $list = @(Get-CvSites | Where-Object { $_.nvr -ne $nvr }) + @([pscustomobject]@{ nvr = $nvr; site = $site; vendor = $vendor; recorder = $rec })
   ConvertTo-Json @($list) -Depth 3 | Set-Content -Path (Join-Path $script:CvHere 'camviews-sites.json') -Encoding UTF8
 }
 function Get-CvSiteCred([string]$nvr) {
-  Add-Type -AssemblyName System.Security
-  $f = Join-Path $script:CvHere ('secrets\nvr-' + ($nvr -replace '[^0-9A-Za-z.]', '_') + '.bin')
-  if (-not (Test-Path $f)) { return $null }
-  $o = [Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect([IO.File]::ReadAllBytes($f), [Text.Encoding]::ASCII.GetBytes('WireIt-Toolkit-nvr-v1'), [Security.Cryptography.DataProtectionScope]::LocalMachine)) | ConvertFrom-Json
-  return New-Object System.Management.Automation.PSCredential ($o.user, (ConvertTo-SecureString $o.pw -AsPlainText -Force))
+  $f = Get-CvCredFile $nvr; $legacy = $false
+  if (-not (Test-Path -LiteralPath $f)) { $f = Get-CvCredFile $nvr -Legacy; $legacy = $true; if (-not (Test-Path -LiteralPath $f)) { return $null } }
+  $o = [Text.Encoding]::UTF8.GetString((Invoke-CvDpapi 'unprotect' ([IO.File]::ReadAllBytes($f)))) | ConvertFrom-Json
+  $cred = New-Object System.Management.Automation.PSCredential ($o.user, (ConvertTo-SecureString $o.pw -AsPlainText -Force))
+  if ($legacy) {
+    # moved into vault\ (locked) the first time an admin or the SYSTEM task reads it; the readable copy is then deleted
+    try { $site = @(Get-CvSites | Where-Object { $_.nvr -eq $nvr })[0]; Save-CvSite $nvr $(if ($site) { [string]$site.site } else { '' }) $o.user $(if ($site) { [string]$site.vendor } else { 'auto' }) $(if ($site -and $site.recorder) { [int]$site.recorder } else { 1 }) $cred.Password } catch {}
+  }
+  return $cred
 }
 function Invoke-CvAuto {
   $sites = @(Get-CvSites)
@@ -327,7 +353,7 @@ if (-not $Site) { $Site = Read-Host 'Site ID (WI-###) or the site folder name' }
 $cred = $null
 if ($CredFile) { $l = Get-Content $CredFile; $cred = New-Object System.Management.Automation.PSCredential ($l[0], (ConvertTo-SecureString $l[1] -AsPlainText -Force)) }
 else { $pw = Read-Host ('Password for ' + $User + ' on ' + $Nvr + ' (hidden, not saved)') -AsSecureString; $cred = New-Object System.Management.Automation.PSCredential ($User, $pw) }
-if ($Remember) { Save-CvSite $Nvr $Site $cred.UserName $Vendor $RecorderNo $cred.Password; CvSay ('Remembered ' + $Nvr + ' for ' + $Site + ' (login encrypted for this PC only). Run CamViews.ps1 -InstallTask for a daily refresh.') 'Green' }
+if ($Remember) { try { Save-CvSite $Nvr $Site $cred.UserName $Vendor $RecorderNo $cred.Password; CvSay ('Remembered ' + $Nvr + ' for ' + $Site + ' (login encrypted for this PC only, readable by Administrators only). Run CamViews.ps1 -InstallTask for a daily refresh.') 'Green' } catch { CvSay ([string]$_.Exception.Message) 'Red' } }
 $res = Save-CameraViews -Nvr $Nvr -Cred $cred -Site $Site -Vendor $Vendor -RecorderNo $RecorderNo -NoUpload:$NoUpload
 $cred = $null
 if ($res.ok) { exit 0 } else { exit 3 }

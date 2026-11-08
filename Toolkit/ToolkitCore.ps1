@@ -181,6 +181,9 @@ function Get-TkUpdateInfo($cfg, [string]$toolkitDir) {
 function Install-TkUpdate($m, [string]$toolkitDir, [scriptblock]$Fetch = $null) {
   # Downloads every file to staging, checks each SHA-256, then swaps them in. Keeps the replaced files in previous\
   # so "Go back" restores them. Any failure before the swap changes nothing; a failure during the swap restores.
+  # 2.2.1 (review H10): every file step stops on its first error (the callers run with ErrorActionPreference Continue, which let a
+  # locked or access-denied copy pass as done), and every swapped-in file is checked against its hash before the version is written.
+  $ErrorActionPreference = 'Stop'
   $P = Get-TkPaths $toolkitDir
   $bad = Test-TkManifest $m; if ($bad) { throw ('Update refused: ' + $bad) }
   if (Test-Path $P.Staging) { Remove-Item $P.Staging -Recurse -Force }
@@ -200,44 +203,56 @@ function Install-TkUpdate($m, [string]$toolkitDir, [scriptblock]$Fetch = $null) 
   $added = New-Object System.Collections.Generic.List[string]
   foreach ($f in $m.files) {
     $live = Join-Path $P.Root $f.path
-    if (Test-Path -LiteralPath $live) { $b = Join-Path $prev $f.path; New-Item -ItemType Directory -Force -Path (Split-Path -Parent $b) | Out-Null; Copy-Item -LiteralPath $live $b -Force }
+    if (Test-Path -LiteralPath $live) { $b = Join-Path $prev $f.path; New-Item -ItemType Directory -Force -Path (Split-Path -Parent $b) -ErrorAction Stop | Out-Null; Copy-Item -LiteralPath $live $b -Force -ErrorAction Stop }
     else { $added.Add([string]$f.path) }
   }
   $vj = Join-Path $toolkitDir 'version.json'
-  if (Test-Path $vj) { Copy-Item $vj (Join-Path $prev 'version.json.prev') -Force }
+  if (Test-Path $vj) { Copy-Item $vj (Join-Path $prev 'version.json.prev') -Force -ErrorAction Stop }
   Save-TkJson ([ordered]@{ from = $old; to = [string]$m.version; at = (Get-Date -Format 's'); added = $added.ToArray() }) (Join-Path $prev 'undo.json')
   $done = New-Object System.Collections.Generic.List[string]
   try {
     foreach ($f in $m.files) {
-      $live = Join-Path $P.Root $f.path; New-Item -ItemType Directory -Force -Path (Split-Path -Parent $live) | Out-Null
-      Copy-Item -LiteralPath (Join-Path $P.Staging $f.path) $live -Force; $done.Add([string]$f.path)
+      $live = Join-Path $P.Root $f.path; New-Item -ItemType Directory -Force -Path (Split-Path -Parent $live) -ErrorAction Stop | Out-Null
+      $done.Add([string]$f.path)   # before the copy: a half-written file is put back too
+      Copy-Item -LiteralPath (Join-Path $P.Staging $f.path) $live -Force -ErrorAction Stop
+      if ((Get-TkSha256 $live) -ne ([string]$f.sha256).ToLower()) { throw ('after copying, ' + $f.path + ' is not the new file (locked or not allowed?)') }
     }
     Save-TkJson ([ordered]@{ version = [string]$m.version; released = $m.released; commit = $m.commit; previous = $old; installed = (Get-Date -Format 's') }) $vj
   } catch {
-    foreach ($p in $done) { $b = Join-Path $prev $p; if (Test-Path -LiteralPath $b) { Copy-Item -LiteralPath $b (Join-Path $P.Root $p) -Force } elseif ($added -contains $p) { Remove-Item -LiteralPath (Join-Path $P.Root $p) -Force -ErrorAction SilentlyContinue } }
-    if (Test-Path (Join-Path $prev 'version.json.prev')) { Copy-Item (Join-Path $prev 'version.json.prev') $vj -Force }
-    throw ('Update could not be installed, the old version was put back: ' + $_.Exception.Message)
+    $why = $_.Exception.Message; $notBack = @()
+    # (2.2.1: the loop variable is $rp - PowerShell names are not case-sensitive, so 2.2.0's "$p" overwrote the paths object $P
+    # and the put-back never found the Toolkit folder: a failed update was NOT rolled back)
+    foreach ($rp in $done) {
+      try { $b = Join-Path $prev $rp; if (Test-Path -LiteralPath $b) { Copy-Item -LiteralPath $b (Join-Path $P.Root $rp) -Force -ErrorAction Stop } elseif ($added -contains $rp) { $ap = Join-Path $P.Root $rp; if (Test-Path -LiteralPath $ap) { Remove-Item -LiteralPath $ap -Force -ErrorAction Stop } } }
+      catch { $notBack += $rp }
+    }
+    try { if (Test-Path (Join-Path $prev 'version.json.prev')) { Copy-Item (Join-Path $prev 'version.json.prev') $vj -Force -ErrorAction Stop } } catch { $notBack += 'version.json' }
+    if ($notBack.Count) { throw ('Update could not be installed (' + $why + '), and these files could not be put back: ' + ($notBack -join ', ') + '. Run the Toolkit installer as an admin.') }
+    throw ('Update could not be installed, the old version was put back: ' + $why)
   }
   Remove-Item $P.Staging -Recurse -Force -ErrorAction SilentlyContinue
   return $old
 }
 
 function Undo-TkUpdate([string]$toolkitDir) {
-  # put back the version that the last update replaced
+  # put back the version that the last update replaced. 2.2.1 (review H10): any file that cannot be put back stops it with its name.
+  $ErrorActionPreference = 'Stop'
   $P = Get-TkPaths $toolkitDir
   $cur = Read-TkJson (Join-Path $toolkitDir 'version.json')
   if (-not $cur -or -not $cur.previous) { throw 'There is no earlier version saved on this PC.' }
   $prev = Join-Path $P.Previous ([string]$cur.previous)
   $u = Read-TkJson (Join-Path $prev 'undo.json')
   if (-not $u) { throw ('The saved copy of version ' + $cur.previous + ' is missing.') }
-  Get-ChildItem -LiteralPath $prev -Recurse -File | Where-Object { $_.Name -notin @('undo.json', 'version.json.prev') } | ForEach-Object {
-    $rel = $_.FullName.Substring($prev.Length).TrimStart('\', '/')
-    $dst = Join-Path $P.Root $rel; New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
-    Copy-Item -LiteralPath $_.FullName $dst -Force
+  $bad = @()
+  foreach ($fi in @(Get-ChildItem -LiteralPath $prev -Recurse -File | Where-Object { $_.Name -notin @('undo.json', 'version.json.prev') })) {
+    $rel = $fi.FullName.Substring($prev.Length).TrimStart('\', '/')
+    $dst = Join-Path $P.Root $rel
+    try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null; Copy-Item -LiteralPath $fi.FullName $dst -Force -ErrorAction Stop; if ((Get-TkSha256 $dst) -ne (Get-TkSha256 $fi.FullName)) { $bad += $rel } } catch { $bad += $rel }
   }
-  foreach ($a in @($u.added)) { if ($a -and (Test-TkManifestPath $a)) { Remove-Item -LiteralPath (Join-Path $P.Root $a) -Force -ErrorAction SilentlyContinue } }
+  foreach ($a in @($u.added)) { if ($a -and (Test-TkManifestPath $a)) { $ap = Join-Path $P.Root $a; try { if (Test-Path -LiteralPath $ap) { Remove-Item -LiteralPath $ap -Force -ErrorAction Stop } } catch { $bad += $a } } }
+  if ($bad.Count) { throw ('Going back did not finish: ' + ($bad -join ', ') + ' could not be put back (locked or not allowed). The version number was not changed. Run it as an admin.') }
   $vp = Join-Path $prev 'version.json.prev'
-  if (Test-Path $vp) { Copy-Item $vp (Join-Path $toolkitDir 'version.json') -Force }
+  if (Test-Path $vp) { Copy-Item $vp (Join-Path $toolkitDir 'version.json') -Force -ErrorAction Stop }
   # stop the next start from re-installing the version we just left
   $cfgPath = Join-Path $toolkitDir 'skip-version.txt'; Set-Content -Path $cfgPath -Value ([string]$cur.version)
   return [string]$cur.previous
