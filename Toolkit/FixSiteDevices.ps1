@@ -821,14 +821,23 @@ function Initialize-FsSecretDirectory([string]$dir) {
   if ($script:FsTestSecrets) { return }
   if ($script:FsVaultAcl) { if (-not (& $script:FsVaultAcl $dir)) { throw 'The password folder could not be made private. No password was saved.' }; return }
   if ($env:OS -ne 'Windows_NT') { return }
+  $sids = @('S-1-5-32-544', 'S-1-5-18', [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) | Select-Object -Unique
+  $di = New-Object IO.DirectoryInfo($dir)
+  # 2.2.6: only the DACL (who may open it) is read and written. Set-Acl on Windows PowerShell 5.1 also writes the audit list (SACL),
+  # which needs SeSecurityPrivilege, so a normal (not "Run as administrator") login could not save a password at all in 2.2.5.
+  $cur = $null; try { $cur = $(if ($PSVersionTable.PSEdition -eq 'Core') { [IO.FileSystemAclExtensions]::GetAccessControl($di, [Security.AccessControl.AccessControlSections]::Access) } else { $di.GetAccessControl([Security.AccessControl.AccessControlSections]::Access) }) } catch { $cur = $null }
+  if ($cur -and $cur.AreAccessRulesProtected) {
+    $have = @($cur.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+    if (($have -join ',') -eq ((@($sids) | Sort-Object -Unique) -join ',')) { return }   # already private exactly like this
+  }
   $acl = New-Object Security.AccessControl.DirectorySecurity
   $acl.SetAccessRuleProtection($true, $false)
-  $sids = @('S-1-5-32-544', 'S-1-5-18', [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) | Select-Object -Unique
   foreach ($sid in $sids) {
     $rule = New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($sid)), 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')
     $acl.AddAccessRule($rule)
   }
-  Set-Acl -LiteralPath $dir -AclObject $acl -ErrorAction Stop
+  # a new security object with only access rules: SetAccessControl persists the DACL alone (no owner, no SACL)
+  if ($PSVersionTable.PSEdition -eq 'Core') { [IO.FileSystemAclExtensions]::SetAccessControl($di, $acl) } else { $di.SetAccessControl($acl) }
 }
 function Save-FsSecrets([string]$dir, $sec) {
   $ErrorActionPreference = 'Stop'
