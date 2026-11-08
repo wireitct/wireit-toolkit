@@ -3,7 +3,8 @@ const assert = require('assert'), fs = require('fs'), path = require('path'), vm
 let pass = 0; const ok = (c, m) => { assert(c, m); pass++; }; const eq = (a, b, m) => { assert.deepStrictEqual(a, b, m); pass++; };
 function env() {
   const props = {}, cache = {}, files = {}, trig = []; let fileN = 0, NOW = Date.parse('2026-11-08T15:00:00Z'), mails = [], slept = 0;
-  const blob = (name, bytes, type) => ({ getName: () => name, getBytes: () => Buffer.from(bytes), getSize: () => Buffer.from(bytes).length, getContentType: () => type, copyBlob() { return this; } });
+  // getDataAsString: Gmail attachments are Blobs, and the relay reads their text with it (2.2.6: the tests left it out)
+  const blob = (name, bytes, type) => ({ getName: () => name, getBytes: () => Buffer.from(bytes), getSize: () => Buffer.from(bytes).length, getContentType: () => type, getDataAsString: () => Buffer.from(bytes).toString('latin1'), copyBlob() { return this; } });
   const g = {
     console: { log() {}, error() {} }, JSON, Date: class extends Date { constructor(...a) { a.length ? super(...a) : super(NOW); } static now() { return NOW; } },
     PropertiesService: { getScriptProperties: () => ({ getProperty: k => (k in props ? props[k] : null), setProperty: (k, v) => { props[k] = String(v); }, deleteProperty: k => { delete props[k]; }, getProperties: () => Object.assign({}, props) }) },
@@ -143,4 +144,23 @@ a = g._post({op:'hikReplyGet',key:KEY,serial:SER,shortSerial:SS,pc:'A'});
 eq(a.found,false,'multiple attachments with no individual serial are never guessed');
 eq(g.unmatchedHikReplies().length,1,'ambiguous attachments remain visible for manual handling');
 eq(Array.from(g.hrSerials_(nvrSerial)),[nvrSerial],'the complete slash serial is extracted without splitting it');
+// 2.2.6 (Codex file-by-file B): words in the attachment that look like serials (a date in the file name, encrypted content) must not
+// stop a valid single-file reply from matching the device the mail names
+g = env(); g._props.STATUS_PUSH_KEY = KEY; g.setupHikRelay();
+g._mail('date', 'support@hikvision.com', 'Password reset for device ' + SER, 'Please import the attached file.', [g._blob('reply-20261108T1500.xml', '<xml>unlock-date</xml>', 'application/xml')]);
+g.scanHikReplies();
+a = g._post({op:'hikReplyGet',key:KEY,serial:SER,shortSerial:SS,pc:'A'});
+eq([a.found, a.found && Buffer.from(a.data,'base64').toString()], [true, '<xml>unlock-date</xml>'], 'reproduction: a date-like attachment name does not stop the single file from matching its device');
+g = env(); g._props.STATUS_PUSH_KEY = KEY; g.setupHikRelay();
+const enc = 'U2FsdGVkX19aB3cD4eF5gH6iJ7kL8mN9oP0qR1sT2uV3wX4yZ5Ab7Cd9Ef1Gh3Ij5Kl7Mn9Op1Qr3St5Uv7Wx9Yz';
+g._mail('enc', 'support@hikvision.com', 'Password reset for device ' + SER, 'Please import the attached file.', [g._blob('unlock.bin', enc, 'application/octet-stream')]);
+g.scanHikReplies();
+a = g._post({op:'hikReplyGet',key:KEY,serial:SER,shortSerial:SS,pc:'A'});
+eq([a.found, a.found && Buffer.from(a.data,'base64').toString()], [true, enc], 'reproduction: encrypted attachment text does not stop the single file from matching its device');
+eq(g.unmatchedHikReplies().length, 0, '...and it is not listed as unmatched');
+g = env(); g._props.STATUS_PUSH_KEY = KEY; g.setupHikRelay();
+g._mail('two-content', 'support@hikvision.com', 'Reset '+SER+' and '+ser2, 'Two files', [g._blob('a.xml','<dev>'+SS+'</dev> UNLOCK-A','application/xml'),g._blob('b.xml','<dev>K87654321</dev> UNLOCK-B','application/xml')]);
+g.scanHikReplies();
+a = g._post({op:'hikReplyGet',key:KEY,serial:ser2,shortSerial:'K87654321',pc:'B'});
+eq(Buffer.from(a.data,'base64').toString(),'<dev>K87654321</dev> UNLOCK-B','two files: each is matched by the device its content names');
 console.log('hikrelay total: ' + pass + ' ok');

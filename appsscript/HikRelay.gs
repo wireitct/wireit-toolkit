@@ -107,10 +107,15 @@ function scanHikReplies() {
         var rec = { at: now, receivedAt: new Date(msg.getDate()).toISOString(), subject: subject.slice(0, 200), serials: serials, servedAt: 0, servedTo: '' };
         if (atts.length) {
           // Each attachment has its own serials and delivery receipt. Never hand the first device's file to all serials in a mail.
+          // 2.2.6 (Codex file-by-file B): a date-like file name ("reply-20261108.xml") or encrypted file content (Gmail's getDataAsString)
+          // also looks like a "serial". Words from the attachment count only when they name a device the mail names; a single file
+          // with none of those belongs to the serial(s) the mail itself names (2.2.5 let such words win, so the device never matched).
+          var mailSerials = hrSerials_(subject + ' ' + body);
           var replies = atts.map(function (a, index) {
-            var own = hrSerials_(String(a.getName() || ''));
-            if (!own.length && a.getDataAsString) { try { own = hrSerials_(a.getDataAsString()); } catch (err) {} }
-            if (!own.length && atts.length === 1) own = serials;
+            var fromName = hrSerials_(String(a.getName() || '')), fromData = [];
+            if (a.getDataAsString) { try { fromData = hrSerials_(a.getDataAsString()); } catch (err) { fromData = []; } }
+            var named = fromName.concat(fromData).filter(function (w, ix, all) { return all.indexOf(w) === ix && mailSerials.some(function (m) { return hrSameDevice_(w, m); }); });
+            var own = named.length ? named : (atts.length === 1 && mailSerials.length ? mailSerials : (fromName.length ? fromName : fromData));
             var item = { at: now, receivedAt: rec.receivedAt, subject: rec.subject, serials: own, servedAt: 0, servedTo: '', kind: 'file', name: String(a.getName() || 'reply.bin').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100) };
             if (folder) { var f = folder.createFile(a.copyBlob ? a.copyBlob() : a); f.setName(((atts.length === 1 ? serials[0] : own[0]) || 'UNMATCHED') + '__' + mid + '__' + (atts.length > 1 ? index + '__' : '') + item.name); item.fileId = f.getId(); }
             else item.data = Utilities.base64Encode(a.getBytes());
@@ -147,6 +152,14 @@ function unmatchedHikReplies() {
   return out;
 }
 
+/** Two serial words name the same device: equal, or one is the (9+ character) end of the other (the short serial in a file name). */
+function hrSameDevice_(a, b) {
+  a = String(a || ''); b = String(b || '');
+  if (!a || !b) return false;
+  if (a === b) return true;
+  var s = a.length < b.length ? a : b, l = a.length < b.length ? b : a;
+  return s.length >= 9 && l.slice(-s.length) === s;
+}
 function hrSerialMatch_(rec, serial, shortSerial) {
   var s = String(serial || '').toUpperCase(), ss = String(shortSerial || '').toUpperCase();
   return (rec.serials || []).some(function (w) { return (s && w === s) || (ss.length >= 8 && (w === ss || w.slice(-ss.length) === ss)) || (s.length >= 9 && w.length >= 9 && s.slice(-w.length) === w); });
