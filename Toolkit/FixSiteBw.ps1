@@ -28,6 +28,10 @@ function Get-FsBwStatus([string]$bw) {
   $r = Invoke-FsBw $bw @('status')
   try { return [string](($r.out | ConvertFrom-Json).status) } catch { return '' }
 }
+# 2.2.3 (Codex #25): Windows PowerShell 5.1's ConvertFrom-Json writes a JSON array as ONE object, so @(text | ConvertFrom-Json) is a
+# 1-item array there. Parsed into a variable first, then unrolled, it is the real list on 5.1 and 7 alike.
+$script:FsJsonParse = { param($t) ConvertFrom-Json -InputObject $t }
+function ConvertFrom-FsJsonArray([string]$text) { if (-not $text) { return }; $v = & $script:FsJsonParse $text; foreach ($i in $v) { $i } }
 function Get-FsBwItemName([string]$site) { return ($site + ' ' + [char]0x2013 + ' site password') }
 function Get-FsBwItem([string]$bw, [string]$id) { $g = Invoke-FsBw $bw @('get', 'item', $id); if ($g.code -ne 0 -or -not $g.out) { return $null }; try { return ($g.out | ConvertFrom-Json) } catch { return $null } }
 function Get-FsBwCfgValue($cfg, [string]$name, [string]$default) { if ($cfg -and $cfg.PSObject.Properties[$name] -and [string]$cfg.$name) { return [string]$cfg.$name }; return $default }
@@ -35,10 +39,10 @@ function Get-FsBwCfgValue($cfg, [string]$name, [string]$default) { if ($cfg -and
 function Get-FsBwTarget([string]$bw, $cfg = $null) {
   $on = Get-FsBwCfgValue $cfg 'bitwardenOrg' 'WireIt CT'; $cn = Get-FsBwCfgValue $cfg 'bitwardenCollection' 'Sites'
   $plain = { param($s) (([string]$s) -replace '[^\x20-\x7E]', '').Trim() }
-  $orgs = @(); try { $orgs = @((Invoke-FsBw $bw @('list', 'organizations')).out | ConvertFrom-Json) } catch {}
+  $orgs = @(); try { $orgs = @(ConvertFrom-FsJsonArray ((Invoke-FsBw $bw @('list', 'organizations')).out)) } catch {}
   $org = @($orgs | Where-Object { $_ -and (& $plain $_.name) -ieq (& $plain $on) })[0]
   if (-not $org) { return $null }
-  $cols = @(); try { $cols = @((Invoke-FsBw $bw @('list', 'org-collections', '--organizationid', ([string]$org.id))).out | ConvertFrom-Json) } catch {}
+  $cols = @(); try { $cols = @(ConvertFrom-FsJsonArray ((Invoke-FsBw $bw @('list', 'org-collections', '--organizationid', ([string]$org.id))).out)) } catch {}
   $col = @($cols | Where-Object { $_ -and (& $plain $_.name) -ieq (& $plain $cn) })[0]
   if (-not $col) { return $null }
   return [pscustomobject]@{ orgId = [string]$org.id; org = [string]$org.name; colId = [string]$col.id; col = [string]$col.name }
@@ -60,7 +64,7 @@ function Save-FsBitwarden([string]$bw, [string]$site, [string]$pw, [string]$sess
     $where = { param($it) if ($it -and $it.PSObject.Properties['organizationId'] -and [string]$it.organizationId) { $script:FsBwLast.where = 'org'; if ($tg -and [string]$it.organizationId -eq $tg.orgId) { $script:FsBwLast.org = $tg.org; $script:FsBwLast.collection = $tg.col } } else { $script:FsBwLast.where = 'personal' } }
     $l = Invoke-FsBw $bw @('list', 'items', '--search', $name)
     $plainName = $name -replace '[^\x20-\x7E]', ''   # Windows PowerShell may read bw's UTF-8 dash wrongly: compare without it
-    $found = @(); try { $found = @(($l.out | ConvertFrom-Json) | Where-Object { ([string]$_.name -replace '[^\x20-\x7E]', '') -eq $plainName -and [int]$_.type -eq 1 }) } catch {}
+    $found = @(); try { $found = @(ConvertFrom-FsJsonArray $l.out | Where-Object { ([string]$_.name -replace '[^\x20-\x7E]', '') -eq $plainName -and [int]$_.type -eq 1 }) } catch {}
     if ($tg -and $found.Count -gt 1) { $found = @(@($found | Where-Object { [string]$_.organizationId -eq $tg.orgId }) + @($found | Where-Object { [string]$_.organizationId -ne $tg.orgId })) }   # the org's copy first
     $verify = { param($id) $s2 = Invoke-FsBw $bw @('sync'); if ($s2.code -ne 0) { $script:FsBwLast.why = 'sync after'; return $false }; $it = Get-FsBwItem $bw $id; if (-not ($it -and $it.login -and ([string]$it.login.password) -ceq $pw)) { $script:FsBwLast.why = 'read back'; return $false }; & $where $it; return $true }
     if ($found.Count) {

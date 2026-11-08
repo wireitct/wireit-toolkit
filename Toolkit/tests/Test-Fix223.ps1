@@ -227,6 +227,19 @@ Eq ($dups -join ',') '' 'no function is defined twice in WireItToolkit.ps1'
 $fx = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Do-Fix' }, $true))[0]
 Check (-not $fx.Parameters -and -not $fx.Body.ParamBlock) 'the remaining Do-Fix is the button''s (no key parameter)'
 Check ($wt -match 'Do-FixFailed \(\[string\]\$f\.Tag\)') '"Fix what failed" calls its own Do-FixFailed'
+Write-Host '#25 Bitwarden lists are real lists on Windows PowerShell 5.1'
+. (Join-Path $tk 'FixSiteBw.ps1')
+$js = '[{"id":"o1","name":"Personal stuff"},{"id":"o2","name":"WireIt CT"}]'
+$ps51 = { param($t) Write-Output -NoEnumerate @(ConvertFrom-Json -InputObject $t) }   # what 5.1's ConvertFrom-Json does with an array
+Eq @(& $ps51 $js).Count 1 'the 5.1 behaviour reproduced: @(json-array | ConvertFrom-Json) is ONE item'
+$script:FsJsonParse = $ps51
+$orgs = @(ConvertFrom-FsJsonArray $js)
+Eq $orgs.Count 2 'reproduction: two organizations are two (2.2.2 saw one and missed "WireIt CT" -> personal vault)'
+Eq @($orgs | Where-Object { $_.name -eq 'WireIt CT' }).Count 1 '...and the WireIt CT org is found by name'
+$script:FsJsonParse = { param($t) ConvertFrom-Json -InputObject $t }
+Eq @(ConvertFrom-FsJsonArray $js).Count 2 'same on PowerShell 7'
+$bwsrc = Read-Src 'Toolkit/FixSiteBw.ps1'
+Check (-not ([regex]::Matches($bwsrc, '@\(\(?[^)]*\.out\)? \| ConvertFrom-Json\)')).Count -and ([regex]::Matches($bwsrc, 'ConvertFrom-FsJsonArray')).Count -ge 4) 'every list read uses it (organizations, collections, items)'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
