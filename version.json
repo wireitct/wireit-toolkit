@@ -1,8 +1,8 @@
 {
   "version": "2.2.3",
   "released": "2026-11-08",
-  "commit": "628b5a72f5c5ae8ec54a63a07bf41fad7d5d4cd3",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/628b5a72f5c5ae8ec54a63a07bf41fad7d5d4cd3/",
+  "commit": "21afed1050d5e6e6a8038b59aac802a9994e5080",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/21afed1050d5e6e6a8038b59aac802a9994e5080/",
   "notes": "2.2.3 (not released): fixes from Codex's full review of 2.2.2 (5e465b9), findings #6-64; the Crew/SYSTEM split is removed (Crew is a local admin): no SYSTEM task, IPC folder or ACL lock. See files/pc-setup/toolkit-2.2.3-fixes.md.",
   "files": [
     {
@@ -139,6 +139,11 @@
       "path": "Toolkit/Install-Toolkit.ps1",
       "sha256": "a38f91a5ed882be7491079d3c0861f377188264e48bc2a6ce9b41eae849e8de7",
       "size": 12865
+    },
+    {
+      "path": "Toolkit/logs/camviews-2026-11-08.log",
+      "sha256": "003f5fd5db90dbea791d8fc18073d2dbca8ba91d96c61fa2a14b2f3a6f244741",
+      "size": 155
     },
     {
       "path": "Toolkit/modules/NvrHealth/firmware-latest.json",
@@ -287,13 +292,13 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
-      "sha256": "536520b268b6d16474b991c92b6938cc647c5e48b17c99f579e4a630f2b8419c",
-      "size": 57189
+      "sha256": "6a141aa2655415bd20e8c1174a17d3b661b33b1e1a904b16e7f902b63faa9080",
+      "size": 56855
     },
     {
       "path": "Toolkit/tests/Test-Fix224.ps1",
-      "sha256": "4d202b2463c2114f484fbf4da358bcf5d86e149bdbeafc9028750c3043041023",
-      "size": 24551
+      "sha256": "ae71cf9ee3e17698ec20031bc078ac3040d7381e248afd20818c6f4a93bd6154",
+      "size": 26575
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
