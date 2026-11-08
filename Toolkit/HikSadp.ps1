@@ -40,10 +40,16 @@ function Get-SadpLocalIps {
   } catch {}
   return @($ips | Select-Object -Unique)
 }
+# 2.2.5: on Windows an ICMP "port unreachable" (a probe to an address/port nobody listens on) makes the NEXT receive on that UDP socket fail
+# with WSAECONNRESET (10054), and answers that are already waiting are lost with it. SIO_UDP_CONNRESET off = Windows keeps receiving.
+function Disable-SadpConnReset($u) {
+  if ($env:OS -ne 'Windows_NT') { return }
+  try { [void]$u.Client.IOControl(-1744830452, [byte[]]@(0, 0, 0, 0), $null) } catch { Sadp-Log ('SADP: could not switch off UDP connection-reset reports: ' + $_.Exception.Message) }
+}
 function Open-SadpSockets {
   $socks = @()
   if ($script:SadpTest) {
-    $u = New-Object Net.Sockets.UdpClient; $u.Client.Bind((New-Object Net.IPEndPoint ([Net.IPAddress]::Loopback), 0)); $u.Client.ReceiveTimeout = 300
+    $u = New-Object Net.Sockets.UdpClient; $u.Client.Bind((New-Object Net.IPEndPoint ([Net.IPAddress]::Loopback), 0)); $u.Client.ReceiveTimeout = 300; Disable-SadpConnReset $u
     $ep = $script:SadpTest.Split(':'); $socks += [pscustomobject]@{ udp = $u; local = '127.0.0.1'; dest = (New-Object Net.IPEndPoint ([Net.IPAddress]::Parse($ep[0])), ([int]$ep[1])) }
     return $socks
   }
@@ -53,6 +59,7 @@ function Open-SadpSockets {
       $u.Client.SetSocketOption([Net.Sockets.SocketOptionLevel]::Socket, [Net.Sockets.SocketOptionName]::ReuseAddress, $true)
       try { $u.Client.ReceiveBufferSize = 4194304 } catch {}
       $u.Client.Bind((New-Object Net.IPEndPoint ([Net.IPAddress]::Parse($ip)), $script:SadpPort))
+      Disable-SadpConnReset $u
       try { $u.JoinMulticastGroup([Net.IPAddress]::Parse($script:SadpGroup), [Net.IPAddress]::Parse($ip)) } catch {}
       $u.Client.SetSocketOption([Net.Sockets.SocketOptionLevel]::IP, [Net.Sockets.SocketOptionName]::MulticastInterface, ([Net.IPAddress]::Parse($ip)).GetAddressBytes())
       $u.Client.ReceiveTimeout = 300
@@ -139,10 +146,14 @@ function Request-HikResetExport($dev, [double]$Seconds = 4.0) {
 }
 # Writes the request file exactly like SADP does: <Code><DeviceSN> in one line, no newline. Name: <model>-<serial>.xml (SADP: "ECI-T44F2-<serial>.xml").
 function Save-HikResetFile($dev, $exp, [string]$OutDir) {
+  # 2.2.5: null guard - no request code (export failed / no answer) = no file and no crash (2.2.4: "You cannot call a method on a null-valued expression")
+  if ($null -eq $exp -or -not $exp.ok -or $null -eq $exp.request -or -not ([string]$exp.request.value).Trim() -or $null -eq $dev -or -not [string]$dev.serial) {
+    Sadp-Log ('SADP: no request code to save for ' + $(if ($dev) { [string]$dev.mac } else { 'an unknown device' }) + ' - no file written'); return $null
+  }
   New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
   $name = (([string]$dev.model) -replace '[^A-Za-z0-9\-]+', '_') + '-' + (([string]$dev.serial) -replace '[^A-Za-z0-9\-]+', '_') + '.xml'
   $path = Join-Path $OutDir $name
-  [IO.File]::WriteAllText($path, ($exp.request.value.Trim() + [string]$dev.serial), (New-Object Text.UTF8Encoding($false)))
+  [IO.File]::WriteAllText($path, (([string]$exp.request.value).Trim() + [string]$dev.serial), (New-Object Text.UTF8Encoding($false)))
   return $path
 }
 

@@ -51,6 +51,7 @@ function Export-HikRequests($Devices, [string]$OutDir, $State, [string]$StatePat
     $e = Request-HikResetExport $dev
     if (-not $e.ok) { Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': could not read its request code - ' + $e.error) 'Yellow'; if ($cur) { Set-HikStateField $cur 'note' $e.error }; continue }
     $f = Save-HikResetFile $dev $e $OutDir
+    if (-not $f) { Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': its answer had no request code - no file saved') 'Yellow'; continue }
     $d = Add-HikStateDevice $State $dev $f $dev.bootTime
     Save-HikState $StatePath $State
     Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + '  serial ' + $dev.serial + ': request file saved (' + (Split-Path -Leaf $f) + ')') 'Green'

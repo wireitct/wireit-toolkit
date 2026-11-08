@@ -23,12 +23,14 @@ $logLines = New-Object System.Collections.ArrayList
 $script:SadpLog = { param($l) [void]$logLines.Add($l) }
 $script:HkSay = { param($t, $c) [void]$logLines.Add($t) }
 
-function Start-Py([string[]]$a) { $sp = @{ FilePath = $py; ArgumentList = $a; PassThru = $true; RedirectStandardError = (Join-Path $tmp ('py' + (Get-Random) + '.err')) }; if ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows) { $sp.WindowStyle = 'Hidden' }; return (Start-Process @sp) }
+function Start-Py([string[]]$a) { $script:lastPyErr = (Join-Path $tmp ('py' + (Get-Random) + '.err')); $sp = @{ FilePath = $py; ArgumentList = $a; PassThru = $true; RedirectStandardError = $script:lastPyErr }; if ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows) { $sp.WindowStyle = 'Hidden' }; return (Start-Process @sp) }
 function Start-Fake([object[]]$devs, [int]$port) {
   $f = Join-Path $tmp ('devs' + $port + '.json'); ($devs | ConvertTo-Json -Depth 5) | Set-Content $f -Encoding UTF8
   $p = Start-Py @((Join-Path $fx 'fake_sadp.py'), $port, $f)
   $end = (Get-Date).AddSeconds(10); while (-not (Test-Path ($f + '.ready')) -and (Get-Date) -lt $end) { Start-Sleep -Milliseconds 100 }
-  return [pscustomobject]@{ proc = $p; file = $f; port = $port }
+  $ok = Test-Path ($f + '.ready')
+  if (-not $ok) { $er = ''; try { $er = (Get-Content -Raw $script:lastPyErr -ErrorAction SilentlyContinue) } catch {}; Write-Host ('  the fake devices did not start (' + $py + '): ' + $er) -ForegroundColor Red }
+  return [pscustomobject]@{ proc = $p; file = $f; port = $port; started = $ok }
 }
 function Stop-Fake($fk) { Set-Content ($fk.file + '.stop') '1'; Start-Sleep -Milliseconds 800; try { if (-not $fk.proc.HasExited) { $fk.proc.Kill() } } catch {} }
 function Fake-State($fk) { Get-Content ($fk.file + '.state.json') -Raw | ConvertFrom-Json }
@@ -47,6 +49,8 @@ $fk = Start-Fake $devs $port
 $script:SadpTest = '127.0.0.1:' + $port
 try {
 Write-Host '1. SADP'
+Check ([bool]$py) ('a real Python was found for the fake devices (' + $py + ')')
+Check $fk.started 'the fake devices started (fake_sadp.py needs only the standard library; 2.2.4 needed the cryptography package)'
 $found = @(Find-HikSadp 2.5)
 Eq $found.Count 4 'discovery: all 4 devices found, on 3 different subnets, without any address on those subnets'
 $nvr = $found | Where-Object { $_.serial -eq $SN_NVR }
@@ -57,6 +61,8 @@ Check ($c1.encrypt -and $c1.salt) 'Encrypt/Salt fields are read (new firmware)'
 $e = Request-HikResetExport $c1
 Check $e.ok 'export: the device gave its request code'
 $f1 = Save-HikResetFile $c1 $e (Join-Path $tmp 'req')
+$nf = 'x'; $nerr = ''; try { $nf = Save-HikResetFile $c1 ([pscustomobject]@{ ok = $false; request = $null }) (Join-Path $tmp 'req-null') } catch { $nerr = $_.Exception.Message }
+Check ($null -eq $nf -and -not $nerr -and -not (Test-Path (Join-Path $tmp 'req-null'))) 'no request code: Save-HikResetFile writes nothing and does not crash (2.2.4: null-valued expression at HikSadp.ps1:145)'
 $txt = [IO.File]::ReadAllText($f1)
 Eq $txt ($devs[1].code + $SN_C1) 'request file = code + serial in one line, no newline (the exact shape of SADP 3.1.4.4''s own export)'
 Check ($txt -match '^AwAAA[A-Za-z0-9+/]{171}[A-Z]{3}-[A-Z0-9\-]+$') 'request file matches the shape of the 4 real files (AwAAA... 176 base64 chars + serial)'

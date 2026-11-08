@@ -7,9 +7,8 @@ devices.json: [{mac, ip, mask, gw, serial, model, activated, kind, boot, code, u
 State changes are written to <devices.json>.state.json so a test can read what the device did.
 """
 import json, socket, sys, re, os, base64
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import minicrypto   # 2.2.5: stdlib only (2.2.4 needed the 'cryptography' package, which a plain Windows Python does not have -> 0 devices)
 port = int(sys.argv[1]); path = sys.argv[2]
 devs = json.load(open(path, encoding='utf-8-sig')); statep = path + '.state.json'
 log = []
@@ -42,15 +41,15 @@ while True:
         log.append({'type': ty, 'mac': mac})
         if d.get('real') and ty == 'exchangecode' and tag(x, 'Code'):
             # SADP 3.x key exchange: client public key (PKCS#1 DER b64) -> session key (hex text) encrypted with it
-            pub = serialization.load_der_public_key(base64.b64decode(tag(x, 'Code')))
+            n, e = minicrypto.load_rsa_public_der(base64.b64decode(tag(x, 'Code')))
             d['_sess'] = os.urandom(16).hex()
-            ct = pub.encrypt(d['_sess'].encode(), padding.PKCS1v15())
+            ct = minicrypto.rsa_pkcs1v15_encrypt(n, e, d['_sess'].encode())
             send(probe_match(d, ty, '<Result>success</Result><Code>%s</Code>' % base64.b64encode(ct).decode())); save(); continue
         if d.get('real') and ty == 'reset':
             ok = False
             try:
                 key = bytes.fromhex(d['_sess']); raw = base64.b64decode(tag(x, 'Password'))
-                dec = Cipher(algorithms.AES(key), modes.ECB()).decryptor(); pt = dec.update(raw) + dec.finalize()
+                pt = minicrypto.aes_ecb_decrypt(key, raw)
                 first = key if d.get('layout') == 2 else d['_sess'][:16].encode()
                 ok = pt[:16] == first and tag(x, 'Code') == d['realUnlock'] and not d.get('bootChanged')
                 if ok: d['activated'] = True; d['password'] = pt[16:].rstrip(b'\0').decode()
