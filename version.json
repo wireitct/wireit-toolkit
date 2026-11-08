@@ -1,8 +1,8 @@
 {
   "version": "2.2.5",
   "released": "2026-11-08",
-  "commit": "2dcf3404e1526808ff253b09b85f7ac3429537f6",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/2dcf3404e1526808ff253b09b85f7ac3429537f6/",
+  "commit": "418121e25c62070aac5b5cc46f03ffcda8fdea57",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/418121e25c62070aac5b5cc46f03ffcda8fdea57/",
   "notes": "",
   "files": [
     {
@@ -72,8 +72,8 @@
     },
     {
       "path": "Toolkit/CamViews.ps1",
-      "sha256": "1027c907661fdbc672683d7cc89e6f3ebdb0e76833644e10ae09b57b3a358910",
-      "size": 33261
+      "sha256": "833df7a6a4e57b956726d5acca9d6a2694bf2838caf054adc2264d3c2a92404c",
+      "size": 34781
     },
     {
       "path": "Toolkit/FixIt.ps1",
@@ -287,8 +287,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix221.ps1",
-      "sha256": "e3b567c9683715214bda8ef7ee0806688a3a9e34fefc82b58b30bf6318b67d5c",
-      "size": 39521
+      "sha256": "a5cec4d515b881a385d9ad1cedb8dc4ce5fcf0a0ed00934de4e55a5389813c6e",
+      "size": 39434
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
@@ -304,6 +304,11 @@
       "path": "Toolkit/tests/Test-Fix224.ps1",
       "sha256": "5eb4f4e3190190b5aae37a501097ca5ac78da1bfef223eb65b116ddd40274435",
       "size": 26638
+    },
+    {
+      "path": "Toolkit/tests/Test-Fix225.ps1",
+      "sha256": "e229ec13372ef1321fdccc999b5da6bcb20836b9227048c2fca47f2524be3c31",
+      "size": 13176
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
