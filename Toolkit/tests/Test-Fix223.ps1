@@ -401,6 +401,18 @@ Write-Host '#59 a busy answer keeps the scan for later'
 $su = Read-Src 'Toolkit/ScanUpload.ps1'
 Check ($su -match "\`$retry = \(-not \`$r\) -or \(\`$r -and -not \`$r\.ok -and \(\[string\]\`$r\.msg\) -match '\(\?i\)busy\|too many\|try again'\)" -and $su -match 'if \(\$retry\) \{') 'reproduction: {ok:false,msg:"busy"} queues the list (2.2.2 queued only on no answer)'
 Check ($su -notmatch "if \(\`$f\.FullName -eq \(Pending-Path \`$Site\)\) \{ Remove-Item") 'the site''s older waiting list is not deleted before the new one is safe'
+Write-Host '#64 an old HiTools export keeps its own 48-hour window'
+$cr = Join-Path $tmp 'cr64'; New-Item -ItemType Directory -Force -Path (Join-Path $cr 'out') | Out-Null
+Copy-Item (Join-Path $repo 'CamReset\Make-Request.ps1') $cr
+[IO.File]::WriteAllText((Join-Path $cr 'out\latest.json'), '{"devices":[{"Brand":"Hikvision","Model":"DS-2CD2143G2-I","Serial":"DS-2CD2143G2-I20230101AAWRK12345678","IP":"192.168.1.64","MAC":"aa-bb","StartTime":"x"}]}')
+$x64 = Join-Path $tmp 'K12345678.xml'; [IO.File]::WriteAllText($x64, '<x/>'); (Get-Item $x64).LastWriteTime = (Get-Date).AddHours(-30)
+$o64 = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $cr 'Make-Request.ps1') -Serial K12345678 -XmlPath $x64 2>&1 | Out-String
+$rq = Get-Content (Join-Path $cr 'requests\DS-2CD2143G2-I20230101AAWRK12345678\request.json') -Raw | ConvertFrom-Json
+$vu = [datetime]$rq.validUntil
+Check ([math]::Abs(($vu - (Get-Date).AddHours(18)).TotalMinutes) -lt 5) 'reproduction: a 30-hour-old export is valid ~18 h more, not 48 (2.2.2 restarted the clock at packaging)'
+(Get-Item $x64).LastWriteTime = (Get-Date).AddHours(-50)
+$o64 = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $cr 'Make-Request.ps1') -Serial K12345678 -XmlPath $x64 2>&1 | Out-String
+Check ($o64 -match 'more than 48 hours ago') 'an export past 48 hours is refused'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

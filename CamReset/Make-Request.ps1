@@ -30,8 +30,10 @@ if (-not $dev -and -not $Serial -and $devs.Count -eq 1) { $dev = $devs[0] }
 if (-not $dev) { Write-Host ('Could not match ' + $XmlPath + ' to a camera from the last scan. Run Find Cameras again, then: .\Make-Request.ps1 -Serial <9-char short serial> -XmlPath "' + $XmlPath + '"'); exit 1 }
 $sn = [string]$dev.Serial; $short = Short $sn
 $dir = Join-Path $here ('requests\' + ($sn -replace '[^\w\-]', '_')); New-Item -ItemType Directory -Force -Path $dir | Out-Null
-Copy-Item $XmlPath (Join-Path $dir ([IO.Path]::GetFileName($XmlPath))) -Force
-$now = Get-Date
+Copy-Item $XmlPath (Join-Path $dir ([IO.Path]::GetFileName($XmlPath))) -Force   # (Copy-Item keeps the export time)
+# 2.2.3 (Codex #64): the 48 hours run from when HiTools EXPORTED the file (its time on disk), not from packaging it now
+$now = (Get-Item -LiteralPath $XmlPath).LastWriteTime; if ($now -gt (Get-Date)) { $now = Get-Date }
+if ($now.AddHours(48) -le (Get-Date)) { Write-Host ('That export is from ' + $now.ToString('ddd MMM d h:mm tt') + ' - more than 48 hours ago, so Hikvision will not accept it. Export a new XML in HiTools.'); exit 1 }
 $req = [ordered]@{ brand = 'Hikvision'; model = $dev.Model; serial = $sn; shortSerial = $short; startTime = $dev.StartTime; ip = $dev.IP; mac = $dev.MAC
   xmlFile = [IO.Path]::GetFileName($XmlPath); exportedAt = $now.ToString('s'); validUntil = $now.AddHours(48).ToString('s'); status = 'exported'; pc = $env:COMPUTERNAME }
 Set-Content -Path (Join-Path $dir 'request.json') -Value ($req | ConvertTo-Json) -Encoding UTF8
