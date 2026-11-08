@@ -291,7 +291,23 @@ function Save-CameraViews {
 }
 
 # ---- automatic refresh on a PC that stays on the site's network (daily task, hidden) ----
-function Get-CvSites { $p = Join-Path $script:CvHere 'camviews-sites.json'; if (Test-Path $p) { return @(Get-Content $p -Raw | ConvertFrom-Json) } else { return @() } }
+# 2.2.5 fix 10: Windows PowerShell 5.1's ConvertFrom-Json writes a JSON array as ONE object, so @(text | ConvertFrom-Json) was a 1-item
+# array there: with 2 or more remembered NVRs Get-CvSites gave ONE "site" whose .nvr was "10.0.0.1 10.0.0.2", the daily refresh found no
+# login for it and skipped every NVR, and the next -Remember wrote [{"value":[...],"Count":2},{...}] (seen on the Office PC, Nov 8 2026).
+# Parsed into a variable first, then unrolled, it is the real list on 5.1 and 7 alike (same as FixSiteBw's ConvertFrom-FsJsonArray).
+# A list a 5.1 save already wrote that way ({"value":[...],"Count":n} in place of its sites, or nested lists) reads back as its sites.
+function Expand-CvSiteItem($i) {
+  if ($null -eq $i) { return }
+  if ($i -is [array]) { foreach ($j in $i) { Expand-CvSiteItem $j }; return }
+  if ($i.PSObject.Properties['value'] -and -not $i.PSObject.Properties['nvr']) { foreach ($j in @($i.value)) { Expand-CvSiteItem $j }; return }
+  $i
+}
+function ConvertFrom-CvJsonArray([string]$text) {
+  if (-not $text -or -not $text.Trim()) { return }
+  $v = ConvertFrom-Json -InputObject $text
+  foreach ($i in $v) { Expand-CvSiteItem $i }
+}
+function Get-CvSites { $p = Join-Path $script:CvHere 'camviews-sites.json'; if (-not (Test-Path -LiteralPath $p)) { return @() }; return @(ConvertFrom-CvJsonArray (Get-Content -LiteralPath $p -Raw)) }
 # 2.2.1 (review M2): a remembered NVR login is machine-wide DPAPI (the daily task runs as SYSTEM), so anyone who can READ the file can
 # decrypt it on this PC. It now lives in vault\ (Administrators + SYSTEM only, set by the installer) AND the file itself gets its own
 # Administrators + SYSTEM-only permissions when it is written - it is never left behind readable: if that fails it is deleted.
@@ -337,7 +353,9 @@ function Save-CvSite([string]$nvr, [string]$site, [string]$user, [string]$vendor
   Move-CvIntoPlace $tmp $f
   $lf = Get-CvCredFile $nvr -Legacy; if (Test-Path -LiteralPath $lf) { Remove-Item -LiteralPath $lf -Force -ErrorAction SilentlyContinue }   # the 2.2.0 copy in secrets\ (Crew could read that folder)
   $list = @(Get-CvSites | Where-Object { $_.nvr -ne $nvr }) + @([pscustomobject]@{ nvr = $nvr; site = $site; vendor = $vendor; recorder = $rec })
-  ConvertTo-Json @($list) -Depth 3 | Set-Content -Path (Join-Path $script:CvHere 'camviews-sites.json') -Encoding UTF8
+  # 2.2.5 fix 10: one flat entry per NVR, written as a plain array (never a list inside the list)
+  $flat = [object[]]@(foreach ($e in $list) { [pscustomobject][ordered]@{ nvr = [string]$e.nvr; site = [string]$e.site; vendor = [string]$e.vendor; recorder = $(if ($e.recorder) { [int]$e.recorder } else { 1 }) } })
+  ConvertTo-Json -InputObject $flat -Depth 3 | Set-Content -Path (Join-Path $script:CvHere 'camviews-sites.json') -Encoding UTF8
 }
 function Get-CvSiteCred([string]$nvr) {
   $f = Get-CvCredFile $nvr; $legacy = $false

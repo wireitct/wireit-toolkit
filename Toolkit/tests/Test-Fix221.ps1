@@ -323,9 +323,8 @@ Check ($fs -notmatch "your word \+ 4 random digits\)   Enter" -and $fs -match 'N
 Write-Host 'M2. remembered NVR logins: Administrators + SYSTEM only'
 $cvDir = Join-Path $tmp 'cv'; New-Item -ItemType Directory -Force -Path (Join-Path $cvDir 'secrets') | Out-Null
 $cvSrc = Read-Src 'Toolkit/CamViews.ps1'
-$fnStart = $cvSrc.IndexOf('$script:CvDpapi = $null'); $fnEnd = $cvSrc.IndexOf('function Invoke-CvAuto {')
+$fnStart = $cvSrc.IndexOf('# ---- automatic refresh on a PC'); $fnEnd = $cvSrc.IndexOf('function Invoke-CvAuto {')   # 2.2.5 fix 10: the real Get-CvSites too (this suite had its own copy)
 . ([scriptblock]::Create($cvSrc.Substring($fnStart, $fnEnd - $fnStart)))
-function Get-CvSites { $p = Join-Path $script:CvHere 'camviews-sites.json'; if (Test-Path $p) { return @(Get-Content $p -Raw | ConvertFrom-Json) } else { return @() } }
 $script:CvHere = $cvDir
 $script:CvDpapi = { param($op, $data) [byte[]]($data | ForEach-Object { $_ -bxor 0x5A }) }
 $script:aclCalls = New-Object System.Collections.ArrayList
