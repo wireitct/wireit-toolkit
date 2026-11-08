@@ -53,7 +53,9 @@ if ($Mode -in @('Run', 'Find', 'Export')) {
   else { Hk-Say 'Asking each device for its password-reset request file (the same step as SADP "Forgot password > Export file")...' 'Cyan'; [void](Export-HikRequests $devs $reqDir $state $statePath -Redo:$Redo) }
   if ($Mode -eq 'Export') { Format-HikStatus $state | ForEach-Object { Write-Host $_ }; exit 0 }
 }
-if ($Mode -in @('Run', 'Submit')) { Hk-Say 'Hikvision''s reset page' 'Cyan'; [void](Submit-HikRequests $state $statePath (Get-HikFormFor $cfg)) }
+# 2.2.3 (Codex #58): -Only limits EVERY stage: the submission sees only the matching saved devices (old pending ones stay out)
+$onlySerials = $null; if ($Only) { $onlySerials = @(@($state.devices) | Where-Object { [string]$_.serial -like ('*' + $Only + '*') -or [string]$_.ip -eq $Only -or [string]$_.mac -eq $Only } | ForEach-Object { [string]$_.serial }) }
+if ($Mode -in @('Run', 'Submit')) { Hk-Say 'Hikvision''s reset page' 'Cyan'; [void](Submit-HikRequests $state $statePath (Get-HikFormFor $cfg) 900 $onlySerials) }
 if ($Mode -in @('Run', 'Watch')) {
   $end = (Get-Date).AddMinutes($WaitMinutes)
   do {

@@ -262,6 +262,9 @@ Write-Host '#47 standalone HikReset reads the site password where the installer 
 $hr = Read-Src 'Toolkit/HikReset.ps1'
 Check ($hr -match "\`$secDir = Join-Path \`$here 'vault'") 'reproduction: default store is Toolkit\vault (2.2.2 read Toolkit\secrets)'
 Check ($hr -match "FsLegacySecretsDir = Join-Path \`$here 'secrets'") '...and an old secrets\ store is still found'
+Write-Host '#58 HikReset -Only limits the submission too'
+$hr = Read-Src 'Toolkit/HikReset.ps1'
+Check ($hr -match 'Submit-HikRequests \$state \$statePath \(Get-HikFormFor \$cfg\) 900 \$onlySerials') 'reproduction: -Only is passed to the submission (2.2.2 submitted every saved pending device)'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
