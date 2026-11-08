@@ -202,7 +202,9 @@ function Send-CvOutbox {
   if (-not (Test-Path $script:CvOutbox)) { return 0 }
   $key = Get-CvKey; if (-not $key) { return 0 }
   $sent = 0
-  foreach ($f in @(Get-ChildItem $script:CvOutbox -Filter *.json | Sort-Object Name)) {
+  # 2.2.6 (Codex file-by-file A): the outbox is shared with the scan uploader (scan-*.json, op scanPush). Only this uploader's own files
+  # (camviews-*.json) are read here; a waiting camera list is left for ScanUpload.ps1 (2.2.5 deleted it as "not a camera-pictures push").
+  foreach ($f in @(Get-ChildItem $script:CvOutbox -Filter 'camviews-*.json' | Sort-Object Name)) {
     try { $o = Get-Content $f.FullName -Raw | ConvertFrom-Json } catch { Remove-Item $f.FullName -Force; continue }
     # 2.2.3 (Codex #60): only a camera-pictures push leaves the outbox with the key, and only with its own fields (anything else is dropped)
     if ([string]$o.op -ne 'camPush') { Remove-Item $f.FullName -Force; continue }
