@@ -14,7 +14,7 @@ param([string]$Root = 'C:\WireIt', [switch]$NoShortcut, [switch]$PlanOnly)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $tk = Join-Path $Root 'Toolkit'
-$files = 'WireItToolkit.ps1', 'ToolkitCore.ps1', 'WireIt Toolkit.cmd', 'Install-Toolkit.ps1', 'README.txt', 'wireit.ico', 'wireit-logo.png', 'version.json', 'CamViews.ps1', 'Set upload key.cmd', 'NvrCheck.ps1', 'ScanUpload.ps1', 'FixIt.ps1', 'FixSite.ps1', 'FixSiteCore.ps1', 'FixSiteDevices.ps1', 'FixSiteWindow.ps1', 'HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'HikEmailDrop.ps1', 'FixSiteBw.ps1'
+$files = 'WireItToolkit.ps1', 'ToolkitCore.ps1', 'WireIt Toolkit.cmd', 'Install-Toolkit.ps1', 'README.txt', 'wireit.ico', 'wireit-logo.png', 'version.json', 'CamViews.ps1', 'Set upload key.cmd', 'NvrCheck.ps1', 'ScanUpload.ps1', 'FixIt.ps1', 'FixSite.ps1', 'FixSiteCore.ps1', 'FixSiteDevices.ps1', 'FixSiteWindow.ps1', 'HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'HikEmailDrop.ps1', 'FixSiteBw.ps1', 'ToolkitMigrate.ps1'
 # 2.2.1 (review M3): the companion tools come from .\bundle\<tool> (a release zip) OR from beside the Toolkit folder (a copy of the
 # repository: Toolkit\, FixNVR\, CamReset\, NetCheck\ side by side). Every file the Toolkit needs is checked BEFORE anything is
 # installed; a missing one stops the install with its name (it used to be skipped and the install still said "installed").
@@ -99,13 +99,14 @@ foreach ($t in 'FixNVR\FixNVR.ps1', 'CamReset\Find-Cameras.ps1', 'NetCheck\NetCh
 # ---------------- 2.2.3: no SYSTEM task, no folder lock (Crew is a local admin); the password vault stays ----------------
 if (-not $adm) { 'NOTE: run this installer as administrator once to remove 2.2.x''s "Fix this site" task and folder lock if this PC had them.' }
 else {
-  # 1) 2.2.x's SYSTEM task and the files only it used are removed
-  $null = & schtasks.exe /Query /TN '\WireIt\Fix this site' 2>$null
-  if ($LASTEXITCODE -eq 0) { $null = & schtasks.exe /Delete /TN '\WireIt\Fix this site' /F 2>$null; if ($LASTEXITCODE -eq 0) { 'Removed the old "Fix this site" task (nothing runs as SYSTEM any more).' } else { 'WARNING: could not remove the old "Fix this site" task (Task Scheduler > WireIt): delete it by hand.' } }
-  foreach ($gone in @('FixSiteIpc.ps1', 'FixSiteRunner.ps1', 'FixSiteAsk.ps1', 'HikPortalStep.ps1', 'WireItAcl.ps1')) { $gp = Join-Path $tk $gone; if (Test-Path -LiteralPath $gp) { Remove-Item -LiteralPath $gp -Force -ErrorAction SilentlyContinue } }
-  $ipcDir = Join-Path $tk 'ipc'; if (Test-Path -LiteralPath $ipcDir) { Remove-Item -LiteralPath $ipcDir -Recurse -Force -ErrorAction SilentlyContinue }
-  # 2) the 2.2.x folder lock is taken off: the folders inherit Windows' normal permissions again
-  if (Test-Path -LiteralPath $Root) { $null = & icacls.exe $Root /reset /T /C /Q 2>&1; if ($LASTEXITCODE -ne 0) { 'WARNING: could not put the normal permissions back on ' + $Root + ' (icacls answered ' + $LASTEXITCODE + ').' } }
+  # 1)-2) 2.2.4: the SYSTEM task, the IPC folder, the old files and the old folder lock come off (logged); vault\ and secrets\ stay
+  # locked to Administrators + SYSTEM + you, and each local admin user can read the upload key without elevation (#26). See ToolkitMigrate.ps1.
+  try {
+    . (Join-Path $tk 'ToolkitMigrate.ps1')
+    $mr = Invoke-TkMigration -Root $Root -ToolkitDir $tk -OwnerSid ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+    foreach ($l in @($mr.log)) { $l }; foreach ($w in @($mr.warnings)) { 'WARNING: ' + $w }
+    try { Add-Content -LiteralPath (Join-Path (Join-Path $tk 'logs') 'install.log') -Value (@((Get-Date -Format s) + ' migration') + @($mr.log) + @($mr.warnings | ForEach-Object { 'WARNING: ' + $_ })) } catch {}
+  } catch { 'WARNING: the 2.2.x clean-up did not run: ' + $_.Exception.Message }
   # 3) 2.1's saved site passwords (encrypted for the admin who typed them) and the remembered NVR logins go into vault\
   $fsd = Join-Path $tk 'FixSiteDevices.ps1'
   if (Test-Path $fsd) {

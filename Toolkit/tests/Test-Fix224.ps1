@@ -152,6 +152,93 @@ $r3 = & $run3 $nm3 $full -FailSearch
 Check (-not $r3.ok -and $null -eq $r3.days_held) 'the in-between footage search fails -> days held UNKNOWN, not met'
 Remove-Module NvrHealth -Force -ErrorAction SilentlyContinue
 
+# ------------------------------------------------------------------------------------------------------------------------------
+# an ACL + Task Scheduler mock: paths are plain strings; icacls arguments are interpreted the way icacls.exe does for /reset, /T,
+# /inheritance:r, /grant:r and /grant. ACL = @{ prot = inheritance off; aces = @(...) } ('inherited' = Windows' normal permissions)
+$sep = [IO.Path]::DirectorySeparatorChar
+function New-AclMock([string]$root, [switch]$Old222) {
+  $m = @{ acl = @{}; files = New-Object System.Collections.ArrayList; task = [bool]$Old222; calls = New-Object System.Collections.ArrayList; adminUsers = @('S-1-5-21-9-9-9-1001', 'S-1-5-21-9-9-9-1002') }
+  $tkd = $root + $sep + 'Toolkit'
+  foreach ($p in @($root, $tkd, ($tkd + $sep + 'logs'), ($tkd + $sep + 'state'), ($tkd + $sep + 'vault'), ($tkd + $sep + 'secrets'), ($tkd + $sep + 'secrets' + $sep + 'upload-key.bin'), ($tkd + $sep + 'vault' + $sep + 'site-x.dat'), ($root + $sep + 'FixNVR'), ($root + $sep + 'CamReset'))) { [void]$m.files.Add($p); $m.acl[$p] = @{ prot = $false; aces = @('inherited') } }
+  if ($Old222) {
+    foreach ($p in @(($tkd + $sep + 'ipc'), ($tkd + $sep + 'ipc' + $sep + 'req.json'), ($tkd + $sep + 'FixSiteRunner.ps1'), ($tkd + $sep + 'WireItAcl.ps1'))) { [void]$m.files.Add($p); $m.acl[$p] = @{ prot = $false; aces = @('inherited') } }
+    foreach ($t in @($tkd, ($root + $sep + 'FixNVR'), ($root + $sep + 'CamReset'))) { $m.acl[$t] = @{ prot = $true; aces = @('S-1-5-32-544:F', 'S-1-5-18:F', 'S-1-5-32-545:RX') } }
+    foreach ($v in @(($tkd + $sep + 'vault'), ($tkd + $sep + 'secrets'))) { $m.acl[$v] = @{ prot = $true; aces = @('S-1-5-32-544:F', 'S-1-5-18:F') } }
+  }
+  return $m
+}
+function Get-AclMockOps($m) {
+  return @{
+    taskExists = { param($n) [void]$m.calls.Add('taskExists'); return $m.task }.GetNewClosure()
+    taskDelete = { param($n) [void]$m.calls.Add('taskDelete ' + $n); $m.task = $false; return $true }.GetNewClosure()
+    exists     = { param($p) return ($m.files -contains $p) }.GetNewClosure()
+    remove     = { param($p) [void]$m.calls.Add('remove ' + $p); foreach ($f in @($m.files | Where-Object { $_ -eq $p -or $_.StartsWith($p + $sep) })) { $m.files.Remove($f); $m.acl.Remove($f) } }.GetNewClosure()
+    children   = { param($p) return @($m.files | Where-Object { $_.StartsWith($p + $sep) -and -not $_.Substring($p.Length + 1).Contains([string]$sep) }) }.GetNewClosure()
+    isLocked   = { param($p) return [bool]$m.acl[$p].prot }.GetNewClosure()
+    adminUsers = { return $m.adminUsers }.GetNewClosure()
+    icacls     = { param([string[]]$a)
+      [void]$m.calls.Add('icacls ' + ($a -join ' ')); $p = $a[0]
+      $targets = @($p); if ($a -contains '/T') { $targets += @($m.files | Where-Object { $_.StartsWith($p + $sep) }) }
+      foreach ($t in $targets) {
+        if (-not $m.acl.ContainsKey($t)) { continue }; $e = $m.acl[$t]
+        for ($i = 1; $i -lt $a.Count; $i++) {
+          switch -Regex ($a[$i]) {
+            '^/reset$' { $e.prot = $false; $e.aces = @('inherited') }
+            '^/inheritance:r$' { $e.prot = $true; $e.aces = @($e.aces | Where-Object { $_ -ne 'inherited' }) }
+            '^/grant(:r)?$' { $repl = ($a[$i] -eq '/grant:r'); $i++; while ($i -lt $a.Count -and -not $a[$i].StartsWith('/')) { $g = $a[$i].TrimStart('*') -replace '\(OI\)|\(CI\)|\(IO\)', ''; $sid = $g.Split(':')[0]; if ($repl) { $e.aces = @($e.aces | Where-Object { -not $_.StartsWith($sid + ':') }) }; $e.aces = @($e.aces) + $g; $i++ }; $i-- }
+          }
+        }
+      }
+      return 0 }.GetNewClosure()
+  }
+}
+. (Join-Path $tk 'ToolkitMigrate.ps1')
+$owner = 'S-1-5-21-9-9-9-1001'
+Write-Host '4. the installer''s permission reset never loosens vault\ or secrets\'
+$root4 = Join-Path $tmp 'WireIt4'; $tk4 = $root4 + $sep + 'Toolkit'
+$m4 = New-AclMock $root4 -Old222; $r4 = Invoke-TkMigration -Root $root4 -ToolkitDir $tk4 -OwnerSid $owner -Ops (Get-AclMockOps $m4)
+foreach ($v in @('vault', 'secrets')) {
+  $e = $m4.acl[$tk4 + $sep + $v]
+  Check ($e.prot -and -not (@($e.aces) -contains 'inherited')) ('reproduction: ' + $v + '\ stays locked after the reset (2.2.3: icacls /reset /T opened it to inherited permissions)')
+  Eq ((@($e.aces | ForEach-Object { $_.Split(':')[0] }) | Sort-Object -Unique) -join ',') (@('S-1-5-18', 'S-1-5-21-9-9-9-1001', 'S-1-5-32-544') -join ',') ('...' + $v + '\ = Administrators + SYSTEM + the installing owner only')
+}
+Check (@($m4.calls | Where-Object { $_ -match 'icacls .*(vault|secrets)\S* /reset' }).Count -eq 0) 'no /reset is ever run on vault\ or secrets\'
+Check (-not $m4.acl[$tk4].prot -and @($m4.acl[$tk4 + $sep + 'logs'].aces) -contains 'inherited') 'the rest of the Toolkit folder gets Windows'' normal permissions back'
+# a vault\ that an older installer already loosened is locked again
+$m4b = New-AclMock $root4; $r4b = Invoke-TkMigration -Root $root4 -ToolkitDir $tk4 -OwnerSid $owner -Ops (Get-AclMockOps $m4b)
+Check ($m4b.acl[$tk4 + $sep + 'vault'].prot -and -not (@($m4b.acl[$tk4 + $sep + 'vault'].aces) -contains 'inherited')) 'a vault\ left open by 2.2.3 is locked again on the next install'
+
+Write-Host '5. #26: the upload key is readable by the logged-in admin without "Run as administrator"'
+$keyAces = @($m4.acl[$tk4 + $sep + 'secrets' + $sep + 'upload-key.bin'].aces)
+foreach ($u in @('S-1-5-21-9-9-9-1001', 'S-1-5-21-9-9-9-1002')) { Check ($keyAces -contains ($u + ':R')) ('reproduction: local admin user ' + $u + ' has read on upload-key.bin by its own SID (UAC: the Administrators group is deny-only unelevated)') }
+Check (-not (@($m4.acl[$tk4 + $sep + 'vault' + $sep + 'site-x.dat'].aces) -match '1002:R').Count) '...and on nothing else (the site password store is not opened)'
+# no read access at all: Get-CvKey says plainly what to do (a real file the process may not read)
+$kd = Join-Path $tmp 'tk5'; New-Item -ItemType Directory -Force -Path (Join-Path $kd 'secrets') | Out-Null; $kf = Join-Path (Join-Path $kd 'secrets') 'upload-key.bin'; [IO.File]::WriteAllBytes($kf, [byte[]](1, 2, 3))
+$canDeny = $false; if ($IsLinux -or $IsMacOS) { & chmod 000 $kf; try { [void][IO.File]::ReadAllBytes($kf) } catch { $canDeny = $true } }
+if ($canDeny) {
+  $job5 = Start-Job -ScriptBlock { param($tk, $kd) . (Join-Path $tk 'CamViews.ps1') -Lib; $script:CvHere = $kd; $env:WIREIT_UPLOAD_KEY = ''; $script:said = @(); function CvSay([string]$s, [string]$c = '') { $script:said += $s }; $k = Get-CvKey; Write-Output ($script:said -join ' | '); Write-Output ('KEY[' + $k + ']') } -ArgumentList $tk, $kd
+  $o5 = @(Receive-Job -Job $job5 -Wait -AutoRemoveJob)
+  Check ((@($o5) -join "`n") -match 'Run as administrator') 'reproduction: an unreadable key -> a clear "Run as administrator" message (2.2.3: silently no key)'
+  Check ((@($o5) -join "`n") -match 'KEY\[\]') '...and no key is used'
+  & chmod 600 $kf
+} else { Write-Host '  skip  (Windows) the unreadable-key message needs a file this account may not read; checked on Linux/macOS' }
+
+Write-Host '6. migration from 2.2.2: the SYSTEM task, the IPC folder and the old lock come off, once, and are logged'
+Check (-not $m4.task) 'reproduction: the old SYSTEM task "\WireIt\Fix this site" is removed'
+Check (-not ($m4.files -contains ($tk4 + $sep + 'ipc'))) 'the old IPC folder is removed'
+Check (-not ($m4.files -contains ($tk4 + $sep + 'FixSiteRunner.ps1')) -and -not ($m4.files -contains ($tk4 + $sep + 'WireItAcl.ps1'))) 'the files only the SYSTEM design used are removed'
+Check (-not $m4.acl[$root4 + $sep + 'FixNVR'].prot -and -not $m4.acl[$root4 + $sep + 'CamReset'].prot) 'the old lock is off FixNVR and CamReset too'
+$lg = (@($r4.log) -join "`n")
+Check ($lg -match 'SYSTEM task' -and $lg -match 'IPC folder' -and $lg -match 'folder lock' -and $lg -match 'FixSiteRunner') 'the log names each thing it removed'
+Eq @($r4.warnings).Count 0 'no warnings'
+$n0 = $m4.calls.Count
+$r4c = Invoke-TkMigration -Root $root4 -ToolkitDir $tk4 -OwnerSid $owner -Ops (Get-AclMockOps $m4)
+$again = @($m4.calls | Select-Object -Skip $n0)
+Check (-not @($again | Where-Object { $_ -match '/reset|^remove|^taskDelete' }).Count) 'run again: nothing is removed or reset a second time (idempotent)'
+Check ((@($r4c.log) -join ' ') -match 'nothing to remove') '...and the log says "nothing to remove"'
+Check ($m4.acl[$tk4 + $sep + 'vault'].prot -and @($m4.acl[$tk4 + $sep + 'secrets' + $sep + 'upload-key.bin'].aces) -contains 'S-1-5-21-9-9-9-1002:R') '...and vault\ is still locked, the key still readable'
+# the installer itself uses it (run the real installer script in plan-only mode is not possible off Windows; its migration block is the function above)
+
 #@@NEXT@@
 
 } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }

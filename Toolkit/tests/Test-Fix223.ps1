@@ -441,7 +441,7 @@ $wt = Read-Src 'Toolkit/WireItToolkit.ps1'
 Check ($wt -notmatch 'needs an admin login on this PC' -and $wt -notmatch 'Invoke-TkUpdateTask') '#45: no admin-only refusal for the classic tools; updates run here, not through a task'
 Check ($wt -match "schtasks\.exe /Delete /TN '\\WireIt\\Fix this site'") '#1-4: an old 2.2.x SYSTEM task is deleted when the Toolkit or installer runs'
 $it = Read-Src 'Toolkit/Install-Toolkit.ps1'
-Check ($it -notmatch 'Install-WireItCrewSetup' -and $it -match 'icacls\.exe \$Root /reset /T' -and $it -match "schtasks\.exe /Delete /TN '\\WireIt\\Fix this site'") '#1/#2/#26: the installer makes no task and no lock; it removes the old task and resets the old lock'
+# 2.2.4: the installer's clean-up is checked by RUNNING it (Invoke-TkMigration against an ACL/Task Scheduler mock): Test-Fix224.ps1 sections 4-6
 Check ($fs -notmatch 'Get-FsRunnerRunsDir' -and $fw -notmatch 'siteList') '#39: the site list is read and saved by the fix itself on the tech''s login (no SYSTEM hand-over)'
 # kept protections
 Check ($fs.IndexOf('if (Test-Path -LiteralPath $tempState) { try { $nr0 = Remove-FsTempIps $tempState') -gt 0 -and $fs.IndexOf('if (Test-Path -LiteralPath $tempState) { try { $nr0') -lt $fs.IndexOf('function Done(')) '#31/#33 kept: a killed run''s temporary addresses are removed first thing on the next start'

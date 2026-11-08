@@ -157,7 +157,12 @@ function CvUnprotect([string]$path, [string]$entropy) {
 function Get-CvKey {
   if ($env:WIREIT_UPLOAD_KEY) { return $env:WIREIT_UPLOAD_KEY }   # tests
   $own = Join-Path $script:CvHere 'secrets\upload-key.bin'
-  try { if (Test-Path $own) { return (CvUnprotect $own 'WireIt-Toolkit-v1') } } catch { CvLog ('own key: ' + $_.Exception.Message) }
+  try { if (Test-Path $own) { return (CvUnprotect $own 'WireIt-Toolkit-v1') } } catch {
+    CvLog ('own key: ' + $_.Exception.Message)
+    # 2.2.4 (#26): a Toolkit started without "Run as administrator" (UAC) may not be allowed to read the key: say so in plain words
+    $ex = $_.Exception; $denied = $false; while ($ex) { if ($ex -is [UnauthorizedAccessException]) { $denied = $true }; $ex = $ex.InnerException }
+    if ($denied) { $script:CvKeyDenied = $true; CvSay ('This Windows account may not read the upload key (secrets\upload-key.bin) without admin rights. Right-click the Toolkit > "Run as administrator", or run Install-Toolkit.ps1 as administrator once so your account can read it.') 'Yellow' }
+  }
   foreach ($vm in @((Join-Path (Split-Path -Parent $script:CvHere) 'VendorMonitor\secrets\ingest.bin'))) {
     try { if (Test-Path $vm) { return (CvUnprotect $vm 'WireIt-VendorMonitor-v1') } } catch { CvLog ('vendor monitor key: ' + $_.Exception.Message) }
   }
@@ -172,6 +177,8 @@ function Set-CvKey {
   $b = [Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes((@{ key = $k } | ConvertTo-Json -Compress)), [Text.Encoding]::ASCII.GetBytes('WireIt-Toolkit-v1'), [Security.Cryptography.DataProtectionScope]::LocalMachine)
   [IO.File]::WriteAllBytes((Join-Path $dir 'upload-key.bin'), $b)
   try { & icacls.exe $dir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' ($env:USERNAME + ':(OI)(CI)F') | Out-Null } catch {}
+  # 2.2.4 (#26): every local admin USER may read this one file without elevation (UAC); the folder stays admins + SYSTEM + you
+  try { $mg = Join-Path $script:CvHere 'ToolkitMigrate.ps1'; if (Test-Path -LiteralPath $mg) { . $mg; $ops = Get-TkRealOps; foreach ($u in @(& $ops.adminUsers)) { [void](& $ops.icacls (Get-TkKeyReadArgs (Join-Path $dir 'upload-key.bin') $u)) } } } catch {}
   CvSay 'Upload key saved on this PC (encrypted, this PC only).' 'Green'
 }
 
