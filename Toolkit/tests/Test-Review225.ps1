@@ -53,7 +53,7 @@ try {
   # The actual launcher must recover before it parses even one line of the damaged core.
   foreach ($f in @('WireItToolkit.ps1','ToolkitRecover.ps1')) { Copy-Item (Join-Path $tk $f) (Join-Path $recover $f) }
   $marker = Join-Path $tmp 'core-loaded.txt'
-  [IO.File]::WriteAllText((Join-Path $prev 'Toolkit/ToolkitCore.ps1'), ("[IO.File]::WriteAllText('" + $marker.Replace("'","''") + "','restored'); exit 0"))
+  [IO.File]::WriteAllText((Join-Path $prev 'Toolkit/ToolkitCore.ps1'), ("[IO.File]::WriteAllText('" + $marker.Replace("'","''") + "','restored'); [Environment]::Exit(0)"))
   [IO.File]::WriteAllText((Join-Path $recover 'ToolkitCore.ps1'), 'function Broken {')
   Save-TkJson @{ prev=$prev; from='2.2.5'; to='2.2.6'; added=@() } (Join-Path $recover 'previous/update-pending.json')
   & $exe -NoProfile -File (Join-Path $recover 'WireItToolkit.ps1') -NoUpdate | Out-Null
@@ -148,6 +148,7 @@ try {
   $result = $scenario | ConvertFrom-Json
   Check ($result.retarget_exit -eq 0 -and $result.retarget_camera_password -and $result.retarget_channel_password -and $result.retarget_saved_nvr) 'live recorder retarget updates camera operations, channel credentials and saved associations'
   Check ($result.interrupted_attempt_only -and $result.undo_exit -eq 0 -and $result.undo_restored_password -and $result.undo_marker) 'killing a real fix after its password write still allows Undo to restore the original password'
+  Check ($result.nvr_interrupted_attempt_only -and $result.nvr_undo_exit -eq 0 -and $result.nvr_undo_restored_password -and $result.nvr_undo_marker) 'killing a recorder password change before verification still allows Undo to restore its original password'
 } catch { $script:fail++; Write-Host ('FAIL unexpected error: ' + $_.Exception.Message + ' at ' + $_.InvocationInfo.ScriptLineNumber) }
 finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
 Write-Host ('Test-Review225: ' + $script:pass + ' passed, ' + $script:fail + ' failed')

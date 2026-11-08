@@ -429,9 +429,18 @@ if ($Mode -eq 'Rollback') {
     $oldN = $(if ($old.ContainsKey('nvr|' + $nip0)) { [string]$old['nvr|' + $nip0] } else { '' })
     $nip = Resolve-FsUndoNvrIp @($r0.nvrs) $nip0 $isDone   # 2.2.2 (H8): moved back by an earlier Undo -> its old address
     if ($nip -ne $nip0) { if (-not $nvrPwR.ContainsKey($nip) -and $nvrPwR.ContainsKey($nip0)) { $nvrPwR[$nip] = $nvrPwR[$nip0] }; if (-not (Test-FsOnScheme $nip $pcScheme)) { [void](Add-FsTempIp (Get-FsP3 $nip) $pc $tempState) } }
-    if (-not $oldN -or -not $nvrPwR.ContainsKey($nip)) { Say ('  NVR ' + $nip + ': its old password is not on this PC - not undone ' + $script:FsBad) 'Red'; $bad++; continue }
-    [void](Set-FsPassword $nip 'Hikvision' (Fs-Cred $nvrPwR[$nip]) $oldN); Say-PlainWarning $nip
-    $ok = ((Test-FsLogin $nip 'Hikvision' $oldN) -eq 'ok')   # 2.2.3 (Codex #20): back = the old password logs in
+    if (-not $oldN) { Say ('  NVR ' + $nip + ': its old password is not on this PC - not undone ' + $script:FsBad) 'Red'; $bad++; continue }
+    # The saved current login may still be the old one if the write was interrupted before verification. Resolve it first.
+    $ncands = @(@($nvrPwR[$nip], $sec.password, $oldN) | Where-Object { $_ } | Select-Object -Unique | ForEach-Object { [pscustomobject]@{ label = 'saved at this site'; value = [string]$_ } })
+    $working = Find-FsPassword $nip 'Hikvision' $ncands ([int]$opts.maxPasswordTries)
+    $ok = $false
+    if ($working.state -eq 'ok') {
+      $ok = ($working.value -ceq $oldN)
+      if (-not $ok) {
+        [void](Set-FsPassword $nip 'Hikvision' (Fs-Cred $working.value) $oldN); Say-PlainWarning $nip
+        $ok = ((Test-FsLogin $nip 'Hikvision' $oldN) -eq 'ok')   # back = the old password logs in
+      }
+    }
     if ($ok) { $nvrPwR[$nip] = $oldN; $sec.nvr[$nip] = $oldN; if ($nip -ne $nip0) { $nvrPwR[$nip0] = $oldN; $sec.nvr[$nip0] = $oldN }; & $markDone ('nvrpw|' + $nip0) } else { $bad++ }
     Say ('  NVR ' + $nip + ': old password back ' + $(if ($ok) { $script:FsOk } else { $script:FsBad }))
   }

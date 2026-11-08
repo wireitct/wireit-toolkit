@@ -25,7 +25,7 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix='review225-') as tmp:
         root = Path(tmp)
-        for mode in ['retarget', 'interrupt']:
+        for mode in ['retarget', 'interrupt', 'interrupt-nvr']:
             case = root / mode
             vault = case / 'vault'
             vault.mkdir(parents=True)
@@ -37,6 +37,9 @@ def main():
                 scene['devices']['192.168.0.20'] = {'kind': 'nvr', 'brand': 'Hikvision', 'model': 'DS-7608NI-K2',
                     'serial': 'NVRSERIAL1', 'mac': 'c4:2f:90:00:00:20', 'password': 'Oldpass123', 'https': True,
                     'channels': {'1': {'ip': '192.168.1.21', 'password': 'Oldpass123', 'protocol': 'HIKVISION', 'name': 'Front'}}}
+            if mode == 'interrupt-nvr':
+                scene['devices'] = {'192.168.1.20': {'kind': 'nvr', 'brand': 'Hikvision', 'model': 'DS-7608NI-K2',
+                    'serial': 'NVRSERIAL1', 'mac': 'c4:2f:90:00:00:20', 'password': 'Oldpass123', 'https': True, 'channels': {}}}
             scene_file = case / 'scene.json'
             scene_file.write_text(json.dumps(scene))
             mock.load(scene_file)
@@ -53,7 +56,7 @@ def main():
                     return super().pc(method, path, q, body)
                 def route(self, method, ip, path, q, body, rawq):
                     d = mock.S['devices'].get(ip)
-                    if mode == 'interrupt' and d and d.get('pw_changes') and method == 'GET' and path == '/ISAPI/System/deviceInfo' and not release.is_set():
+                    if mode.startswith('interrupt') and d and d.get('pw_changes') and method == 'GET' and path == '/ISAPI/System/deviceInfo' and not release.is_set():
                         waiting.set()
                         release.wait(20)
                     return super().route(method, ip, path, q, body, rawq)
@@ -67,6 +70,8 @@ def main():
                    'rollback': {}, 'bitwardenSaved': False, 'shownOnce': False}
             if mode == 'retarget':
                 sec['nvr']['192.168.0.20'] = 'Oldpass123'
+            if mode == 'interrupt-nvr':
+                sec['nvr']['192.168.1.20'] = 'Oldpass123'
             slug = 'review-' + hashlib.sha256(b'review').hexdigest()[:8]
             (vault / ('site-' + slug + '.dat')).write_text('TEST:' + base64.b64encode(json.dumps(sec).encode()).decode())
             answers = case / 'answers.txt'
@@ -96,13 +101,16 @@ def main():
                         proc.wait()
                         release.set()
                     rollback = next((case / 'runs').glob('*/rollback.json'))
-                    recorded = json.loads(rollback.read_text(encoding='utf-8-sig'))['cameras'][0]
-                    results['interrupted_attempt_only'] = recorded['password_attempted'] and not recorded['password_changed']
+                    journal = json.loads(rollback.read_text(encoding='utf-8-sig'))
+                    is_nvr = mode == 'interrupt-nvr'
+                    prefix = 'nvr_' if is_nvr else ''
+                    recorded = journal['nvr_passwords' if is_nvr else 'cameras'][0]
+                    results[prefix + 'interrupted_attempt_only'] = (recorded['attempted'] and not recorded['changed']) if is_nvr else (recorded['password_attempted'] and not recorded['password_changed'])
                     time.sleep(1.1)  # Run directory names have one-second precision.
                     undo = subprocess.run(command + ['-Mode', 'Rollback', '-RollbackDir', str(rollback.parent)], capture_output=True, text=True, timeout=30)
-                    results['undo_exit'] = undo.returncode
-                    results['undo_restored_password'] = mock.S['devices']['192.168.1.21']['password'] == 'Oldpass123'
-                    results['undo_marker'] = (rollback.parent / 'undone.txt').exists()
+                    results[prefix + 'undo_exit'] = undo.returncode
+                    results[prefix + 'undo_restored_password'] = mock.S['devices']['192.168.1.20' if is_nvr else '192.168.1.21']['password'] == 'Oldpass123'
+                    results[prefix + 'undo_marker'] = (rollback.parent / 'undone.txt').exists()
                     if undo.returncode:
                         raise RuntimeError(undo.stdout + undo.stderr)
             finally:
