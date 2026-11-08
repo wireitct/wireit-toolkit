@@ -343,6 +343,18 @@ Read-ScPrevious $R44 $d44
 Eq @($R44.previous).Count 1 'same network: compared'
 $cmd = [IO.File]::ReadAllText((Join-Path $repo 'sitecheck\WireIt-SiteCheck.cmd')); $ci = $cmd.IndexOf('##PSSTART')
 Check ($cmd.Substring($ci + 11).Trim() -eq $scs.Trim()) 'the Site check launcher .cmd carries the same SiteCheck.ps1'
+Write-Host '#30 an NVR on the right subnet with broken network settings is fixed in place'
+$pc30 = [pscustomobject]@{ ip = '192.168.1.105'; gw = '192.168.1.1'; mask = '255.255.255.0'; prefix = 24 }
+$obs30 = [pscustomobject]@{ pc = $pc30; devices = @(); nvrs = @([pscustomobject]@{ ip = '192.168.1.20'; brand = 'Hikvision'; model = 'DS-7608NI'; mac = 'aa:00:00:00:00:20'; login = 'site password'; channels = @(); net = [pscustomobject]@{ dhcp = $false; gw = '192.168.0.1'; mask = '255.255.255.0'; dns1 = '' } }) }
+$p30 = New-FsPlan $null $obs30
+$n30 = @($p30.nvrs)[0]
+Check (@($n30.steps) -contains 'move' -and $n30.target -eq '192.168.1.20') 'reproduction: old router .0.1 + no DNS on an NVR at .20 -> its settings are fixed in place (2.2.2: "no network work")'
+Check (($n30.why -join ' ') -match 'router 192\.168\.0\.1' -and ($n30.why -join ' ') -match 'no DNS') '...and the plan says why'
+$obs30.nvrs[0].net = [pscustomobject]@{ dhcp = $false; gw = '192.168.1.1'; mask = '255.255.255.0'; dns1 = '8.8.8.8' }
+Check (-not @((@((New-FsPlan $null $obs30).nvrs)[0]).steps).Count) 'good settings -> nothing to do'
+$fs = Read-Src 'Toolkit/FixSite.ps1'
+Check ($fs -match '\$t = \$\(if \(\$n\.target -eq \$n\.ip\) \{ \$n\.ip \}' -and $fs -match 'ntN = Get-FsNet \$nip') 'FixSite reads the NVR''s settings and fixes them on the same address'
+Check ($fs -match "Add-Member -NotePropertyName moved") 'the plan''s NVR (an object) records whether it moved'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

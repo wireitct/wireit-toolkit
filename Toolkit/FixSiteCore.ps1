@@ -329,6 +329,12 @@ function New-FsPlan($expected, $observed, $opts = $null) {
       # 2.0.2: right scheme, but not where the WireIt standard puts an NVR (.20, or .19/.18). It works, so it is only named, never moved.
       $plan.leftAlone += ('NVR ' + $ip + ': WireIt standard puts the NVR at .' + @($o.nvrHosts)[0] + ' (it works where it is, so it is not moved)')
     }
+    # 2.2.3 (Codex #30): on the right scheme but with broken network settings (DHCP, another router, wrong mask, no DNS) = fixed in place
+    $netBad = @(Get-FsNvrNetProblems (Get-FsProp $nv 'net' $null) (Get-FsProp $observed 'pc' $null))
+    if ($scheme -and (Test-FsOnScheme $ip $scheme) -and $netBad.Count -and -not @($item.steps).Count) {
+      if ($br -eq 'Hikvision') { $item.target = $ip; $item.why += ('NVR network settings: ' + ($netBad -join '; ')); $item.steps += @('backup', 'move') }
+      else { $item.why += ('NVR network settings: ' + ($netBad -join '; ') + ' - fix them in its own menu'); $item.steps += 'manual' }
+    }
     if ($item.login -eq 'unknown') { $item.why += 'NVR password not known (asked once before the fixes)' }
     # 2.1.0: a Hikvision NVR nobody can log in to gets Hikvision's official reset too (never the reset button)
     if ($br -eq 'Hikvision' -and $item.login -in @('unknown', 'refused', 'locked')) { $item.why += 'Hikvision''s official password reset (request file -> Hikvision''s page -> unlock file)'; $item.steps += 'reset' }
@@ -583,6 +589,16 @@ function Get-FsManualLines($plan) {
   foreach ($n in @($plan.nvrs | Where-Object { @($_.steps) -contains 'manual' })) { $out += ('NVR ' + $n.ip + ': needs a person - ' + (@($n.why) -join '; ') + ' ' + $script:FsBad) }
   foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'manual' })) { $out += ($c.name + ': needs a person - ' + (@($c.why) -join '; ') + ' ' + $script:FsBad) }
   return $out
+}
+function Get-FsNvrNetProblems($net, $pc) {
+  # what is wrong with an NVR's own network settings, against this PC's network (its router and mask). Unknown = nothing claimed.
+  $p = @(); if (-not $net) { return $p }
+  $pgw = [string](Get-FsProp $pc 'gw' ''); $pmask = [string](Get-FsProp $pc 'mask' '')
+  if ([bool](Get-FsProp $net 'dhcp' $false)) { $p += 'gets its address from DHCP (it can change)' }
+  $g = [string](Get-FsProp $net 'gw' ''); if ($pgw -and $g -ne $pgw) { $p += ('router ' + $(if ($g) { $g } else { 'none' }) + ' (the site router is ' + $pgw + ')') }
+  $m = [string](Get-FsProp $net 'mask' ''); if ($pmask -and $m -and $m -ne $pmask) { $p += ('mask ' + $m + ' (site: ' + $pmask + ')') }
+  if (-not [string](Get-FsProp $net 'dns1' '') -or [string](Get-FsProp $net 'dns1' '') -eq '0.0.0.0') { $p += 'no DNS server (no app / cloud access)' }
+  return $p
 }
 function Merge-FsSiteListCams($oldCams, $newCams) {
   # 2.2.3 (Codex #38): adding cameras to a saved list also brings the ones already on it up to date (same MAC = same camera:

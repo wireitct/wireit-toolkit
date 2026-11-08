@@ -587,10 +587,11 @@ if ($Mode -eq 'DryRun') {
       $typed = Ask ('Type the password of the NVR at ' + $nip + ' (hidden; Enter = skip - then cameras cannot be put back on it):') -Secret
       if ($typed) { Remember-Secret $typed; if ((Test-FsLogin $nip 'Hikvision' $typed) -eq 'ok') { $fp = [pscustomobject]@{ state = 'ok'; label = 'typed'; value = $typed } } else { Say 'That NVR password did not work (not tried again, so it does not lock).' 'Yellow' } }
     }
-    $nobj = [ordered]@{ ip = $nip; brand = 'Hikvision'; model = ''; mac = ''; login = $(if ($fp.state -eq 'ok') { $fp.label } elseif ($fp.state -eq 'locked') { 'locked' } else { 'unknown' }); channels = @() }
+    $nobj = [ordered]@{ ip = $nip; net = $null; brand = 'Hikvision'; model = ''; mac = ''; login = $(if ($fp.state -eq 'ok') { $fp.label } elseif ($fp.state -eq 'locked') { 'locked' } else { 'unknown' }); channels = @() }
     $fd = @($found | Where-Object { $_.ip -eq $nip })[0]; if ($fd) { $nobj.model = $fd.model; $nobj.mac = $fd.mac; $nobj.brand = (Get-FsBrand $fd.brand $fd.model) }
     if ($fp.state -eq 'ok') {
       $nvrPw[$nip] = $fp.value; $sec.nvr[$nip] = $fp.value
+      $ntN = Get-FsNet $nip 'Hikvision' (Fs-Cred $fp.value); if ($ntN) { $nobj.net = [ordered]@{ dhcp = [bool]$ntN.dhcp; gw = [string]$ntN.gw; mask = [string]$ntN.mask; dns1 = [string]$ntN.dns1 } }   # 2.2.3 (Codex #30)
       $chs = @(Get-FsNvrChannels $nip (Fs-Cred $fp.value)); $nobj.channels = @($chs | ForEach-Object { [ordered]@{ channel = $_.channel; ip = $_.ip; online = $_.online; name = $_.name; protocol = $_.protocol } })
       Say ('NVR ' + $nip + ': ' + $chs.Count + ' camera channel(s), ' + @($chs | Where-Object { $_.online -eq $false }).Count + ' without video.')
     } else { Say ('NVR ' + $nip + ': could not log in, so its channel list is not read.') 'Yellow' }
@@ -824,16 +825,16 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'move' })) {
   $net = Get-FsNet $n.ip 'Hikvision' $cr
   if (-not $net) { & $nvrFail 'its address settings could not be read - not moved'; continue }
   $taken = @($plan.cams | ForEach-Object { [string]$_.target; [string]$_.ip }) + @($plan.nvrs | Where-Object { $_ -ne $n } | ForEach-Object { [string]$_.target; [string]$_.ip })
-  $t = Get-FsNvrMoveTarget $n.target $plan.scheme $opts.nvrHosts $taken
+  $t = $(if ($n.target -eq $n.ip) { $n.ip } else { Get-FsNvrMoveTarget $n.target $plan.scheme $opts.nvrHosts $taken })   # same address = only its network settings are fixed (#30)
   if (-not $t) { & $nvrFail ('not moved: ' + $n.target + ' (and the other NVR addresses) already answer on the network'); continue }
   if ($t -ne $n.target) { Say ('NVR ' + $n.ip + ': ' + $n.target + ' is already used by another device - moving it to ' + $t + ' instead') 'Yellow'; $n.target = $t }
   $rb.nvrs += [ordered]@{ ip = $n.ip; target = $n.target; iface = $net.iface; old = [ordered]@{ ip = $net.ip; mask = $net.mask; gw = $net.gw; dhcp = $net.dhcp; dns1 = $net.dns1; dns2 = $net.dns2 } }; Save-Rb
   $w = Set-FsNet $n.ip 'Hikvision' $cr $net $n.target $devNet.mask $devNet.gw
   if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $n.ip 'Hikvision' $cr) }
   $back = $w.ok -and (Wait-FsDevice $n.target 'Hikvision' $nvrPw[$n.ip] ([int]$opts.rebootWaitSec))
-  $l = Format-FsCheckLine ('NVR ' + $n.ip) @([pscustomobject]@{ text = $(if ($w.ok) { 'moved -> ' + (Get-FsShort $n.target) } else { 'the NVR refused the new address' }); ok = $back })
+  $l = Format-FsCheckLine ('NVR ' + $n.ip) @([pscustomobject]@{ text = $(if (-not $w.ok) { 'the NVR refused the new address settings' } elseif ($n.target -eq $n.ip) { 'network settings fixed (router ' + $devNet.gw + ', fixed address)' } else { 'moved -> ' + (Get-FsShort $n.target) }); ok = $back })
   Say $l $(if ($back) { 'Green' } else { 'Red' }); $results += $l
-  if ($back) { $okCount++; $nvrPw[$n.target] = $nvrPw[$n.ip]; $sec.nvr[$n.target] = $nvrPw[$n.ip]; Save-FsSecrets $SecretsDir $sec; $n.moved = $true } else { $badCount++; $n.moved = $false }
+  if ($back) { $okCount++; $nvrPw[$n.target] = $nvrPw[$n.ip]; $sec.nvr[$n.target] = $nvrPw[$n.ip]; Save-FsSecrets $SecretsDir $sec }; if ($back) { $okCount = $okCount } else { $badCount++ }; $n | Add-Member -NotePropertyName moved -NotePropertyValue ([bool]$back) -Force
 }
 # 2.0.3: NVR password -> the site password (factory password at a new site, or the option ticked). Channels keep the camera logins.
 $rb.nvr_passwords = @()
