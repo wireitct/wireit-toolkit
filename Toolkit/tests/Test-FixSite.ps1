@@ -470,9 +470,15 @@ if (-not $NoEndToEnd -and $py) {
     Check (-not @($s0.devices.PSObject.Properties | Where-Object { $_.Value.pw_changes }).Count) 'option unticked: no password changed on any camera or the NVR'
     Check ($s0.devices.'192.168.1.21'.password -eq 'Old#CamA1' -and $s0.devices.'192.168.1.22'.password -eq 'Old#CamB2' -and $s0.devices.'192.168.1.20'.channels.'1'.password -eq 'Old#CamA1') 'option unticked: working cameras and their NVR channels keep their own passwords'
     # ticked, with a fake Bitwarden on the PC (logged in): the site password goes there
-    $fb = Join-Path $tmp 'fakebw'; New-Item -ItemType Directory -Force -Path $fb | Out-Null; $bwc = Join-Path $fb 'bw.cmd'
-    Set-Content -Path $bwc -Encoding ASCII -Value @('@echo off', 'if "%1"=="status" goto st', 'if "%1"=="list" goto ls', 'if "%1"=="create" goto cr', 'if "%1"=="sync" exit /b 0', 'exit /b 1', ':st', 'echo {"status":"unlocked"}', 'exit /b 0', ':ls', 'echo []', 'exit /b 0', ':cr', 'more > "%~dp0created.txt"', 'echo {"id":"fake-1"}', 'exit /b 0')
-    $bwArg = @(); if ($env:OS -eq 'Windows_NT') { $bwArg = @('-BwPath', $bwc) }
+    # 2.2.5: the same fake Bitwarden as Test-Fix221/222 (tests\fixsite\fakebw.py) on Windows AND Linux. 2.2.4 used a tiny bw.cmd here that knew only
+    # status/list/create/sync; since 2.2.1 the Toolkit also lists the organization + collection and reads the item back (bw get item), which
+    # that bw.cmd refused -> "not confirmed" + the shown-once window on Windows (the check was Windows-only, so Linux never saw it).
+    $fb = Join-Path $tmp 'fakebw'; New-Item -ItemType Directory -Force -Path $fb | Out-Null
+    $env:FAKEBW_STATE = Join-Path $fb 'bw.json'; $env:FAKEBW_MODE = ''; $env:FAKEBW_NOORG = ''; $env:FAKEBW_STATUS = ''
+    $fbPy = Join-Path $fx 'fakebw.py'
+    if ($env:OS -eq 'Windows_NT') { $bwc = Join-Path $fb 'bw.cmd'; Set-Content -Path $bwc -Encoding ASCII -Value @('@echo off', ('"' + $py + '" "' + $fbPy + '" %*')) }
+    else { $bwc = Join-Path $fb 'bw'; Set-Content -Path $bwc -Encoding ASCII -Value @('#!/bin/sh', ('exec "' + $py + '" "' + $fbPy + '" "$@"')); & chmod +x $bwc }
+    $bwArg = @('-BwPath', $bwc)
     $om = E2EM $m @('YES', 'n') 'Fix' (@('-PasswordAll') + $bwArg)
     Check ($om -match '2 working one\(s\) because you ticked "Make every device use the site password"') 'option ticked: Cam A + Cam B included (Cam C is already on the site password)'
     Check ($om -match 'NVR 192\.168\.1\.20: NVR is on a different password') 'option ticked: the NVR on a different password is included'
@@ -493,12 +499,13 @@ if (-not $NoEndToEnd -and $py) {
     Check ($rbB.password_rolled_back -and -not $rbB.password_changed) 'option ticked: rollback.json records Cam B as put back (an Undo will not touch it again)'
     Check (@($rjm.nvr_passwords | Where-Object { $_.ip -eq '192.168.1.20' -and $_.changed }).Count -eq 1) 'option ticked: rollback.json records the NVR password change'
     Check (Test-Path (Join-Path $rdm.FullName 'backup')) 'option ticked: backups taken first'
-    if ($env:OS -eq 'Windows_NT') {
-      Check ($om -match 'Saved in Bitwarden and checked: "Mixed - site password"') 'Bitwarden on the PC (logged in): saved as "Mixed - site password"'
-      $item = $null; try { $item = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(((Get-Content (Join-Path $fb 'created.txt') -Raw).Trim()))) | ConvertFrom-Json } catch {}
-      Check ($item -and $item.name -eq ('Mixed ' + [char]0x2013 + ' site password') -and $item.login.password -eq 'Testpw2468' -and $item.login.username -eq 'admin') 'Bitwarden item: name, user admin, the site password (handed over on stdin only)'
-      Check (-not ($om -match 'SHOWN ONCE')) 'Bitwarden saved -> no shown-once window'
-    }
+    Check ($om -match 'Saved in Bitwarden and checked: "Mixed - site password"') 'Bitwarden on the PC (logged in): saved as "Mixed - site password"'
+    $bws = $null; try { $bws = [IO.File]::ReadAllText($env:FAKEBW_STATE) | ConvertFrom-Json } catch {}
+    $item = $(if ($bws) { @($bws.items)[0] })
+    Check ($item -and $item.name -eq ('Mixed ' + [char]0x2013 + ' site password') -and $item.login.password -eq 'Testpw2468' -and $item.login.username -eq 'admin' -and $item.organizationId -eq 'org-1') 'Bitwarden item: name, user admin, the site password, in the WireIt CT org (handed over on stdin only; fakebw refuses a password on the command line)'
+    Check ($bws -and (@($bws.calls) -contains 'get item')) 'Bitwarden: the item was read back after saving'
+    Check (-not ($om -match 'SHOWN ONCE')) 'Bitwarden saved -> no shown-once window'
+    $env:FAKEBW_STATE = ''
     $hm = @(Get-ChildItem "$tmp\m" -Recurse -File | Where-Object { $_.Extension -ne '.dat' } | Select-String -SimpleMatch -Pattern ([string[]]@('Testpw2468', 'Old#CamA1', 'Old#CamB2', 'Nvr#Old33')) -List)
     Eq $hm.Count 0 'option ticked: no password in any log, plan, scan or rollback file'
     $om3 = E2EM $m @('YES') 'Rollback' @('-RollbackDir', $rdm.FullName)
