@@ -280,6 +280,13 @@ function Set-FsNet([string]$ip, [string]$brand, $cred, $net, [string]$newIp, [st
 }
 
 # ---------------- password ----------------
+function Resolve-FsPwChange([string]$ip, [string]$brand, [string]$newPw, [string]$oldPw) {
+  # 2.2.3 (Codex #19): after a password write, what the device REALLY has: 'changed' (new logs in), 'unchanged' (old still logs in)
+  # or 'unknown' (neither answers now: the write may have taken). One login try each; 'unknown' is bookkept as maybe-changed.
+  if ((Test-FsLogin $ip $brand $newPw) -eq 'ok') { return 'changed' }
+  if ($oldPw -and (Test-FsLogin $ip $brand $oldPw) -eq 'ok') { return 'unchanged' }
+  return 'unknown'
+}
 function Set-FsPassword([string]$ip, [string]$brand, $oldCred, [string]$newPw) {
   if ($brand -eq 'Dahua') {
     # Dahua's password CGI only takes the passwords in its address: over HTTPS that address is encrypted too (2.2.1, review H1)

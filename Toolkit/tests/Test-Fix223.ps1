@@ -106,6 +106,17 @@ function Test-FsPicture { return $true }
 Check (-not (Test-FsVideo '192.168.1.20' $null 5 '192.168.1.50' 'Hikvision' $null)) 'reproduction: ch 5 online with a picture but pointing at .99 -> camera .50 NOT verified'
 Check (Test-FsVideo '192.168.1.20' $null 5 '192.168.1.99' 'Hikvision' $null) 'the camera the channel points at is verified'
 Remove-Item function:Test-FsPicture
+Write-Host '#19 a password write whose answer was lost is still bookkept'
+$script:DevPw = @{ '10.0.0.7' = 'NewSite1' }
+$script:Fake = @{ 'GET *ISAPI/System/deviceInfo' = { param($k, $b) $ip0 = ($k -split ' ')[1] -replace '/.*$', ''; $c0 = @($script:Calls)[-1].cred; if ($script:DevPw[$ip0] -eq 'GONE') { return @{ code = 0; body = ''; err = 'timeout' } }; if ($c0 -and (Fs-Plain $c0) -ceq $script:DevPw[$ip0]) { return '<DeviceInfo/>' }; return @{ code = 401; body = '' } } }
+Eq (Resolve-FsPwChange '10.0.0.7' 'Hikvision' 'NewSite1' 'Old1') 'changed' 'the new password logs in -> changed (whatever the write answered)'
+$script:DevPw['10.0.0.7'] = 'Old1'
+Eq (Resolve-FsPwChange '10.0.0.7' 'Hikvision' 'NewSite1' 'Old1') 'unchanged' 'the old one logs in -> unchanged'
+$script:DevPw['10.0.0.7'] = 'GONE'
+Eq (Resolve-FsPwChange '10.0.0.7' 'Hikvision' 'NewSite1' 'Old1') 'unknown' 'reproduction: neither answers -> unknown (2.2.2 said "old one still works")'
+$fs = Read-Src 'Toolkit/FixSite.ps1'
+Check ($fs -match "password_unconfirmed = \`$true" -and $fs -match 'np\.unconfirmed = \$true') 'FixSite: unknown = rollback flag set (Undo tries both), camera and NVR alike'
+Check ($fs -match 'password_attempted = \$true; Save-Rb\s+\[void\]\(Set-FsPassword') 'the attempt is in the undo file BEFORE the write'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

@@ -826,9 +826,12 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'password' })) {
   if ($oldN -ceq $sitePw) { Say ('NVR ' + $nip + ': already on the site password ' + $script:FsOk) 'Green'; continue }
   $sec.rollback[$stamp]['nvr|' + $nip] = $oldN; Save-FsSecrets $SecretsDir $sec
   $np = [ordered]@{ ip = $nip; changed = $false }; $rb.nvr_passwords += $np; Save-Rb
-  $ok = Set-FsPassword $nip 'Hikvision' (Fs-Cred $oldN) $sitePw
+  $np.attempted = $true; Save-Rb
+  [void](Set-FsPassword $nip 'Hikvision' (Fs-Cred $oldN) $sitePw)
   Say-PlainWarning $nip
-  if ($ok -and (Test-FsLogin $nip 'Hikvision' $sitePw) -eq 'ok') { $nvrPw[$nip] = $sitePw; $sec.nvr[$nip] = $sitePw; $np.changed = $true; Save-FsSecrets $SecretsDir $sec; Save-Rb; $l = Format-FsCheckLine ('NVR ' + $nip) @([pscustomobject]@{ text = 'site password set'; ok = $true }); $okCount++ }
+  $pwState = Resolve-FsPwChange $nip 'Hikvision' $sitePw $oldN   # 2.2.3 (Codex #19)
+  if ($pwState -eq 'changed') { $nvrPw[$nip] = $sitePw; $sec.nvr[$nip] = $sitePw; $np.changed = $true; Save-FsSecrets $SecretsDir $sec; Save-Rb; $l = Format-FsCheckLine ('NVR ' + $nip) @([pscustomobject]@{ text = 'site password set'; ok = $true }); $okCount++ }
+  elseif ($pwState -eq 'unknown') { $np.changed = $true; $np.unconfirmed = $true; $nvrPw.Remove($nip); Save-Rb; $l = Format-FsCheckLine ('NVR ' + $nip) @([pscustomobject]@{ text = 'password change not confirmed: neither password logs in right now - check the NVR'; ok = $false }); $badCount++ }
   else { $l = Format-FsCheckLine ('NVR ' + $nip) @([pscustomobject]@{ text = 'the NVR refused the new password - it keeps its old one'; ok = $false }); $badCount++ }
   $results += $l; Say $l $(if ($np.changed) { 'Green' } else { 'Red' })
 }
@@ -905,8 +908,13 @@ foreach ($c in $ordered) {
     elseif ((Test-FsLogin $ip $c.brand $sitePw) -eq 'ok') { $pw = $sitePw; $cr = Fs-Cred $pw; & $step 'password already set' $true }
     else {
       $sec.rollback[$stamp][$c.mac + '|' + $c.ip] = $pw; Save-FsSecrets $SecretsDir $sec; $pwBefore = $pw
-      $ok = Set-FsPassword $ip $c.brand $cr $sitePw
-      if ($ok -and (Test-FsLogin $ip $c.brand $sitePw) -eq 'ok') { $pw = $sitePw; $cr = Fs-Cred $pw; $rbc.password_changed = $true; $mk = ConvertTo-FsMac $c.mac; if ($mk) { $sec.cams[$mk] = $sitePw; Save-FsSecrets $SecretsDir $sec }; & $step $(if (Test-FsSentPlain $ip) { 'password set' } else { 'password set (over HTTPS)' }) $true } else { & $step 'password not changed (old one still works)' $false }
+      $rbc.password_attempted = $true; Save-Rb
+      [void](Set-FsPassword $ip $c.brand $cr $sitePw)
+      # 2.2.3 (Codex #19): the answer to the write may be lost while the change took: decide from what logs in now, never from the answer
+      $pwState = Resolve-FsPwChange $ip $c.brand $sitePw $pwBefore; $mk = ConvertTo-FsMac $c.mac
+      if ($pwState -eq 'changed') { $pw = $sitePw; $cr = Fs-Cred $pw; $rbc.password_changed = $true; if ($mk) { $sec.cams[$mk] = $sitePw; Save-FsSecrets $SecretsDir $sec }; & $step $(if (Test-FsSentPlain $ip) { 'password set' } else { 'password set (over HTTPS)' }) $true }
+      elseif ($pwState -eq 'unchanged') { & $step 'password not changed (old one still works)' $false }
+      else { $rbc.password_changed = $true; $rbc.password_unconfirmed = $true; if ($mk) { $sec.cams[$mk] = $sitePw; Save-FsSecrets $SecretsDir $sec }; & $step 'password change not confirmed: neither password logs in right now (it may have the site password) - camera left, check it' $false; $stop = $true }
       Say-PlainWarning $ip
     }
     Save-Rb
