@@ -265,7 +265,7 @@ if (-not $isWin) {
   $iroot = Join-Path $tmp 'inst/WireIt'; $psx = (Get-Process -Id $PID).Path
   $o1 = & $psx -NoProfile -File (Join-Path $src 'Toolkit/Install-Toolkit.ps1') -Root $iroot -NoShortcut 2>&1 | Out-String
   $ivj = Join-Path $iroot 'Toolkit/version.json'
-  Check ((Test-Path $ivj) -and ((Get-Content $ivj -Raw | ConvertFrom-Json).version -eq '2.2.2')) 'reproduction (NEW-2/M3): a repository copy installs Toolkit\version.json with its version (2.2.1: none -> "0.0.0")'
+  Check ((Test-Path $ivj) -and ((Get-Content $ivj -Raw | ConvertFrom-Json).version -eq '2.2.3')) 'reproduction (NEW-2/M3): a repository copy installs Toolkit\version.json with its version (2.2.1: none -> "0.0.0")'
   $o2 = & $psx -NoProfile -File (Join-Path $iroot 'Toolkit/Install-Toolkit.ps1') -Root $iroot -NoShortcut 2>&1 | Out-String
   Check ($o2 -match 'FixNVR is already in place' -and $o2 -notmatch 'with itself') 'reproduction (Codex M3): run again from C:\WireIt\Toolkit it does not copy the tool folders onto themselves'
   Check (Test-Path (Join-Path $iroot 'Toolkit/FixSiteBw.ps1')) 'the new FixSiteBw.ps1 is installed'
@@ -316,13 +316,14 @@ Remove-Item Function:\Start-Sleep
 # =====================================================================================
 $scc = [IO.File]::ReadAllText((Join-Path $repo 'sitecheck/WireIt-SiteCheck.cmd')); $sci = $scc.IndexOf('##' + 'PSSTART')
 Check ($sci -gt 0 -and $scc.Substring($sci + 11).Trim() -eq (Read-Src 'sitecheck/SiteCheck.ps1').Trim()) 'reproduction (2.2.2 WIP): the Site check launcher .cmd carries the 2.2.2 SiteCheck.ps1 (the WIP changed the .ps1 only)'
+# (2.2.3: the version checks below follow the code's current version, 2.2.3)
 # =====================================================================================
 Write-Host 'Version. never 0.0.0, never a downgrade; 2.2.2 everywhere; the manifest lists every shipped file'
 . (Join-Path $tk 'ToolkitCore.ps1')
 $vt = Join-Path $tmp 'ver/WireIt/Toolkit'; New-Item -ItemType Directory -Force -Path $vt | Out-Null
-Eq (Get-TkVersion $vt) '2.2.2' 'reproduction (NEW-2): no version.json anywhere -> the code''s own 2.2.2 (2.2.1: "0.0.0")'
+Eq (Get-TkVersion $vt) '2.2.3' 'reproduction (NEW-2): no version.json anywhere -> the code''s own 2.2.2 (2.2.1: "0.0.0")'
 Save-TkJson ([ordered]@{ version = '2.0.4' }) (Join-Path $vt 'version.json')
-Eq (Get-TkVersion $vt) '2.2.2' 'a stale version.json (2.0.4) beside 2.2.2 code still reads 2.2.2'
+Eq (Get-TkVersion $vt) '2.2.3' 'a stale version.json (2.0.4) beside 2.2.2 code still reads 2.2.2'
 $web = Join-Path $tmp 'web'; New-Item -ItemType Directory -Force -Path $web | Out-Null
 $m204 = [ordered]@{ version = '2.0.4'; base = 'https://raw.githubusercontent.com/wireitct/wireit-toolkit/d424688ba2a6f6032b98384b549578e66ed796d6/'; files = @([ordered]@{ path = 'Toolkit/a.ps1'; sha256 = ('0' * 64) }) }
 ($m204 | ConvertTo-Json -Depth 4) | Set-Content (Join-Path $web 'version.json')
@@ -340,7 +341,7 @@ $fcv = ''; if ((Read-Src 'Toolkit/FixSiteCore.ps1') -match "\`$script:FsVersion 
 $tcv = ''; if ((Read-Src 'Toolkit/ToolkitCore.ps1') -match "\`$script:TkBuiltVersion = '([^']+)'") { $tcv = $Matches[1] }
 $bwv = ''; if ((Read-Src 'Toolkit/FixSiteBw.ps1') -match "\`$script:FsVersion = '([^']+)'") { $bwv = $Matches[1] }
 $man = Get-Content (Join-Path $repo 'version.json') -Raw | ConvertFrom-Json
-Check ($fcv -eq '2.2.2' -and $tcv -eq '2.2.2' -and $bwv -eq '2.2.2' -and [string]$man.version -eq '2.2.2') ('one version everywhere: FixSiteCore ' + $fcv + ', ToolkitCore ' + $tcv + ', FixSiteBw ' + $bwv + ', version.json ' + $man.version)
+Check ($fcv -eq '2.2.3' -and $tcv -eq '2.2.3' -and $bwv -eq '2.2.3' -and [string]$man.version -eq '2.2.3') ('one version everywhere: FixSiteCore ' + $fcv + ', ToolkitCore ' + $tcv + ', FixSiteBw ' + $bwv + ', version.json ' + $man.version)
 Check ([string]$man.base -like ('*/' + [string]$man.commit + '/') -and [string]$man.commit -match '^[0-9a-f]{40}$') 'the manifest downloads from the commit it names'
 Check (-not (Test-TkManifest $man)) 'the manifest passes the Toolkit''s own manifest check'
 $listed = @($man.files | ForEach-Object { [string]$_.path })
@@ -354,7 +355,7 @@ Check ($hb.Count -eq 0) ('every listed hash is the file on this branch' + $(if (
 $bmOut = Join-Path $tmp 'version-built.json'
 & (Join-Path $repo 'tools/Build-Manifest.ps1') -Commit ([string]$man.commit) -Released ([string]$man.released) -Out $bmOut | Out-Null
 $bm = [IO.File]::ReadAllText($bmOut) | ConvertFrom-Json
-Check ([string]$bm.version -eq '2.2.2' -and -not (Test-TkManifest $bm)) 'release package: tools\Build-Manifest.ps1 builds a manifest the Toolkit accepts, at the code''s own version'
+Check ([string]$bm.version -eq '2.2.3' -and -not (Test-TkManifest $bm)) 'release package: tools\Build-Manifest.ps1 builds a manifest the Toolkit accepts, at the code''s own version'
 Check ((@($bm.files | ForEach-Object { $_.path + '=' + $_.sha256 } | Sort-Object) -join '|') -eq (@($man.files | ForEach-Object { $_.path + '=' + ([string]$_.sha256).ToLower() } | Sort-Object) -join '|')) 'release package: version.json is exactly what the builder makes from this branch (no file missed, no stale hash)'
 Check (@($man.files | Where-Object { -not (Test-Path (Join-Path $repo ([string]$_.path))) }).Count -eq 0) 'every listed file exists'
 } finally { foreach ($p in $procs) { try { $p.Kill() } catch {} }; $script:FsMockUrl = '' }

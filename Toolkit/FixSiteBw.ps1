@@ -1,5 +1,5 @@
 <#
- FixSiteBw.ps1 - WireIt Toolkit 2.2.2: the site password into Bitwarden (the bw command), as "<site> - site password".
+ FixSiteBw.ps1 - WireIt Toolkit 2.2.3: the site password into Bitwarden (the bw command), as "<site> - site password".
  2.2.3: Fix this site runs on the tech's own login again (no SYSTEM task), so FixSite.ps1 calls this directly with that login's
  Bitwarden.
  New items go into the WireIt CT organization, collection "Sites" (config.json fixSite.bitwardenOrg / bitwardenCollection change the
@@ -7,7 +7,7 @@
  The password only goes to bw on its stdin (base64 item JSON), never on a command line or in a file. Dot-sourced by FixSiteDevices.ps1
  (so FixSite.ps1 and the tests have it).
 #>
-if (-not (Get-Variable -Name FsVersion -Scope Script -ErrorAction SilentlyContinue)) { $script:FsVersion = '2.2.2' }
+if (-not (Get-Variable -Name FsVersion -Scope Script -ErrorAction SilentlyContinue)) { $script:FsVersion = '2.2.3' }
 $script:FsBwLast = $null   # { where ('org' | 'personal' | ''); org; collection; why } of the last Save-FsBitwarden
 function Find-FsBitwarden($cfg) {
   if ($cfg -and $cfg.PSObject.Properties['bitwardenCli'] -and $cfg.bitwardenCli -and (Test-Path ([string]$cfg.bitwardenCli))) { return [string]$cfg.bitwardenCli }

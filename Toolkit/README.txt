@@ -1,4 +1,4 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.2.0, 2026-11-08 (not released)
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.2.3, 2026-11-08 (not released)
 ==============================================================================
 HOW TO USE (2.0)
   1. Double-click "WireIt Toolkit" on the desktop.
@@ -6,8 +6,8 @@ HOW TO USE (2.0)
   3. Leave the camera settings as they are, or pick codec / frame rate / resolution / bitrate.
      They go ONLY on the cameras with a problem. Working cameras are not touched.
      To put them on every camera, tick "Apply settings to ALL cameras" (unticks itself after each run).
-  4. Press the big green "Fix this site". From the Crew login it starts by itself (2.2.0: no admin name or password);
-     from an admin login on a PC not yet set up for 2.2.0, click Yes when Windows asks.
+  4. Press the big green "Fix this site" and click Yes when Windows asks (2.2.3: Crew is a local admin; the fix runs in
+     its own blue window on this login, and closing that window stops it).
   5. Read the list of what is wrong and what it will change. Type YES to fix it all.
   6. Watch the checklist: a green check per camera. A red X says exactly what to go check.
 
@@ -256,7 +256,13 @@ MOVE TO A NEW PC (e.g. the new EliteDesk)
   4. Optional check: powershell -ExecutionPolicy Bypass -File .\tests\Test-Toolkit.ps1   (should end "0 failed")
   On a customer PC: copy the folder, run "WireIt Toolkit.cmd" directly, delete the folder afterwards.
 
-2.2.0 (2026-11-08, from the Nov 7 code review; tested, NOT released)
+2.2.3 (2026-11-08, from Codex's full review of 2.2.2; tested on Linux mocks, NOT released)
+  - Crew is a local admin, so the 2.2.0 split is gone: no SYSTEM task, no ipc\ folder, no folder lock, no admin-only refusals.
+    Install-Toolkit (as admin) removes the old task and lock. Site passwords stay in vault\ (encrypted for this PC).
+  - A run that was killed (window closed, power lost) gets its temporary PC addresses removed the next time it starts.
+  - See files/pc-setup/toolkit-2.2.3-fixes.md for every finding and its test.
+
+2.2.0 (2026-11-08, from the Nov 7 code review; superseded by 2.2.3 for the Crew/SYSTEM parts)
   - Locked folders: Install-Toolkit (run once as an admin) gives Administrators + SYSTEM full control of C:\WireIt\Toolkit,
     FixNVR, CamReset and NetCheck; the Crew login gets read + run only, plus write in its own logs / state / outbox / runs /
     ipc / inbox folders. Site passwords live in vault\ (Administrators + SYSTEM only, encrypted for this PC, so any admin and the
