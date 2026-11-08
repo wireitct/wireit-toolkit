@@ -273,6 +273,13 @@ Check ($line -match '^--remote-debugging-port=2222 ') 'plain arguments stay as t
 Eq (Join-HikArgs @('a"b')) '"a\"b"' 'an inner quote is escaped'
 Eq (Join-HikArgs @('C:\x y\')) '"C:\x y\\"' 'a trailing backslash before the closing quote is doubled'
 Check ((Read-Src 'Toolkit/HikPortal.ps1') -match '-ArgumentList \(Join-HikArgs \$args2\)') 'the browser is started with the quoted line'
+Write-Host '#36 first visit: factory-password devices get the new site password'
+$fs = Read-Src 'Toolkit/FixSite.ps1'
+$iRead = $fs.IndexOf('$sitePwAtStart = [bool]$sec.password'); $iAsk = $fs.IndexOf('[void](Ask-SitePassword)')
+Check ($iRead -gt 0 -and $iRead -lt $iAsk) 'the "had a site password" fact is taken right after the store is read, before one is asked or made'
+Check ($fs -match '\$opts\.factoryToSite = \[bool\]\(\$NewSite -or -not \$sitePwAtStart -or \$sitePwPending\)') 'reproduction: factoryToSite uses it (2.2.2 tested after the new password existed -> always false)'
+$o36 = Merge-FsOptions @{ factoryToSite = $true }
+Check ([bool]$o36.factoryToSite) 'the option reaches the planner'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

@@ -204,6 +204,7 @@ if ($NewSite) {
   else { Say 'This site has no camera list yet - the Toolkit will offer to save one at the end.' 'Yellow' }
 }
 $sec = Read-FsSecrets $SecretsDir $siteName
+$sitePwAtStart = [bool]$sec.password   # 2.2.3 (Codex #36): did this site have its password BEFORE this run made or asked one?
 foreach ($p in @($sec.password) + @($sec.known)) { Remember-Secret $p }
 function Stop-IfUnreadable($s) {
   # 2.2.0 (review M1): a saved store this PC cannot read is NEVER taken as "no password yet" (that made a second password)
@@ -651,7 +652,7 @@ if ($Mode -eq 'DryRun') {
 #  PLAN
 # =====================================================================================
 $opts.newSite = [bool]$NewSite
-$opts.factoryToSite = [bool]($NewSite -or -not $sec.password)   # 2.0.3: no site password yet = devices on a factory password get it
+$opts.factoryToSite = [bool]($NewSite -or -not $sitePwAtStart -or $sitePwPending)   # 2.0.3: no site password yet = devices on a factory password get it; 2.2.3 (Codex #36): decided from the start of the run, not after this run made one
 $plan = New-FsPlan $list $observed $opts
 # 2.1.0 (Moshe, Nov 6 2026): devices that work with ANOTHER password: by default switch them to the site password so everything matches - asked first.
 if ($Mode -eq 'Fix' -and -not $opts.passwordAll) {
