@@ -1,8 +1,8 @@
 {
   "version": "2.2.5",
   "released": "2026-11-08",
-  "commit": "243235a29c392c073bdce16878fc20b4f8c644fa",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/243235a29c392c073bdce16878fc20b4f8c644fa/",
+  "commit": "2dcf3404e1526808ff253b09b85f7ac3429537f6",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/2dcf3404e1526808ff253b09b85f7ac3429537f6/",
   "notes": "",
   "files": [
     {
@@ -317,8 +317,8 @@
     },
     {
       "path": "Toolkit/tests/Test-HikReset.ps1",
-      "sha256": "8935e168006fc5331bba4efc98ed23d33aad3147c3d49b208b424c383423f87f",
-      "size": 33084
+      "sha256": "a0fc61961e9f4192ea76c474262b547ada24667037d64827924bed49e1f382ed",
+      "size": 34144
     },
     {
       "path": "Toolkit/tests/Test-Toolkit.ps1",
