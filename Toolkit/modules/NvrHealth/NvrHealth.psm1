@@ -175,7 +175,7 @@ function Invoke-NhSecretHttp([hashtable]$a) {
   if ($script:NhSecretTls[$k] -ne 'no') {
     $a.Scheme = 'https'
     $r = Http @a
-    if ($r.code -gt 0) { $script:NhSecretTls[$k] = 'yes'; return $r }
+    if ($r.code -gt 0) { $script:NhSecretTls[$k] = 'yes'; $script:Scheme[$k] = 'https'; return $r }
     if ($script:NhSecretTls[$k] -eq 'yes' -or $r.errKind -ne 'refused') {
       Bad ('HTTPS did not work on ' + $a.Ip + ': the password was NOT sent over plain HTTP.')
       return $r
@@ -208,7 +208,8 @@ function Http-Curl([string]$Uri, [string]$Method = 'GET', [string]$Body = '', [s
 function Http {
   param([string]$Ip, [string]$Method = 'GET', [string]$Path, [string]$Body = '', [string]$ContentType = 'application/xml',
         $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0, [byte[]]$BodyBytes = $null, [string]$OutFile = '', [switch]$SecretTransport)
-  if (-not $script:Opt.MockUrl -and -not $SecretTransport -and (Test-NhSecretRequest $Path $Body)) {
+  # Authentication and verification also carry a password. Protect these reads as well as password-bearing bodies.
+  if (-not $script:Opt.MockUrl -and -not $SecretTransport -and ($Credential -or (Test-NhSecretRequest $Path $Body))) {
     $secretArgs = @{}; foreach ($key in $PSBoundParameters.Keys) { $secretArgs[$key] = $PSBoundParameters[$key] }
     return (Invoke-NhSecretHttp $secretArgs)
   }

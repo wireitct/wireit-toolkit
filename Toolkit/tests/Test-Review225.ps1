@@ -84,11 +84,15 @@ try {
     $c = [pscredential]::new('admin',(ConvertTo-SecureString 'Testpass123' -AsPlainText -Force))
     $r = Http -Ip '10.0.0.20' -Method PUT -Path '/ISAPI/Security/users/1' -Body '<User><password>Newpass456</password></User>' -Credential $c -NoLogBody
     $https = ($r.code -eq 200 -and $script:captured.Count -eq 1 -and $script:captured[0] -eq 'https://10.0.0.20/ISAPI/Security/users/1')
+    $script:captured = @()
+    $r = Http -Ip '10.0.0.20' -Path '/ISAPI/System/deviceInfo' -Credential $c
+    $readHttps = ($r.code -eq 200 -and $script:captured[0] -eq 'https://10.0.0.20/ISAPI/System/deviceInfo')
     $script:captured = @(); $script:scenario = 'tls-fail'
     $r = Http -Ip '10.0.0.21' -Method PUT -Path '/ISAPI/Security/users/1' -Body '<User><password>Newpass456</password></User>' -Credential $c -NoLogBody
-    [pscustomobject]@{ https=$https; noDowngrade=($r.code -eq 0 -and -not @($script:captured | Where-Object { $_ -like 'http://*' }).Count) }
+    [pscustomobject]@{ https=$https; readHttps=$readHttps; noDowngrade=($r.code -eq 0 -and -not @($script:captured | Where-Object { $_ -like 'http://*' }).Count) }
   }
   Check $transport.https 'legacy password write uses HTTPS even when HTTP works'
+  Check $transport.readHttps 'authenticated password verification also stays on HTTPS'
   Check $transport.noDowngrade 'legacy TLS failure never retries a password over HTTP'
   $verify = & $mod {
     param($tmp)
