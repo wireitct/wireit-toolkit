@@ -1,8 +1,8 @@
 {
   "version": "2.2.5",
   "released": "2026-11-08",
-  "commit": "8cf2139308a7e42a4c502a8cddbb3be062f25575",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/8cf2139308a7e42a4c502a8cddbb3be062f25575/",
+  "commit": "3157f848bdac2fdc932c755ad949c863b45899fd",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/3157f848bdac2fdc932c755ad949c863b45899fd/",
   "notes": "Independent review fixes: private password stores, HTTPS authentication, interrupted Undo, verified recording and recorder addresses, reset replies, atomic recovery, release inventory and scan queues.",
   "files": [
     {
@@ -72,8 +72,8 @@
     },
     {
       "path": "Toolkit/CamViews.ps1",
-      "sha256": "833df7a6a4e57b956726d5acca9d6a2694bf2838caf054adc2264d3c2a92404c",
-      "size": 34781
+      "sha256": "1dea9a6aeeb1f95d9cc68e006a3b846fd82b62057594156d4bf427694b2f6f2b",
+      "size": 35067
     },
     {
       "path": "Toolkit/FixIt.ps1",
@@ -82,8 +82,8 @@
     },
     {
       "path": "Toolkit/FixSite.ps1",
-      "sha256": "1f092610f968d46cad3d3697d4be2efd5d7744eacbbba836fdda4cdac5f97996",
-      "size": 102364
+      "sha256": "485a33196b33f29edf1534d2dca38e064faa75541a490465c4f211bea0437114",
+      "size": 104889
     },
     {
       "path": "Toolkit/FixSiteBw.ps1",
@@ -92,13 +92,13 @@
     },
     {
       "path": "Toolkit/FixSiteCore.ps1",
-      "sha256": "36499a525b622c23b36b8153cdf91554a502b6d775dab672c2486de46739b92c",
-      "size": 69466
+      "sha256": "06e38e6ef4baf2326ca3195198214c7419fb88c7319c185c65e9310d1a1de1b4",
+      "size": 69629
     },
     {
       "path": "Toolkit/FixSiteDevices.ps1",
-      "sha256": "da832ec4afa5aa8c1a38f07feb252f425bb41ad1159d7668e4aafe1b2cb997e6",
-      "size": 83826
+      "sha256": "bd75d6e482e04d018259b1028dddb22802a64801b9684de454ac5484a06529d3",
+      "size": 84953
     },
     {
       "path": "Toolkit/FixSiteWindow.ps1",
@@ -184,6 +184,16 @@
       "path": "Toolkit/Set upload key.cmd",
       "sha256": "35822aaba2b4f76b6293c4fdc3bc79a89067fc321f49882dc7eeae80ab739b44",
       "size": 225
+    },
+    {
+      "path": "Toolkit/tests/fix226/ok_server.py",
+      "sha256": "95b7fd5fb0b886021848447121a51ab033c3a6fdfc997d62c00e942242ea18a2",
+      "size": 1016
+    },
+    {
+      "path": "Toolkit/tests/fix226/scenarios.py",
+      "sha256": "558f19ea91b85eda31c10fbe16cfaa78adf86b11781d976390c4613f43a122c7",
+      "size": 9784
     },
     {
       "path": "Toolkit/tests/fixsite/byw-scan.json",
@@ -297,8 +307,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "00cf0c5e5d9c941a6ba0a6a4c085a4493ce40450ac4bc27a022263bf17442fbf",
-      "size": 42820
+      "sha256": "de3d22da3ddef77dc1448ec7d34c208e39fe9e7dbd335048312a069be183d4ed",
+      "size": 43258
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
@@ -314,6 +324,11 @@
       "path": "Toolkit/tests/Test-Fix225.ps1",
       "sha256": "e229ec13372ef1321fdccc999b5da6bcb20836b9227048c2fca47f2524be3c31",
       "size": 13176
+    },
+    {
+      "path": "Toolkit/tests/Test-Fix226.ps1",
+      "sha256": "7289e6ecbea1785ec3a21b3a68ee8f779986fc83215511c5da98a439ca582ed7",
+      "size": 7092
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
@@ -332,13 +347,13 @@
     },
     {
       "path": "Toolkit/tests/Test-Review225.ps1",
-      "sha256": "1f00e6470ccb3c1cc1ebec51774ba419a8b665bc7b0c96e27a51a038495e22cd",
-      "size": 14337
+      "sha256": "2400d0c7fa42f63f30e2e727f0fe9f438057bcbab9d9c1775f6c92d360eb4287",
+      "size": 15024
     },
     {
       "path": "Toolkit/tests/Test-Toolkit.ps1",
-      "sha256": "8bc3d6ce07964c8678f180c76715011e26fbb2694ed0789c2dc46b846823b116",
-      "size": 67194
+      "sha256": "3ce4c5d2f1b7b9090c850a9a605a137affd46ab6c3a74e6e82c9a8246e87b0b9",
+      "size": 67594
     },
     {
       "path": "Toolkit/tests/TestPython.ps1",
