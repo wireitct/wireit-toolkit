@@ -26,11 +26,14 @@ try {
     else {
       try {
         if (Wait-PortalForm $s 60) {
-          [void](Fill-HikPortalForm $s $q.form $d $file)
+          $fill = Fill-HikPortalForm $s $q.form $d $file
           $tmo = [int]$q.timeoutSec; if ($tmo -le 0) { $tmo = 900 }
           $form = $q.form
-          $r = Wait-PortalSubmitted $s $tmo $null ({ [void](Restore-PortalFields $s $form $d) }.GetNewClosure())
-          $res = $(if ($r -eq 'submitted') { 'submitted' } elseif ($r -match 'time') { 'timeout' } else { 'failed' })
+          if (@(Test-PortalFilled $fill $d).Count) { $res = 'failed' }   # 2.2.3 (Codex #49): a page that did not take every field (or the file) is not sent
+          else {
+            $r = Wait-PortalSubmitted $s $tmo $null ({ [void](Restore-PortalFields $s $form $d) }.GetNewClosure())
+            $res = $(if ($r -eq 'submitted') { 'submitted' } elseif ($r -match 'time') { 'timeout' } else { 'failed' })
+          }
         }
       } finally { Stop-HikBrowserSession $s }
     }

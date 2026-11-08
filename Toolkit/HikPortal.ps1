@@ -176,15 +176,29 @@ function Test-PortalFilled($r, $dev) {
   $bad = @(); foreach ($k in @('firstName', 'lastName', 'email', 'company', 'zipCode', 'serialNo', 'modelNumber')) { if ($r.PSObject.Properties[$k] -and $r.$k -ne 'ok') { $bad += ($k + ': ' + $r.$k) } elseif (-not $r.PSObject.Properties[$k]) { $bad += ($k + ': not filled') } }
   if ($r.PSObject.Properties['state'] -and ([string]$r.state -in @('', 'missing', 'no such state'))) { $bad += ('state: ' + $r.state) }
   if ($r.PSObject.Properties['businessType'] -and ([string]$r.businessType -in @('', 'missing', 'no such type'))) { $bad += ('business type: ' + $r.businessType) }
-  if ($r.PSObject.Properties['file'] -and -not [string]$r.file) { $bad += 'request file did not attach' }
+  if ($r.PSObject.Properties['file'] -and (-not [string]$r.file -or [string]$r.file -match '^no file box')) { $bad += ('request file did not attach' + $(if ([string]$r.file) { ' (' + $r.file + ')' } else { '' })) }   # 2.2.3 (Codex #49)
   return $bad
 }
 # puts the cursor in the picture-code box, brings the window forward and watches for the page to accept the form.
 # Returns 'submitted' | 'timeout' | 'closed'. $Cancel is checked every few seconds.
+# 2.2.3 (Codex #49): "submitted" only after Submit was clicked AND the page says so in words that were NOT already on it, or the
+# form's own request (its address names the enquiry / reset form) answered 2xx and the form then went away or the thanks appeared.
+# A form that just disappears, page text that was there before, or some other 2xx POST is not a submission.
+function Test-PortalAccepted($st, $clickedAt) {
+  if (-not $clickedAt) { return $false }
+  $okRx = '(?i)(thank you|has been (successfully )?submitted|successfully submitted|submission (was )?successful|we have received|request (has been )?(received|sent))'
+  $badRx = '(?i)verification code (is )?(wrong|incorrect|error)|incorrect (verification|code)|(fail|error)'
+  $txt = [string]$st.text; $base = [string]$st.base
+  $newThanks = $false; foreach ($m in [regex]::Matches($txt, $okRx)) { if ($base -notmatch [regex]::Escape($m.Value)) { $newThanks = $true; break } }
+  if (($newThanks -or ([string]$st.url -match '(?i)success|thank')) -and -not ($txt -match $badRx -and $base -notmatch $badRx)) { return $true }
+  $fp = @(@($st.posts) | Where-Object { $_ -and [string]$_.u -match '(?i)enquiry|password|reset|retrieve|forgot|support' -and [string]$_.u -notmatch '(?i)captcha|verify|slide|track|analytic|collect|log|cookie|beacon|geetest' -and [int]$_.s -ge 200 -and [int]$_.s -lt 300 })
+  if ($fp.Count -and -not $st.modal -and -not $st.formShown) { $script:PortalLastPost = ($fp | ForEach-Object { $_.u }) -join ' '; return $true }
+  return $false
+}
 function Wait-PortalSubmitted($s, [int]$TimeoutSec = 900, [scriptblock]$Tick = $null, [scriptblock]$Refill = $null) {
   $lastRefill = Get-Date
   $c = $s.cdp
-  try { [void](Invoke-CdpJs $c '(function(){var i=document.querySelector("form#enquiry-form input[name=Verification]")||document.querySelector("form#enquiry-form input[maxlength=\"6\"]"); if(i){i.scrollIntoView({block:"center"}); i.focus();} window.__hikPosts=[]; (function(){ var ox=XMLHttpRequest.prototype.open, os=XMLHttpRequest.prototype.send; XMLHttpRequest.prototype.open=function(m,u){this.__m=m;this.__u=u;return ox.apply(this,arguments)}; XMLHttpRequest.prototype.send=function(){var x=this; x.addEventListener("loadend",function(){ if(String(x.__m).toUpperCase()==="POST") window.__hikPosts.push({u:String(x.__u).slice(0,160),s:x.status}); }); return os.apply(this,arguments)}; var of=window.fetch; window.fetch=function(i,o){ var p=of.apply(this,arguments); var m=(o&&o.method)||"GET"; if(String(m).toUpperCase()==="POST"){ var u=(typeof i==="string")?i:(i&&i.url); p.then(function(r){window.__hikPosts.push({u:String(u).slice(0,160),s:r.status})}).catch(function(){}); } return p; } })(); window.__hikClicked=0; var b=document.querySelector("#formSubmit"); if(b) b.addEventListener("click",function(){window.__hikClicked=(window.__hikClicked||0)+1},true); return 1})()') } catch {}
+  try { [void](Invoke-CdpJs $c '(function(){var i=document.querySelector("form#enquiry-form input[name=Verification]")||document.querySelector("form#enquiry-form input[maxlength=\"6\"]"); if(i){i.scrollIntoView({block:"center"}); i.focus();} window.__hikPosts=[]; (function(){ var ox=XMLHttpRequest.prototype.open, os=XMLHttpRequest.prototype.send; XMLHttpRequest.prototype.open=function(m,u){this.__m=m;this.__u=u;return ox.apply(this,arguments)}; XMLHttpRequest.prototype.send=function(){var x=this; x.addEventListener("loadend",function(){ if(String(x.__m).toUpperCase()==="POST") window.__hikPosts.push({u:String(x.__u).slice(0,160),s:x.status}); }); return os.apply(this,arguments)}; var of=window.fetch; window.fetch=function(i,o){ var p=of.apply(this,arguments); var m=(o&&o.method)||"GET"; if(String(m).toUpperCase()==="POST"){ var u=(typeof i==="string")?i:(i&&i.url); p.then(function(r){window.__hikPosts.push({u:String(u).slice(0,160),s:r.status})}).catch(function(){}); } return p; } })(); window.__hikClicked=0; window.__hikBase=(document.body&&document.body.innerText||"").slice(0,4000); var b=document.querySelector("#formSubmit"); if(b) b.addEventListener("click",function(){window.__hikClicked=(window.__hikClicked||0)+1},true); return 1})()') } catch {}
   try { [void](Send-Cdp $c 'Page.bringToFront') } catch {}
   $end = (Get-Date).AddSeconds($TimeoutSec); $clickedAt = $null; $lastTick = Get-Date
   while ((Get-Date) -lt $end) {
@@ -192,15 +206,10 @@ function Wait-PortalSubmitted($s, [int]$TimeoutSec = 900, [scriptblock]$Tick = $
     if ($Refill -and ((Get-Date) - $lastRefill).TotalSeconds -ge 8) { $lastRefill = Get-Date; try { & $Refill } catch {} }
     if ($Tick -and ((Get-Date) - $lastTick).TotalSeconds -ge 20) { $lastTick = Get-Date; try { & $Tick } catch {} }
     try {
-      $st = Invoke-CdpJs $c '(function(){var f=document.querySelector("form#enquiry-form"); return {url:location.href, formShown: !!(f && f.offsetHeight>0), clicks: window.__hikClicked||0, posts: window.__hikPosts||[], modal: !!(document.querySelector("[class*=verify],[class*=captcha],[class*=slider]") && document.querySelector("[class*=verify],[class*=captcha],[class*=slider]").offsetHeight>0), text: (document.body&&document.body.innerText||"").slice(0,4000)}})()' 8
+      $st = Invoke-CdpJs $c '(function(){var f=document.querySelector("form#enquiry-form"); return {url:location.href, formShown: !!(f && f.offsetHeight>0), clicks: window.__hikClicked||0, posts: window.__hikPosts||[], modal: !!(document.querySelector("[class*=verify],[class*=captcha],[class*=slider]") && document.querySelector("[class*=verify],[class*=captcha],[class*=slider]").offsetHeight>0), text: (document.body&&document.body.innerText||"").slice(0,4000), base: window.__hikBase||""}})()' 8
     } catch { if ($s.proc.HasExited) { return 'closed' }; continue }
     if ($st.clicks -gt 0 -and -not $clickedAt) { $clickedAt = Get-Date }
-    $ok = ($st.text -match '(?i)(thank you|has been (successfully )?submitted|successfully submitted|submission (was )?successful|we have received|will (be )?(reply|respond|contact|send)|request (has been )?(received|sent))') -or $st.url -match '(?i)success|thank'
-    if ($ok -and -not ($st.text -match '(?i)verification code (is )?(wrong|incorrect|error)|incorrect (verification|code)')) { return 'submitted' }
-    if ($clickedAt -and -not $st.formShown) { return 'submitted' }
-    # the form's own POST (not the puzzle check, not tracking) answered 2xx after the click
-    $fp = @($st.posts | Where-Object { $_.u -notmatch '(?i)captcha|verify|slide|track|analytic|collect|log|cookie|beacon|geetest' -and [int]$_.s -ge 200 -and [int]$_.s -lt 300 })
-    if ($clickedAt -and $fp.Count -and -not $st.modal -and ((Get-Date) - $clickedAt).TotalSeconds -gt 4) { $script:PortalLastPost = ($fp | ForEach-Object { $_.u }) -join ' '; return 'submitted' }
+    if (Test-PortalAccepted $st $clickedAt) { return 'submitted' }
   }
   return 'timeout'
 }

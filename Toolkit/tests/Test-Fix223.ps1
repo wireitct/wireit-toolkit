@@ -357,6 +357,18 @@ Check ($fs -match '\$t = \$\(if \(\$n\.target -eq \$n\.ip\) \{ \$n\.ip \}' -and 
 Check ($fs -match "Add-Member -NotePropertyName moved") 'the plan''s NVR (an object) records whether it moved'
 Write-Host '#51 the laptop tells the relay when its request file was made'
 Check ((Read-Src 'Toolkit/HikMail.ps1') -match '\$body\.exportedAt = \(\[datetime\]\$Device\.exportedAt\)\.ToUniversalTime\(\)') 'reproduction: hikReplyGet carries exportedAt (2.2.2 sent only the serial)'
+Write-Host '#49 the portal counts as submitted only on real evidence'
+. (Join-Path $tk 'HikPortal.ps1') 2>$null
+$t0 = (Get-Date).AddSeconds(-10)
+$base = 'Password Reset. We have received many requests; we will reply within 2 working days. Fill the form.'
+Check (-not (Test-PortalAccepted ([pscustomobject]@{ url = 'https://www.hikvision.com/en/support/password-reset/'; formShown = $true; posts = @(); modal = $false; text = $base; base = $base }) $t0)) 'reproduction: generic page text that was already there is not a submission (2.2.2: "we have received" -> submitted)'
+Check (-not (Test-PortalAccepted ([pscustomobject]@{ url = 'x'; formShown = $false; posts = @(); modal = $false; text = 'loading'; base = $base }) $t0)) 'a form that just disappears is not a submission'
+Check (-not (Test-PortalAccepted ([pscustomobject]@{ url = 'x'; formShown = $false; posts = @([pscustomobject]@{ u = 'https://cdn.example.com/api/prefs'; s = 200 }); modal = $false; text = 'x'; base = $base }) $t0)) 'an unrelated 2xx POST is not a submission'
+Check (Test-PortalAccepted ([pscustomobject]@{ url = 'x'; formShown = $true; posts = @(); modal = $false; text = $base + ' Thank you! Your request has been submitted.'; base = $base }) $t0) 'new thanks text after Submit -> submitted'
+Check (Test-PortalAccepted ([pscustomobject]@{ url = 'x'; formShown = $false; posts = @([pscustomobject]@{ u = 'https://www.hikvision.com/api/enquiry/save'; s = 200 }); modal = $false; text = 'x'; base = $base }) $t0) 'the form''s own POST answered 2xx and the form went away -> submitted'
+Check (-not (Test-PortalAccepted ([pscustomobject]@{ url = 'x'; formShown = $true; posts = @(); modal = $false; text = $base + ' Thank you'; base = $base }) $null)) 'nothing counts before Submit was clicked'
+Check (@(Test-PortalFilled ([pscustomobject]@{ firstName = 'ok'; lastName = 'ok'; email = 'ok'; company = 'ok'; zipCode = 'ok'; serialNo = 'ok'; modelNumber = 'ok'; state = 'CT'; businessType = 'x'; file = 'no file box on the page' }) $null).Count -eq 1) 'a missing upload box is a fill problem'
+Check ((Read-Src 'Toolkit/HikPortalStep.ps1') -match 'if \(@\(Test-PortalFilled \$fill \$d\)\.Count\) \{ \$res = ''failed'' \}') 'the Crew portal helper checks the fill before waiting'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
