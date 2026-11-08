@@ -369,6 +369,17 @@ Check (Test-PortalAccepted ([pscustomobject]@{ url = 'x'; formShown = $false; po
 Check (-not (Test-PortalAccepted ([pscustomobject]@{ url = 'x'; formShown = $true; posts = @(); modal = $false; text = $base + ' Thank you'; base = $base }) $null)) 'nothing counts before Submit was clicked'
 Check (@(Test-PortalFilled ([pscustomobject]@{ firstName = 'ok'; lastName = 'ok'; email = 'ok'; company = 'ok'; zipCode = 'ok'; serialNo = 'ok'; modelNumber = 'ok'; state = 'CT'; businessType = 'x'; file = 'no file box on the page' }) $null).Count -eq 1) 'a missing upload box is a fill problem'
 Check ((Read-Src 'Toolkit/HikPortalStep.ps1') -match 'if \(@\(Test-PortalFilled \$fill \$d\)\.Count\) \{ \$res = ''failed'' \}') 'the Crew portal helper checks the fill before waiting'
+Write-Host '#28 unsupported brands are refused plainly'
+$pc28 = [pscustomobject]@{ ip = '192.168.1.105'; gw = '192.168.1.1'; mask = '255.255.255.0'; prefix = 24 }
+$obs28 = [pscustomobject]@{ pc = $pc28; nvrs = @([pscustomobject]@{ ip = '192.168.1.20'; brand = 'Uniview'; model = 'NVR302'; mac = 'aa:00:00:00:00:20'; login = 'not supported'; channels = @() })
+  devices = @([pscustomobject]@{ ip = '10.1.1.64'; brand = 'Uniview'; model = 'IPC2124'; mac = 'aa:00:00:00:00:64'; kind = 'camera'; login = 'ok' }) }
+$p28 = New-FsPlan $null $obs28
+$n28 = @($p28.nvrs)[0]; $c28 = @($p28.cams)[0]
+Check (@($n28.steps) -join ',' -eq 'manual' -and ($n28.why -join ' ') -match 'does not support Uniview recorders') 'reproduction: a Uniview NVR gets no Hikvision work, only a plain "not supported" (2.2.2 ran the Hikvision path)'
+Check ($c28.state -eq 'manual' -and ($c28.why -join ' ') -match 'does not support Uniview cameras' -and -not (@($c28.steps) -contains 'move')) 'a Uniview camera on the wrong subnet is not moved through Hikvision ISAPI'
+Check (@(Get-FsManualLines $p28).Count -eq 2) 'both count as manual work in the result (exit 4, never "all fixed")'
+Check ((Test-FsBrandSupported 'Dahua' 'camera') -and -not (Test-FsBrandSupported 'Dahua' 'nvr') -and (Test-FsBrandSupported 'Hikvision' 'nvr') -and -not (Test-FsBrandSupported '' 'camera')) 'supported set: Hikvision everything, Dahua cameras'
+Check ((Read-Src 'Toolkit/FixSite.ps1') -match "login = 'not supported'") 'FixSite tries no password on an unsupported NVR'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

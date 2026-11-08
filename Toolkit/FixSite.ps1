@@ -580,6 +580,8 @@ if ($Mode -eq 'DryRun') {
   $nvrIps = @($found | Where-Object { $_.kind -eq 'nvr' } | ForEach-Object { $_.ip })
   if ($list) { foreach ($n in @($list.nvrs)) { if ($n.ip -and $nvrIps -notcontains [string]$n.ip -and (& $reach ([string]$n.ip)) -and (Test-FsLogin ([string]$n.ip) 'Hikvision' '') -ne 'noanswer') { $nvrIps += [string]$n.ip } } }
   foreach ($nip in $nvrIps) {
+    $fd0 = @($found | Where-Object { $_.ip -eq $nip })[0]; $b0 = $(if ($fd0) { Get-FsBrand $fd0.brand $fd0.model } else { 'Hikvision' })
+    if (-not (Test-FsBrandSupported $b0 'nvr')) { Say ('NVR ' + $nip + ' is a ' + $b0 + ': Fix this site does not support it, so no password is tried and nothing on it is changed.') 'Yellow'; $observed.nvrs += [pscustomobject]([ordered]@{ ip = $nip; net = $null; brand = $b0; model = [string]$fd0.model; mac = [string]$fd0.mac; login = 'not supported'; channels = @() }); continue }   # 2.2.3 (Codex #28)
     $cands = @(); if ($sec.nvr -and $sec.nvr.ContainsKey($nip)) { $cands += [pscustomobject]@{ label = 'saved NVR password'; value = [string]$sec.nvr[$nip] } }
     $cands += @(Get-FsPasswordCandidates $sec ([int]$opts.maxPasswordTries - 1) '' (Get-NewSiteDefaults 'Hikvision'))
     $fp = Find-FsPassword $nip 'Hikvision' $cands ([int]$opts.maxPasswordTries - 1)

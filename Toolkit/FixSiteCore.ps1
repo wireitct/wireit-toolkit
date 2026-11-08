@@ -318,6 +318,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
   foreach ($nv in @(Get-FsProp $observed 'nvrs' @())) {
     $ip = [string](Get-FsProp $nv 'ip' ''); $br = Get-FsBrand ([string](Get-FsProp $nv 'brand' '')) ([string](Get-FsProp $nv 'model' '')); if (-not $nvrBrand) { $nvrBrand = $br }
     $item = [ordered]@{ ip = $ip; brand = $br; model = [string](Get-FsProp $nv 'model' ''); mac = (ConvertTo-FsMac ([string](Get-FsProp $nv 'mac' ''))); login = [string](Get-FsProp $nv 'login' ''); target = ''; why = @(); steps = @(); chCount = @(Get-FsProp $nv 'channels' @()).Count }
+    if (-not (Test-FsBrandSupported $br 'nvr')) { $item.why += (Get-FsUnsupportedWhy $br 'nvr'); $item.steps = @('manual'); $plan.nvrs += [pscustomobject]$item; continue }   # 2.2.3 (Codex #28)
     if ($scheme -and -not (Test-FsOnScheme $ip $scheme)) {
       $t = ''; foreach ($h in $o.nvrHosts) { if (-not $used.ContainsKey([int]$h)) { $t = $scheme + '.' + $h; break } }
       foreach ($en in $expNvrs) { $eip = [string](Get-FsProp $en 'ip' ''); if ((ConvertTo-FsMac ([string](Get-FsProp $en 'mac' ''))) -eq $item.mac -and (Get-FsP3 $eip) -eq $scheme -and -not $used.ContainsKey((Get-FsLast $eip))) { $t = $eip } }
@@ -387,6 +388,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
       $plan.missing += [pscustomobject]$c; $plan.cams += [pscustomobject]$c; continue
     }
     if (Test-FsPoeNet $d.ip) { $c.state = 'ok'; $c.broken = $false; $c.why += 'on the NVR''s own PoE ports (left as is)'; $plan.healthy += $c.name; $plan.cams += [pscustomobject]$c; continue }
+    if (-not (Test-FsBrandSupported $c.brand 'camera')) { $c.state = 'manual'; $c.steps = @('manual'); $c.why += (Get-FsUnsupportedWhy $c.brand 'camera'); $plan.cams += [pscustomobject]$c; continue }   # 2.2.3 (Codex #28)
     # what is wrong
     $wrongScheme = ($scheme -and -not (Test-FsOnScheme $d.ip $scheme))
     $outOfBlock = (-not $wrongScheme -and $o.moveOutOfBlock -and ((Get-FsLast $d.ip) -lt [int]$o.camFirst -or (Get-FsLast $d.ip) -gt [int]$o.camLast))
@@ -582,6 +584,16 @@ function New-FsSiteList([string]$site, [string]$siteId, $plan, $observed) {
   return [ordered]@{ site = $site; siteId = $siteId; scheme = $plan.scheme; saved = (Get-Date -Format 's'); savedBy = ('WireIt Toolkit ' + $script:FsVersion + ' on ' + $env:COMPUTERNAME); note = 'No passwords in this file.'; nvrs = $nvrs; cameras = $cams }
 }
 
+# 2.2.3 (Codex #28): what Fix this site can really change. Recorders: Hikvision. Cameras: Hikvision and Dahua. Anything else
+# (Uniview, unknown, other makers) is found and listed but never touched: the tool says so plainly and it counts as manual work.
+function Test-FsBrandSupported([string]$brand, [string]$kind) {
+  if ($kind -eq 'nvr') { return ($brand -eq 'Hikvision') }
+  return ($brand -in @('Hikvision', 'Dahua'))
+}
+function Get-FsUnsupportedWhy([string]$brand, [string]$kind) {
+  $b = $(if ($brand) { $brand } else { 'unknown-brand' })
+  return ('Fix this site does not support ' + $b + ' ' + $(if ($kind -eq 'nvr') { 'recorders' } else { 'cameras' }) + ' - left exactly as it is; fix it in its own web page')
+}
 function Get-FsManualLines($plan) {
   # 2.2.3 (Codex #42): what needs a person (manual NVR steps, cameras the tool will not touch) is part of the result: each one is a
   # red checklist line and counts as "still a problem" (never a green "all fixed")
