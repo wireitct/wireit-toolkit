@@ -380,6 +380,18 @@ Check ($c28.state -eq 'manual' -and ($c28.why -join ' ') -match 'does not suppor
 Check (@(Get-FsManualLines $p28).Count -eq 2) 'both count as manual work in the result (exit 4, never "all fixed")'
 Check ((Test-FsBrandSupported 'Dahua' 'camera') -and -not (Test-FsBrandSupported 'Dahua' 'nvr') -and (Test-FsBrandSupported 'Hikvision' 'nvr') -and -not (Test-FsBrandSupported '' 'camera')) 'supported set: Hikvision everything, Dahua cameras'
 Check ((Read-Src 'Toolkit/FixSite.ps1') -match "login = 'not supported'") 'FixSite tries no password on an unsupported NVR'
+Write-Host '#56 a ZIP in the Hikvision drop folder is read with hard limits'
+. (Join-Path $tk 'HikMail.ps1') 2>$null
+Add-Type -AssemblyName System.IO.Compression; Add-Type -AssemblyName System.IO.Compression.FileSystem
+function New-Zip56([string]$p, [hashtable]$files) { if (Test-Path $p) { Remove-Item $p }; $z = [IO.Compression.ZipFile]::Open($p, 'Create'); foreach ($k in $files.Keys) { $e = $z.CreateEntry($k); $s = $e.Open(); $b = [byte[]]$files[$k]; $s.Write($b, 0, $b.Length); $s.Dispose() }; $z.Dispose() }
+$z1 = Join-Path $tmp 'bomb.zip'; New-Zip56 $z1 @{ 'big.xml' = (New-Object byte[] (3MB)) }
+Check ((Get-Item $z1).Length -lt 100KB) '(the test archive is small on disk)'
+Eq @(Read-HikZipEntries $z1).Count 0 'reproduction: an entry that expands past 2 MB is refused (2.2.2 expanded it all to disk and read it)'
+$f25 = @{}; foreach ($i in 1..25) { $f25[('f' + $i + '.xml')] = [byte[]](1, 2, 3) }; $z2 = Join-Path $tmp 'many.zip'; New-Zip56 $z2 $f25
+Eq @(Read-HikZipEntries $z2).Count 0 'more than 20 entries: refused'
+$z3 = Join-Path $tmp 'ok.zip'; New-Zip56 $z3 @{ 'reset_K1.xml' = [Text.Encoding]::ASCII.GetBytes('<xml>unlock</xml>') }
+$r56 = @(Read-HikZipEntries $z3); Check ($r56.Count -eq 1 -and [Text.Encoding]::ASCII.GetString($r56[0].bytes) -eq '<xml>unlock</xml>') 'a normal reply ZIP is read'
+Check ((Read-Src 'Toolkit/HikMail.ps1') -notmatch 'Expand-Archive') 'nothing is expanded to disk any more'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

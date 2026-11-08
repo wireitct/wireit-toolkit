@@ -172,13 +172,33 @@ function Get-HikCodeFromText([string]$Text) {
   foreach ($m in [regex]::Matches($Text, $rx)) { $c = $m.Groups[1].Value; if ($c -match '\d') { return $c } }
   return ''
 }
+# 2.2.3 (Codex #56): a ZIP in the drop folder is read in memory with hard limits - at most 20 entries, each at most 2 MB expanded
+# and 5 MB in all (the size inside the archive is not trusted: reading stops at the limit). Nothing is written to disk.
+$script:HikZipMaxEntries = 20; $script:HikZipMaxEntry = 2MB; $script:HikZipMaxTotal = 5MB
+function Read-HikZipEntries([string]$Path) {
+  $out = @(); $total = 0
+  try { Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue; Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue } catch {}
+  $zip = $null
+  try {
+    $zip = [IO.Compression.ZipFile]::OpenRead($Path)
+    if ($zip.Entries.Count -gt $script:HikZipMaxEntries) { return @() }
+    foreach ($e in $zip.Entries) {
+      if (-not $e.Name -or $e.FullName.EndsWith('/')) { continue }
+      $s = $e.Open(); $ms = New-Object IO.MemoryStream; $buf = New-Object byte[] 65536; $n = 0; $too = $false
+      try { while (($k = $s.Read($buf, 0, $buf.Length)) -gt 0) { $n += $k; if ($n -gt $script:HikZipMaxEntry -or ($total + $n) -gt $script:HikZipMaxTotal) { $too = $true; break }; $ms.Write($buf, 0, $k) } } finally { $s.Dispose() }
+      if ($too) { return @() }   # one oversized entry = the whole archive is refused
+      $total += $n; $out += [pscustomobject]@{ name = (($e.Name) -replace '[^A-Za-z0-9._-]', '_'); bytes = $ms.ToArray() }
+    }
+  } catch { return @() } finally { if ($zip) { $zip.Dispose() } }
+  return $out
+}
 # folder mode: every regular file in $Dir newer than $Since becomes a pseudo-message with one attachment (.zip = its files, .eml = its attachments or code)
 function Get-HikFolderMessages([string]$Dir, [datetime]$Since) {
   $out = @()
   if (-not $Dir -or -not (Test-Path -LiteralPath $Dir)) { return $out }
   foreach ($f in @(Get-ChildItem -LiteralPath $Dir -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $Since -and $_.Length -lt 5MB -and $_.Name -notlike '*.json' -and $_.Name -notlike '*.tmp' })) {
     $att = New-Object System.Collections.ArrayList; $text = ''
-    if ($f.Extension -match '(?i)\.zip$') { try { $tmp = Join-Path ([IO.Path]::GetTempPath()) ('hz' + [guid]::NewGuid().ToString('N').Substring(0, 6)); Expand-Archive -LiteralPath $f.FullName -DestinationPath $tmp -Force; foreach ($z in Get-ChildItem $tmp -File -Recurse) { [void]$att.Add([pscustomobject]@{ name = ($f.BaseName + '-' + $z.Name); bytes = [IO.File]::ReadAllBytes($z.FullName); type = 'file' }) }; Remove-Item -Recurse -Force $tmp } catch {} }
+    if ($f.Extension -match '(?i)\.zip$') { foreach ($z in @(Read-HikZipEntries $f.FullName)) { [void]$att.Add([pscustomobject]@{ name = ($f.BaseName + '-' + $z.name); bytes = $z.bytes; type = 'file' }) } }   # 2.2.3 (Codex #56)
     elseif ($f.Extension -match '(?i)\.eml$') {
       try {
         $mm = Read-MimeMessage ([IO.File]::ReadAllBytes($f.FullName)); $text = [string]$mm.text
