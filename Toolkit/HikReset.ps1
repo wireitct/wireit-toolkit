@@ -32,7 +32,8 @@ $inboxDir = Join-Path $here 'inbox\hik'
 if (-not $cfg.form) { Write-Host 'config.json has no "form" (name, email, company ...). Cannot fill Hikvision''s page.' -ForegroundColor Red; exit 2 }
 if (-not $StateDir) { $StateDir = Join-Path (Join-Path $here 'runs') 'HikReset' }
 New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
-$statePath = Join-Path $StateDir 'state.json'; $reqDir = Join-Path $StateDir 'requests'; $repDir = Join-Path $StateDir 'replies'; $secDir = Join-Path $here 'secrets'
+$statePath = Join-Path $StateDir 'state.json'; $reqDir = Join-Path $StateDir 'requests'; $repDir = Join-Path $StateDir 'replies'; $secDir = Join-Path $here 'vault'
+$script:FsLegacySecretsDir = Join-Path $here 'secrets'   # 2.2.3 (Codex #47): the installer moved site passwords to vault\ (secrets\ = old PCs)
 $logFile = Join-Path $StateDir 'hikreset.log'
 $script:SadpLog = { param($l) try { Add-Content -LiteralPath $logFile -Value ((Get-Date -Format 's') + ' ' + $l) } catch {} }
 $script:HkSay = { param($t, $c) $col = switch ($c) { 'Green' { 'Green' } 'Yellow' { 'Yellow' } 'Red' { 'Red' } 'Cyan' { 'Cyan' } default { 'Gray' } }; Write-Host $t -ForegroundColor $col; try { Add-Content -LiteralPath $logFile -Value ((Get-Date -Format 's') + ' ' + $t) } catch {} }

@@ -258,6 +258,10 @@ try {
   Check ([Text.Encoding]::UTF8.GetBytes($r21b.body).Length -ne $bin.Length) '...the old text path really does change the bytes'
 } finally { try { $p21.Kill() } catch {}; Remove-Module NvrHealth -ErrorAction SilentlyContinue }
 Check ((Read-Src 'Toolkit/modules/NvrHealth/NvrFix.ps1') -match "-OutFile \`$cfgFile" -and (Read-Src 'Toolkit/modules/NvrHealth/NvrFix.ps1') -notmatch "config-' \+ \`$di\.serial \+ '\.txt'") 'Fix NVR firmware saves the export as .bin through -OutFile'
+Write-Host '#47 standalone HikReset reads the site password where the installer keeps it (vault\)'
+$hr = Read-Src 'Toolkit/HikReset.ps1'
+Check ($hr -match "\`$secDir = Join-Path \`$here 'vault'") 'reproduction: default store is Toolkit\vault (2.2.2 read Toolkit\secrets)'
+Check ($hr -match "FsLegacySecretsDir = Join-Path \`$here 'secrets'") '...and an old secrets\ store is still found'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
