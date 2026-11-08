@@ -60,8 +60,10 @@ try {
   Check ($LASTEXITCODE -eq 0 -and (Test-Path $marker)) 'real launcher restores a truncated core before loading it'
   Remove-Item $marker
   Save-TkJson @{ prev=(Join-Path $tmp 'missing-backup'); from='2.2.5'; to='2.2.6'; added=@() } (Join-Path $recover 'previous/update-pending.json')
-  $null = & $exe -NoProfile -File (Join-Path $recover 'WireItToolkit.ps1') -NoUpdate 2>&1
-  Check ($LASTEXITCODE -eq 1 -and -not (Test-Path $marker)) 'real launcher stops before loading the core when recovery fails'
+  # 2.2.6: the launcher reports the failure on its error stream and exits 1, as designed. Under Windows PowerShell 5.1 a native
+  # program's stderr captured with 2>&1 becomes an error record, and with this script's 'Stop' that ended the whole suite here.
+  $launchOut = & { $ErrorActionPreference = 'Continue'; & $exe -NoProfile -File (Join-Path $recover 'WireItToolkit.ps1') -NoUpdate 2>&1 | ForEach-Object { [string]$_ } }; $launchCode = $LASTEXITCODE
+  Check ($launchCode -eq 1 -and -not (Test-Path $marker) -and (($launchOut | Out-String) -match 'saved copy is missing')) 'real launcher stops before loading the core when recovery fails, and says why'
   $src = Join-Path $tmp 'source.ps1'; $dst = Join-Path $tmp 'live.ps1'
   Set-Content $src 'new complete script'; Set-Content $dst 'old complete script'; $before = Get-TkSha256 $dst
   & {
