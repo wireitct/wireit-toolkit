@@ -1,8 +1,8 @@
 {
   "version": "2.2.3",
   "released": "2026-11-08",
-  "commit": "21afed1050d5e6e6a8038b59aac802a9994e5080",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/21afed1050d5e6e6a8038b59aac802a9994e5080/",
+  "commit": "d3e53b1c76df9c8bb6bebc3a5a2cc4bea9bbf2f6",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/d3e53b1c76df9c8bb6bebc3a5a2cc4bea9bbf2f6/",
   "notes": "2.2.3 (not released): fixes from Codex's full review of 2.2.2 (5e465b9), findings #6-64; the Crew/SYSTEM split is removed (Crew is a local admin): no SYSTEM task, IPC folder or ACL lock. See files/pc-setup/toolkit-2.2.3-fixes.md.",
   "files": [
     {
