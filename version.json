@@ -1,8 +1,8 @@
 {
   "version": "2.2.3",
   "released": "2026-11-08",
-  "commit": "605a93fb6a1f39378ef8123f723801a10230d5b4",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/605a93fb6a1f39378ef8123f723801a10230d5b4/",
+  "commit": "0e006d4ffea6b2941abcf0aabbad44beeb77c61e",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/0e006d4ffea6b2941abcf0aabbad44beeb77c61e/",
   "notes": "2.2.3 (not released): fixes from Codex's full review of 2.2.2 (5e465b9), findings #6-64; the Crew/SYSTEM split is removed (Crew is a local admin): no SYSTEM task, IPC folder or ACL lock. See files/pc-setup/toolkit-2.2.3-fixes.md.",
   "files": [
     {
@@ -162,8 +162,8 @@
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/Test-NvrHealth.ps1",
-      "sha256": "48fbce194f30aadcb848e851910aa43e12ffee3076259c7aa82259705e6bcada",
-      "size": 24555
+      "sha256": "bffc345b71718feb49d96c45f4d14d9abac06fe8c7b1019a08fbbf537073d484",
+      "size": 24549
     },
     {
       "path": "Toolkit/NvrCheck.ps1",
@@ -257,8 +257,8 @@
     },
     {
       "path": "Toolkit/tests/hikreset/fake_sadp.py",
-      "sha256": "f3e40556bb4c8cbbe9b6164ba265f9275f82d6abdfb3f9ccdce81010c645e15f",
-      "size": 5558
+      "sha256": "19ec179bcad84635b1355de89e263cc643603f27b425e38410ca01fe0386f6fb",
+      "size": 5513
     },
     {
       "path": "Toolkit/tests/hikreset/mock_relay.py",
@@ -277,43 +277,48 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix221.ps1",
-      "sha256": "5126fd5407d2e600c8643947c32001b87de77c9b442e8064dd368752d40934eb",
-      "size": 37166
+      "sha256": "52f9c8d318aab38d87c59a0b3555d2100ba7f22fa169bc3389d518dd26650a4c",
+      "size": 37171
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "86c79a54a5413e27422addb511119103d11e29d734a78dfd217c4c6cf5c1d40b",
-      "size": 41310
+      "sha256": "b476b73e0d5552d1f236ca7ec87ccd0a0f13dd87fd4bdc7a6d76305a12324de1",
+      "size": 41315
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
-      "sha256": "6a141aa2655415bd20e8c1174a17d3b661b33b1e1a904b16e7f902b63faa9080",
-      "size": 56855
+      "sha256": "e6b1f140bb19c50884e92608e8b6984dea6a362951f3b684797a5103dea23435",
+      "size": 56860
     },
     {
       "path": "Toolkit/tests/Test-Fix224.ps1",
-      "sha256": "435f7557b3e1aadf39091a65bc1eb87578e90d30478a46015084e09c79392ea4",
-      "size": 26698
+      "sha256": "5eb4f4e3190190b5aae37a501097ca5ac78da1bfef223eb65b116ddd40274435",
+      "size": 26638
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
-      "sha256": "2d024084244530203d4e2e27602b55e814d9d3ac625ee46a0625df8fbad91f9a",
-      "size": 8101
+      "sha256": "b06123993afc5cb66d49c9000965a002894f1bd57566209d0e6c765ea2a8e408",
+      "size": 8159
     },
     {
       "path": "Toolkit/tests/Test-FixSite.ps1",
-      "sha256": "44142cba87434fe2282f92a809dd0adcb165492e149be8073bd78e8246ae2c87",
-      "size": 60176
+      "sha256": "a2429e3c8e145c3cfab426347fb3c0a50081c30afbdb5e7882b7170ca4af511a",
+      "size": 60096
     },
     {
       "path": "Toolkit/tests/Test-HikReset.ps1",
-      "sha256": "a55409fbc2ef3f26ee173eade541dc13466cab75349c18a65e3671f9925657be",
-      "size": 30465
+      "sha256": "de3ff103a883761624d161a64ed36906ee25415741915d2a3072d007188eb492",
+      "size": 30399
     },
     {
       "path": "Toolkit/tests/Test-Toolkit.ps1",
-      "sha256": "b657ae786965b25227828947ae94bfeb406ca4f0145a93e0a5bc1779808a6cbd",
-      "size": 67050
+      "sha256": "40df8910d911c46ab2e49af9ffafd4f042f754c16595e5b15dbf5344fa2d6fb4",
+      "size": 67166
+    },
+    {
+      "path": "Toolkit/tests/TestPython.ps1",
+      "sha256": "d941ca62e7ddd91068e72c4d6434b036ee603387964db030ffc6bfb8cf6561ec",
+      "size": 2359
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
