@@ -413,6 +413,17 @@ Check ([math]::Abs(($vu - (Get-Date).AddHours(18)).TotalMinutes) -lt 5) 'reprodu
 (Get-Item $x64).LastWriteTime = (Get-Date).AddHours(-50)
 $o64 = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $cr 'Make-Request.ps1') -Serial K12345678 -XmlPath $x64 2>&1 | Out-String
 Check ($o64 -match 'more than 48 hours ago') 'an export past 48 hours is refused'
+Write-Host '#63 SiteCheck: no ping is not "dead" when the device''s services answer'
+$scs = Read-Src 'sitecheck/SiteCheck.ps1'
+$i63 = $scs.IndexOf('function Get-ScNet24'); $j63 = $scs.IndexOf('function Get-ScMedian', $i63); Invoke-Expression $scs.Substring($i63, $j63 - $i63)
+$i63 = $scs.IndexOf('function Get-ScDiagnosis'); $j63 = $scs.IndexOf('function Format-ScReport', $i63); Invoke-Expression $scs.Substring($i63, $j63 - $i63)
+$R63 = [ordered]@{ nets = @(@{ ip = '192.168.1.50'; prefix = 24 }); nvr = '192.168.1.20'; nvrRead = [ordered]@{ ok = $true; msg = 'Read 2 channels' }; duplicates = @(); notes = @()
+  devices = @([pscustomobject]@{ Ip = '192.168.1.20'; Ok = 0; LossPct = 100; InArp = $true; Ports = @(80, 8000) }, [pscustomobject]@{ Ip = '192.168.1.31'; Ok = 0; LossPct = 100; InArp = $true; Ports = @(80, 554) })
+  channels = @([pscustomobject]@{ Ch = 1; Ip = '192.168.1.31'; Online = $false; Name = 'Door'; Detail = 'Disconnected' }) }
+$D63 = Get-ScDiagnosis $R63
+$t63 = (@($D63.Findings | ForEach-Object { [string]$_.Text }) -join ' | ')
+Check ($t63 -notmatch 'NVR 192\.168\.1\.20 is NOT answering' -and $t63 -match 'ping is turned off') 'reproduction: an NVR whose login worked is not "frozen / power-cycle" for no ping (2.2.2 said power-cycle)'
+Check ($t63 -notmatch 'probably frozen' -and $t63 -match 'ports 80/554 are open') 'a camera with open ports and no ping is not called frozen'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

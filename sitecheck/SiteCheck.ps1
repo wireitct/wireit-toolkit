@@ -376,7 +376,11 @@ function Get-ScDiagnosis($R) {
   $head = ''
   # NVR itself
   $nvrDev = $null; if ($nvr) { $nvrDev = $byIp[$nvr] }
-  if ($nvr -and (-not $nvrDev -or $nvrDev.Ok -eq 0)) {
+  # 2.2.3 (Codex #63): no ping answer is not "down" when its login / API or its ports answered (ping can be turned off)
+  $nvrAlive = ($R.nvrRead -and $R.nvrRead.ok) -or ($nvrDev -and @($nvrDev.Ports).Count)
+  if ($nvr -and (-not $nvrDev -or $nvrDev.Ok -eq 0) -and $nvrAlive) {
+    $find += [pscustomobject]@{ Level = 'info'; Text = ('NVR ' + $nvr + ' does not answer ping, but ' + $(if ($R.nvrRead -and $R.nvrRead.ok) { 'it answered the login' } else { 'its ports ' + (@($nvrDev.Ports) -join '/') + ' are open' }) + ' - it is working (ping is turned off on it).') }
+  } elseif ($nvr -and (-not $nvrDev -or $nvrDev.Ok -eq 0)) {
     $nvrArp = ($nvrDev -and $nvrDev.InArp)
     $find += [pscustomobject]@{ Level = 'bad'; Text = ('NVR ' + $nvr + ' is NOT answering. ' + $(if ($nvrArp) { 'Something holds that address but does not reply to ping - NVR may be frozen. Power-cycle the NVR.' } else { 'Check the NVR has power and its network cable/switch port is lit, or that the NVR address is right.' })) }
   } elseif ($nvrDev -and $nvrDev.LossPct -ge 5) {
@@ -398,6 +402,7 @@ function Get-ScDiagnosis($R) {
     elseif (-not $onLan -and -not $d) { $deadCount++; $why = 'This camera is on the NVR''s own PoE ports (' + $ip + '), so only the NVR can see it. Offline there = no power or no link on that PoE port: check the cable/jack, re-seat it at the NVR, or try another NVR port. If a known-good port and cable fail, the camera is dead.' }
     elseif ($d -and $d.Ok -gt 0 -and $d.LossPct -ge 10) { $why = 'The camera answers but drops ' + $d.LossPct + '% of pings - a flaky cable, jack, or switch port (or a PoE port that is browning out). Re-terminate or move it to another port.' }
     elseif ($d -and $d.Ok -gt 0) { $why = 'The camera is ON the network (pings fine' + $(if (@($d.Ports).Count) { ', ports ' + (@($d.Ports) -join '/') + ' open' } else { ', but its video ports are closed' }) + '), but the NVR gets no video. Likely the camera is frozen or its settings changed. Reboot it (unplug its PoE 10 s); if it comes back then goes again, update its firmware.' }
+    elseif ($d -and @($d.Ports).Count) { $why = 'The camera does not answer ping (it may be turned off on it), but its ports ' + (@($d.Ports) -join '/') + ' are open, so it is powered and on the network. The NVR gets no video: check the channel''s address / password / protocol in the NVR before rebooting anything.' }   # 2.2.3 (Codex #63)
     elseif ($d -and $d.InArp) { $why = 'Something holds that address but does not answer ping - camera is probably frozen. Reboot it at the PoE switch.' }
     else { $deadCount++; $why = 'Nothing answers at ' + $ip + ' at all: no power or no network link. Check the PoE switch port lights, the cable, and the switch''s power. If it''s only this camera, the camera may be dead.' }
     if ($det -and $det -ne 'Disconnected') { $why += ' (NVR says: ' + $det + ')' }
