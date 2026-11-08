@@ -1060,6 +1060,12 @@ function Advisory-Hits($adv, $cur) {
   }
   return $false
 }
+function Get-FwResultLine([int]$sec, [int]$old, [int]$notJudged) {
+  if ($sec) { return @{ ok = $false; color = 'Red'; text = ('RESULT: ' + $sec + ' device(s) with known security holes, ' + $old + ' more on old firmware' + $(if ($notJudged) { ', ' + $notJudged + ' not checked' } else { '' }) + '. Plan updates (with the owner''s OK; an update reboots the device).') } }
+  if ($notJudged) { return @{ ok = $false; color = 'Yellow'; text = ('RESULT: NOT fully checked - ' + $notJudged + ' device(s) could not be judged (model not in the list, or not readable). Check those on the maker''s site.' + $(if ($old) { ' ' + $old + ' on older firmware.' } else { '' })) } }
+  if ($old) { return @{ ok = $true; color = 'Yellow'; text = ('RESULT: no known holes; ' + $old + ' device(s) on older firmware.') } }
+  return @{ ok = $true; color = 'Green'; text = 'RESULT: firmware OK.' }
+}
 function Judge-Firmware([string]$label, [string]$model, [string]$fw, $ref, [switch]$Quiet) {
   $o = [ordered]@{ label = $label; model = $model; firmware = $fw; latest = ''; update_available = $null; advisories = @(); verdict = 'unknown'; note = ''; unlisted = $false }
   $cur = Parse-Fw $fw; $m = Find-RefModel $ref $model
@@ -1107,7 +1113,7 @@ function Get-FirmwareStatus {
   $t = Resolve-Target $Ip $Vendor $Credential $Port
   Say ''; Say ('----- Firmware / security check: ' + $Ip + $(if ($ref) { ' (reference list of ' + $ref.updated + ')' } else { ' (NO reference list found)' }) + ' -----') 'Cyan'
   if (-not $ref) { Warn 'firmware-latest.json is missing, so versions are only listed, not judged.' }
-  $items = @()
+  $items = @(); $fwUnread = 0
   switch ($t.vendor) {
     'Hikvision' {
       $di = Hik-DeviceInfo $t
@@ -1117,7 +1123,7 @@ function Get-FirmwareStatus {
       if ($IncludeCameras) {
         foreach ($ct in (Get-CameraTargets $t $CameraIps $CameraCredential)) {
           $cd = Hik-DeviceInfo $ct
-          if ($cd.login -eq 'ok') { $items += Judge-Firmware ('Camera ' + $ct.ip) $cd.model $cd.firmware $ref -Quiet } else { Warn ('Camera ' + $ct.ip + ': could not read it (' + $cd.login + ').') }
+          if ($cd.login -eq 'ok') { $items += Judge-Firmware ('Camera ' + $ct.ip) $cd.model $cd.firmware $ref -Quiet } else { Warn ('Camera ' + $ct.ip + ': could not read it (' + $cd.login + ').'); $fwUnread++ }
         }
         Write-FwUnlisted $items
       }
@@ -1141,21 +1147,24 @@ function Get-FirmwareStatus {
       else {
         $r = Onvif-Call $t '/onvif/device_service' '<x:GetDeviceInformation/>' $script:NsDev
         $x = Xml $r.body
-        if ($x) { $items += Judge-Firmware 'Recorder' (XText $x 'Model') (XText $x 'FirmwareVersion') $ref } else { Bad 'Could not read the recorder''s model / firmware.' }
+        if ($x) { $items += Judge-Firmware 'Recorder' (XText $x 'Model') (XText $x 'FirmwareVersion') $ref } else { Bad 'Could not read the recorder''s model / firmware.'; $fwUnread++ }
       }
       if ($IncludeCameras) {
         foreach ($ct in (Get-CameraTargets $t $CameraIps $CameraCredential)) {
           if ($ct.vendor -eq 'Auto') { $ct.vendor = Detect-Vendor $ct.ip 0 }
           $cd = $(if ($ct.vendor -eq 'Hikvision') { Hik-DeviceInfo $ct } elseif ($ct.vendor -eq 'Uniview') { Unv-DeviceInfo $ct } else { $null })
-          if ($cd -and $cd.login -eq 'ok') { $items += Judge-Firmware ('Camera ' + $ct.ip) $cd.model $cd.firmware $ref -Quiet } else { Warn ('Camera ' + $ct.ip + ': could not read it.') }
+          if ($cd -and $cd.login -eq 'ok') { $items += Judge-Firmware ('Camera ' + $ct.ip) $cd.model $cd.firmware $ref -Quiet } else { Warn ('Camera ' + $ct.ip + ': could not read it.'); $fwUnread++ }
         }
         Write-FwUnlisted $items
       }
     }
   }
   $sec = @($items | Where-Object { $_.verdict -eq 'security' }); $old = @($items | Where-Object { $_.verdict -eq 'old' })
-  Say $(if ($sec.Count) { 'RESULT: ' + $sec.Count + ' device(s) with known security holes, ' + $old.Count + ' more on old firmware. Plan updates (with the owner''s OK; an update reboots the device).' } elseif ($old.Count) { 'RESULT: no known holes; ' + $old.Count + ' device(s) on older firmware.' } else { 'RESULT: firmware OK.' }) $(if ($sec.Count) { 'Red' } elseif ($old.Count) { 'Yellow' } else { 'Green' })
-  return [pscustomobject]@{ check = 'firmware'; ip = $Ip; vendor = $t.vendor; ok = ($sec.Count -eq 0); devices = $items; problems = @($sec | ForEach-Object { $_.label + ': ' + (($_.advisories | ForEach-Object { $_.id }) -join ',') }); log = $script:LogFile }
+  # 2.2.3 (Codex #22): a device whose firmware could not be judged (model not in the list, no reference data, not readable) is NOT "OK"
+  $unk = @($items | Where-Object { $_.verdict -eq 'unknown' }); $notJudged = $unk.Count + [int]$fwUnread; if (-not $items.Count -and -not $notJudged) { $notJudged = 1 }
+  $res = Get-FwResultLine $sec.Count $old.Count $notJudged
+  Say $res.text $res.color
+  return [pscustomobject]@{ check = 'firmware'; ip = $Ip; vendor = $t.vendor; ok = $res.ok; not_judged = $notJudged; devices = $items; problems = @($sec | ForEach-Object { $_.label + ': ' + (($_.advisories | ForEach-Object { $_.id }) -join ',') }); log = $script:LogFile }
 }
 
 # ================= all three (read-only) =================

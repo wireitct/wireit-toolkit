@@ -305,6 +305,15 @@ $r41h = & $nm41 {
 }
 Check ($r41h -and -not $r41h.ok -and $r41h.why -match 'read back') 'reproduction: Hikvision NTP set, read-back unreadable -> NOT ok'
 Remove-Module NvrHealth -ErrorAction SilentlyContinue
+Write-Host '#22 the firmware check is never green for devices it could not judge'
+$nm22 = Import-Module (Join-Path $tk 'modules\NvrHealth\NvrHealth.psm1') -Force -PassThru -DisableNameChecking
+$r22 = & $nm22 { Get-FwResultLine 0 0 1 }
+Check (-not $r22.ok -and $r22.text -notmatch 'firmware OK') 'reproduction: an unknown model -> not OK, not "RESULT: firmware OK" (2.2.2 said OK, ok=True)'
+$r22 = & $nm22 { Get-FwResultLine 0 0 0 }; Check ($r22.ok -and $r22.text -match 'firmware OK') 'everything judged and current -> OK'
+$r22 = & $nm22 { Get-FwResultLine 1 0 2 }; Check (-not $r22.ok -and $r22.text -match '2 not checked') 'holes + unjudged: both said'
+$src22 = Read-Src 'Toolkit/modules/NvrHealth/NvrHealth.psm1'
+Check (([regex]::Matches($src22, '\$fwUnread\+\+')).Count -ge 3 -and $src22 -match 'ok = \$res\.ok; not_judged = \$notJudged') 'unreadable recorder/cameras are counted; the result carries it'
+Remove-Module NvrHealth -ErrorAction SilentlyContinue
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
