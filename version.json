@@ -1,8 +1,8 @@
 {
   "version": "2.2.5",
   "released": "2026-11-08",
-  "commit": "3157f848bdac2fdc932c755ad949c863b45899fd",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/3157f848bdac2fdc932c755ad949c863b45899fd/",
+  "commit": "69656aceeb12f92c21b75689d10b47915f6b0723",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/69656aceeb12f92c21b75689d10b47915f6b0723/",
   "notes": "Independent review fixes: private password stores, HTTPS authentication, interrupted Undo, verified recording and recorder addresses, reset replies, atomic recovery, release inventory and scan queues.",
   "files": [
     {
@@ -302,8 +302,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix221.ps1",
-      "sha256": "a5cec4d515b881a385d9ad1cedb8dc4ce5fcf0a0ed00934de4e55a5389813c6e",
-      "size": 39434
+      "sha256": "c9589f5a95a72aa3c7a1ad6814afa089dcd522dcb4bc2bde8bcdf372fb708a80",
+      "size": 39509
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
