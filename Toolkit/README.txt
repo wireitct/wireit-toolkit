@@ -1,4 +1,4 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.2.3, 2026-11-08 (not released)
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.2.5, 2026-11-08 (not released)
 ==============================================================================
 HOW TO USE (2.0)
   1. Double-click "WireIt Toolkit" on the desktop.
@@ -255,6 +255,16 @@ MOVE TO A NEW PC (e.g. the new EliteDesk)
      and lists anything missing.
   4. Optional check: powershell -ExecutionPolicy Bypass -File .\tests\Test-Toolkit.ps1   (should end "0 failed")
   On a customer PC: copy the folder, run "WireIt Toolkit.cmd" directly, delete the folder afterwards.
+
+2.2.5 (2026-11-08, from the first real Windows test on the Office PC; tested on Linux mocks, NOT released)
+  - Tests find a real Python (py -3, then python, then python3; never the Windows Store "python3" stub): Toolkit\tests\TestPython.ps1.
+  - Hikvision reset tests: the fake devices need only Python's standard library (2.2.4 needed the cryptography package, so on a
+    plain Windows Python they never started); SADP sockets ignore Windows UDP connection-reset errors; no crash when a device
+    gives no request code.
+  - Remembered NVR logins (CamViews): unique temp file, retried move / copy, and a non-elevated admin can save and read its own.
+  - A failed HTTPS handshake is reported as such on Windows PowerShell 5.1 (the password is still never sent in clear).
+  - An update blocked by a file in use says plainly that nothing changed. tools\Build-Manifest.ps1 works without git.
+  - Version 2.2.5 everywhere (2.2.4 still said 2.2.3).
 
 2.2.3 (2026-11-08, from Codex's full review of 2.2.2; tested on Linux mocks, NOT released)
   - Crew is a local admin, so the 2.2.0 split is gone: no SYSTEM task, no ipc\ folder, no folder lock, no admin-only refusals.
