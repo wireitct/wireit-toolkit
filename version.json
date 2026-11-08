@@ -1,8 +1,8 @@
 {
   "version": "2.2.3",
   "released": "2026-11-08",
-  "commit": "3c676f1607eb0b3a3a7df497bd30e085baba6850",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/3c676f1607eb0b3a3a7df497bd30e085baba6850/",
+  "commit": "0ba73e111edcf4f339abe9b4150b2571dc7b8de1",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/0ba73e111edcf4f339abe9b4150b2571dc7b8de1/",
   "notes": "2.2.3 (not released): fixes from Codex's full review of 2.2.2 (5e465b9), findings #6-64; the Crew/SYSTEM split is removed (Crew is a local admin): no SYSTEM task, IPC folder or ACL lock. See files/pc-setup/toolkit-2.2.3-fixes.md.",
   "files": [
     {
@@ -152,13 +152,13 @@
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrHealth.psm1",
-      "sha256": "6644edddd3b6e46b00dbdd600c0fd6f606851ad7e4f8caeb8c07de5225912eb2",
-      "size": 107718
+      "sha256": "ae2aaa87edcaa2369ef84c79b496326a45a91b4dfbcbf1110d70d58e1658879d",
+      "size": 110514
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/mock_devices.py",
-      "sha256": "224350763900dcdce2ab4ed44a8088f82437898ea3a345acd2959df54c1088d3",
-      "size": 32903
+      "sha256": "eec6f2c4d95e5606dab93921576536669c9608720d276d2a978ec2ff589cb4fb",
+      "size": 33232
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/Test-NvrHealth.ps1",
@@ -292,8 +292,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix224.ps1",
-      "sha256": "525e6acaa3bd293b623b1d8d4f3c2e2204b37f42a218c52804316f4fb6de25c9",
-      "size": 10891
+      "sha256": "6f92802386c8d0abd2dca298f91786e8f6ad8fb76c1c8e6f15cd60b9b21f81a3",
+      "size": 15960
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
