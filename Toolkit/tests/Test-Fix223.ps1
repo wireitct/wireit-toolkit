@@ -240,6 +240,24 @@ $script:FsJsonParse = { param($t) ConvertFrom-Json -InputObject $t }
 Eq @(ConvertFrom-FsJsonArray $js).Count 2 'same on PowerShell 7'
 $bwsrc = Read-Src 'Toolkit/FixSiteBw.ps1'
 Check (-not ([regex]::Matches($bwsrc, '@\(\(?[^)]*\.out\)? \| ConvertFrom-Json\)')).Count -and ([regex]::Matches($bwsrc, 'ConvertFrom-FsJsonArray')).Count -ge 4) 'every list read uses it (organizations, collections, items)'
+Write-Host '#21 a firmware-update config backup is the device''s bytes, unchanged'
+$wd = Join-Path $tmp 'web21'; New-Item -ItemType Directory -Force -Path $wd | Out-Null
+$bin = [byte[]](0..255 + 255..0 + @(0xC3, 0x28, 0xFF, 0xFE, 0x00)); [IO.File]::WriteAllBytes((Join-Path $wd 'configurationData'), $bin)
+$srv21 = Join-Path $tmp 'srv21.py'; [IO.File]::WriteAllText($srv21, "import http.server, functools, sys`nh = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[1]); h.log_message = lambda *a: None`ns = http.server.HTTPServer(('127.0.0.1', 0), h); print(s.server_address[1], flush=True); s.serve_forever()`n")
+$py21 = $(if (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' } else { 'python' })
+$psi = New-Object Diagnostics.ProcessStartInfo; $psi.FileName = (Get-Command $py21).Source; $psi.Arguments = '"' + $srv21 + '" "' + $wd + '"'; $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.CreateNoWindow = $true
+$p21 = [Diagnostics.Process]::Start($psi); $port21 = [int]$p21.StandardOutput.ReadLine()
+try {
+  $nm = Import-Module (Join-Path $tk 'modules\NvrHealth\NvrHealth.psm1') -Force -PassThru -DisableNameChecking
+  $of = Join-Path $tmp 'cfg.bin'
+  $r21 = & $nm { param($p, $o) Http -Ip '127.0.0.1' -Port $p -Scheme 'http' -Path '/configurationData' -OutFile $o } $port21 $of
+  Eq $r21.code 200 'export answered'
+  $got = [IO.File]::ReadAllBytes($of)
+  Check ($got.Length -eq $bin.Length -and -not @(0..($bin.Length - 1) | Where-Object { $got[$_] -ne $bin[$_] }).Count) 'reproduction: every byte survives (2.2.2 decoded it as UTF-8 text and saved .txt)'
+  $r21b = & $nm { param($p) Http -Ip '127.0.0.1' -Port $p -Scheme 'http' -Path '/configurationData' } $port21
+  Check ([Text.Encoding]::UTF8.GetBytes($r21b.body).Length -ne $bin.Length) '...the old text path really does change the bytes'
+} finally { try { $p21.Kill() } catch {}; Remove-Module NvrHealth -ErrorAction SilentlyContinue }
+Check ((Read-Src 'Toolkit/modules/NvrHealth/NvrFix.ps1') -match "-OutFile \`$cfgFile" -and (Read-Src 'Toolkit/modules/NvrHealth/NvrFix.ps1') -notmatch "config-' \+ \`$di\.serial \+ '\.txt'") 'Fix NVR firmware saves the export as .bin through -OutFile'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

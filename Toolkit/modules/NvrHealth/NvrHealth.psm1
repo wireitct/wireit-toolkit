@@ -180,8 +180,11 @@ function Http-Curl([string]$Uri, [string]$Method = 'GET', [string]$Body = '', [s
 }
 function Http {
   param([string]$Ip, [string]$Method = 'GET', [string]$Path, [string]$Body = '', [string]$ContentType = 'application/xml',
-        $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0, [byte[]]$BodyBytes = $null)
+        $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0, [byte[]]$BodyBytes = $null, [string]$OutFile = '')
   if (-not $Timeout) { $Timeout = [int]$script:Opt.TimeoutSec }
+  # 2.2.3 (Codex #21): -OutFile = the answer's bytes straight to a file (a config export is binary: never through a string)
+  if ($OutFile) { $a = @{ Uri = ((Base $Ip $Port $Scheme) + $Path); Method = $Method; UseBasicParsing = $true; TimeoutSec = $Timeout; OutFile = $OutFile; ErrorAction = 'Stop' }; if ($Credential) { $a.Credential = $Credential }; if (-not $script:IsPs5) { if (Test-WireItLanHost $Ip) { $a.SkipCertificateCheck = $true }; if ($Credential) { $a.AllowUnencryptedAuthentication = $true } }
+    Log ($Method + ' ' + $Ip + $Path + ' -> file'); try { Invoke-WebRequest @a; $n = $(if (Test-Path -LiteralPath $OutFile) { (Get-Item -LiteralPath $OutFile).Length } else { 0 }); return @{ code = $(if ($n -gt 0) { 200 } else { 204 }); body = ''; err = ''; bytes = $n } } catch { $code = 0; try { $code = [int]$_.Exception.Response.StatusCode } catch {}; Remove-Item -LiteralPath $OutFile -ErrorAction SilentlyContinue; return @{ code = $code; body = ''; err = [string]$_.Exception.Message; bytes = 0 } } }
   $a = @{ Uri = ((Base $Ip $Port $Scheme) + $Path); Method = $Method; UseBasicParsing = $true; TimeoutSec = $Timeout }
   if ($Credential) { $a.Credential = $Credential }
   if ($Headers) { $a.Headers = $Headers }
