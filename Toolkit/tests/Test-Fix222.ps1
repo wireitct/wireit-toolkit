@@ -79,7 +79,34 @@ Check (-not (Test-FsSentPlain '192.168.1.35')) 'mock: ...and not on the warning 
 $script:FsNoTlsModels = @(); $script:FsMockUrl = ''
 Check ($fs -match 'HTTPS did not work \(' -and $fs -match 'noHttpsModels' -and $fs -match '\$script:FsModels\[\[string\]\$d\.ip\]') 'FixSite: a red line per device, config.json noHttpsModels, the models from the scan'
 Check ((Read-Src 'Toolkit/FixSiteDevices.ps1') -match 'Tls12 -bor \[Net\.SecurityProtocolType\]::Tls11 -bor \[Net\.SecurityProtocolType\]::Tls;') 'PS 5.1: TLS 1.0/1.1 allowed for devices (old firmware stays on HTTPS)'
+foreach ($rel in @('FixNVR/FixNVR.ps1', 'NetCheck/NetCheck.ps1', 'Toolkit/modules/NvrHealth/NvrHealth.psm1')) { $src = Read-Src $rel; Check (($src -match 'Tls12 -bor \[Net\.SecurityProtocolType\]::Tls11 -bor \[Net\.SecurityProtocolType\]::Tls\b') -and -not ($src -match 'SecurityProtocol = \[Net\.SecurityProtocolType\]::Tls12\s*(\r?\n|#|;|$)')) ('reproduction (re-review risk 2): ' + $rel + ' - PS 5.1 allows TLS 1.0/1.1 for old firmware (2.2.1: exactly TLS 1.2)') }
+$src = Read-Src 'Toolkit/ToolkitCore.ps1'; Check (($src -match 'SecurityProtocol = \[Net\.ServicePointManager\]::SecurityProtocol -bor \[Net\.SecurityProtocolType\]::Tls12') -and -not ($src -match 'SecurityProtocol = \[Net\.SecurityProtocolType\]::Tls12\s*(\r?\n|#|;|$)')) 'ToolkitCore: the update download adds TLS 1.2 instead of switching the device TLS versions off'
+$sp0 = [Net.ServicePointManager]::SecurityProtocol
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Check (([int][Net.ServicePointManager]::SecurityProtocol -band [int][Net.SecurityProtocolType]::Tls11) -ne 0) 'the update line keeps TLS 1.1 on when a device tool set it (same process)' } finally { [Net.ServicePointManager]::SecurityProtocol = $sp0 }
 
+# =====================================================================================
+Write-Host 'H1 (classic Fix NVR). a password in the body goes over HTTPS; plain HTTP only when nothing listens on 443 (re-review H1)'
+$nvrAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'FixNVR/FixNVR.ps1'), [ref]$null, [ref]$null)
+foreach ($fn in @('Test-NvrSecretBody', 'Test-NvrTlsPort', 'Http', 'Base', 'Err-Body')) { $fa = $nvrAst.Find({ param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $fn }, $true); . ([scriptblock]::Create($fa.Extent.Text)) }
+$Mock = $null; $IsPs5 = ($PSVersionTable.PSVersion.Major -lt 6); $script:refused = @{}; $script:scheme = @{}; $script:nvrTls = @{}
+$script:NvrLog = New-Object System.Collections.ArrayList; $script:NvrSay = New-Object System.Collections.ArrayList
+function Log([string]$s) { [void]$script:NvrLog.Add($s) }; function Say([string]$s, [string]$c = '') { [void]$script:NvrSay.Add($s) }
+Check ((Test-NvrSecretBody '<User><id>1</id><password>x</password></User>') -and (Test-NvrSecretBody '{"password":"x"}') -and -not (Test-NvrSecretBody '<passwordLevel>1</passwordLevel>') -and -not (Test-NvrSecretBody '<ipAddress>1.2.3.4</ipAddress>')) 'Fix NVR: a body with a password is recognised (and a body without one is not)'
+Eq (Test-NvrTlsPort '127.0.0.1:1') 'refused' 'Fix NVR: nothing listening on the HTTPS port = "refused" (no HTTPS)'
+$cr = New-Object PSCredential('admin', (ConvertTo-SecureString 'x' -AsPlainText -Force))
+$r = Http ('127.0.0.1:' + $plainPort) 'PUT' '/ISAPI/ContentMgmt/InputProxy/channels/1' '<InputProxyChannel><sourceInputPortDescriptor><password>secret1</password></sourceInputPortDescriptor></InputProxyChannel>' 'application/xml' $cr 4
+Check ($r.code -eq 0 -and ([string]$script:nvrTls['127.0.0.1:' + $plainPort]) -like 'failed:*' -and -not (@($script:NvrLog | Where-Object { $_ -like '*http://127.0.0.1:*' }).Count)) 'reproduction (re-review H1): Fix NVR, HTTPS handshake fails -> the channel password is NOT sent over plain HTTP (2.2.1 used http:// only)'
+Check (@($script:NvrSay | Where-Object { $_ -match 'NOT sent over plain HTTP' }).Count -gt 0) 'Fix NVR: ...and the tech is told in red'
+$r = Http ('127.0.0.1:' + $hangPort) 'PUT' '/ISAPI/Security/users/1' '<User><password>secret2</password></User>' 'application/xml' $cr 2
+Check ($r.code -eq 0 -and ([string]$script:nvrTls['127.0.0.1:' + $hangPort]) -like 'failed:*') 'Fix NVR: HTTPS times out -> NOT sent over plain HTTP'
+$n0 = $script:NvrLog.Count; $r = Http ('127.0.0.1:' + $hangPort) 'PUT' '/ISAPI/Security/users/1' '<User><password>secret2</password></User>' 'application/xml' $cr 2
+Check ($script:NvrLog.Count -eq $n0) 'Fix NVR: the same device is not tried again in this run once HTTPS failed'
+$script:NvrLog.Clear(); $r = Http '127.0.0.1:1' 'PUT' '/ISAPI/Security/users/1' '<User><password>secret3</password></User>' 'application/xml' $cr 3
+Check ([string]$script:nvrTls['127.0.0.1:1'] -eq 'none' -and @($script:NvrLog | Where-Object { $_ -like '*https://127.0.0.1:1/*' }).Count -and @($script:NvrLog | Where-Object { $_ -like '*plain HTTP*' }).Count) 'Fix NVR: nothing on 443 (refused) = the one case that goes on over plain HTTP'
+Check (@($script:NvrSay | Where-Object { $_ -match 'has no HTTPS' }).Count -gt 0) 'Fix NVR: ...with the yellow warning'
+$script:NvrLog.Clear(); $r = Http '127.0.0.1:1' 'GET' '/ISAPI/System/deviceInfo' '' 'application/xml' $cr 3
+Check (@($script:NvrLog | Where-Object { $_ -like 'GET http://127.0.0.1:1/*' }).Count -eq 1) 'Fix NVR: a read with no password keeps the old http:// first'
+Remove-Item Function:\Log, Function:\Say, Function:\Http, Function:\Base -ErrorAction SilentlyContinue
 # =====================================================================================
 Write-Host 'H2. PowerShell 7 wrappers and curl: certificate check skipped for private IPv4 devices only (Codex H2)'
 Check ((Test-WireItLanHost '192.168.1.20') -and (Test-WireItLanHost '10.0.0.5') -and (Test-WireItLanHost '172.20.1.1') -and (Test-WireItLanHost '169.254.3.4') -and (Test-WireItLanHost '127.0.0.1')) 'private / link-local / loopback IPv4 = LAN'

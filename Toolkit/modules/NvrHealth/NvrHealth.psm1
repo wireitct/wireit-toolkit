@@ -68,7 +68,7 @@ function Test-WireItLanHost([string]$h) {
 function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -IgnoreWarnings -WarningAction SilentlyContinue -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
 $script:IsPs5 = $PSVersionTable.PSVersion.Major -lt 6
 if ($script:IsPs5) {
-  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls   # 2.2.2 (re-review): old camera/NVR firmware that only speaks TLS 1.0/1.1 stays on HTTPS
   [void](Enable-WireItLanTls)   # 2.2.1 (review H2): recorders on private addresses only, never a site with a name
   [Net.ServicePointManager]::Expect100Continue = $false
 }

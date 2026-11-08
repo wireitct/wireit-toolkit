@@ -81,7 +81,7 @@ function Test-WireItLanHost([string]$h) {
 function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -IgnoreWarnings -WarningAction SilentlyContinue -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
 $IsPs5 = $PSVersionTable.PSVersion.Major -lt 6
 if ($IsPs5) {
-  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls   # 2.2.2 (re-review): old camera/NVR firmware that only speaks TLS 1.0/1.1 stays on HTTPS
   [void](Enable-WireItLanTls)   # 2.2.1 (review H2): devices on private addresses only
   [Net.ServicePointManager]::Expect100Continue = $false
 }
@@ -321,6 +321,23 @@ function Base([string]$ip) {
   if ($script:scheme.ContainsKey($ip)) { return ($script:scheme[$ip] + '://' + $ip) }
   return ('http://' + $ip)
 }
+# 2.2.2 (re-review H1, classic Fix NVR): a request whose body carries a password goes over HTTPS first. It drops to plain HTTP
+# ONLY when nothing listens on the HTTPS port (the device has no HTTPS); a timeout or a TLS/certificate failure stops it instead.
+$script:nvrTls = @{}   # ip -> 'ok' (HTTPS worked) | 'none' (nothing on 443) | 'failed:<why>'
+function Test-NvrSecretBody([string]$body) { return ($body -match '(?i)<(\w+:)?password[\s>/]' -or $body -match '(?i)"(password|passwd|pwd)"\s*:') }
+function Test-NvrTlsPort([string]$ip, [int]$ms = 3000) {
+  $h = $ip; $port = 443; if ($ip -match '^(.+):(\d+)$') { $h = $Matches[1]; $port = [int]$Matches[2] }
+  $c = New-Object Net.Sockets.TcpClient
+  try {
+    $ar = $c.BeginConnect($h, $port, $null, $null)
+    if (-not $ar.AsyncWaitHandle.WaitOne($ms)) { return 'timeout' }
+    $c.EndConnect($ar); return 'tls'   # the port answers, so the HTTPS failure was the TLS handshake or the certificate
+  } catch {
+    $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }
+    if ($e -is [Net.Sockets.SocketException] -and ([string]$e.SocketErrorCode -eq 'ConnectionRefused' -or [int]$e.NativeErrorCode -eq 10061 -or [int]$e.NativeErrorCode -eq 111)) { return 'refused' }
+    return 'error'
+  } finally { try { $c.Close() } catch {} }
+}
 function Err-Body($ex) { try { $r = $ex.Exception.Response; if ($r) { $sr = New-Object IO.StreamReader($r.GetResponseStream()); return $sr.ReadToEnd() } } catch {}; return '' }
 function Http([string]$ip, [string]$method, [string]$path, [string]$body = '', [string]$ctype = 'application/xml', $cred = $null, [int]$timeout = 10) {
   if ($script:refused.ContainsKey($ip)) { return @{ code = 401; body = ''; err = 'login refused earlier, not retried' } }
@@ -328,10 +345,17 @@ function Http([string]$ip, [string]$method, [string]$path, [string]$body = '', [
   if ($cred) { $args2.Credential = $cred }
   if ($body) { $args2.Body = [Text.Encoding]::UTF8.GetBytes($body); $args2.ContentType = $ctype }
   if (-not $IsPs5) { if (Test-WireItLanHost $ip) { $args2.SkipCertificateCheck = $true }; if ($cred) { $args2.AllowUnencryptedAuthentication = $true } }   # 2.2.2 (Codex H2): the skip only for a device on the LAN
-  Log ($method + ' ' + $ip + $path + $(if ($body) { ' BODY ' + $body } else { '' }))
+  $secret = ((-not $Mock) -and (Test-NvrSecretBody $body))
+  if ($secret) {
+    $st = [string]$script:nvrTls[$ip]
+    if ($st -like 'failed:*') { return @{ code = 0; body = ''; err = ('HTTPS did not work (' + $st.Substring(7) + ') - the password was not sent over plain HTTP') } }
+    $args2.Uri = $(if ($st -eq 'none') { 'http://' } else { 'https://' }) + $ip + $path
+  }
+  Log ($method + ' ' + $args2.Uri + $(if ($body) { ' BODY ' + $body } else { '' }))
   for ($try = 0; $try -lt 2; $try++) {
     try {
       $r = Invoke-WebRequest @args2
+      if ($secret -and $args2.Uri.StartsWith('https://')) { $script:nvrTls[$ip] = 'ok' }
       $c = [string]$r.Content; if ($r.Content -is [byte[]]) { $c = [Text.Encoding]::UTF8.GetString($r.Content) }
       Log ('  -> ' + [int]$r.StatusCode + ' ' + $(if ($c.Length -gt 600) { $c.Substring(0, 600) + '...' } else { $c }))
       return @{ code = [int]$r.StatusCode; body = $c; err = '' }
@@ -340,6 +364,18 @@ function Http([string]$ip, [string]$method, [string]$path, [string]$body = '', [
       $eb = Err-Body $_
       Log ('  -> ' + $code + ' ' + $_.Exception.Message + ' ' + $eb)
       if ($code -eq 401 -and $cred) { $script:refused[$ip] = $true; return @{ code = 401; body = $eb; err = 'login refused' } }
+      if ($secret -and $code -ne 0 -and $args2.Uri.StartsWith('https://')) { $script:nvrTls[$ip] = 'ok' }
+      if ($secret -and $code -eq 0 -and $args2.Uri.StartsWith('https://')) {
+        $why = $(if ([string]$_.Exception.Message -match '(?i)timed? ?out|timeout') { 'timeout' } else { Test-NvrTlsPort $ip })
+        if ($why -eq 'refused') {
+          $script:nvrTls[$ip] = 'none'; $args2.Uri = 'http://' + $ip + $path
+          Say ('  WARNING: ' + $ip + ' has no HTTPS (nothing on port 443) - its password goes over plain HTTP.') 'Yellow'
+          Log ('  HTTPS refused on ' + $ip + ' -> plain HTTP'); continue
+        }
+        $script:nvrTls[$ip] = 'failed:' + $why
+        Say ('  ' + $ip + ': HTTPS did not work (' + $why + ') - the password was NOT sent over plain HTTP. Change it on the device page instead.') 'Red'
+        return @{ code = 0; body = $eb; err = ('HTTPS did not work (' + $why + ') - the password was not sent over plain HTTP') }
+      }
       if ($code -eq 0 -and $try -eq 0 -and -not $Mock -and -not $script:scheme.ContainsKey($ip)) { $script:scheme[$ip] = 'https'; $args2.Uri = ((Base $ip) + $path); continue }
       return @{ code = $code; body = $eb; err = $_.Exception.Message }
     }

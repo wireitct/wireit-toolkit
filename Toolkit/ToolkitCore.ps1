@@ -153,7 +153,7 @@ function Test-TkManifest($m) {
 }
 
 function Get-TkWeb([string]$url, [int]$timeoutMs) {
-  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12   # 2.2.2 (re-review): add TLS 1.2 for GitHub, never take the device TLS versions away
   $req = [Net.WebRequest]::Create($url)
   $req.Timeout = $timeoutMs
   if ($req -is [Net.HttpWebRequest]) { $req.ReadWriteTimeout = $timeoutMs; $req.UserAgent = 'WireIt-Toolkit' }
