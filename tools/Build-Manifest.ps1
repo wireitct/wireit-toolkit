@@ -1,5 +1,6 @@
 <#
- Build-Manifest.ps1 - writes version.json (the update manifest) from the files git tracks on this branch.
+ Build-Manifest.ps1 - writes version.json (the update manifest) from the files git tracks on this branch (2.2.5: without git, from the
+ files on disk under the allowed folders, minus what is never shipped).
  Not shipped (tools\ is outside the Toolkit's allowed folders). Windows PowerShell 5.1 or pwsh 7.
  Usage: powershell -File tools\Build-Manifest.ps1 -Commit <40-hex commit that holds exactly these files> [-Released yyyy-MM-dd] [-Notes '...']
  The commit must be the one whose files are listed (commit the code first, then build the manifest naming that commit, then commit version.json):
@@ -24,8 +25,22 @@ $version = $m.Groups[1].Value
 $m2 = [regex]::Match($core, "\`$script:TkAllowedTop\s*=\s*@\(([^)]*)\)"); if (-not $m2.Success) { throw 'TkAllowedTop not found in ToolkitCore.ps1' }
 $tops = @([regex]::Matches($m2.Groups[1].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
 if (-not $Notes -and (Test-Path $Out)) { try { $old = [IO.File]::ReadAllText($Out) | ConvertFrom-Json; if ([string]$old.version -eq $version) { $Notes = [string]$old.notes } } catch {} }
-$list = @(& git -C $Repo ls-files)
-if ($LASTEXITCODE -ne 0) { throw 'git ls-files failed' }
+# 2.2.5: crew PCs have no git. Without it (or outside a clone) the files are listed from disk: everything under the allowed folders except
+# what is never shipped (config.json, logs, vault/secrets/ipc/inbox, Python caches) - the same rule Test-Fix222 uses for "shipped".
+function Get-BmDiskFiles([string]$root, [string[]]$tops) {
+  foreach ($t in $tops) {
+    $d = Join-Path $root $t; if (-not (Test-Path -LiteralPath $d)) { continue }
+    Get-ChildItem -LiteralPath $d -Recurse -File | Where-Object { $_.Name -ne 'config.json' -and $_.Extension -ne '.pyc' -and $_.FullName -notmatch '[\\/](__pycache__|vault|secrets|ipc|inbox|logs)[\\/]' } |
+      ForEach-Object { $_.FullName.Substring($root.TrimEnd('\', '/').Length + 1).Replace('\', '/') }
+  }
+}
+$list = $null
+$git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($git -and (Test-Path -LiteralPath (Join-Path $Repo '.git'))) {
+  $list = @(& $git.Source -C $Repo ls-files 2>$null)
+  if ($LASTEXITCODE -ne 0) { Write-Host 'git ls-files failed - listing the files on disk instead' -ForegroundColor Yellow; $list = $null }
+} else { Write-Host 'git is not on this PC (or this is not a clone) - listing the files on disk instead' -ForegroundColor Yellow }
+if ($null -eq $list) { $list = @(Get-BmDiskFiles $Repo $tops) }
 $sha = [Security.Cryptography.SHA256]::Create()
 $files = @()
 foreach ($p in ($list | Sort-Object)) {

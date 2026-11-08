@@ -96,11 +96,29 @@ function Fs-Http {
     $code = 0; try { $code = [int]$_.Exception.Response.StatusCode } catch {}
     $eb = ''; try { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $eb = [string]$_.ErrorDetails.Message } } catch {}
     $err = $(if ($code -eq 0) { Get-FsNetErrorKind $_.Exception } else { '' })
+    # 2.2.5: Windows PowerShell 5.1 reports a TLS handshake with a box that is not speaking TLS as a plain "connection closed" (WebException
+    # SendFailure/ReceiveFailure, inner IOException), not as a TLS error, so it came out as 'other'. When the port itself answers a TCP
+    # connect, the HTTPS failure was the handshake or the certificate: 'tls' (the password is still not sent in clear either way).
+    if ($Tls -and $err -eq 'other' -and -not $script:FsMockUrl -and (Test-FsTcpAnswers $Ip) -eq 'yes') { $err = 'tls' }
     # test harness: the mock answers 599 "MOCKNET:<kind>" for what a real device does on the wire (port closed, no answer, bad TLS)
     if ($script:FsMockUrl -and $code -eq 599 -and $eb -match '^MOCKNET:(\w+)') { $code = 0; $err = $Matches[1]; $eb = '' }
     Fs-LogLine ('  -> ' + $code + ' ' + $_.Exception.Message + $(if ($err) { ' [' + $err + ']' } else { '' }))
     return [pscustomobject]@{ code = $code; body = $eb; err = $err }
   }
+}
+# 2.2.5: does anything accept a TCP connection on the HTTPS port? 'yes' | 'refused' | 'no' (timeout / no route / error)
+function Test-FsTcpAnswers([string]$ip, [int]$ms = 2000) {
+  $h = $ip; $port = 443; if ($ip -match '^(.+):(\d+)$') { $h = $Matches[1]; $port = [int]$Matches[2] }
+  $c = New-Object Net.Sockets.TcpClient
+  try {
+    $ar = $c.BeginConnect($h, $port, $null, $null)
+    if (-not $ar.AsyncWaitHandle.WaitOne($ms)) { return 'no' }
+    $c.EndConnect($ar); return 'yes'
+  } catch {
+    $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }
+    if ($e -is [Net.Sockets.SocketException] -and ([string]$e.SocketErrorCode -eq 'ConnectionRefused' -or [int]$e.NativeErrorCode -in @(10061, 111))) { return 'refused' }
+    return 'no'
+  } finally { try { $c.Close() } catch {} }
 }
 # 2.2.2 (review H1): WHY a call got no HTTP answer. 'refused' = nothing listens on that port (the device has no HTTPS);
 # 'timeout' = no answer in time; 'tls' = the TLS handshake or the certificate failed; 'unreachable' = no route; 'other'.
@@ -118,6 +136,7 @@ function Get-FsNetErrorKind($ex) {
       if ($st -eq 'Timeout') { $kind = 'timeout' } elseif ($st -in @('TrustFailure', 'SecureChannelFailure')) { if (-not $kind) { $kind = 'tls' } }
     }
     elseif ($e -is [Security.Authentication.AuthenticationException]) { if (-not $kind) { $kind = 'tls' } }
+    elseif ($e -is [IO.IOException] -and [string]$e.Message -match '(?i)(SSL|TLS|handshake|transport stream)') { if (-not $kind) { $kind = 'tls' } }   # 2.2.5: Windows PowerShell 5.1's words for a failed handshake
     elseif ($e -is [TimeoutException] -or $e -is [OperationCanceledException]) { $kind = 'timeout' }
   }
   if ($kind) { return $kind }

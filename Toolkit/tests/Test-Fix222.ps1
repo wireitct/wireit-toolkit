@@ -53,6 +53,8 @@ $r = Fs-Http -Ip ('127.0.0.1:' + $hangPort) -Path '/x' -Tls -Timeout 2
 Eq $r.err 'timeout' 'real socket: no answer in time is "timeout", not "no HTTPS"'
 $r = Fs-Http -Ip ('127.0.0.1:' + $plainPort) -Path '/x' -Tls -Timeout 4
 Eq $r.err 'tls' 'real socket: a failed TLS handshake is "tls", not "no HTTPS"'
+Eq (Test-FsTcpAnswers ('127.0.0.1:' + $plainPort)) 'yes' '2.2.5: the port answers a TCP connect (so a failed HTTPS there = "tls", also where Windows PowerShell 5.1 calls it "connection closed")'
+Eq (Test-FsTcpAnswers '127.0.0.1:1') 'refused' '2.2.5: nothing listening = "refused"'
 $script:FsTlsState = @{}; $script:FsPlainSecret.Clear(); $script:FsTlsFailed = @{}
 $hp = '127.0.0.1:' + $hangPort; $pp = '127.0.0.1:' + $plainPort
 $r = Fs-HttpSecret -Ip $hp -Path '/x' -Method 'PUT' -Body '<password>x</password>' -Timeout 2
@@ -358,6 +360,13 @@ $bm = [IO.File]::ReadAllText($bmOut) | ConvertFrom-Json
 Check ([string]$bm.version -eq '2.2.3' -and -not (Test-TkManifest $bm)) 'release package: tools\Build-Manifest.ps1 builds a manifest the Toolkit accepts, at the code''s own version'
 Check ((@($bm.files | ForEach-Object { $_.path + '=' + $_.sha256 } | Sort-Object) -join '|') -eq (@($man.files | ForEach-Object { $_.path + '=' + ([string]$_.sha256).ToLower() } | Sort-Object) -join '|')) 'release package: version.json is exactly what the builder makes from this branch (no file missed, no stale hash)'
 Check (@($man.files | Where-Object { -not (Test-Path (Join-Path $repo ([string]$_.path))) }).Count -eq 0) 'every listed file exists'
+# 2.2.5: crew PCs have no git - the builder must still work (2.2.4: "The term 'git' is not recognized")
+$ng = Join-Path $tmp 'nogit'; New-Item -ItemType Directory -Force -Path $ng | Out-Null; $ngOut = Join-Path $tmp 'version-nogit.json'
+$pshExe = (Get-Process -Id $PID).Path; $oldPath = $env:PATH
+try { $env:PATH = $(if ($env:OS -eq 'Windows_NT') { $env:SystemRoot + '\System32' } else { $ng }); $ngLog = & $pshExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'tools/Build-Manifest.ps1') -Commit ([string]$man.commit) -Released ([string]$man.released) -Out $ngOut 2>&1; $ngCode = $LASTEXITCODE } finally { $env:PATH = $oldPath }
+$ngm = $null; try { $ngm = [IO.File]::ReadAllText($ngOut) | ConvertFrom-Json } catch {}
+Check ($ngCode -eq 0 -and $ngm -and (($ngLog | Out-String) -match 'listing the files on disk')) '2.2.5: without git, Build-Manifest still builds the manifest (from the files on disk) and says so'
+Check ($ngm -and (@($ngm.files | ForEach-Object { $_.path + '=' + $_.sha256 } | Sort-Object) -join '|') -eq (@($man.files | ForEach-Object { $_.path + '=' + ([string]$_.sha256).ToLower() } | Sort-Object) -join '|')) '2.2.5: ...and it is the same manifest as version.json (same files, same hashes)'
 } finally { foreach ($p in $procs) { try { $p.Kill() } catch {} }; $script:FsMockUrl = '' }
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
