@@ -290,7 +290,7 @@ $fY = @(Get-ChildItem $spdY -Filter 'site-*.dat')[0]; $sxY = $null; if ($fY) { $
 Check ($sxY -and $sxY.password -ceq 'Newpw#1234' -and -not $sxY.bitwardenSaved -and -not ($ospY -match 'SHOWN ONCE') -and $ospY -match 'Save this in Bitwarden' -and -not ($ospY -match [regex]::Escape('Newpw#1234'))) 'Site password...: "Yes, I know it" -> exactly what the tech typed, not shown, "Save this in Bitwarden"'
 Check (-not (Test-Path (Join-Path $spdY 'password-word.dat'))) 'Site password...: "Yes, I know it" never asks for the word (nothing is made)'
 
-$py = $null; foreach ($n in $(if ($env:OS -eq 'Windows_NT') { @('python', 'py') } else { @('python3') })) { $cmd = Get-Command $n -ErrorAction SilentlyContinue; if ($cmd) { $py = $cmd.Source; break } }
+. (Join-Path $PSScriptRoot 'TestPython.ps1'); $py = Get-TestPython   # 2.2.5: a real Python, never the Windows Store stub
 if (-not $NoEndToEnd -and $py) {
   Write-Host '3. end to end against a fake site'
   function Start-Mock([string]$scn) {

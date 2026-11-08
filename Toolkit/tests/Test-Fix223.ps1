@@ -245,8 +245,8 @@ Write-Host '#21 a firmware-update config backup is the device''s bytes, unchange
 $wd = Join-Path $tmp 'web21'; New-Item -ItemType Directory -Force -Path $wd | Out-Null
 $bin = [byte[]](0..255 + 255..0 + @(0xC3, 0x28, 0xFF, 0xFE, 0x00)); [IO.File]::WriteAllBytes((Join-Path $wd 'configurationData'), $bin)
 $srv21 = Join-Path $tmp 'srv21.py'; [IO.File]::WriteAllText($srv21, "import http.server, functools, sys`nh = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[1]); h.log_message = lambda *a: None`ns = http.server.HTTPServer(('127.0.0.1', 0), h); print(s.server_address[1], flush=True); s.serve_forever()`n")
-$py21 = $(if (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' } else { 'python' })
-$psi = New-Object Diagnostics.ProcessStartInfo; $psi.FileName = (Get-Command $py21).Source; $psi.Arguments = '"' + $srv21 + '" "' + $wd + '"'; $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.CreateNoWindow = $true
+. (Join-Path $PSScriptRoot 'TestPython.ps1'); $py21 = Get-TestPython   # 2.2.5: a real Python, never the Windows Store stub
+$psi = New-Object Diagnostics.ProcessStartInfo; $psi.FileName = $py21; $psi.Arguments = '"' + $srv21 + '" "' + $wd + '"'; $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.CreateNoWindow = $true
 $p21 = [Diagnostics.Process]::Start($psi); $port21 = [int]$p21.StandardOutput.ReadLine()
 try {
   $nm = Import-Module (Join-Path $tk 'modules\NvrHealth\NvrHealth.psm1') -Force -PassThru -DisableNameChecking

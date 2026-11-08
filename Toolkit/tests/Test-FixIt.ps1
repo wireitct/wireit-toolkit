@@ -8,7 +8,7 @@ $tkDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $script:pass = 0; $script:fail = 0
 function Check([string]$name, [bool]$ok, [string]$info = '') { if ($ok) { $script:pass++; Write-Output ('PASS ' + $name) } else { $script:fail++; Write-Output ('FAIL ' + $name + '  ' + $info) } }
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('wireit-fixtest-' + (Get-Random)); New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-$py = (Get-Command python -ErrorAction SilentlyContinue).Source
+. (Join-Path $PSScriptRoot 'TestPython.ps1'); $py = Get-TestPython   # 2.2.5: a real Python, never the Windows Store stub
 $mockPy = Join-Path $tkDir 'modules\NvrHealth\tests\mock_devices.py'; $fx = Join-Path $tkDir 'FixIt.ps1'
 $tok = $null; $err = $null; [void][Management.Automation.Language.Parser]::ParseFile($fx, [ref]$tok, [ref]$err); Check 'parse FixIt.ps1' ($err.Count -eq 0) ($err | Out-String)
 [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $tkDir 'modules\NvrHealth\NvrFix.ps1'), [ref]$tok, [ref]$err); Check 'parse NvrFix.ps1' ($err.Count -eq 0) ($err | Out-String)

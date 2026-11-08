@@ -15,10 +15,10 @@ $tmp = Join-Path ([IO.Path]::GetTempPath()) ('fix221-' + [guid]::NewGuid().ToStr
 $script:LogLines = New-Object System.Collections.ArrayList
 function Fs-LogLine([string]$s) { [void]$script:LogLines.Add($s) }
 function Read-Src([string]$rel) { return [IO.File]::ReadAllText((Join-Path $repo $rel)) }
-$py = $(if (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' } else { 'python' })
+. (Join-Path $PSScriptRoot 'TestPython.ps1'); $py = Get-TestPython   # 2.2.5: a real Python, never the Windows Store stub
 $mockProc = $null
 function Start-Mock([string]$json) {
-  $psi = New-Object Diagnostics.ProcessStartInfo; $psi.FileName = (Get-Command $py).Source
+  $psi = New-Object Diagnostics.ProcessStartInfo; $psi.FileName = $py
   $psi.Arguments = '"' + (Join-Path $here 'fixsite\mock_site.py') + '" "' + $json + '" 0'; $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.CreateNoWindow = $true
   $p = [Diagnostics.Process]::Start($psi); $port = [int]$p.StandardOutput.ReadLine()
   $script:mockProc = $p; return ('http://127.0.0.1:' + $port)

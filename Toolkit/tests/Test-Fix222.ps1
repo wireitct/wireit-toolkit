@@ -17,10 +17,10 @@ $tmp = Join-Path ([IO.Path]::GetTempPath()) ('fix222-' + [guid]::NewGuid().ToStr
 $script:LogLines = New-Object System.Collections.ArrayList
 function Fs-LogLine([string]$s) { [void]$script:LogLines.Add($s) }
 function Read-Src([string]$rel) { return [IO.File]::ReadAllText((Join-Path $repo $rel)) }
-$py = $(if (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' } else { 'python' })
+. (Join-Path $PSScriptRoot 'TestPython.ps1'); $py = Get-TestPython   # 2.2.5: a real Python, never the Windows Store stub
 $procs = New-Object System.Collections.ArrayList
 function Start-Py([string]$script, [string[]]$a) {
-  $psi = New-Object Diagnostics.ProcessStartInfo; $psi.FileName = (Get-Command $py).Source
+  $psi = New-Object Diagnostics.ProcessStartInfo; $psi.FileName = $py
   $psi.Arguments = '"' + $script + '" ' + (@($a | ForEach-Object { '"' + $_ + '"' }) -join ' '); $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.CreateNoWindow = $true
   $p = [Diagnostics.Process]::Start($psi); [void]$procs.Add($p); return [int]$p.StandardOutput.ReadLine()
 }

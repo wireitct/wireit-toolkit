@@ -4,7 +4,7 @@ param([int]$Port = 18190)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $here
-$py = (Get-Command python -ErrorAction SilentlyContinue).Source; if (-not $py) { $py = (Get-Command py -ErrorAction SilentlyContinue).Source }
+. (Join-Path $PSScriptRoot '..\..\..\tests\TestPython.ps1'); $py = Get-TestPython   # 2.2.5: a real Python, never the Windows Store stub
 if (-not $py) { throw 'Python 3 is needed for the mock devices.' }
 $logs = Join-Path $env:TEMP ('nvrhealth-testlogs-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $mock = Start-Process -FilePath $py -ArgumentList @((Join-Path $here 'mock_devices.py'), $Port) -PassThru -NoNewWindow -RedirectStandardError (Join-Path $env:TEMP 'nvrhealth-mock.err')

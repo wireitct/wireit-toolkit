@@ -1,7 +1,7 @@
 <#
  Run-AllTests.ps1 - runs every WireIt Toolkit test suite from a plain clone (Windows PowerShell 5.1 or pwsh 7). Not shipped (tools\).
  Usage (from anywhere):  powershell -NoProfile -ExecutionPolicy Bypass -File <clone>\tools\Run-AllTests.ps1
- Needs Python 3 on PATH ("python" or "py") for the mock devices. Exit code = number of suites that failed.
+ Needs a real Python 3 for the mock devices (Toolkit\tests\TestPython.ps1 finds it: py -3, then python, then python3; never the Windows Store stub). Exit code = number of suites that failed.
 #>
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)

@@ -15,7 +15,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path; $tk = Split-Path -Paren
 $script:fail = 0; $script:pass = 0
 function Check([bool]$ok, [string]$what) { if ($ok) { $script:pass++; Write-Host ('  ok    ' + $what) } else { $script:fail++; Write-Host ('  FAIL  ' + $what) -ForegroundColor Red } }
 function Eq($a, $b, [string]$what) { Check ("$a" -eq "$b") ($what + ' (got "' + $a + '", want "' + $b + '")') }
-$py = $(if ($env:OS -eq 'Windows_NT') { 'python' } elseif (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' } else { 'python' })   # Windows: python3 is often the Store stub
+. (Join-Path $PSScriptRoot 'TestPython.ps1'); $py = Get-TestPython   # 2.2.5: a real Python, never the Windows Store stub
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('hiktest-' + [guid]::NewGuid().ToString('N').Substring(0, 8)); New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 function New-Code([int]$seed) { $b = New-Object byte[] 132; $b[0] = 3; $r = New-Object Random($seed); $x = New-Object byte[] 128; $r.NextBytes($x); [Array]::Copy($x, 0, $b, 4, 128); return [Convert]::ToBase64String($b) }
 $PW = 'Wireit4821'

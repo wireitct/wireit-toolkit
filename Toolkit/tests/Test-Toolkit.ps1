@@ -224,7 +224,7 @@ Check 'firmware list: own copy when no daily check' ((Get-TkNvrReference $rtk) -
 Set-Content (Join-Path $rw 'NvrHealth\firmware-latest.json') '{"updated":"2026-12-01T05:30:00","models":{"x":{}}}'
 Check 'firmware list: newer monthly refresh wins' ((Get-TkNvrReference $rtk) -like '*\NvrHealth\firmware-latest.json' -and (Get-TkNvrReference $rtk) -notlike '*modules*')
 Check 'plain end texts' ((Get-TkNvrPlainEnd 'Clock check' 2) -match 'Nothing was changed' -and (Get-TkNvrPlainEnd 'Clock check' 4) -match 'PROBLEM')
-$py = (Get-Command python -ErrorAction SilentlyContinue).Source
+. (Join-Path $PSScriptRoot 'TestPython.ps1'); $py = Get-TestPython   # 2.2.5: a real Python, never the Windows Store stub
 $mockPy = Join-Path $tkDir 'modules\NvrHealth\tests\mock_devices.py'
 if ($py -and (Test-Path $mockPy) -and (Test-Path $nm)) {
   $mp = 18191; $mbase = 'http://127.0.0.1:' + $mp
@@ -296,7 +296,7 @@ $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $su -CamResetDir 
 Check 'upload: no site = the tip line' ($o -match 'Tip: type the site to save this list to the site page.') $o
 $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $su -Site 'WI-064' -CamResetDir $scr -NoSend 2>&1 | Out-String
 Check 'upload body: op scanPush, 2 devices, no password' ($o -match '"op":"scanPush"' -and $o -match '"site":"WI-064"' -and ([regex]::Matches($o, '"kind"')).Count -eq 2 -and $o -notmatch 'Secret|password') $o
-$py = (Get-Command python -ErrorAction SilentlyContinue).Source
+. (Join-Path $PSScriptRoot 'TestPython.ps1'); $py = Get-TestPython   # 2.2.5: a real Python, never the Windows Store stub
 $mockSc = Join-Path $tkDir 'tests\mock_scan_server.py'
 if ($py -and (Test-Path $mockSc)) {
   $sp = 18192; $sbase = 'http://127.0.0.1:' + $sp + '/'
