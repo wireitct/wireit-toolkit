@@ -214,7 +214,11 @@ Check (-not (Test-FsOldFirmware 'V5.7.3 build 220112')) 'new firmware is not old
 # site list
 $pl = New-FsPlan $null $lo; $sl = New-FsSiteList 'Lieber' 'WI-1' $pl $lo
 Eq @($sl.cameras).Count 5 'save-as-list: every camera'
-Check (@($sl.cameras | Where-Object { $_.ip -eq '192.168.1.23' }).Count -eq 1) 'save-as-list records the NEW address of moved cameras'
+# 2.2.3 (Codex #38): a list saved from the PLAN (nothing moved yet) records where cameras are; a verified move (ipNow) records the new address
+Check (-not @($sl.cameras | Where-Object { $_.ip -eq '192.168.1.23' }).Count) 'save-as-list from the plan alone: planned targets are NOT recorded (2.2.3, Codex #38)'
+$mv = @($pl.cams | Where-Object { $_.target -eq '192.168.1.23' })[0]; if ($mv) { $mv | Add-Member -NotePropertyName ipNow -NotePropertyValue '192.168.1.23' -Force }
+$sl = New-FsSiteList 'Lieber' 'WI-1' $pl $lo
+Check (@($sl.cameras | Where-Object { $_.ip -eq '192.168.1.23' }).Count -eq 1) 'save-as-list records the NEW address of cameras whose move was verified'
 Check (-not (($sl | ConvertTo-Json -Depth 6) -match '(?i)"[a-z_]*(password|pwd|secret)[a-z_]*"\s*:')) 'site list holds no password field'
 $snap = ConvertFrom-FsSnapshot ([pscustomobject]@{ site = 'x'; scheme = '192.168.1'; nvrs = @([pscustomobject]@{ ip = '192.168.1.20'; mac = '44-19-B6-00-00-20' }); cameras = @([pscustomobject]@{ mac = '44-19-B6-00-00-21'; ip = '192.168.1.21'; channel = 1; nvr = '192.168.1.20'; poe_port = $null }) })
 Eq $snap.cameras[0].mac '44:19:b6:00:00:21' 'Fix NVR install snapshot works as a site list'

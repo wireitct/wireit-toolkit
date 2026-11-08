@@ -279,8 +279,9 @@ Check (-not @($fl | Where-Object { $_ -match 'reset button|power-cycle the camer
 Check (-not (Test-RunningAsSystem)) 'portal: the browser is never opened from the SYSTEM account (guard present, test runs as a normal user)'
 $chs8 = @(1..8 | ForEach-Object { [pscustomobject]@{ channel = $_; ip = ('192.168.254.' + $_); online = ($_ -in 2, 3) } }); $chs8[4].ip = '10.243.1.8'
 Eq (Get-FsFreeNvrChannel $chs8 '192.168.1.24' '10.243.1.8') 5 'NVR slot: the camera''s own old slot is reused (ch5 held its old address)'
-Eq (Get-FsFreeNvrChannel $chs8 '192.168.1.21') 1 'NVR slot: a full NVR (8 plug-and-play slots) -> first OFFLINE slot, never an online camera''s'
-Eq (Get-FsFreeNvrChannel $chs8 '192.168.1.22' '' @(1)) 4 'NVR slot: next offline slot when ch1 is already taken this run'
+# 2.2.3 (Codex #15): an offline slot still holds another camera's configuration: a full NVR gives no slot (put it on by hand)
+Eq (Get-FsFreeNvrChannel $chs8 '192.168.1.21') 0 'NVR slot: a full NVR (8 plug-and-play slots) -> no slot: never an offline or online camera''s (2.2.3)'
+Eq (Get-FsFreeNvrChannel $chs8 '192.168.1.22' '' @(1)) 0 'NVR slot: still none when ch1 is already taken this run (2.2.3)'
 Write-Host '5. secrets'
 $all = ($logLines -join "`n")
 Check ($all -notmatch [regex]::Escape($PW)) 'the new password is in no log line'
