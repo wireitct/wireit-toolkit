@@ -413,13 +413,17 @@ if ($Mode -eq 'Rollback') {
     $pw = ''; foreach ($cand in $candsR) { if ($cand -and (Test-FsLogin $ip $c.brand $cand) -eq 'ok') { $pw = $cand; break } }
     if (-not $pw) { Say ('  ' + $c.name + ': cannot log in at ' + $ip + ' - not undone ' + $script:FsBad) 'Red'; $bad++; continue }
     $cr = Fs-Cred $pw
-    if ($c.stream_before -and -not (& $isDone ($ck + '|settings'))) { $cur = Get-FsStream $ip $c.brand $cr; $want = [pscustomobject]@{ codec = [string]$c.stream_before.codec; fps = [int]$c.stream_before.fps; resolution = $(if ($c.stream_before.width) { '' + $c.stream_before.width + 'x' + $c.stream_before.height } else { 'keep' }); bitrate = [int]$c.stream_before.bitrate; gop = 0; smartCodec = 'keep' }
+    if ($c.stream_before -and -not (& $isDone ($ck + '|settings')) -and -not ($cur = Get-FsStream $ip $c.brand $cr)) { $res += [pscustomobject]@{ text = 'settings could not be read - not put back'; ok = $false } }   # 2.2.3 (Codex #20)
+    elseif ($c.stream_before -and -not (& $isDone ($ck + '|settings'))) { $want = [pscustomobject]@{ codec = [string]$c.stream_before.codec; fps = [int]$c.stream_before.fps; resolution = $(if ($c.stream_before.width) { '' + $c.stream_before.width + 'x' + $c.stream_before.height } else { 'keep' }); bitrate = [int]$c.stream_before.bitrate; gop = 0; smartCodec = 'keep' }
       $diff = @(Get-FsSettingsDiff $cur $want); if ([int]$c.stream_before.gop -and $cur -and [int]$cur.gop -ne [int]$c.stream_before.gop) { $diff += [pscustomobject]@{ field = 'gop'; from = $cur.gop; to = [int]$c.stream_before.gop } }
       if ([string]$c.stream_before.smartCodec -eq 'on' -and $cur.smartCodec -eq 'off') { $diff += [pscustomobject]@{ field = 'smartCodecOn'; from = 'off'; to = 'on' } }
       $diff = @($diff | Where-Object { $_.field -ne 'smartCodecOn' })   # Smart Codec back on: by hand (it was the cause on BYW)
-      if ($diff.Count) { $w = Set-FsStream $ip $c.brand $cr $cur $diff; $res += [pscustomobject]@{ text = 'settings back'; ok = [bool]$w.ok }; if ($w.ok) { & $markDone ($ck + '|settings') } } else { & $markDone ($ck + '|settings') } }
+      if ($diff.Count) { $w = Set-FsStream $ip $c.brand $cr $cur $diff; $okS = [bool]$w.ok
+        # 2.2.3 (Codex #20): settings count as back only when the camera reads them back as they were
+        if ($okS) { $rd = Get-FsStream $ip $c.brand $cr; $okS = [bool]($rd -and -not @(Get-FsSettingsDiff $rd $want).Count) }
+        $res += [pscustomobject]@{ text = 'settings back'; ok = $okS }; if ($okS) { & $markDone ($ck + '|settings') } } else { & $markDone ($ck + '|settings') } }
     if ($c.password_changed -and $oldPw -and -not (& $isDone ($ck + '|password'))) {
-      $ok = $(if ($pw -ceq $oldPw) { $true } else { Set-FsPassword $ip $c.brand $cr $oldPw })
+      $ok = $(if ($pw -ceq $oldPw) { $true } else { [void](Set-FsPassword $ip $c.brand $cr $oldPw); (Test-FsLogin $ip $c.brand $oldPw) -eq 'ok' })   # 2.2.3 (Codex #20): back = the old password logs in
       if ($ok) { $pw = $oldPw; $cr = Fs-Cred $pw; $mk = ConvertTo-FsMac ([string]$c.mac); if ($mk) { $sec.cams[$mk] = $oldPw }; & $markDone ($ck + '|password') }
       $res += [pscustomobject]@{ text = 'old password back'; ok = $ok }
     }
@@ -462,7 +466,8 @@ if ($Mode -eq 'Rollback') {
     $nip = Resolve-FsUndoNvrIp @($r0.nvrs) $nip0 $isDone   # 2.2.2 (H8): moved back by an earlier Undo -> its old address
     if ($nip -ne $nip0) { if (-not $nvrPwR.ContainsKey($nip) -and $nvrPwR.ContainsKey($nip0)) { $nvrPwR[$nip] = $nvrPwR[$nip0] }; if (-not (Test-FsOnScheme $nip $pcScheme)) { [void](Add-FsTempIp (Get-FsP3 $nip) $pc $tempState) } }
     if (-not $oldN -or -not $nvrPwR.ContainsKey($nip)) { Say ('  NVR ' + $nip + ': its old password is not on this PC - not undone ' + $script:FsBad) 'Red'; $bad++; continue }
-    $ok = Set-FsPassword $nip 'Hikvision' (Fs-Cred $nvrPwR[$nip]) $oldN; Say-PlainWarning $nip
+    [void](Set-FsPassword $nip 'Hikvision' (Fs-Cred $nvrPwR[$nip]) $oldN); Say-PlainWarning $nip
+    $ok = ((Test-FsLogin $nip 'Hikvision' $oldN) -eq 'ok')   # 2.2.3 (Codex #20): back = the old password logs in
     if ($ok) { $nvrPwR[$nip] = $oldN; $sec.nvr[$nip] = $oldN; if ($nip -ne $nip0) { $nvrPwR[$nip0] = $oldN; $sec.nvr[$nip0] = $oldN }; & $markDone ('nvrpw|' + $nip0) } else { $bad++ }
     Say ('  NVR ' + $nip + ': old password back ' + $(if ($ok) { $script:FsOk } else { $script:FsBad }))
   }
@@ -470,9 +475,13 @@ if ($Mode -eq 'Rollback') {
     if (& $isDone ('nvrmove|' + [string]$n.ip)) { continue }
     if (-not $nvrPwR.ContainsKey([string]$n.target)) { Say ('  NVR ' + $n.target + ': no saved login - move it back by hand to ' + $n.old.ip) 'Yellow'; $bad++; continue }
     $cr = Fs-Cred $nvrPwR[[string]$n.target]; $net = Get-FsNet ([string]$n.target) 'Hikvision' $cr; [void](Add-FsTempIp (Get-FsP3 ([string]$n.old.ip)) $pc $tempState)
+    if (-not $net) { Say ('  NVR ' + $n.target + ': its address settings could not be read - not moved back ' + $script:FsBad) 'Red'; $bad++; continue }
     $w = Set-FsNet ([string]$n.target) 'Hikvision' $cr $net ([string]$n.old.ip) ([string]$n.old.mask) ([string]$n.old.gw) ([string]$n.old.dns1) ([string]$n.old.dns2) -Dhcp:([bool]$n.old.dhcp)
-    if ($w.ok) { & $markDone ('nvrmove|' + [string]$n.ip) } else { $bad++ }
-    Say ('  NVR: back to ' + $n.old.ip + $(if ($n.old.dhcp) { ' (DHCP)' } else { '' }) + ' ' + $(if ($w.ok) { $script:FsOk } else { $script:FsBad }))
+    # 2.2.3 (Codex #20): done only when the NVR answers on its old address (after the restart it may need); DHCP = the router picks it
+    if ($w.ok -and $w.reboot) { [void](Restart-FsDevice ([string]$n.target) 'Hikvision' $cr) }
+    $backN = $w.ok -and ([bool]$n.old.dhcp -or (Wait-FsDevice ([string]$n.old.ip) 'Hikvision' $nvrPwR[[string]$n.target] ([int]$opts.rebootWaitSec)))
+    if ($backN) { & $markDone ('nvrmove|' + [string]$n.ip) } else { $bad++ }
+    Say ('  NVR: back to ' + $n.old.ip + $(if ($n.old.dhcp) { ' (DHCP)' } else { '' }) + $(if ($w.ok -and -not $backN) { ' - accepted, but it does not answer there' } else { '' }) + ' ' + $(if ($backN) { $script:FsOk } else { $script:FsBad }))
   }
   Say-NetRestore (Remove-FsTempIps $tempState)
   try { Save-FsSecrets $SecretsDir $sec } catch {}

@@ -117,6 +117,13 @@ Eq (Resolve-FsPwChange '10.0.0.7' 'Hikvision' 'NewSite1' 'Old1') 'unknown' 'repr
 $fs = Read-Src 'Toolkit/FixSite.ps1'
 Check ($fs -match "password_unconfirmed = \`$true" -and $fs -match 'np\.unconfirmed = \$true') 'FixSite: unknown = rollback flag set (Undo tries both), camera and NVR alike'
 Check ($fs -match 'password_attempted = \$true; Save-Rb\s+\[void\]\(Set-FsPassword') 'the attempt is in the undo file BEFORE the write'
+Write-Host '#20 Undo marks a change done only once it is verified'
+$fs = Read-Src 'Toolkit/FixSite.ps1'
+Check ($fs -match "settings could not be read - not put back") 'reproduction: unreadable stream -> not marked done (2.2.2 found "no differences" and marked it)'
+Check ($fs -match 'reads them back as they were' -and $fs -match '\$okS = \[bool\]\(\$rd -and') 'settings are read back before "done"'
+Check ($fs -match "\[void\]\(Set-FsPassword \`$ip \`$c\.brand \`$cr \`$oldPw\); \(Test-FsLogin \`$ip \`$c\.brand \`$oldPw\) -eq 'ok'") 'camera password back = the old password logs in'
+Check ($fs -match "\`$ok = \(\(Test-FsLogin \`$nip 'Hikvision' \`$oldN\) -eq 'ok'\)") 'NVR password back = the old password logs in'
+Check ($fs -match "Restart-FsDevice \(\[string\]\`$n\.target\)" -and $fs -match "if \(\`$backN\) \{ & \`$markDone \('nvrmove") 'NVR move-back: restart when asked, done only when it answers on its old address'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
