@@ -242,6 +242,21 @@ try {
 if (-not $NoPortal) {
   Write-Host '4. portal'
   . (Join-Path $tk 'HikPortal.ps1')
+  # 2.2.5 fix 8: the browser gets each argument on its own (2.2.3/2.2.4 sent them as one, so no debugging port and no own profile).
+  # Checked by starting a real process the same way Start-HikBrowserSession does (Start-Process + Join-HikArgs) and reading back what it got.
+  $oldExtra = $script:PortalExtraArgs; $script:PortalExtraArgs = @('--headless=new', '--no-sandbox')
+  $tprof = $tmp + '\Jose Maria\Temp\wireit-hik-1a2b3c4d\'; $turl = 'file:///C:/WireIt%20Test/fake form.html?a="b"'
+  $ba = @(Get-HikBrowserArgs 33901 $tprof $turl)
+  Eq $ba.Count 9 'portal args: one list element per browser argument'
+  Check ($ba[0] -eq '--remote-debugging-port=33901' -and $ba[1] -eq ('--user-data-dir=' + $tprof) -and $ba[-1] -eq $turl) 'portal args: debugging port, own profile and page are separate arguments'
+  if ($py) {
+    $aout = Join-Path $tmp 'argv.json'
+    $asp = @{ FilePath = $py; ArgumentList = (Join-HikArgs (@((Join-Path $fx 'argv_dump.py'), $aout) + $ba)); PassThru = $true }; if ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows) { $asp.WindowStyle = 'Hidden' }
+    $ap = Start-Process @asp; if (-not $ap.WaitForExit(15000)) { try { $ap.Kill() } catch {} }
+    $got = @(); if (Test-Path $aout) { $got = @(Get-Content $aout -Raw | ConvertFrom-Json) }
+    Eq (($got | ForEach-Object { '[' + $_ + ']' }) -join ' ') (($ba | ForEach-Object { '[' + $_ + ']' }) -join ' ') 'portal args: a started program receives exactly those arguments (spaces, quotes and the trailing \ survive)'
+  } else { Check $false 'portal args: no Python to start the argument check' }
+  $script:PortalExtraArgs = $oldExtra
   $br = ''; foreach ($c in @('/usr/bin/chromium', '/usr/bin/google-chrome', "$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe")) { if ($c -and (Test-Path -LiteralPath $c)) { $br = $c; break } }
   if (-not $br) { Write-Host '  skip  no Chrome/Edge here' }
   else {
@@ -250,6 +265,7 @@ if (-not $NoPortal) {
     $s = Start-HikBrowserSession $script:PortalUrl
     Check ($null -ne $s) 'portal: browser window opened with its own throw-away profile'
     if ($s) {
+      Check (@(Get-ChildItem -Force -LiteralPath $s.profile -ErrorAction SilentlyContinue).Count -gt 0) 'portal: the browser really writes into that throw-away profile folder'
       Check (Wait-PortalForm $s 30) 'portal: form loaded'
       $form = [pscustomobject]@{ firstName = 'Moshe'; lastName = 'Reichman'; email = 'moshe@wireitct.com'; company = 'WireIt CT LLC'; state = 'Connecticut'; zip = '06710'; businessType = 'Installer' }
       $r = Fill-HikPortalForm $s $form $nvr $f1

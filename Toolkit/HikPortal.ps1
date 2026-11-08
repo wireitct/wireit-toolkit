@@ -66,6 +66,17 @@ function Join-HikArgs([string[]]$a) {
     if ($s -and $s -notmatch '[\s"]') { $s } else { '"' + ([regex]::Replace(([regex]::Replace($s, '(\\*)"', '$1$1\"')), '(\\+)$', '$1$1')) + '"' }
   }) -join ' ')
 }
+# 2.2.5 fix 8: the browser's arguments, one array element per argument. Before, the list was written @('--remote-debugging-port=' + $port, '--user-data-dir=' + $prof, ...):
+# in PowerShell the comma binds tighter than +, so that is '--remote-debugging-port=' + @($port, '--user-data-dir=' + @($prof, ...)) - ONE string
+# "--remote-debugging-port=33901 --user-data-dir=... --remote-allow-origins=*". Join-HikArgs then quoted it as one argument, so the browser got no
+# debugging port and no own profile (Chrome showed it as --remote-debugging-port="33901 --user-data-dir=..."), and /json/list never answered.
+# Same on Windows PowerShell 5.1 and pwsh 7. Each piece is now built in parentheses on its own.
+function Get-HikBrowserArgs([int]$Port, [string]$ProfileDir, [string]$Url) {
+  $a = @(('--remote-debugging-port=' + $Port), ('--user-data-dir=' + $ProfileDir), '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--remote-allow-origins=*')
+  $a += @($script:PortalExtraArgs | Where-Object { $_ })
+  if ($Url) { $a += $Url }
+  return [string[]]$a
+}
 function Start-HikBrowserSession([string]$Url) {
   # 2.1.0 (3 Hewlett, Nov 6 2026): a window opened by a SYSTEM process lands on a Desktop nobody can see or use (systemprofile\Desktop is unavailable). Never do that.
   if (Test-RunningAsSystem) { throw 'This is running as the SYSTEM account, which has no screen. Start the Toolkit from the logged-in user (the Toolkit window or a scheduled task set to run as that user, only when logged on).' }
@@ -74,7 +85,7 @@ function Start-HikBrowserSession([string]$Url) {
   $port = Get-Random -Minimum 20000 -Maximum 40000
   $prof = Join-Path ([IO.Path]::GetTempPath()) ('wireit-hik-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
   New-Item -ItemType Directory -Force -Path $prof | Out-Null
-  $args2 = @('--remote-debugging-port=' + $port, '--user-data-dir=' + $prof, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--remote-allow-origins=*') + @($script:PortalExtraArgs) + @($Url)
+  $args2 = @(Get-HikBrowserArgs $port $prof $Url)
   $proc = Start-Process -FilePath $exe -ArgumentList (Join-HikArgs $args2) -PassThru   # 2.2.3 (Codex #48): one quoted command line
   $ws = ''; $end = (Get-Date).AddSeconds(25)
   while ((Get-Date) -lt $end -and -not $ws) {
