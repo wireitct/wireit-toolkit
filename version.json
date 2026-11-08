@@ -1,8 +1,8 @@
 {
   "version": "2.2.3",
   "released": "2026-11-08",
-  "commit": "8560fb49a8cefe8b8fb745d7d21231eccf1648f3",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/8560fb49a8cefe8b8fb745d7d21231eccf1648f3/",
+  "commit": "3c676f1607eb0b3a3a7df497bd30e085baba6850",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/3c676f1607eb0b3a3a7df497bd30e085baba6850/",
   "notes": "2.2.3 (not released): fixes from Codex's full review of 2.2.2 (5e465b9), findings #6-64; the Crew/SYSTEM split is removed (Crew is a local admin): no SYSTEM task, IPC folder or ACL lock. See files/pc-setup/toolkit-2.2.3-fixes.md.",
   "files": [
     {
@@ -82,8 +82,8 @@
     },
     {
       "path": "Toolkit/FixSite.ps1",
-      "sha256": "ea762754fdd89237188e19090c7f47c985295f79b1db46f37420562bf591b162",
-      "size": 101513
+      "sha256": "3fb81276ecea64b4bf25682bc0eb304d03d69584c7a0dd85cfc4efba98d763a7",
+      "size": 101555
     },
     {
       "path": "Toolkit/FixSiteBw.ps1",
@@ -97,8 +97,8 @@
     },
     {
       "path": "Toolkit/FixSiteDevices.ps1",
-      "sha256": "2c7ca8f0987c4707280f922164c9e8816f7ea4e19fa1fc70234ae553975836a7",
-      "size": 77670
+      "sha256": "0321f22cf03d05428a9a2c3bb602198dce83a82090f3fea9370416a65138a4dc",
+      "size": 81006
     },
     {
       "path": "Toolkit/FixSiteWindow.ps1",
@@ -147,8 +147,8 @@
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrFix.ps1",
-      "sha256": "cfd255b806d1f0572f01177bb7d603210a5b321e4219b9328bea75ee78cd9ccf",
-      "size": 20636
+      "sha256": "57ad8aa7e58f97cbda38ea99c51da3fd2e5433a5b3dcd140d86bfebbc9047145",
+      "size": 22039
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrHealth.psm1",
@@ -157,8 +157,8 @@
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/mock_devices.py",
-      "sha256": "0f06ed7773452464856db5251f98b12cb4fb94b20b8dc3abba3a3f6c926a4890",
-      "size": 32833
+      "sha256": "224350763900dcdce2ab4ed44a8088f82437898ea3a345acd2959df54c1088d3",
+      "size": 32903
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/Test-NvrHealth.ps1",
@@ -287,13 +287,13 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
-      "sha256": "41617a5eb3c337d6945ed57c36abdb4784ca8389f387fdecce5379272f6f3cfd",
-      "size": 57303
+      "sha256": "876577c7abeaaa9e0e15ff6379ae791e63ea6070fbfe0965315a8b56a6f8ec33",
+      "size": 57311
     },
     {
       "path": "Toolkit/tests/Test-Fix224.ps1",
-      "sha256": "a14713b4c7dede681c795135be67a98f8bd8255f6fd5378d2795038e9911ac65",
-      "size": 5441
+      "sha256": "525e6acaa3bd293b623b1d8d4f3c2e2204b37f42a218c52804316f4fb6de25c9",
+      "size": 10891
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
