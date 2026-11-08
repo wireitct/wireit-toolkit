@@ -1,8 +1,9 @@
 <#
- Test-HikReset.ps1 - WireIt Toolkit 2.1 tests for the Hikvision official-reset flow (pwsh 7 or Windows PowerShell 5.1; needs python3 for the fake devices and fake mailbox).
+ Test-HikReset.ps1 - WireIt Toolkit 2.2 tests for the Hikvision official-reset flow (pwsh 7 or Windows PowerShell 5.1; needs python3 for the fake devices and the mock reply relay).
    1. SADP: discovery on several subnets, the request file is built exactly like SADP's own, the import tries only a few forms
    2. flow: state file, no second export, expiry, restart check, reply matching, import + login check
-   3. mail: IMAP (fake server), MIME attachments, matching by serial / short serial / MAC, wrong files never used
+   3. mail: saved .eml mails (MIME attachments, codes), matching by serial / short serial / MAC, wrong files never used
+   3b. 2.2.0 reply relay (mock HTTPS relay on 127.0.0.1, op hikReplyGet), config fallbacks, the "I got Hik's email" drops
    4. portal: the form is filled and the request file attached on a local copy of Hikvision's page (needs Chrome/Chromium; skipped when absent)
    5. no password and no unlock code in any log line
  Usage: powershell -ExecutionPolicy Bypass -File Test-HikReset.ps1        (exit code = number of failed checks)
@@ -10,7 +11,7 @@
 param([switch]$NoPortal)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path; $tk = Split-Path -Parent $here; $fx = Join-Path $here 'hikreset'
-. (Join-Path $tk 'HikResetFlow.ps1')
+. (Join-Path $tk 'HikResetFlow.ps1'); . (Join-Path $tk 'HikEmailDrop.ps1')
 $script:fail = 0; $script:pass = 0
 function Check([bool]$ok, [string]$what) { if ($ok) { $script:pass++; Write-Host ('  ok    ' + $what) } else { $script:fail++; Write-Host ('  FAIL  ' + $what) -ForegroundColor Red } }
 function Eq($a, $b, [string]$what) { Check ("$a" -eq "$b") ($what + ' (got "' + $a + '", want "' + $b + '")') }
@@ -141,32 +142,95 @@ $eml = "From: =?utf-8?Q?Hikvision_Support?= <support@hikvision.com>`r`nTo: moshe
 [IO.File]::WriteAllText((Join-Path $mdir '1.eml'), $eml)
 $eml2 = "From: someone@hikvision.com`r`nSubject: other`r`nContent-Type: multipart/mixed; boundary=`"B2`"`r`n`r`n--B2`r`nContent-Type: text/plain`r`n`r`nno serial here`r`n--B2`r`nContent-Type: application/xml; name=`"mystery.xml`"`r`nContent-Disposition: attachment; filename=`"mystery.xml`"`r`nContent-Transfer-Encoding: 7bit`r`n`r`nAAAAAAAAAAAA`r`n--B2--`r`n"
 [IO.File]::WriteAllText((Join-Path $mdir '2.eml'), $eml2)
-$mport = 41000 + (Get-Random -Maximum 900)
-$ip = Start-Py @((Join-Path $fx 'fake_imap.py'), $mport, $mdir, 'moshe@wireitct.com', ([BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes('app pass "w"')) -replace '-', ''))
-Start-Sleep -Milliseconds 1200
-$mcfg = [pscustomobject]@{ host = '127.0.0.1'; port = $mport; user = 'moshe@wireitct.com'; ssl = $false }
+# 2.2.0: no IMAP on the site boxes. Mails saved as .eml (the "I got Hik's email" button, the replies folder) are read the same way.
+$mm1 = Read-MimeMessage ([IO.File]::ReadAllBytes((Join-Path $mdir '1.eml')))
+Eq $mm1.from 'Hikvision Support <support@hikvision.com>' 'mime: encoded sender name decoded'
+Eq @($mm1.attachments).Count 1 'mime: one attachment found'; Eq $mm1.attachments[0].name 'reset.xml' 'mime: attachment name'
+Check ((Hm-Latin1).GetString($mm1.attachments[0].bytes) -eq ($devs[0].unlock + $SN_NVR)) 'mime: base64 attachment decoded byte for byte'
+Check ($mm1.text -match 'K53440227\.') 'mime: quoted-printable text decoded'
+$msgs = @(Get-HikFolderMessages $mdir (Get-Date).AddMinutes(-5) | Sort-Object { [string]$_.subject })
+Eq $msgs.Count 2 'eml: both saved mails read from the folder'
+Eq $msgs[0].attachments[0].name '1-reset.xml' 'eml in a folder: its attachment is taken'
+$pend = @([pscustomobject]@{ serial = $SN_NVR; shortSerial = 'K53440227'; mac = 'c0-6d-ed-2b-f3-85' }, [pscustomobject]@{ serial = $SN_C1; shortSerial = 'K43962989'; mac = 'c0-6d-ed-a7-35-7c' })
+$mt = Find-HikReplyMatches $pend $msgs
+Eq @($mt.matched).Count 1 'match: the NVR file matched by the serial inside it'; Eq $mt.matched[0].device.serial $SN_NVR 'match: right device'
+Eq @($mt.unmatched).Count 1 'match: the file with no serial of ours is unmatched'
+Eq (Get-HikCodeFromText "Hello,`r`nYour verification code: AB12CD34`r`nThanks") 'AB12CD34' 'code: an 8-character code is read from the mail text'
+Eq (Get-HikCodeFromText 'no code in this mail') '' 'code: none when the mail has none'
+
+Write-Host '3b. reply relay (HTTPS, op hikReplyGet; mock relay)'
+$RKEY = 'relay-key-' + [guid]::NewGuid().ToString('N')
+$rdir = Join-Path $tmp 'relay'; New-Item -ItemType Directory -Force -Path $rdir | Out-Null
+([ordered]@{ $SN_NVR = [ordered]@{ kind = 'file'; name = 'reset.xml'; data = [Convert]::ToBase64String($unlockBytes) }; 'K43962989' = [ordered]@{ kind = 'code'; code = 'AB12CD34' } } | ConvertTo-Json -Depth 4) | Set-Content (Join-Path $rdir 'replies.json') -Encoding ASCII
+$rport = 42000 + (Get-Random -Maximum 900)
+$rp = Start-Py @((Join-Path $fx 'mock_relay.py'), $rport, $rdir, $RKEY)
+$end = (Get-Date).AddSeconds(10); $up = $false
+while (-not $up -and (Get-Date) -lt $end) { try { $c = New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1', $rport); $c.Close(); $up = $true } catch { Start-Sleep -Milliseconds 150 } }
+Check $up 'mock relay is up'
+$relay = [pscustomobject]@{ url = ('http://127.0.0.1:' + $rport + '/exec'); address = 'hikreset@wireitct.com'; everySec = 60 }
+$oldKey = $env:WIREIT_UPLOAD_KEY
 try {
-  $msgs = @(Get-HikImapMessages $mcfg 'app pass "w"' 4 'hikvision')
-  Eq $msgs.Count 2 'imap: both mails fetched (password with a quote in it works)'
-  Eq $msgs[0].from 'Hikvision Support <support@hikvision.com>' 'mime: encoded sender name decoded'
-  Eq @($msgs[0].attachments).Count 1 'mime: one attachment found'; Eq $msgs[0].attachments[0].name 'reset.xml' 'mime: attachment name'
-  Check ((Hm-Latin1).GetString($msgs[0].attachments[0].bytes) -eq ($devs[0].unlock + $SN_NVR)) 'mime: base64 attachment decoded byte for byte'
-  Check ($msgs[0].text -match 'K53440227\.') 'mime: quoted-printable text decoded'
-  $pend = @([pscustomobject]@{ serial = $SN_NVR; shortSerial = 'K53440227'; mac = 'c0-6d-ed-2b-f3-85' }, [pscustomobject]@{ serial = $SN_C1; shortSerial = 'K43962989'; mac = 'c0-6d-ed-a7-35-7c' })
-  $mt = Find-HikReplyMatches $pend $msgs
-  Eq @($mt.matched).Count 1 'match: the NVR file matched by the serial inside it'; Eq $mt.matched[0].device.serial $SN_NVR 'match: right device'
-  Eq @($mt.unmatched).Count 1 'match: the file with no serial of ours is unmatched'
-  $bad = $false; try { [void](Get-HikImapMessages $mcfg 'wrong' 4) } catch { $bad = $true }
-  Check $bad 'imap: a wrong mailbox password is reported, not ignored'
-  $cmds = Get-Content (Join-Path $mdir 'commands.log') -Raw
-  Check ($cmds -match 'EXAMINE' -and $cmds -notmatch 'STORE|DELETE|EXPUNGE|COPY|MOVE|APPEND') 'mailbox is only read (EXAMINE + BODY.PEEK): nothing stored, deleted or moved'
-  # whole path through Receive-HikReplies with imap
-  $sec = Join-Path $tmp 'sec'; Set-HikMailPassword $sec (ConvertTo-SecureString 'app pass "w"' -AsPlainText -Force)
+  Check (Test-HikRelayUrl 'https://script.google.com/macros/s/AKfy/exec') 'relay address: https is accepted'
+  Check (-not (Test-HikRelayUrl 'http://script.google.com/macros/s/AKfy/exec')) 'relay address: plain http to the internet is refused (the key would travel in clear)'
+  Check (-not (Test-HikRelayUrl 'ftp://x') -and -not (Test-HikRelayUrl '')) 'relay address: junk and empty are refused'
+  Check (Test-HikRelayUrl $relay.url) 'relay address: http to 127.0.0.1 (tests only) is accepted'
+  $r = Get-HikRelayReply $relay '' $pend[0]; Check ($r.state -eq 'failed' -and $r.msg -match 'upload key') 'relay: no upload key on this PC -> a plain message, nothing sent'
+  $r = Get-HikRelayReply $relay 'wrong-key' $pend[0]; Check ($r.state -eq 'failed' -and $r.msg -match 'Wrong key') 'relay: a wrong key is reported, not ignored'
+  $env:WIREIT_UPLOAD_KEY = $RKEY; Eq (Get-HikRelayKey $tmp) $RKEY 'relay key: the box''s upload key is used (test override)'
+  $r = Get-HikRelayReply $relay $RKEY ([pscustomobject]@{ serial = 'DS-2CD1000-I20200101AAWRZ00000000'; shortSerial = 'Z00000000' })
+  Eq $r.state 'none' 'relay: nothing for that serial yet -> none'
+  $r = Get-HikRelayReply $relay $RKEY $pend[1]
+  Check ($r.state -eq 'found' -and $r.message.attachments[0].name -like '*-code.txt' -and [Text.Encoding]::ASCII.GetString($r.message.attachments[0].bytes) -eq 'AB12CD34') 'relay: a code reply becomes a small code file for that serial'
+  $cp = Join-Path $tmp 'c.txt'; [IO.File]::WriteAllBytes($cp, [byte[]]$r.message.attachments[0].bytes)
+  Eq (Read-HikUnlock -Path $cp).code 'AB12CD34' 'relay: the code file imports as Hikvision''s 8-character key'
+  $lg = @(Get-Content (Join-Path $rdir 'requests.log') | ForEach-Object { $_ | ConvertFrom-Json })
+  Check (@($lg | Where-Object { $_.op -eq 'hikReplyGet' -and $_.serial -and $_.PSObject.Properties['shortSerial'] -and $_.PSObject.Properties['pc'] -and $_.ua -eq 'WireIt-Toolkit' }).Count -eq $lg.Count) 'relay: every request is op hikReplyGet with serial, short serial and PC name'
+  Check (-not ((Get-Content (Join-Path $rdir 'requests.log') -Raw) -match 'password')) 'relay: no password field is ever sent'
+  'down' | Set-Content (Join-Path $rdir 'mode.txt'); $r = Get-HikRelayReply $relay $RKEY $pend[0]
+  Check ($r.state -eq 'failed' -and $r.msg -match 'no answer' -and $r.msg -notmatch [regex]::Escape($RKEY)) 'relay down: reported as failed, key not in the message'
+  'junk' | Set-Content (Join-Path $rdir 'mode.txt'); $r = Get-HikRelayReply $relay $RKEY $pend[0]
+  Check ($r.state -eq 'failed' -and $r.msg -match 'unreadable') 'relay answers a web page (sign-in page): reported as failed'
+  'ok' | Set-Content (Join-Path $rdir 'mode.txt')
+  # config: empty config -> relay off -> the button
+  $h0 = Get-HikConfig $null
+  Check (-not [string]$h0.relay.url -and $h0.relay.address -eq 'hikreset@wireitct.com' -and $h0.waitMinutes -eq 15) 'config: empty config -> relay off, address default hikreset@wireitct.com, wait 15 min'
+  $script:HkRelayStatus = $null; $null = Get-HikReplyMessages $h0 $tmp (Join-Path $tmp 'none') (Get-Date).AddDays(-1) @($pend[0])
+  $w0 = Format-HikWaitLine $h0 1 15; Check ($w0.text -match 'I got Hik' -and $w0.text -match 'no reply mailbox') 'config empty: the waiting line says there is no mailbox and points to the button'
+  $hBad = Get-HikConfig ([pscustomobject]@{ hikReset = [pscustomobject]@{ relay = [pscustomobject]@{ url = 'http://evil.example/exec' } } })
+  Check (-not [string]$hBad.relay.url) 'config: an http:// relay address is switched off (never sends the key in clear)'
+  $cfgAll = [pscustomobject]@{ form = [pscustomobject]@{ email = 'moshe@wireitct.com'; firstName = 'Moshe' }; hikReset = [pscustomobject]@{ relay = [pscustomobject]@{ url = $relay.url; address = 'hikreset@wireitct.com'; everySec = 60 }; waitMinutes = 20 } }
+  $hc = Get-HikConfig $cfgAll $tmp
+  Check ($hc.relay.url -eq $relay.url -and $hc.waitMinutes -eq 20 -and $hc.replyTo -eq 'hikreset@wireitct.com') 'config: relay on -> replies go to the relay address'
+  Eq (Get-HikFormFor $hc).email 'hikreset@wireitct.com' 'form: Hikvision''s reply address is the relay''s when the relay is on'
+  Eq (Get-HikFormFor $h0).email '' 'form: with no relay, the form keeps its own email (none in an empty config)'
+  Eq (Get-HikFormFor (Get-HikConfig ([pscustomobject]@{ form = $cfgAll.form }))).email 'moshe@wireitct.com' 'form: relay off -> the configured email stays'
+  # the whole path: Receive-HikReplies asks the relay for each waiting device and files the reply
   $stm = Read-HikState (Join-Path $tmp 's4.json'); $nvrd = Add-HikStateDevice $stm $nvr (Join-Path $tmp 'req2\x.xml') $nvr.bootTime; $nvrd.status = 'submitted'
-  $cfgI = [pscustomobject]@{ mail = $mcfg }; $cfgI.mail | Add-Member mode 'imap' -Force
-  $rr = Receive-HikReplies $stm (Join-Path $tmp 's4.json') $cfgI $sec (Join-Path $tmp 'rep4')
-  Check ($rr.got.Count -eq 1 -and (Test-Path $rr.got[0].replyFile)) 'Receive-HikReplies over IMAP: reply saved under replies\ and device marked replied'
-} finally { try { $ip.Kill() } catch {} }
+  $rr = Receive-HikReplies $stm (Join-Path $tmp 's4.json') $hc $tmp (Join-Path $tmp 'rep4') -ForceRelay
+  Check ($rr.got.Count -eq 1 -and (Test-Path $rr.got[0].replyFile) -and ([Convert]::ToBase64String([IO.File]::ReadAllBytes($rr.got[0].replyFile)) -eq [Convert]::ToBase64String($unlockBytes))) 'Receive-HikReplies over the relay: the reply file is saved byte for byte and the device marked replied'
+  Check (@($logLines | Where-Object { $_ -match 'reply mailbox' }).Count -ge 1) 'the screen says the reply came from the reply mailbox'
+  $w1 = Format-HikWaitLine $hc 1 12; Check ($w1.text -match 'hikreset@wireitct\.com' -and $w1.text -match '12 more min') 'waiting line: names the address and the minutes left'
+  'down' | Set-Content (Join-Path $rdir 'mode.txt')
+  $stm2 = Read-HikState (Join-Path $tmp 's5.json'); $c1d = Add-HikStateDevice $stm2 $devs[1] (Join-Path $tmp 'req2\y.xml') $devs[1].bootTime; $c1d.status = 'submitted'
+  $rr = Receive-HikReplies $stm2 (Join-Path $tmp 's5.json') $hc $tmp (Join-Path $tmp 'rep5') -ForceRelay
+  $w2 = Format-HikWaitLine $hc 1 12; Check ($rr.got.Count -eq 0 -and $w2.color -eq 'Yellow' -and $w2.text -match 'Could not check the reply mailbox' -and $w2.text -match 'I got Hik') 'relay failing: the screen says so and points to the button'
+  $n0 = @(Get-Content (Join-Path $rdir 'requests.log')).Count; $null = Receive-HikReplies $stm2 (Join-Path $tmp 's5.json') $hc $tmp (Join-Path $tmp 'rep5')
+  Eq @(Get-Content (Join-Path $rdir 'requests.log')).Count $n0 'relay: asked at most once a minute (everySec)'
+  'ok' | Set-Content (Join-Path $rdir 'mode.txt')
+  # the "I got Hik's email" button: a pasted code, then the flow takes it from inbox\hik
+  $inb = Join-Path $tmp 'inbox-hik'
+  $sv = Save-HikEmailDrop $inb $SN_C1 -Code ' ab12-cd34 '; Check ($sv.ok -and (Test-Path $sv.path) -and (Get-Content $sv.path -Raw) -eq 'ab12cd34') 'button: a pasted code is saved for that serial (spaces and dashes dropped)'
+  Check (-not (Save-HikEmailDrop $inb 'bad serial!' -Code 'AB12CD34').ok) 'button: no device picked -> refused'
+  Check (-not (Save-HikEmailDrop $inb $SN_C1 -Code '<script>').ok) 'button: junk instead of a code -> refused'
+  $ex = Join-Path $tmp 'run.exe'; [IO.File]::WriteAllText($ex, 'MZ'); Check (-not (Save-HikEmailDrop $inb $SN_C1 -File $ex).ok) 'button: a program file is refused'
+  $big = Join-Path $tmp 'big.xml'; [IO.File]::WriteAllBytes($big, (New-Object byte[] (3MB))); Check (-not (Save-HikEmailDrop $inb $SN_C1 -File $big).ok) 'button: a file over 2 MB is refused'
+  $hOff = Get-HikConfig $null
+  $rr = Receive-HikReplies $stm2 (Join-Path $tmp 's5.json') $hOff $tmp (Join-Path $tmp 'rep5') $inb
+  Check ($rr.got.Count -eq 1 -and $rr.got[0].serial -eq $SN_C1 -and -not (Test-Path $sv.path)) 'button: the flow takes the dropped code with no mailbox at all, and the drop is used only once'
+  Save-HikWaitingList $inb $stm 'Lieber' 'hikreset@wireitct.com'
+  $wl = Get-Content (Join-Path $inb 'waiting.json') -Raw
+  Check ($wl -notmatch [regex]::Escape($devs[0].unlock) -and $wl -notmatch 'password') 'waiting list for the button: serials only, no codes or passwords'
+} finally { try { $rp.Kill() } catch {}; $env:WIREIT_UPLOAD_KEY = $oldKey }
 if (-not $NoPortal) {
   Write-Host '4. portal'
   . (Join-Path $tk 'HikPortal.ps1')

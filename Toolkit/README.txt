@@ -1,4 +1,4 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.1.0, 2026-11-06
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.2.0, 2026-11-08 (not released)
 ==============================================================================
 HOW TO USE (2.0)
   1. Double-click "WireIt Toolkit" on the desktop.
@@ -6,7 +6,8 @@ HOW TO USE (2.0)
   3. Leave the camera settings as they are, or pick codec / frame rate / resolution / bitrate.
      They go ONLY on the cameras with a problem. Working cameras are not touched.
      To put them on every camera, tick "Apply settings to ALL cameras" (unticks itself after each run).
-  4. Press the big green "Fix this site". Click Yes when Windows asks.
+  4. Press the big green "Fix this site". From the Crew login it starts by itself (2.2.0: no admin name or password);
+     from an admin login on a PC not yet set up for 2.2.0, click Yes when Windows asks.
   5. Read the list of what is wrong and what it will change. Type YES to fix it all.
   6. Watch the checklist: a green check per camera. A red X says exactly what to go check.
 
@@ -31,9 +32,16 @@ HIKVISION OFFICIAL PASSWORD RESET (2.1.0) - for a Hikvision NVR or camera nobody
        WHAT STILL NEEDS YOU: Hikvision's page shows a "slide the piece" / picture check. That is there to tell a person from a
        program and the Toolkit does not defeat it: you slide it and press Submit, one device at a time, ~20 seconds each.
        (Tried 6 Nov 2026: the browser service's built-in solver did not pass this slider, so there is no automatic option.)
-    4. Hikvision emails the unlock file/key to the address in config.json (moshe@wireitct.com). The Toolkit watches that mailbox:
-       "hikReset.mail.mode": "folder" = drop the files in the replies folder (Tab's mail watcher does this for WireIt),
-       or "imap" (mail.user + an app password kept encrypted on this PC). Each reply is matched to its device by serial.
+    4. Hikvision emails the unlock file/key. 2.2.0: NO mail password and NO IMAP on any site box. With config.json
+       "hikReset": { "relay": { "url": "<the HikRelay web-app /exec address, https>", "address": "hikreset@wireitct.com",
+       "everySec": 60 }, "waitMinutes": 15 } the form gives Hikvision the relay address, and the Toolkit asks the relay once a
+       minute, by serial, with this PC's upload key (the same key as the service log). The relay (appsscript\HikRelay.gs on the
+       accounting@ Google account) files each reply by serial and hands it out once. With no relay url (an empty config) the
+       form keeps config "form.email" and the screen says to press "I got Hik's email".
+       BACKUP, always there: "I got Hik's email" (Fix this site, and Reset passwords step 4): drag the attachment in or paste the
+       code, pick the device. The run carries on by itself. The screen always says what it is waiting for and when the mailbox
+       could not be checked. Each reply is matched to its device by serial. (The exact form of Hikvision's reply - attachment or a
+       code in the text - is not confirmed yet; both are taken.)
     5. Imports it the way SADP does (key exchange, then the new password encrypted with it + Hikvision's 8-character key),
        sets the SITE password, and believes it only after a real login with that password. If the device will not take it,
        it says so and tells you to finish that one in SADP (Forgot password > Import file) - never loops (at most 2 tries).
@@ -247,3 +255,13 @@ MOVE TO A NEW PC (e.g. the new EliteDesk)
      and lists anything missing.
   4. Optional check: powershell -ExecutionPolicy Bypass -File .\tests\Test-Toolkit.ps1   (should end "0 failed")
   On a customer PC: copy the folder, run "WireIt Toolkit.cmd" directly, delete the folder afterwards.
+
+2.2.0 (2026-11-08, from the Nov 7 code review; tested, NOT released)
+  - Locked folders: Install-Toolkit (run once as an admin) gives Administrators + SYSTEM full control of C:\WireIt\Toolkit,
+    FixNVR, CamReset and NetCheck; the Crew login gets read + run only, plus write in its own logs / state / outbox / runs /
+    ipc / inbox folders. Site passwords live in vault\ (Administrators + SYSTEM only, encrypted for this PC, so any admin and the
+    background task read the same file; 2.1's secrets\ files are moved there).
+  - "Fix this site" from Crew: an admin-made task (\WireIt\Fix this site, runs as SYSTEM) that Crew may start but not change.
+    The window sends only the site, the drop-downs, the ticks and the Yes/No answers; everything else is refused.
+  - The site-password word is asked hidden (twice) and is never shown or logged; 2.1 logs that had it are blanked.
+  - Hikvision's reply: reply relay first, "I got Hik's email" button as backup (see 4. above).

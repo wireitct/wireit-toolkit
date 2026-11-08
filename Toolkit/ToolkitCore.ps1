@@ -127,6 +127,7 @@ function Test-TkManifestPath([string]$p) {
   if ($parts.Count -lt 2) { return $false }
   if ($script:TkAllowedTop -notcontains $parts[0]) { return $false }
   if ($parts[-1] -ieq 'config.json') { return $false }
+  if (@($parts | Where-Object { $_ -in @('vault', 'secrets', 'ipc', 'inbox') }).Count) { return $false }   # 2.2.0: an update never writes the password stores or the Crew drop folders
   return $true
 }
 
@@ -362,6 +363,8 @@ function Import-TkReply([string]$path, [string]$camResetDir, [string]$preferSeri
 function Get-TkFormFields($cfg, $dev) {
   $f = $cfg.form
   $list = New-Object System.Collections.Generic.List[object]
+  # 2.2.0: with the reply relay on, Hikvision replies to the relay's address (hikreset@...), where the Toolkit picks it up by itself
+  try { if ($cfg.PSObject.Properties['hikReset'] -and $cfg.hikReset.relay -and [string]$cfg.hikReset.relay.url) { $f2 = [ordered]@{}; if ($f -is [Collections.IDictionary]) { foreach ($k in @($f.Keys)) { $f2[$k] = $f[$k] } } else { foreach ($p in $f.PSObject.Properties) { $f2[$p.Name] = $p.Value } }; $f = $f2; $f.email = $(if ([string]$cfg.hikReset.relay.address) { [string]$cfg.hikReset.relay.address } else { 'hikreset@wireitct.com' }) } } catch {}
   foreach ($p in @(@('First name', $f.firstName), @('Last name', $f.lastName), @('Email', $f.email), @('Company', $f.company), @('State', $f.state), @('Zip code', $f.zip), @('Business type', $f.businessType))) { $list.Add([pscustomobject]@{ Label = $p[0]; Value = [string]$p[1] }) }
   if ($dev) {
     $list.Add([pscustomobject]@{ Label = 'Serial (9)'; Value = [string]$dev.ShortSerial })

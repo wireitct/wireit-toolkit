@@ -1,25 +1,16 @@
 <#
- HikMail.ps1 - WireIt Toolkit 2.1: catch Hikvision's reply (the unlock file) and match it to the device it belongs to.
- Two ways, both read-only on the mailbox (messages are only read, never moved, deleted or marked):
-   imap   - the reply mailbox over IMAP/SSL (config.json "hikReset.mail": host, port, user; the password/app-password is kept encrypted for THIS Windows user
-            by "Set mail password" - never in config.json). Gmail / Google Workspace: imap.gmail.com:993 with an app password.
-   folder - a drop folder (default CamReset\replies): save the attachments there by hand, or let Tab's mail watcher copy them in.
- A reply is matched to a device by the device's serial (full or the 9-character short one) or MAC in the attachment's name or content,
- else in the mail's text. A file that matches nothing is listed as "unmatched" and is never sent to any device.
- Test harness: tests\hikreset\fake_imap.py (plain TCP, ssl=false).
+ HikMail.ps1 - WireIt Toolkit 2.2: catch Hikvision's reply (the unlock file or code) and match it to the device it belongs to.
+ 2.2.0 (Moshe, Nov 7 2026, 8:06 PM): NO mail password on any site box and no IMAP from the box. Two ways, both automatic:
+   relay  - the Toolkit asks WireIt's reply relay over HTTPS: {op:'hikReplyGet', key, serial} -> the reply file (base64) or the code, or "none".
+            The relay is a small Apps Script (appsscript/HikRelay.gs) on the WireIt Gmail account, where hikreset@wireitct.com arrives.
+            config.json "hikReset.relay": { "url": "https://script.google.com/macros/s/.../exec", "address": "hikreset@wireitct.com" }.
+            The key is this PC's upload key ("Set upload key.cmd", the same push key Find cameras uses). No url = relay off.
+   folder - drop folders: the replies folder of the reset, and inbox\hik (the "I got Hik's email" button saves the dragged file or the pasted code there).
+ A reply is matched to a device by the device's serial (full or the 9-character short one) or MAC in the file's name or content.
+ A file that matches nothing is listed as "unmatched" and is never sent to any device.
+ Test harness: tests\hikreset\mock_relay.py (plain http on 127.0.0.1).
 #>
 function Hm-Latin1 { return [Text.Encoding]::GetEncoding(28591) }
-# ---------------- secret for the mailbox (DPAPI, this Windows user only) ----------------
-function Get-HikMailSecretPath([string]$Dir) { return (Join-Path $Dir 'hik-mail.dat') }
-function Set-HikMailPassword([string]$Dir, [System.Security.SecureString]$Secure) {
-  New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-  ($Secure | ConvertFrom-SecureString) | Set-Content -LiteralPath (Get-HikMailSecretPath $Dir) -Encoding ASCII
-}
-function Get-HikMailPassword([string]$Dir) {
-  $p = Get-HikMailSecretPath $Dir
-  if (-not (Test-Path -LiteralPath $p)) { return '' }
-  try { $sec = (Get-Content -LiteralPath $p -Raw).Trim() | ConvertTo-SecureString; return (New-Object PSCredential('x', $sec)).GetNetworkCredential().Password } catch { return '' }
-}
 # ---------------- MIME ----------------
 function Hm-DecodeWord([string]$s) {
   return [regex]::Replace($s, '=\?([^?]+)\?([bBqQ])\?([^?]*)\?=', { param($m)
@@ -78,61 +69,72 @@ function Read-MimeMessage([byte[]]$Raw) {
   $msg.attachments = @($msg.attachments)
   return $msg
 }
-# ---------------- IMAP (just enough: LOGIN, SELECT, SEARCH, FETCH BODY.PEEK[], LOGOUT) ----------------
-function Imap-ReadLine($st) {
-  $sb = New-Object System.Collections.Generic.List[byte]
-  while ($true) { $b = $st.ReadByte(); if ($b -lt 0) { throw 'mail server closed the connection' }; if ($b -eq 10) { break }; if ($b -ne 13) { $sb.Add([byte]$b) } }
-  return (Hm-Latin1).GetString($sb.ToArray())
+# ---------------- the reply relay (HTTPS, no mail password on this PC) ----------------
+# url must be https:// (http only to 127.0.0.1 / localhost, for the tests). Returns $true when the url may be used.
+function Test-HikRelayUrl([string]$Url) {
+  if (-not $Url) { return $false }
+  try { $u = [Uri]$Url } catch { return $false }
+  if (-not $u.IsAbsoluteUri) { return $false }
+  if ($u.Scheme -eq 'https') { return $true }
+  return ($u.Scheme -eq 'http' -and $u.Host -in @('127.0.0.1', 'localhost'))
 }
-function Imap-ReadBytes($st, [int]$n) { $buf = New-Object byte[] $n; $got = 0; while ($got -lt $n) { $r = $st.Read($buf, $got, $n - $got); if ($r -le 0) { throw 'mail server closed the connection' }; $got += $r }; return $buf }
-function Open-ImapSession($cfg, [string]$Password) {
-  $tcp = New-Object Net.Sockets.TcpClient; $tcp.ReceiveTimeout = 30000; $tcp.SendTimeout = 30000
-  $tcp.Connect([string]$cfg.host, [int]$cfg.port)
-  $st = $tcp.GetStream(); $st.ReadTimeout = 30000
-  if ($cfg.ssl -ne $false) { $ssl = New-Object Net.Security.SslStream($st, $false); $ssl.AuthenticateAsClient([string]$cfg.host); $st = $ssl; $st.ReadTimeout = 30000 }
-  $s = [pscustomobject]@{ tcp = $tcp; st = $st; n = 0 }
-  [void](Imap-ReadLine $st)   # greeting
-  $q = '"' + (($Password -replace '\\', '\\') -replace '"', '\"') + '"'
-  $r = Imap-Cmd $s ('LOGIN "' + ([string]$cfg.user -replace '"', '\"') + '" ' + $q) -Secret
-  if (-not $r.ok) { throw ('mail login refused: ' + $r.status) }
-  return $s
-}
-function Imap-Cmd($s, [string]$Cmd, [switch]$Secret) {
-  $s.n++; $tag = 'a' + $s.n
-  $b = [Text.Encoding]::UTF8.GetBytes($tag + ' ' + $Cmd + "`r`n"); $s.st.Write($b, 0, $b.Length); $s.st.Flush()
-  $lits = New-Object System.Collections.ArrayList; $lines = New-Object System.Collections.ArrayList
-  while ($true) {
-    $l = Imap-ReadLine $s.st
-    $m = [regex]::Match($l, '\{(\d+)\}$')
-    if ($m.Success) { [void]$lits.Add((Imap-ReadBytes $s.st ([int]$m.Groups[1].Value))); [void]$lines.Add($l); continue }
-    if ($l.StartsWith($tag + ' ')) { return [pscustomobject]@{ ok = ($l -match "^$tag OK"); status = $l.Substring($tag.Length + 1); lines = @($lines); literals = @($lits) } }
-    [void]$lines.Add($l)
+# this PC's upload key (the push key). Same file and DPAPI scope as CamViews (secrets\upload-key.bin, LocalMachine). Never logged.
+function Get-HikRelayKey([string]$ToolkitDir) {
+  if ($env:WIREIT_UPLOAD_KEY) { return $env:WIREIT_UPLOAD_KEY }   # tests
+  $c = @(@((Join-Path $ToolkitDir 'secrets\upload-key.bin'), 'WireIt-Toolkit-v1'), @((Join-Path (Split-Path -Parent $ToolkitDir) 'VendorMonitor\secrets\ingest.bin'), 'WireIt-VendorMonitor-v1'))
+  foreach ($p in $c) {
+    try {
+      if (-not (Test-Path -LiteralPath $p[0])) { continue }
+      Add-Type -AssemblyName System.Security
+      $b = [Security.Cryptography.ProtectedData]::Unprotect([IO.File]::ReadAllBytes($p[0]), [Text.Encoding]::ASCII.GetBytes($p[1]), [Security.Cryptography.DataProtectionScope]::LocalMachine)
+      $k = [string]([Text.Encoding]::UTF8.GetString($b) | ConvertFrom-Json).key
+      if ($k) { return $k }
+    } catch {}
   }
+  return ''
 }
-function Close-ImapSession($s) { try { [void](Imap-Cmd $s 'LOGOUT') } catch {}; try { $s.tcp.Close() } catch {} }
-# fetches messages from the last $Days days whose sender matches $FromLike; returns parsed messages (read-only: BODY.PEEK)
-function Get-HikImapMessages($cfg, [string]$Password, [int]$Days = 4, [string]$FromLike = 'hikvision') {
-  $s = Open-ImapSession $cfg $Password; $out = @()
+# one question to the relay for one device. Returns { state = 'found'|'none'|'failed'; msg; message (a pseudo mail with one attachment) }
+function Get-HikRelayReply($Relay, [string]$Key, $Device, [int]$TimeoutSec = 20) {
+  $url = [string]$Relay.url
+  if (-not (Test-HikRelayUrl $url)) { return [pscustomobject]@{ state = 'failed'; msg = 'the relay address in config.json is not an https address'; message = $null } }
+  if (-not $Key) { return [pscustomobject]@{ state = 'failed'; msg = 'this PC has no upload key yet (an admin runs "Set upload key.cmd" once)'; message = $null } }
+  try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
+  $body = [ordered]@{ op = 'hikReplyGet'; key = $Key; serial = [string]$Device.serial; shortSerial = [string]$Device.shortSerial; pc = [string]$env:COMPUTERNAME }
+  $json = $body | ConvertTo-Json -Compress
   try {
-    $folder = $(if ($cfg.folder) { [string]$cfg.folder } else { 'INBOX' })
-    $r = Imap-Cmd $s ('EXAMINE "' + $folder + '"'); if (-not $r.ok) { throw ('mail folder: ' + $r.status) }
-    $since = (Get-Date).AddDays(-$Days).ToString('dd-MMM-yyyy', [Globalization.CultureInfo]::InvariantCulture)
-    $r = Imap-Cmd $s ('SEARCH SINCE ' + $since + ' FROM "' + $FromLike + '"')
-    $ids = @(); foreach ($l in $r.lines) { $m = [regex]::Match($l, '^\* SEARCH\s*(.*)$'); if ($m.Success -and $m.Groups[1].Value.Trim()) { $ids += @($m.Groups[1].Value.Trim() -split '\s+') } }
-    foreach ($id in $ids) {
-      $f = Imap-Cmd $s ('FETCH ' + $id + ' (BODY.PEEK[])')
-      if ($f.ok -and $f.literals.Count) { $mm = Read-MimeMessage ([byte[]]$f.literals[0]); $mm | Add-Member -NotePropertyName id -NotePropertyValue $id -Force; $out += $mm }
-    }
-  } finally { Close-ImapSession $s }
-  return $out
+    $r = Invoke-WebRequest -Uri $url -Method Post -Body ([Text.Encoding]::UTF8.GetBytes($json)) -ContentType 'text/plain;charset=utf-8' -UseBasicParsing -TimeoutSec $TimeoutSec -UserAgent 'WireIt-Toolkit' -ErrorAction Stop
+  } catch {
+    $m = [string]$_.Exception.Message; if ($Key) { $m = $m.Replace($Key, '****') }
+    if ($m.Length -gt 140) { $m = $m.Substring(0, 140) }
+    return [pscustomobject]@{ state = 'failed'; msg = ('no answer from the relay: ' + $m); message = $null }
+  }
+  $a = $null; try { $a = [string]$r.Content | ConvertFrom-Json -ErrorAction Stop } catch { $a = $null }   # a sign-in page or an error page is not JSON
+  if (-not $a -or -not $a.PSObject.Properties['ok']) { return [pscustomobject]@{ state = 'failed'; msg = 'the relay answered something unreadable'; message = $null } }
+  if (-not $a.ok) { $m = $(if ($a.PSObject.Properties['msg']) { [string]$a.msg } else { 'refused' }); return [pscustomobject]@{ state = 'failed'; msg = ('the relay said: ' + $m); message = $null } }
+  if (-not $a.found) { return [pscustomobject]@{ state = 'none'; msg = ''; message = $null } }
+  $sn = ([string]$Device.serial) -replace '[^A-Za-z0-9\-]', '_'
+  $att = $null
+  if ([string]$a.kind -eq 'code') {
+    $code = ([string]$a.code).Trim()
+    if ($code -notmatch '^[A-Za-z0-9+/=_-]{4,64}$') { return [pscustomobject]@{ state = 'failed'; msg = 'the relay sent a code that does not look like Hikvision''s'; message = $null } }
+    $att = [pscustomobject]@{ name = ('relay-' + $sn + '-code.txt'); bytes = [Text.Encoding]::ASCII.GetBytes($code); type = 'text/plain' }
+  } else {
+    $bytes = $null; try { $bytes = [Convert]::FromBase64String([string]$a.data) } catch {}
+    if (-not $bytes -or $bytes.Length -eq 0 -or $bytes.Length -gt 2MB) { return [pscustomobject]@{ state = 'failed'; msg = 'the relay sent an empty or damaged file'; message = $null } }
+    $nm = ([string]$a.name) -replace '[^A-Za-z0-9._-]', '_'; if (-not $nm) { $nm = 'reply.xml' }
+    $att = [pscustomobject]@{ name = ('relay-' + $sn + '-' + $nm); bytes = $bytes; type = 'file' }
+  }
+  $msg = [pscustomobject]@{ from = 'relay'; subject = $(if ($a.PSObject.Properties['subject']) { [string]$a.subject } else { 'Hikvision reply' }); date = [string]$a.receivedAt; text = ''; attachments = @($att); id = ('relay:' + $Device.serial) }
+  return [pscustomobject]@{ state = 'found'; msg = ''; message = $msg }
 }
 # ---------------- matching ----------------
 # $Devices = state devices (serial, shortSerial, mac). Returns [{ device; name; bytes; how; mail }] and the unmatched ones.
 function Find-HikReplyMatches($Devices, $Messages) {
   $l1 = Hm-Latin1; $matches2 = @(); $un = @()
   foreach ($m in @($Messages)) {
+    if ($null -eq $m) { continue }
     $cands = @()
-    foreach ($a in @($m.attachments)) { $cands += [pscustomobject]@{ name = $a.name; bytes = $a.bytes; fromFile = $false } }
+    foreach ($a in @($m.attachments)) { if ($null -eq $a -or $null -eq $a.bytes) { continue }; $cands += [pscustomobject]@{ name = $a.name; bytes = $a.bytes; fromFile = $false } }
     foreach ($c in $cands) {
       $txt = $l1.GetString($c.bytes); $hit = $null; $how = ''
       foreach ($d in @($Devices)) {
@@ -141,20 +143,40 @@ function Find-HikReplyMatches($Devices, $Messages) {
       }
       if (-not $hit) { foreach ($d in @($Devices)) { $sh = [string]$d.shortSerial; if ($sh -and ($c.name -like ('*' + $sh + '*') -or $txt -like ('*' + $sh + '*'))) { if ($hit) { $hit = $null; $how = 'ambiguous'; break }; $hit = $d; $how = 'short serial' } } }
       if (-not $hit) { foreach ($d in @($Devices)) { $mac = ([string]$d.mac) -replace '[-:]', ''; if ($mac -and (($txt -replace '[-:]', '') -match ('(?i)' + $mac))) { $hit = $d; $how = 'MAC'; break } } }
-      if ($hit) { $matches2 += [pscustomobject]@{ device = $hit; name = $c.name; bytes = $c.bytes; how = $how; mail = $m.subject } } else { $un += [pscustomobject]@{ name = $c.name; bytes = $c.bytes; mail = $m.subject; why = $(if ($how -eq 'ambiguous') { 'could belong to more than one device' } else { 'no serial or MAC of ours in it' }) } }
+      if (-not $hit -and $how -ne 'ambiguous' -and $m.text) {
+        # 2.2.0: else the mail's own text (a code mail names the serial in its text, the attachment is only the code)
+        $mt = [string]$m.text; $cnt = 0
+        foreach ($d in @($Devices)) { $sn = [string]$d.serial; $sh = [string]$d.shortSerial; if (($sn -and $mt -like ('*' + $sn + '*')) -or ($sh -and $mt -like ('*' + $sh + '*'))) { $cnt++; $hit = $d; $how = 'serial in the mail text' } }
+        if ($cnt -gt 1) { $hit = $null; $how = 'ambiguous' }
+      }
+      if ($hit) { $matches2 += [pscustomobject]@{ device = $hit; name = $c.name; bytes = $c.bytes; how = $how; mail = $m.subject; src = [string]$m.id } } else { $un += [pscustomobject]@{ name = $c.name; bytes = $c.bytes; mail = $m.subject; why = $(if ($how -eq 'ambiguous') { 'could belong to more than one device' } else { 'no serial or MAC of ours in it' }) } }
     }
   }
   return [pscustomobject]@{ matched = $matches2; unmatched = $un }
 }
-# folder mode: every regular file in $Dir newer than $Since becomes a pseudo-message with one attachment
+# a Hikvision code written in a mail's text (no attachment). Returns '' when there is none. UNVERIFIED: shape of Hik's code mail not seen yet.
+function Get-HikCodeFromText([string]$Text) {
+  if (-not $Text) { return '' }
+  $m = [regex]::Match($Text, '(?i)(?:verification|security|reset|unlock)?\s*(?:code|key)\s*(?:is)?\s*[:\uFF1A]?\s*([A-Za-z0-9]{8})(?![A-Za-z0-9])')
+  if ($m.Success) { return $m.Groups[1].Value }
+  return ''
+}
+# folder mode: every regular file in $Dir newer than $Since becomes a pseudo-message with one attachment (.zip = its files, .eml = its attachments or code)
 function Get-HikFolderMessages([string]$Dir, [datetime]$Since) {
   $out = @()
-  if (-not (Test-Path -LiteralPath $Dir)) { return $out }
-  foreach ($f in @(Get-ChildItem -LiteralPath $Dir -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $Since -and $_.Length -lt 5MB })) {
-    $att = New-Object System.Collections.ArrayList
-    if ($f.Extension -match '(?i)\.zip$') { try { $tmp = Join-Path ([IO.Path]::GetTempPath()) ('hz' + [guid]::NewGuid().ToString('N').Substring(0, 6)); Expand-Archive -LiteralPath $f.FullName -DestinationPath $tmp -Force; foreach ($z in Get-ChildItem $tmp -File -Recurse) { [void]$att.Add([pscustomobject]@{ name = $z.Name; bytes = [IO.File]::ReadAllBytes($z.FullName); type = 'file' }) }; Remove-Item -Recurse -Force $tmp } catch {} }
+  if (-not $Dir -or -not (Test-Path -LiteralPath $Dir)) { return $out }
+  foreach ($f in @(Get-ChildItem -LiteralPath $Dir -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $Since -and $_.Length -lt 5MB -and $_.Name -notlike '*.json' -and $_.Name -notlike '*.tmp' })) {
+    $att = New-Object System.Collections.ArrayList; $text = ''
+    if ($f.Extension -match '(?i)\.zip$') { try { $tmp = Join-Path ([IO.Path]::GetTempPath()) ('hz' + [guid]::NewGuid().ToString('N').Substring(0, 6)); Expand-Archive -LiteralPath $f.FullName -DestinationPath $tmp -Force; foreach ($z in Get-ChildItem $tmp -File -Recurse) { [void]$att.Add([pscustomobject]@{ name = ($f.BaseName + '-' + $z.Name); bytes = [IO.File]::ReadAllBytes($z.FullName); type = 'file' }) }; Remove-Item -Recurse -Force $tmp } catch {} }
+    elseif ($f.Extension -match '(?i)\.eml$') {
+      try {
+        $mm = Read-MimeMessage ([IO.File]::ReadAllBytes($f.FullName)); $text = [string]$mm.text
+        foreach ($a in @($mm.attachments)) { [void]$att.Add([pscustomobject]@{ name = ($f.BaseName + '-' + $a.name); bytes = $a.bytes; type = $a.type }) }
+        if (-not $att.Count) { $code = Get-HikCodeFromText $text; if ($code) { [void]$att.Add([pscustomobject]@{ name = ($f.BaseName + '-code.txt'); bytes = [Text.Encoding]::ASCII.GetBytes($code); type = 'text/plain' }) } }
+      } catch {}
+    }
     else { [void]$att.Add([pscustomobject]@{ name = $f.Name; bytes = [IO.File]::ReadAllBytes($f.FullName); type = 'file' }) }
-    $out += [pscustomobject]@{ from = 'folder'; subject = $f.Name; date = $f.LastWriteTime.ToString('s'); text = ''; attachments = @($att); id = $f.FullName }
+    $out += [pscustomobject]@{ from = 'folder'; subject = $f.Name; date = $f.LastWriteTime.ToString('s'); text = $text; attachments = @($att); id = $f.FullName }
   }
   return $out
 }

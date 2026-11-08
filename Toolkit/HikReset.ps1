@@ -1,5 +1,5 @@
 <#
- HikReset.ps1 - WireIt Toolkit 2.1: Hikvision's OFFICIAL password reset for every Hik device with an unknown password (NVR and cameras, any subnet).
+ HikReset.ps1 - WireIt Toolkit 2.2: Hikvision's OFFICIAL password reset for every Hik device with an unknown password (NVR and cameras, any subnet).
  Same path as SADP's "Forgot password": the device gives its request file, Hikvision's own page returns an unlock file by email, SADP's import sets the new password.
  No guessing, no default passwords, no exploits. Nothing is power-cycled and no reset button is touched.
  Modes:
@@ -7,7 +7,7 @@
    Find     list every Hik device on any subnet (model, serial, MAC, IP, firmware, activated?)
    Export   make the request files only
    Submit   fill Hikvision's page for every exported file (needs your picture code, once per device)
-   Watch    look for Hikvision's reply now (mailbox + replies folder); -WaitMinutes N keeps looking
+   Watch    look for Hikvision's reply now (reply relay + replies folder + inbox\hik); -WaitMinutes N keeps looking
    Import   apply the replies that have arrived (needs -PasswordFile or a typed password)
    Status   where every device stands
  -RegisterDir <folder>   use request files that already exist (SADP/HiTools exports) instead of asking the devices again.
@@ -27,8 +27,8 @@ if ($SadpTest) { $script:SadpTest = $SadpTest }
 if ($PortalUrlOverride) { $script:PortalUrl = $PortalUrlOverride }
 if (-not $ConfigPath) { $ConfigPath = Join-Path $here 'config.json' }
 $cfgAll = $null; if (Test-Path $ConfigPath) { try { $cfgAll = Get-Content $ConfigPath -Raw | ConvertFrom-Json } catch {} }
-$cfg = [pscustomobject]@{ form = $(if ($cfgAll -and $cfgAll.form) { $cfgAll.form } else { $null }); mail = [pscustomobject]@{ mode = 'folder' } }
-if ($cfgAll -and $cfgAll.PSObject.Properties['hikReset']) { $hr = $cfgAll.hikReset; if ($hr.PSObject.Properties['mail']) { $cfg.mail = $hr.mail } }
+$cfg = Get-HikConfig $cfgAll $here   # 2.2.0: the reply relay (no mail password on this PC) + the inbox\hik drops
+$inboxDir = Join-Path $here 'inbox\hik'
 if (-not $cfg.form) { Write-Host 'config.json has no "form" (name, email, company ...). Cannot fill Hikvision''s page.' -ForegroundColor Red; exit 2 }
 if (-not $StateDir) { $StateDir = Join-Path (Join-Path $here 'runs') 'HikReset' }
 New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
@@ -52,15 +52,16 @@ if ($Mode -in @('Run', 'Find', 'Export')) {
   else { Hk-Say 'Asking each device for its password-reset request file (the same step as SADP "Forgot password > Export file")...' 'Cyan'; [void](Export-HikRequests $devs $reqDir $state $statePath -Redo:$Redo) }
   if ($Mode -eq 'Export') { Format-HikStatus $state | ForEach-Object { Write-Host $_ }; exit 0 }
 }
-if ($Mode -in @('Run', 'Submit')) { Hk-Say 'Hikvision''s reset page' 'Cyan'; [void](Submit-HikRequests $state $statePath $cfg.form) }
+if ($Mode -in @('Run', 'Submit')) { Hk-Say 'Hikvision''s reset page' 'Cyan'; [void](Submit-HikRequests $state $statePath (Get-HikFormFor $cfg)) }
 if ($Mode -in @('Run', 'Watch')) {
   $end = (Get-Date).AddMinutes($WaitMinutes)
   do {
-    $r = Receive-HikReplies $state $statePath $cfg $secDir $repDir
+    $r = Receive-HikReplies $state $statePath $cfg $here $repDir $inboxDir
     foreach ($u in $r.unmatched) { Hk-Say ('  A file from Hikvision does not match any device here: ' + $u.name + ' (' + $u.why + '). It is not used.') 'Yellow' }
     $left = @($state.devices | Where-Object { $_.status -eq 'submitted' })
     if (-not $left.Count -or (Get-Date) -ge $end) { break }
-    Hk-Say ('  Waiting for ' + $left.Count + ' reply(ies)... checking again in a minute.')
+    $wl = Format-HikWaitLine $cfg $left.Count ([math]::Max(0, [int][math]::Ceiling(($end - (Get-Date)).TotalMinutes)))
+    Hk-Say ('  ' + $wl.text) $wl.color
     Start-Sleep -Seconds 60
   } while ($true)
 }

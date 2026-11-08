@@ -11,6 +11,22 @@ $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'ToolkitCore.ps1')
+if (Test-Path (Join-Path $here 'FixSiteIpc.ps1')) { . (Join-Path $here 'FixSiteIpc.ps1') }
+foreach ($lib in @('HikMail.ps1', 'HikEmailDrop.ps1')) { if (Test-Path (Join-Path $here $lib)) { . (Join-Path $here $lib) } }   # 2.2.0: Hik's reply - relay + the "I got Hik's email" button   # 2.2.0: update / go back through the admin-made task
+# 2.2.0 (review H1): the Toolkit folder is read-only for the Crew login, so an update (or Go back) runs in the "Fix this site" task (SYSTEM).
+function Test-TkCanWrite([string]$dir) { $p = Join-Path $dir ('.w' + [guid]::NewGuid().ToString('N').Substring(0, 6)); try { [IO.File]::WriteAllText($p, 'x'); Remove-Item -LiteralPath $p -Force; return $true } catch { return $false } }
+function Invoke-TkUpdateTask([string]$dir, [string]$mode, [int]$waitSec = 240) {
+  if (-not (Get-Command Start-FsRunner -ErrorAction SilentlyContinue) -or -not (Test-FsRunnerTask)) { throw 'Updates need an admin on this PC (the Toolkit folder is locked and the "Fix this site" task is missing - run the Toolkit installer once as admin).' }
+  $r = Start-FsRunner $dir @{ mode = $mode }
+  if (-not $r.ok) { throw ('The update did not start: ' + $r.why) }
+  $end = (Get-Date).AddSeconds($waitSec)
+  while ((Get-Date) -lt $end) {
+    Start-Sleep -Milliseconds 700
+    $c = Read-FsIpcJson (Join-Path (Get-FsIpcRoot $dir) 'current.json')
+    if ($c -and [string]$c.id -eq $r.id -and [string]$c.state -in @('ended', 'refused')) { if ($c.ok) { if ($c.PSObject.Properties['to'] -and $c.to) { return [string]$c.to }; return [string]$c.message }; throw ([string]$c.message + [string]$c.why) }
+  }
+  throw 'The update is taking long - it carries on by itself; open the Toolkit again in a few minutes.'
+}
 $script:WireItUiCode = @'
 using System;
 using System.Drawing;
@@ -367,7 +383,8 @@ if (-not $NoUpdate -and -not $Screenshot) {
   $TK.updateMsg = $u.message
   if ($u.state -eq 'available' -and $TK.cfg.autoUpdate -and ([string]$u.manifest.version -ne (Get-TkSkipVersion $here))) {
     try {
-      $old = Install-TkUpdate $u.manifest $here
+      if (Test-TkCanWrite $here) { $old = Install-TkUpdate $u.manifest $here }
+      else { [void](Invoke-TkUpdateTask $here 'Update'); $old = [string]$u.current }
       Write-TkLog $TK.P.Logs 'update' ('Updated from ' + $old + ' to ' + $u.manifest.version + ' at ' + (Get-Date)) | Out-Null
       $TK.mutex.ReleaseMutex(); $TK.mutex.Dispose()
       Start-Process -FilePath $TK.psexe -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "' + (Join-Path $here 'WireItToolkit.ps1') + '" -NoUpdate -UpdatedFrom ' + $old) -WindowStyle Hidden
@@ -921,6 +938,49 @@ function Take-Reply([string]$path) {
   $rs.replyLbl.Text = $r.message; $rs.replyLbl.ForeColor = $(if ($r.ok -and $r.request) { $cOk } else { $cRed })
   if ($r.ok) { $rs.replyFile = $r.file; if ($r.request) { $rs.req = Get-TkRequests $TK.P.CamReset | Where-Object { $_.serial -eq $r.request.serial } | Select-Object -First 1 }; Rs-Log ('reply file filed: ' + $r.file) }
 }
+# 2.2.0: "I got Hik's email" in Reset passwords: the file goes the same way as a dragged one; a pasted code is kept as a small file
+# next to the request and copied, for HiTools' "Import Key"
+function Show-RsHikDrop {
+  $rs = $TK.rs; if (-not $rs) { return }
+  $devs = @(Get-TkRequests $TK.P.CamReset | Where-Object { $_.serial -or $_.shortSerial } | ForEach-Object { [pscustomobject]@{ serial = $(if ($_.serial) { [string]$_.serial } else { [string]$_.shortSerial }); shortSerial = [string]$_.shortSerial; model = [string]$_.model; ip = [string]$_.ip } })
+  if ($rs.req) { $cur = @($devs | Where-Object { $_.shortSerial -eq [string]$rs.req.shortSerial }); $devs = @($cur) + @($devs | Where-Object { $_.shortSerial -ne [string]$rs.req.shortSerial }) }
+  if (-not $devs.Count) { [void][Windows.Forms.MessageBox]::Show($rs.form, 'No reset request is on this PC yet. Do steps 1-3 first (the request file goes to Hikvision, then their email comes back).', 'WireIt Toolkit'); return }
+  $save = {
+    param($sn, $file, $code)
+    if ($file) { Take-Reply $file; return [pscustomobject]@{ ok = $true; why = '' } }
+    $c = ConvertTo-HikCode $code
+    if (-not $c) { return [pscustomobject]@{ ok = $false; why = 'paste the code from Hikvision''s email (letters and digits only)' } }
+    $tmpD = Join-Path ([IO.Path]::GetTempPath()) ('wireit-code-' + [guid]::NewGuid().ToString('N').Substring(0, 6)); New-Item -ItemType Directory -Force -Path $tmpD | Out-Null
+    $cf = Join-Path $tmpD ('hik-code-' + ($sn -replace '[^A-Za-z0-9-]', '_') + '.txt'); [IO.File]::WriteAllText($cf, $c)
+    $r = Import-TkReply $cf $TK.P.CamReset ([string]$sn); Remove-Item -LiteralPath $tmpD -Recurse -Force -ErrorAction SilentlyContinue
+    if ($r.ok) { $TK.rs.replyFile = $r.file; Set-Clip $c 'the code from Hikvision'; $TK.rs.replyLbl.Text = 'Code saved for serial ' + $sn + ' and copied. In HiTools use Reset Password > Import Key and paste it, with the new password from step 5.'; $TK.rs.replyLbl.ForeColor = $cOk; Rs-Log 'code from Hikvision filed (not logged)' }
+    return [pscustomobject]@{ ok = [bool]$r.ok; why = [string]$r.message }
+  }
+  [void](Show-HikEmailDialog $rs.form $devs $save)
+}
+# 2.2.0: while a request waits for Hikvision, ask the reply relay once a minute (no mail password on this PC; off when config has no relay url)
+function Poll-RsRelay {
+  $rs = $TK.rs; if (-not $rs -or -not (Get-Command Get-HikRelayReply -ErrorAction SilentlyContinue)) { return }
+  $rc = $null; try { if ($TK.cfg.PSObject.Properties['hikReset'] -and $TK.cfg.hikReset.relay -and [string]$TK.cfg.hikReset.relay.url) { $rc = $TK.cfg.hikReset.relay } } catch {}
+  if (-not $rc) { return }
+  if ($rs.relayNext -and (Get-Date) -lt $rs.relayNext) { return }
+  $rs.relayNext = (Get-Date).AddSeconds(60)
+  $open = @(Get-TkRequests $TK.P.CamReset | Where-Object { -not $_.replyFile -and (Get-TkHoursLeft $_) -ge 0 })
+  if (-not $open.Count) { return }
+  $key = Get-HikRelayKey $here
+  foreach ($q in $open) {
+    $r = Get-HikRelayReply $rc $key ([pscustomobject]@{ serial = $(if ($q.serial) { [string]$q.serial } else { [string]$q.shortSerial }); shortSerial = [string]$q.shortSerial }) 15
+    if ($r.state -eq 'failed') { $rs.replyLbl.Text = 'Could not check the reply mailbox (' + $r.msg + '). When Hikvision''s email comes, press "I got Hik''s email".'; $rs.replyLbl.ForeColor = $cRed; return }
+    if ($r.state -eq 'found') {
+      $a = @($r.message.attachments)[0]
+      $tmpD = Join-Path ([IO.Path]::GetTempPath()) ('wireit-relay-' + [guid]::NewGuid().ToString('N').Substring(0, 6)); New-Item -ItemType Directory -Force -Path $tmpD | Out-Null
+      $tf = Join-Path $tmpD ([string]$a.name); [IO.File]::WriteAllBytes($tf, [byte[]]$a.bytes)
+      Take-Reply $tf; Remove-Item -LiteralPath $tmpD -Recurse -Force -ErrorAction SilentlyContinue
+      if ($a.name -like '*-code.txt') { Set-Clip ([Text.Encoding]::ASCII.GetString([byte[]]$a.bytes)) 'the code from Hikvision' }
+      Set-Status ('Hikvision''s reply for ' + [string]$q.model + ' came in by itself (reply mailbox).')
+    }
+  }
+}
 function Show-ResetWindow([string]$dropFile = '') {
   $rs = @{ fieldBtns = @(); dev = $null; req = $null; watch = $false; watchSince = (Get-Date); replyFile = ''; pw = ''; lastWatch = (Get-Date) }
   $TK.rs = $rs
@@ -982,6 +1042,8 @@ function Show-ResetWindow([string]$dropFile = '') {
   $drop.Size = New-Object Drawing.Size(($W - (Px 190)), (Px 104)); $drop.AllowDrop = $true; $drop.Margin = New-Object Windows.Forms.Padding(0, (Px 4), (Px 12), (Px 4))
   $s4.Controls.Add($drop)
   $s4.Controls.Add((Set-Glyph (New-Btn 'Pick the file' { $o = New-Object Windows.Forms.OpenFileDialog; $o.Filter = 'Hikvision reply (*.xml;*.zip;*.txt)|*.xml;*.zip;*.txt|All files|*.*'; if ($o.ShowDialog($TK.rs.form) -eq 'OK') { Take-Reply $o.FileName } }) ([string][char]0xE8E5)))
+  # 2.2.0: the reply mailbox is checked by itself (the relay, every minute while a request waits); this button is the backup
+  $s4.Controls.Add((Set-Glyph (New-Btn "I got Hik's email" { Show-RsHikDrop }) ([string][char]0xE715)))
   $rs.replyLbl = New-Lbl '' $fBold $W; $s4.Controls.Add($rs.replyLbl)
   $dragEnter = { if ($_.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $_.Effect = 'Copy'; if ($TK_UI -and $TK.rs.drop) { $TK.rs.drop.Over = $true } } }
   $dragDrop = { if ($TK_UI -and $TK.rs.drop) { $TK.rs.drop.Over = $false }; $files = $_.Data.GetData([Windows.Forms.DataFormats]::FileDrop); if ($files) { Take-Reply ([string]$files[0]) } }
@@ -1209,7 +1271,7 @@ $status = New-Object Windows.Forms.Label; $status.AutoSize = $true; $status.Anch
 $foot.Controls.Add($status, 0, 0)
 $back = New-Btn 'Go back to the previous version' {
   if ([Windows.Forms.MessageBox]::Show($TK.form, 'Go back to the Toolkit version that was installed before the last update?', 'WireIt Toolkit', 'YesNo', 'Question') -ne 'Yes') { return }
-  try { $v = Undo-TkUpdate $here; [void][Windows.Forms.MessageBox]::Show($TK.form, ('Back on version ' + $v + '. The Toolkit will close; open it again.'), 'WireIt Toolkit'); $TK.form.Close() }
+  try { if (Test-TkCanWrite $here) { $v = Undo-TkUpdate $here } else { $v = Invoke-TkUpdateTask $here 'UndoUpdate' }; [void][Windows.Forms.MessageBox]::Show($TK.form, ('Back on version ' + $v + '. The Toolkit will close; open it again.'), 'WireIt Toolkit'); $TK.form.Close() }
   catch { [void][Windows.Forms.MessageBox]::Show($TK.form, $_.Exception.Message, 'WireIt Toolkit') } }
 $back.Font = $fSmall; $back.MinimumSize = New-Object Drawing.Size((Px 60), (Px 30)); if ($TK_UI) { $back.TextColor = $cMuted; $back.Accent = $cSlate; $back = Set-Glyph $back ([string][char]0xE777); $back.GlyphFont = Ico 8.5 }
 $back.Margin = New-Object Windows.Forms.Padding 0; $foot.Controls.Add($back, 1, 0)
@@ -1235,7 +1297,7 @@ Set-Status ('Ready. ' + $env:COMPUTERNAME)
 $form.Add_DragEnter({ if ($_.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $_.Effect = 'Copy' } })
 $form.Add_DragDrop({ $files = $_.Data.GetData([Windows.Forms.DataFormats]::FileDrop); if ($files) { $p = [string]$files[0]; if ($p -match '(?i)\.json$') { [void][Windows.Forms.MessageBox]::Show($TK.form, 'That looks like a settings/Bitwarden file, not a Hikvision reply. For Bitwarden use Advanced... under Job options.', 'WireIt Toolkit') } else { Show-ResetWindow $p } } })
 $timer = New-Object Windows.Forms.Timer; $timer.Interval = 400
-$timer.Add_Tick({ try { Poll-Run; Watch-Export } catch { Set-Status ('(' + $_.Exception.Message + ')') } })
+$timer.Add_Tick({ try { Poll-Run; Watch-Export; Poll-RsRelay } catch { Set-Status ('(' + $_.Exception.Message + ')') } })
 $form.Add_FormClosing({
   if ($TK.run -and $TK.run.Kind -eq 'console') { [void][Windows.Forms.MessageBox]::Show($TK.form, 'A Fix NVR tool window is still open. Finish it there first; its log is saved in C:\WireIt\FixNVR\runs.', 'WireIt Toolkit') }
   if ($TK.bw -and (Test-Path -LiteralPath $TK.bw)) {

@@ -10,7 +10,7 @@
      cameras:[{name, brand, model, serial, mac, ip, channel, nvr, switch, port, settings:{codec,fps,resolution,bitrate}}] }
  No passwords are ever in it.
 #>
-$script:FsVersion = '2.1.0'
+$script:FsVersion = '2.2.0'
 $script:FsPoeNets = @('192.168.254')
 
 function Get-FsDefaults {

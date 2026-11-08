@@ -336,23 +336,55 @@ function Invoke-FsPoeCycle([string]$siteId, [string]$mac, [string]$portMapDir) {
   return [pscustomobject]@{ state = 'failed'; msg = ('no answer from the switch job: ' + ($out.Trim() -replace '\s+', ' ')).Substring(0, [math]::Min(160, $out.Length + 30)) }
 }
 
-# ---------------- the site's secret store (encrypted for THIS Windows user on THIS PC; never Drive, never logs) ----------------
+# ---------------- the site's secret store (encrypted on THIS PC; never Drive, never logs) ----------------
+# 2.2.0 (review M1): DPAPI LocalMachine scope, so ANY admin account and the background "Fix this site" task (SYSTEM) read the same
+# store. LocalMachine means anyone who can READ the file can decrypt it on this PC, so the store lives in vault\, which only
+# Administrators and SYSTEM can open (Install-Toolkit sets that). Files written by 2.1 (CurrentUser scope, no "LM1:" mark) are still
+# read when the same Windows account that wrote them runs it, and are then re-saved as LocalMachine. A file nobody here can read
+# is reported as "saved by another Windows account" - it is never treated as "no password yet".
+$script:FsDpapi = $null   # TESTS ONLY: { param([string]$op, [byte[]]$data, [string]$scope) } stands in for Windows' DPAPI
+$script:FsLegacySecretsDir = ''   # 2.1's secrets\ folder: read there when vault\ has no file yet (then moved into vault\)
+function Invoke-FsDpapi([string]$Op, [byte[]]$Data, [string]$Scope) {
+  if ($script:FsDpapi) { return [byte[]](& $script:FsDpapi $Op $Data $Scope) }
+  Add-Type -AssemblyName System.Security
+  $ent = [Text.Encoding]::UTF8.GetBytes('WireIt-FixSite')
+  if ($Op -eq 'protect') { return [Security.Cryptography.ProtectedData]::Protect($Data, $ent, [Security.Cryptography.DataProtectionScope]$Scope) }
+  return [Security.Cryptography.ProtectedData]::Unprotect($Data, $ent, [Security.Cryptography.DataProtectionScope]$Scope)
+}
 function Protect-FsText([string]$s) {
   if ($script:FsTestSecrets) { return ('TEST:' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($s))) }
-  Add-Type -AssemblyName System.Security
-  return [Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes($s), [Text.Encoding]::UTF8.GetBytes('WireIt-FixSite'), 'CurrentUser'))
+  return ('LM1:' + [Convert]::ToBase64String((Invoke-FsDpapi 'protect' ([Text.Encoding]::UTF8.GetBytes($s)) 'LocalMachine')))
 }
 function Unprotect-FsText([string]$s) {
+  $s = ([string]$s).Trim()
   if ($s.StartsWith('TEST:')) { if (-not $script:FsTestSecrets) { throw 'test secret file on a real run' }; return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($s.Substring(5))) }
-  Add-Type -AssemblyName System.Security
-  return [Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String($s), [Text.Encoding]::UTF8.GetBytes('WireIt-FixSite'), 'CurrentUser'))
+  if ($s.StartsWith('LM1:')) {
+    try { return [Text.Encoding]::UTF8.GetString((Invoke-FsDpapi 'unprotect' ([Convert]::FromBase64String($s.Substring(4))) 'LocalMachine')) }
+    catch { throw 'FS_OTHER_PC: saved on another PC (this PC cannot read it)' }
+  }
+  try { $t = [Text.Encoding]::UTF8.GetString((Invoke-FsDpapi 'unprotect' ([Convert]::FromBase64String($s)) 'CurrentUser')); $script:FsLastWasLegacy = $true; return $t }
+  catch { throw 'FS_OTHER_ACCOUNT: saved by another Windows account (2.1 kept it for that account only)' }
+}
+# the plain words for the screen when a store can't be read
+function Get-FsUnreadableText([string]$why) {
+  if ($why -match 'FS_OTHER_PC') { return 'This site''s saved password file was made on another PC, so this PC cannot read it.' }
+  return 'This site''s saved password was saved by another Windows account, so this PC cannot read it here.'
 }
 function Get-FsSecretPath([string]$dir, [string]$site) { return (Join-Path $dir ('site-' + (($site -replace '[^A-Za-z0-9_-]+', '_').Trim('_')) + '.dat')) }
 function Read-FsSecrets([string]$dir, [string]$site) {
-  $o = [ordered]@{ site = $site; password = ''; known = @(); nvr = @{}; cams = @{}; rollback = @{}; bitwardenSaved = $false; shownOnce = $false }
+  $o = [ordered]@{ site = $site; password = ''; known = @(); nvr = @{}; cams = @{}; rollback = @{}; bitwardenSaved = $false; shownOnce = $false; unreadable = $false; unreadableWhy = '' }
   $p = Get-FsSecretPath $dir $site
-  if (Test-Path $p) { try { $j = (Unprotect-FsText ((Get-Content $p -Raw).Trim())) | ConvertFrom-Json; foreach ($k in @('password', 'known', 'bitwardenSaved', 'shownOnce')) { if ($j.PSObject.Properties[$k]) { $o[$k] = $j.$k } }; foreach ($k in @('nvr', 'cams', 'rollback')) { if ($j.PSObject.Properties[$k] -and $j.$k) { $h = @{}; foreach ($q in $j.$k.PSObject.Properties) { $h[$q.Name] = $q.Value }; $o[$k] = $h } } } catch { Fs-LogLine ('secret store unreadable: ' + $_.Exception.Message) } }
-  $o.known = @($o.known | Where-Object { $_ }); return [pscustomobject]$o
+  $fromLegacy = $false
+  if (-not (Test-Path -LiteralPath $p) -and $script:FsLegacySecretsDir) { $lp = Get-FsSecretPath $script:FsLegacySecretsDir $site; if (Test-Path -LiteralPath $lp) { $p = $lp; $fromLegacy = $true } }
+  $script:FsLastWasLegacy = $false
+  if (Test-Path -LiteralPath $p) {
+    try { $j = (Unprotect-FsText ((Get-Content -LiteralPath $p -Raw).Trim())) | ConvertFrom-Json; foreach ($k in @('password', 'known', 'bitwardenSaved', 'shownOnce')) { if ($j.PSObject.Properties[$k]) { $o[$k] = $j.$k } }; foreach ($k in @('nvr', 'cams', 'rollback')) { if ($j.PSObject.Properties[$k] -and $j.$k) { $h = @{}; foreach ($q in $j.$k.PSObject.Properties) { $h[$q.Name] = $q.Value }; $o[$k] = $h } } }
+    catch { $o.unreadable = $true; $o.unreadableWhy = [string]$_.Exception.Message; Fs-LogLine ('secret store unreadable: ' + $_.Exception.Message) }
+  }
+  $o.known = @($o.known | Where-Object { $_ }); $r = [pscustomobject]$o
+  # 2.2.0: a 2.1 file (CurrentUser) or one still in secrets\ is moved into vault\ as LocalMachine the first time it is read
+  if (-not $r.unreadable -and ($script:FsLastWasLegacy -or $fromLegacy) -and -not $script:FsTestSecrets) { try { Save-FsSecrets $dir $r; if ($fromLegacy) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }; Fs-LogLine 'secret store moved to the machine-wide (LocalMachine) store' } catch {} }
+  return $r
 }
 function Save-FsSecrets([string]$dir, $sec) {
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -368,11 +400,32 @@ function Test-FsSitePrefix([string]$p) { return ($p -cmatch '^[A-Za-z][A-Za-z0-9
 function Get-FsSitePrefix($cfg, [string]$dir) {
   $p = ''
   if ($cfg -and $cfg.PSObject.Properties['sitePasswordPrefix']) { $p = [string]$cfg.sitePasswordPrefix }
-  if (-not (Test-FsSitePrefix $p)) { $p = ''; $f = Join-Path $dir 'password-word.dat'; if (Test-Path $f) { try { $p = Unprotect-FsText ((Get-Content $f -Raw).Trim()) } catch { $p = '' } } }
+  if (-not (Test-FsSitePrefix $p)) {
+    $p = ''; $f = Join-Path $dir 'password-word.dat'
+    if (-not (Test-Path -LiteralPath $f) -and $script:FsLegacySecretsDir) { $f2 = Join-Path $script:FsLegacySecretsDir 'password-word.dat'; if (Test-Path -LiteralPath $f2) { $f = $f2 } }
+    if (Test-Path -LiteralPath $f) {
+      $script:FsLastWasLegacy = $false
+      try { $p = Unprotect-FsText ((Get-Content -LiteralPath $f -Raw).Trim()) } catch { $p = ''; $script:FsPrefixUnreadable = [string]$_.Exception.Message }
+      if ($p -and (Test-FsSitePrefix $p) -and ($script:FsLastWasLegacy -or $f -ne (Join-Path $dir 'password-word.dat')) -and -not $script:FsTestSecrets) { try { Save-FsSitePrefix $dir $p } catch {} }
+    }
+  }
   if (-not (Test-FsSitePrefix $p)) { $p = '' }
   return $p
 }
 function Save-FsSitePrefix([string]$dir, [string]$p) { New-Item -ItemType Directory -Force -Path $dir | Out-Null; [IO.File]::WriteAllText((Join-Path $dir 'password-word.dat'), (Protect-FsText $p)) }
+# 2.2.0: Install-Toolkit (run as an admin) moves every 2.1 store it can read into vault\ as LocalMachine. Returns { moved; unreadable = @(files) }.
+function Convert-FsSecretStores([string]$FromDir, [string]$ToDir) {
+  $moved = 0; $bad = @()
+  if (-not (Test-Path -LiteralPath $FromDir)) { return [pscustomobject]@{ moved = 0; unreadable = @() } }
+  New-Item -ItemType Directory -Force -Path $ToDir | Out-Null
+  foreach ($f in @(Get-ChildItem -LiteralPath $FromDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'site-*.dat' -or $_.Name -eq 'password-word.dat' })) {
+    $dst = Join-Path $ToDir $f.Name
+    if (Test-Path -LiteralPath $dst) { continue }
+    try { $t = Unprotect-FsText ((Get-Content -LiteralPath $f.FullName -Raw).Trim()); [IO.File]::WriteAllText($dst, (Protect-FsText $t)); Remove-Item -LiteralPath $f.FullName -Force; $moved++ } catch { $bad += $f.Name }
+  }
+  foreach ($d in @(Get-ChildItem -LiteralPath $FromDir -Directory -Filter 'hikreset-*' -ErrorAction SilentlyContinue)) { $dd = Join-Path $ToDir $d.Name; if (-not (Test-Path -LiteralPath $dd)) { try { Move-Item -LiteralPath $d.FullName -Destination $dd; $moved++ } catch {} } }
+  return [pscustomobject]@{ moved = $moved; unreadable = @($bad) }
+}
 function New-FsSitePassword([string]$prefix) {
   # <prefix> + 4 random digits (crypto random). No 3 same digits in a row and no straight run (1234 / 9876): cameras flag those as weak.
   if (-not (Test-FsSitePrefix $prefix)) { throw 'site password prefix missing' }
