@@ -403,6 +403,11 @@ foreach ($h in @('HikSadp.ps1', 'HikPortal.ps1', 'HikPortalStep.ps1', 'HikMail.p
 Check ((@('HikSadp.ps1', 'HikPortal.ps1', 'HikPortalStep.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'HikEmailDrop.ps1') | Where-Object { $listed -contains ('Toolkit/' + $_) }).Count -eq 7) 'reproduction (Codex): all the Hik reset files are in the manifest (2.0.4 listed none)'
 $hb = @($man.files | Where-Object { (Get-TkSha256 (Join-Path $repo ([string]$_.path))) -ne ([string]$_.sha256).ToLower() } | ForEach-Object { $_.path })
 Check ($hb.Count -eq 0) ('every listed hash is the file on this branch' + $(if ($hb.Count) { ' - wrong: ' + ($hb -join ', ') } else { '' }))
+$bmOut = Join-Path $tmp 'version-built.json'
+& (Join-Path $repo 'tools/Build-Manifest.ps1') -Commit ([string]$man.commit) -Released ([string]$man.released) -Out $bmOut | Out-Null
+$bm = [IO.File]::ReadAllText($bmOut) | ConvertFrom-Json
+Check ([string]$bm.version -eq '2.2.2' -and -not (Test-TkManifest $bm)) 'release package: tools\Build-Manifest.ps1 builds a manifest the Toolkit accepts, at the code''s own version'
+Check ((@($bm.files | ForEach-Object { $_.path + '=' + $_.sha256 } | Sort-Object) -join '|') -eq (@($man.files | ForEach-Object { $_.path + '=' + ([string]$_.sha256).ToLower() } | Sort-Object) -join '|')) 'release package: version.json is exactly what the builder makes from this branch (no file missed, no stale hash)'
 Check (@($man.files | Where-Object { -not (Test-Path (Join-Path $repo ([string]$_.path))) }).Count -eq 0) 'every listed file exists'
 } finally { foreach ($p in $procs) { try { $p.Kill() } catch {} }; $script:FsMockUrl = '' }
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
