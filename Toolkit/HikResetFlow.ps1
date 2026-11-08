@@ -309,7 +309,15 @@ function Invoke-HikResetStage {
     $okv = $false; try { $okv = [bool](& $VerifyLogin ([string]$d.ip) $SitePassword) } catch {}
     if ($okv) { Set-HikStateField $d 'status' 'verified'; Set-HikStateField $d 'verifiedAt' (Get-Date -Format 's'); Save-HikState $statePath $state; $fixed += (ConvertTo-SadpMac ([string]$d.mac)); Hk-Say ('  ' + $d.model + ' ' + $d.ip + ': the earlier reset worked - the site password logs in.') 'Green' }
   }
-  foreach ($d in @(& $forMine $state | Where-Object { $_.status -eq 'verified' })) { $mv = ConvertTo-SadpMac ([string]$d.mac); if ($fixed -notcontains $mv) { $fixed += $mv } }
+  # 2.2.3 (Codex #57): a reset verified in an EARLIER run counts only if the site password still logs in now (one try, at the address
+  # the device has now). A factory reset or password change since then = it is reset again.
+  foreach ($d in @(& $forMine $state | Where-Object { $_.status -eq 'verified' })) {
+    $mv = ConvertTo-SadpMac ([string]$d.mac); if ($fixed -contains $mv) { continue }
+    $live = @($devs | Where-Object { $_.mac -eq $mv })[0]; $ipNow = $(if ($live) { [string]$live.ip } else { [string]$d.ip })
+    $okv = $false; if ($live) { try { $okv = [bool](& $VerifyLogin $ipNow $SitePassword) } catch {} }
+    if ($okv) { $fixed += $mv }
+    elseif ($live) { Set-HikStateField $d 'status' 'stale'; Save-HikState $statePath $state; Hk-Say ('  ' + $d.model + ' ' + $ipNow + ': was reset before, but the site password no longer logs in - it is reset again.') 'Yellow' }
+  }
   # a device that is already done is never asked for a new request file
   $todo = @($devs | Where-Object { $_.activated -and $fixed -notcontains (ConvertTo-SadpMac ([string]$_.mac)) })
   # an old state (reply still waiting from an earlier run) is picked up as it is

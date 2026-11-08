@@ -392,6 +392,11 @@ Eq @(Read-HikZipEntries $z2).Count 0 'more than 20 entries: refused'
 $z3 = Join-Path $tmp 'ok.zip'; New-Zip56 $z3 @{ 'reset_K1.xml' = [Text.Encoding]::ASCII.GetBytes('<xml>unlock</xml>') }
 $r56 = @(Read-HikZipEntries $z3); Check ($r56.Count -eq 1 -and [Text.Encoding]::ASCII.GetString($r56[0].bytes) -eq '<xml>unlock</xml>') 'a normal reply ZIP is read'
 Check ((Read-Src 'Toolkit/HikMail.ps1') -notmatch 'Expand-Archive') 'nothing is expanded to disk any more'
+Write-Host '#57 an old verified reset is checked again'
+$hf = Read-Src 'Toolkit/HikResetFlow.ps1'
+$i57 = $hf.IndexOf('Codex #57'); $blk = $hf.Substring($i57, 900)
+Check ($blk -match '& \$VerifyLogin \$ipNow \$SitePassword' -and $blk -match "'status' 'stale'") 'reproduction: a device verified in an earlier run is logged into again; a failure sends it back through the reset (2.2.2 trusted it forever)'
+Check ($hf.IndexOf('Codex #57') -lt $hf.IndexOf('$todo = @($devs | Where-Object { $_.activated -and $fixed -notcontains')) 'the check runs before the to-do list is made'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
