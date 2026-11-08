@@ -1,9 +1,9 @@
 {
-  "version": "2.2.2",
+  "version": "2.2.3",
   "released": "2026-11-08",
-  "commit": "246d800c08805cf4eb96bcf881916ec8f0011077",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/246d800c08805cf4eb96bcf881916ec8f0011077/",
-  "notes": "2.2.2 (not released): fixes from the 2.2.1 re-review and Codex's re-review of 8bafca6 - plain HTTP only for devices with no HTTPS at all (Fix this site and classic Fix NVR); TLS 1.0/1.1 kept for old device firmware on PowerShell 5.1; certificate skip only for LAN devices on PowerShell 7 and curl; TLS helper compiles on PowerShell 7.5; the Fix this site task only exists while the Crew login cannot change what it runs; network recovery checks addresses, routes and gateway; a second Undo after an NVR moved back; isolated camera switches (169.254 / no router); Bitwarden on the tech's own login, into WireIt CT > Sites, syncs checked; installs from a repository copy keep their version; never a downgrade; the update sets up permissions/vault/task or says to run the installer as admin; labelled codes only; no picture/PDF as unlock file; reset resume order. 2.0.4: updates now come through WireIt's own download service (so the code on GitHub can be private); same SHA-256 checks. 2.0.3: every site has its own password - nothing is shared between sites (\"Usual passwords...\" is now \"Site password...\": show, copy, save in Bitwarden, make or type THIS site's password). A site with no site password yet gets one (your word + 4 random digits); every camera and NVR still on its factory password gets it, with its NVR channel updated and the picture checked. New tick \"Make every device use the site password\" (off unless ticked): every device on a different password gets it, one at a time; a camera whose picture does not come back gets its old password back. Saved in Bitwarden when the bw command is on the PC, else shown once with a Copy button. 2.0.2: \"New site (not listed)\" button beside \"Fix this site\": one tap at a site with no saved list, nothing to type. It finds the router, NVR and cameras by itself, names the site from what it sees, tries the saved and old factory passwords (same try limit), shows \"New site (no saved list): found ...\" first, fixes ONLY the problem cameras after YES (backups + undo), then asks for the address (optional) and saves the site on this PC so the next visit finds it. 2.0.1: \"Fix this site\" changes ONLY cameras with a real problem (offline, no video, hung, wrong IP scheme, not on the NVR, password unknown with no video, missing). Working cameras are not touched at all. The camera-setting drop-downs go only on the cameras being fixed, unless you tick \"Apply settings to ALL cameras\"; the site password goes on working cameras only if you tick \"Set the site password on all cameras\". The list now starts with \"Changes only the N cameras listed below. M working cameras will not be touched.\" 2.0 \"Fix this site\": one screen, one big button. It reads the site's camera list, shows only what is wrong, you type YES once, and it fixes each camera (site password, settings from the drop-downs, move to the WireIt IP scheme, back on the NVR, restart or power-cycle hung cameras) with a check per camera when video is back. Missing cameras say which switch port to check. Undo the last fix in one click. The old buttons are under \"More tools\".",
+  "commit": "0b5dc3e470b77952526192cf336c53bf38b143a2",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/0b5dc3e470b77952526192cf336c53bf38b143a2/",
+  "notes": "2.2.3 (not released): fixes from Codex's full review of 2.2.2 (5e465b9), findings #6-64; the Crew/SYSTEM split is removed (Crew is a local admin): no SYSTEM task, IPC folder or ACL lock. See files/pc-setup/toolkit-2.2.3-fixes.md.",
   "files": [
     {
       "path": "CamReset/Find Cameras.cmd",
@@ -12,8 +12,8 @@
     },
     {
       "path": "CamReset/Find-Cameras.ps1",
-      "sha256": "0caeb3d39c3e3a76e85db25372350b4e606255c9645da256050f50fa5ad96f4d",
-      "size": 36320
+      "sha256": "df2c56a2df6cd1dddaecb1b1ad62664127046cdbaa8029e5163aaa10580846e7",
+      "size": 37529
     },
     {
       "path": "CamReset/Install-CamReset.ps1",
@@ -22,8 +22,8 @@
     },
     {
       "path": "CamReset/Make-Request.ps1",
-      "sha256": "3af37ab2e69d3346e99c892e22df5c44d50e2a796ea7ee3d84086aa87f33787e",
-      "size": 3833
+      "sha256": "332e3a029358ab118a3ba7696b55a057338e490b3387daa42d209c145352afa8",
+      "size": 4777
     },
     {
       "path": "CamReset/README.txt",
@@ -72,8 +72,8 @@
     },
     {
       "path": "Toolkit/CamViews.ps1",
-      "sha256": "d261917b38cb56ffdbee2e1b58622785fa995293a6916622ebbbadec77774648",
-      "size": 29750
+      "sha256": "b9eba3184bdc250a457d45c6570092a4e6a6b2d588148ea3143e23eabe67b826",
+      "size": 30030
     },
     {
       "path": "Toolkit/FixIt.ps1",
@@ -82,43 +82,28 @@
     },
     {
       "path": "Toolkit/FixSite.ps1",
-      "sha256": "90e36f2d5a2878aed65c41d74502edcc41dada8084f50487c9850614c99c99fd",
-      "size": 97990
-    },
-    {
-      "path": "Toolkit/FixSiteAsk.ps1",
-      "sha256": "1f5beb0fbe26628e930bc73a7d8e1e685644729b8c72180d760584718f76cdd4",
-      "size": 6511
+      "sha256": "323cf59882ccc9bbefc4aa3007837cc7df0f4cfd5d29ca7e7d2ec09d5c2e70ad",
+      "size": 101564
     },
     {
       "path": "Toolkit/FixSiteBw.ps1",
-      "sha256": "b08f92b16ecd9a5798eac9535247d638ea7a077964aa16b8e676dc65dc278224",
-      "size": 11885
+      "sha256": "10037fead27c6566021a70523eede852d5a144cdc313c53c3453281d1fab2d6d",
+      "size": 12081
     },
     {
       "path": "Toolkit/FixSiteCore.ps1",
-      "sha256": "44b1e8fc72bdd4bbe81320047482706b075dd2fd669c76dd261a5fd3f8ff895e",
-      "size": 59071
+      "sha256": "8091a5e51a750baca160f32c55727468170c08a278c7dd02051ae4535fc2ebc0",
+      "size": 68153
     },
     {
       "path": "Toolkit/FixSiteDevices.ps1",
-      "sha256": "923df0205ab51d683f259951b5adfb627b7c4133af0e4e29f0a8d77131236f0e",
-      "size": 69458
-    },
-    {
-      "path": "Toolkit/FixSiteIpc.ps1",
-      "sha256": "52b1a5b599253216178f5b52b233441a7180d22cb8492bcf092478362442c34f",
-      "size": 13034
-    },
-    {
-      "path": "Toolkit/FixSiteRunner.ps1",
-      "sha256": "b17d388aefe1f55d3ee689652618398ef7aa4ea9da540bd77ded1a90b434b4b8",
-      "size": 8866
+      "sha256": "9c4f961503d3a56bd144f281fd0c36310846ad1b75bcf2fd53d55212e72f5516",
+      "size": 76942
     },
     {
       "path": "Toolkit/FixSiteWindow.ps1",
-      "sha256": "c3e4d925eb9d422cdf588c12b3342e5dd09cb3473d17f6c51abddb1813c8c2f6",
-      "size": 25820
+      "sha256": "c6e4d33f453107680da78018e4a0f318aa77197ebb46b5aca9e21e3b3cbcb4ca",
+      "size": 21166
     },
     {
       "path": "Toolkit/HikEmailDrop.ps1",
@@ -127,38 +112,33 @@
     },
     {
       "path": "Toolkit/HikMail.ps1",
-      "sha256": "10e74070a2f223a93b0a807f9fbd5afb0d56b07b419279a62021eac7cc865709",
-      "size": 15936
+      "sha256": "d02d57e5e70e65360294b2ac2bc2d1e0b7cb08abd9edb30e028f8fbb260dfce4",
+      "size": 17496
     },
     {
       "path": "Toolkit/HikPortal.ps1",
-      "sha256": "3a407d7b4dea20b1cb266891bf02ada72d1c603383ee123f8375ad41c6097a64",
-      "size": 18841
-    },
-    {
-      "path": "Toolkit/HikPortalStep.ps1",
-      "sha256": "62bf2bc128d0909a4cbc09ce3700e6935757c51c24d500965083dc2388cd6bc6",
-      "size": 2234
+      "sha256": "2cd9085344d1bb9d015894ca8ba60366f98217f536830bef0c19ed53f08bf1b6",
+      "size": 20284
     },
     {
       "path": "Toolkit/HikReset.ps1",
-      "sha256": "3755d97b243c4e021bb9a4a2b330b8306e948751666d2e0a09c2e2366c9cddce",
-      "size": 6462
+      "sha256": "31cfbdfa69a52a48cffb2d4beb8a497e0920b9f4971fc3934aebe4e199db6c9b",
+      "size": 6980
     },
     {
       "path": "Toolkit/HikResetFlow.ps1",
-      "sha256": "c3c8a610b14138a1815ff594944966fe536ef887e14c4e96201976473cbef4f9",
-      "size": 30587
+      "sha256": "48706a374b5537af6f01be9b48fe0be3fdb1f18d2cf0a4d47742b865b359e2a6",
+      "size": 30757
     },
     {
       "path": "Toolkit/HikSadp.ps1",
-      "sha256": "6d5b981b7c9cf1f86ad88abb9a51a8034db15f7cb91991df9b9baa6a2d4618d4",
-      "size": 21207
+      "sha256": "2656afc12aa0a3f5b12e5955c20cce727bb5066772b4a7a3a72e03c30b6604fa",
+      "size": 21879
     },
     {
       "path": "Toolkit/Install-Toolkit.ps1",
-      "sha256": "042e004aceeda830099545907ffbe139f81f80fa97fcd1cc25e74a5b36c8c644",
-      "size": 13801
+      "sha256": "48a145e689e9e1a6d617dce530a13b431044949c89e9e15e73b0d6d32e193a45",
+      "size": 13180
     },
     {
       "path": "Toolkit/modules/NvrHealth/firmware-latest.json",
@@ -167,13 +147,13 @@
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrFix.ps1",
-      "sha256": "59b6c4f942edb89c40ff7ce033b7e9fd0ae8a028122a145114c7aed0de413fc6",
-      "size": 20251
+      "sha256": "cfd255b806d1f0572f01177bb7d603210a5b321e4219b9328bea75ee78cd9ccf",
+      "size": 20636
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrHealth.psm1",
-      "sha256": "9f57211140e76646c820badb9c345f13c9acaf5c93e00098565f63410a6f88c8",
-      "size": 104702
+      "sha256": "6644edddd3b6e46b00dbdd600c0fd6f606851ad7e4f8caeb8c07de5225912eb2",
+      "size": 107718
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/mock_devices.py",
@@ -187,18 +167,18 @@
     },
     {
       "path": "Toolkit/NvrCheck.ps1",
-      "sha256": "6cd44e43fdf068bfe5932da1695c0c6bf89e81ac1e0d2d2e6c615d91a70ccff5",
-      "size": 16769
+      "sha256": "b3b273c0f4da61694e46481bc727d36b9cfac380207cae78549e8498469b6f74",
+      "size": 16948
     },
     {
       "path": "Toolkit/README.txt",
-      "sha256": "0cc8647a1e1267f17b243f5407f5bad3f356ed0dc0605303bd74de69c94c2b1a",
-      "size": 23687
+      "sha256": "da9e12f1417659bba87367894fad1eb6b3dc51f1276fb82ff663737b61d891dc",
+      "size": 24234
     },
     {
       "path": "Toolkit/ScanUpload.ps1",
-      "sha256": "ab4f351675bdabed4c006ec89462a4adc567dc0c39d36486d0ef1dda95d4566a",
-      "size": 5208
+      "sha256": "915b077b97271a81507bfc37dc40ff31383b0e8e614aea296d6cef49b19c8f77",
+      "size": 5588
     },
     {
       "path": "Toolkit/Set upload key.cmd",
@@ -232,8 +212,8 @@
     },
     {
       "path": "Toolkit/tests/fixsite/mock_site.py",
-      "sha256": "baff7c5d98c0f9f5ba0a44a03ab2842828579ed8bfae299bd5114dd14dddddea",
-      "size": 19438
+      "sha256": "bb8e0d9e5727e40e93031b768f095347089415d02c125eec0fb8773e6ff85b57",
+      "size": 19578
     },
     {
       "path": "Toolkit/tests/fixsite/mock-221.json",
@@ -292,18 +272,23 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix22.ps1",
-      "sha256": "a75767c08cf33d83983eb912d9a36a8a8b92bf843ed9b600f9f24b236174f317",
-      "size": 19297
+      "sha256": "9a2587c95a2c6b54b1371074e5a9025707690f40d7ffee7b5f3219b44fad3850",
+      "size": 6411
     },
     {
       "path": "Toolkit/tests/Test-Fix221.ps1",
-      "sha256": "e76d7cbe12c60c9fe48cf89ed92ee76c06c54a0de7ff313b1e8c64bf7c8a16de",
-      "size": 36808
+      "sha256": "5126fd5407d2e600c8643947c32001b87de77c9b442e8064dd368752d40934eb",
+      "size": 37166
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "239ba34e4c18be606bfb6b55b1c08278cea506d52acc8e7a91484038985cceb4",
-      "size": 48148
+      "sha256": "136185a6a0c3b8a61937baaac391fe056c136ceb20b46c3e71b027d38563b3f5",
+      "size": 41272
+    },
+    {
+      "path": "Toolkit/tests/Test-Fix223.ps1",
+      "sha256": "b1a1537f923459a5e99c1074c760c65f9c442320cf9e4e4c61c8366afbfe5a3f",
+      "size": 52963
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
@@ -312,13 +297,13 @@
     },
     {
       "path": "Toolkit/tests/Test-FixSite.ps1",
-      "sha256": "6b99377c2a82310eca3d4d45ec692a9e7715e2bd6a872899cafb20b64e3ffa80",
-      "size": 59586
+      "sha256": "d1837f32f794e8f4cd2c9c9a7905cc262c4596046e023eee3c396d81eb10439a",
+      "size": 60123
     },
     {
       "path": "Toolkit/tests/Test-HikReset.ps1",
-      "sha256": "57328ddd6b25cc48a7ae72da16ecaf7a542abd21623d448322407c83792d5e11",
-      "size": 30081
+      "sha256": "a55409fbc2ef3f26ee173eade541dc13466cab75349c18a65e3671f9925657be",
+      "size": 30465
     },
     {
       "path": "Toolkit/tests/Test-Toolkit.ps1",
@@ -327,8 +312,8 @@
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
-      "sha256": "e854af2104d0eff9eb0f86828930bc424154e4e3798d62b7dfe02c446384eb41",
-      "size": 62622
+      "sha256": "bd32b5385fed7a8056c44e0df59bbf6d4a59ca755a4699fe9125d113239c0fc6",
+      "size": 63298
     },
     {
       "path": "Toolkit/WireIt Toolkit.cmd",
@@ -346,14 +331,9 @@
       "size": 68202
     },
     {
-      "path": "Toolkit/WireItAcl.ps1",
-      "sha256": "38df8692616990b92b81d53d25c990eed7075f86173242fee10224ee48dc2ab3",
-      "size": 14017
-    },
-    {
       "path": "Toolkit/WireItToolkit.ps1",
-      "sha256": "47bb6f7de4469e1022b3409d49888a3b1542f3fdcdc8d3d55e8d85373ae311dc",
-      "size": 121204
+      "sha256": "b1bc7c2191bb4d04bde05a7b4f06dd41d12e54467bbcd936af306b6aa8c1829c",
+      "size": 118425
     }
   ]
 }
