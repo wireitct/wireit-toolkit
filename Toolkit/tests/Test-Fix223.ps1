@@ -217,6 +217,16 @@ Eq $cands.Count 2 'reproduction: SitePass9 and sitepass9 are two candidates (2.2
 $fs = Read-Src 'Toolkit/FixSite.ps1'
 Check ($fs -match '\$pw -cne \$sitePw -and \(\$c\.steps -contains ''password''') 'a case-only password rotation is not skipped (-cne)'
 Check (-not ([regex]::Matches($fs, '\$pw -ne \$sitePw')).Count) 'no case-insensitive password comparison left in FixSite'
+Write-Host '#27 the Fix NVR button reaches its own function again'
+$wt = Read-Src 'Toolkit/WireItToolkit.ps1'
+$tok = $null; $errs = $null; $ast = [Management.Automation.Language.Parser]::ParseInput($wt, [ref]$tok, [ref]$errs)
+$defs = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
+$dups = @($defs | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
+Eq @($defs | Where-Object { $_ -eq 'Do-Fix' }).Count 1 'reproduction: exactly one Do-Fix (2.2.2 had two; the second swallowed the button)'
+Eq ($dups -join ',') '' 'no function is defined twice in WireItToolkit.ps1'
+$fx = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Do-Fix' }, $true))[0]
+Check (-not $fx.Parameters -and -not $fx.Body.ParamBlock) 'the remaining Do-Fix is the button''s (no key parameter)'
+Check ($wt -match 'Do-FixFailed \(\[string\]\$f\.Tag\)') '"Fix what failed" calls its own Do-FixFailed'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

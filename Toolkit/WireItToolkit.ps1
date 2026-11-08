@@ -823,9 +823,10 @@ function Do-FixMenu {
   foreach ($k in $keys) { $b = New-Btn $TK.fixNames[$k] $null $k; $b.Add_Click({ param($sender) $sender.FindForm().Tag = [string]$sender.Tag; $sender.FindForm().Close() }); $fl.Controls.Add($b) }
   $c = New-Btn 'Cancel' { param($sender) $sender.FindForm().Close() }; $fl.Controls.Add($c)
   [void]$f.ShowDialog($TK.form)
-  if ($f.Tag) { Do-Fix ([string]$f.Tag) }
+  if ($f.Tag) { Do-FixFailed ([string]$f.Tag) }
 }
-function Do-Fix([string]$key) {
+# 2.2.3 (Codex #27): was a second "Do-Fix", which replaced the Fix NVR button's own Do-Fix (the button then did nothing)
+function Do-FixFailed([string]$key) {
   $doc = Read-TkJson (Join-Path $TK.P.Toolkit 'logs\doctor-last.json'); $camIp = $(if ($doc) { [string]$doc.ip } else { '' })
   $rx = '^\d{1,3}(\.\d{1,3}){3}$'
   switch ($key) {
