@@ -142,6 +142,21 @@ Check (-not (Test-FsFreshScan (Join-Path $tmp 'none.json') 0 (Get-Date))) 'no fi
 Check ($fs -match "Move-Item -LiteralPath \`$lj -Destination \(\`$lj \+ '\.prev'\)" -and $fs -match 'if \(\$scanOk\) \{ Get-TkScanDevices') 'FixSite moves the old scan aside and uses the finder only when this run''s scan is good'
 Write-Host '#35 an APIPA-only isolated switch is still scanned'
 Check ($fc -match "elseif \(-not \`$locals\) \{ \`$locals = @\(\`$allLocals \| Where-Object \{ \`$_\.IPAddress -like '169\.254\.\*' \}\)") 'reproduction: only a 169.254 address -> the finder looks from it (2.2.2 exited "no network")'
+Write-Host '#38 the saved site list says where devices ARE, not where they were planned to go'
+$plan38 = [pscustomobject]@{ scheme = '192.168.1'; nvrs = @([ordered]@{ ip = '10.0.0.20'; target = '192.168.1.20'; brand = 'Hikvision'; model = 'DS-7608'; mac = 'aa:00:00:00:00:20'; moved = $false })
+  cams = @([pscustomobject]@{ name = 'Gate'; brand = 'Hikvision'; model = 'm'; serial = 's'; mac = 'aa:00:00:00:00:55'; ip = '192.168.1.55'; target = '192.168.1.21'; state = 'fix'; channel = 1; nvr = '192.168.1.20'; switch = ''; port = $null; listIp = '' },
+           [pscustomobject]@{ name = 'Door'; brand = 'Hikvision'; model = 'm'; serial = 's'; mac = 'aa:00:00:00:00:56'; ip = '10.0.0.56'; target = '192.168.1.22'; state = 'fix'; channel = 2; nvr = '192.168.1.20'; switch = ''; port = $null; listIp = ''; ipNow = '192.168.1.22' }) }
+$nl = New-FsSiteList 'X' '' $plan38 $null
+Eq $nl.cameras[0].ip '192.168.1.55' 'reproduction: a camera whose move failed is saved at .55 where it is (2.2.2 saved .21)'
+Eq $nl.cameras[1].ip '192.168.1.22' 'a verified move is saved at its new address'
+Eq $nl.nvrs[0].ip '10.0.0.20' 'an NVR that did not move is saved where it is'
+$old = @([pscustomobject]@{ name = 'Door'; mac = 'AA-00-00-00-00-56'; ip = '10.0.0.56'; channel = 2; nvr = '192.168.1.20'; port = 7 }, [pscustomobject]@{ name = 'Yard'; mac = 'aa:00:00:00:00:77'; ip = '192.168.1.30' })
+$m = @(Merge-FsSiteListCams $old @($nl.cameras))
+$door = @($m | Where-Object { (ConvertTo-FsMac ([string](Get-FsProp $_ 'mac' ''))) -eq 'aa:00:00:00:00:56' })
+Eq $door.Count 1 'one entry per camera after the merge'
+Eq (Get-FsProp $door[0] 'ip' '') '192.168.1.22' 'reproduction: an existing entry gets the camera''s new address (2.2.2 kept the old one)'
+Eq (Get-FsProp $door[0] 'port' '') 7 '...and keeps what only the saved list knew (its switch port)'
+Check (@($m | Where-Object { (Get-FsProp $_ 'name' '') -eq 'Yard' }).Count -eq 1 -and @($m | Where-Object { (Get-FsProp $_ 'name' '') -eq 'Gate' }).Count -eq 1) 'cameras not seen keep their entry; new ones are added'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

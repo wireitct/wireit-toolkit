@@ -709,7 +709,7 @@ function Offer-List {
   $q = $(if (-not $list -or $listFrom -like '*snapshot*') { 'Save this as the site''s list (' + @($plan.cams).Count + ' cameras, no passwords)? Then next time it knows what should be here. Type Y to save.' } else { 'Add the ' + $newOnes.Count + ' camera(s) that are not on the site list to it? Type Y to add.' })
   if ((Ask $q) -notmatch '^(?i)y') { return }
   $nl = New-FsSiteList $siteName $siteId $plan $observed
-  if ($list -and $listFrom -notlike '*snapshot*') { $keep = @($list.cameras); foreach ($c in $nl.cameras) { if (-not @($keep | Where-Object { (ConvertTo-FsMac ([string]$_.mac)) -and (ConvertTo-FsMac ([string]$_.mac)) -eq $c.mac }).Count) { $keep += $c } }; $nl.cameras = $keep }
+  if ($list -and $listFrom -notlike '*snapshot*') { $nl.cameras = @(Merge-FsSiteListCams @($list.cameras) @($nl.cameras)) }   # 2.2.3 (Codex #38)
   $json = $nl | ConvertTo-Json -Depth 6
   New-Item -ItemType Directory -Force -Path (Split-Path $localList) | Out-Null; $json | Set-Content -LiteralPath $localList -Encoding UTF8
   if ($listPath) { try { New-Item -ItemType Directory -Force -Path (Split-Path $listPath) | Out-Null; $json | Set-Content -LiteralPath $listPath -Encoding UTF8; Say ('Saved the site list to the site''s Drive folder (Docs\WireIt site list.json).') 'Green' } catch { Say ('Could not write to the Drive folder - saved on this PC: ' + $localList) 'Yellow' } }
@@ -965,7 +965,7 @@ foreach ($c in $ordered) {
             $back = Wait-FsDevice $t $c.brand $pw ([int]$opts.rebootWaitSec)
           }
         }
-        if ($back) { & $step $(if ($t -ne $ip) { 'moved ' + (Get-FsShort $ip) + ' -> ' + (Get-FsShort $t) } else { 'address set fixed' }) $true; $ip = $t; $rbc.ip_after = $t; $c.target = $t }
+        if ($back) { & $step $(if ($t -ne $ip) { 'moved ' + (Get-FsShort $ip) + ' -> ' + (Get-FsShort $t) } else { 'address set fixed' }) $true; $ip = $t; $rbc.ip_after = $t; $c.target = $t; $c | Add-Member -NotePropertyName ipNow -NotePropertyValue $t -Force }
         elseif ($w.ok) { & $step ('moved to ' + (Get-FsShort $t) + ' but it does not answer there yet') $false; $stop = $true; $rbc.ip_after = $t }
         else { & $step 'the camera refused the new address' $false }
       }

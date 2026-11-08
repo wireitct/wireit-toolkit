@@ -566,12 +566,28 @@ $script:FsOk = [string][char]0x2705; $script:FsBad = [string][char]0x274C
 function New-FsSiteList([string]$site, [string]$siteId, $plan, $observed) {
   # "Save this as the site's list": what is there now, after the fixes (targets where a camera was moved). No passwords.
   $cams = @(); foreach ($c in @($plan.cams | Where-Object { $_.state -ne 'missing' })) {
-    $ip = $(if ($c.target) { $c.target } else { $c.ip })
+    # 2.2.3 (Codex #38): where the camera IS now: the new address only when the move was verified (ipNow), never the planned one
+    $ip = [string](Get-FsProp $c 'ipNow' ''); if (-not $ip) { $ip = [string]$c.ip }
     $cams += [ordered]@{ name = $c.name; brand = $c.brand; model = $c.model; serial = $c.serial; mac = $c.mac; ip = $ip; channel = $c.channel; nvr = $c.nvr; switch = $c.switch; port = $c.port }
   }
   foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'missing' })) { $cams += [ordered]@{ name = $c.name; brand = $c.brand; model = $c.model; serial = $c.serial; mac = $c.mac; ip = $c.listIp; channel = $c.channel; nvr = $c.nvr; switch = $c.switch; port = $c.port } }
-  $nvrs = @(); foreach ($n in @($plan.nvrs)) { $nvrs += [ordered]@{ brand = $n.brand; model = $n.model; mac = $n.mac; ip = $(if ($n.target) { $n.target } else { $n.ip }) } }
+  $nvrs = @(); foreach ($n in @($plan.nvrs)) { $nvrs += [ordered]@{ brand = $n.brand; model = $n.model; mac = $n.mac; ip = $(if ($n.target -and (Get-FsProp $n 'moved' $false)) { $n.target } else { $n.ip }) } }
   return [ordered]@{ site = $site; siteId = $siteId; scheme = $plan.scheme; saved = (Get-Date -Format 's'); savedBy = ('WireIt Toolkit ' + $script:FsVersion + ' on ' + $env:COMPUTERNAME); note = 'No passwords in this file.'; nvrs = $nvrs; cameras = $cams }
+}
+
+function Merge-FsSiteListCams($oldCams, $newCams) {
+  # 2.2.3 (Codex #38): adding cameras to a saved list also brings the ones already on it up to date (same MAC = same camera:
+  # its address, channel, NVR as found now); cameras not seen this time keep their saved entry
+  $keep = @(); $byMac = @{}; foreach ($c in @($newCams)) { $m = ConvertTo-FsMac ([string](Get-FsProp $c 'mac' '')); if ($m) { $byMac[$m] = $c } }
+  $usedM = @{}
+  foreach ($o in @($oldCams)) {
+    $m = ConvertTo-FsMac ([string](Get-FsProp $o 'mac' ''))
+    if ($m -and $byMac.ContainsKey($m)) { $n = $byMac[$m]; $e = [ordered]@{}; foreach ($p in $o.PSObject.Properties) { $e[$p.Name] = $p.Value }; if ($o -is [Collections.IDictionary]) { $e = [ordered]@{}; foreach ($k in $o.Keys) { $e[$k] = $o[$k] } }
+      foreach ($k in @('ip', 'channel', 'nvr')) { $v = Get-FsProp $n $k $null; if ($v) { $e[$k] = $v } }; $keep += $e; $usedM[$m] = 1 }
+    else { $keep += $o }
+  }
+  foreach ($c in @($newCams)) { $m = ConvertTo-FsMac ([string](Get-FsProp $c 'mac' '')); if (-not $m -or -not $usedM.ContainsKey($m)) { $keep += $c } }
+  return $keep
 }
 
 # ---------------- 2.0.2: new site (no typing) ----------------
