@@ -349,7 +349,7 @@ $shipped = @(foreach ($top in @('Toolkit', 'FixNVR', 'CamReset', 'NetCheck')) { 
 $miss = @($shipped | Where-Object { $listed -notcontains $_ })
 Check ($miss.Count -eq 0) ('every shipped file is in the manifest' + $(if ($miss.Count) { ' - missing: ' + ($miss -join ', ') } else { ' (' + $listed.Count + ' files)' }))
 foreach ($h in @('HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'HikEmailDrop.ps1', 'FixSiteBw.ps1')) { if ($listed -notcontains ('Toolkit/' + $h)) { Check $false ('manifest lists Toolkit/' + $h) } }
-Check ((@('HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'HikEmailDrop.ps1') | Where-Object { $listed -contains ('Toolkit/' + $_) }).Count -eq 7) 'reproduction (Codex): all the Hik reset files are in the manifest (2.0.4 listed none)'
+Check ((@('HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'HikEmailDrop.ps1') | Where-Object { $listed -contains ('Toolkit/' + $_) }).Count -eq 6) 'reproduction (Codex): all the Hik reset files (2.2.3: 6, the portal helper is gone) are in the manifest (2.0.4 listed none)'
 $hb = @($man.files | Where-Object { (Get-TkSha256 (Join-Path $repo ([string]$_.path))) -ne ([string]$_.sha256).ToLower() } | ForEach-Object { $_.path })
 Check ($hb.Count -eq 0) ('every listed hash is the file on this branch' + $(if ($hb.Count) { ' - wrong: ' + ($hb -join ', ') } else { '' }))
 $bmOut = Join-Path $tmp 'version-built.json'
