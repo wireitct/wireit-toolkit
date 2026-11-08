@@ -162,7 +162,7 @@ function ConvertTo-FsObserved($observed) {
       brand = (Get-FsBrand ([string](Get-FsProp $d 'brand' '')) ([string](Get-FsProp $d 'model' '')) $mac); model = [string](Get-FsProp $d 'model' ''); serial = [string](Get-FsProp $d 'serial' '')
       firmware = [string](Get-FsProp $d 'firmware' ''); kind = $kind; activated = (Get-FsProp $d 'activated' $true); dhcp = [bool](Get-FsProp $d 'dhcp' $false)
       answers = (Get-FsProp $d 'answers' $true); name = [string](Get-FsProp $d 'name' ''); login = [string](Get-FsProp $d 'login' '')
-      streams = (Get-FsProp $d 'streams' $null); channel = $null; nvr = ''; online = $null; chName = ''; chProtocol = ''
+      streams = (Get-FsProp $d 'streams' $null); channel = $null; nvr = ''; online = $null; chName = ''; chProtocol = ''; links = @()
     })
   }
   foreach ($nv in @(Get-FsProp $observed 'nvrs' @())) {
@@ -170,16 +170,28 @@ function ConvertTo-FsObserved($observed) {
     foreach ($c in @(Get-FsProp $nv 'channels' @())) {
       $cip = [string](Get-FsProp $c 'ip' ''); if (-not $cip) { continue }
       $hit = $null; foreach ($d in $devs) { if ($d.ip -eq $cip -and $d.kind -ne 'nvr') { $hit = $d; break } }
+      # 2.2.3 (Codex #14): every recorder that records this camera is kept (links); the first stays its main NVR/channel
+      if ($hit) { $hit.links += [pscustomobject]@{ nvr = $nip; channel = [int](Get-FsProp $c 'channel' 0) } }
+      if ($hit -and $hit.nvr) { continue }
       if ($hit) { $hit.channel = [int](Get-FsProp $c 'channel' 0); $hit.nvr = $nip; $hit.online = (Get-FsProp $c 'online' $null); $hit.chName = [string](Get-FsProp $c 'name' ''); $hit.chProtocol = [string](Get-FsProp $c 'protocol' ''); if (-not $hit.name) { $hit.name = $hit.chName } }
     }
   }
   return $devs
 }
 
-function Get-FsChannelFor($observed, [string]$ip, [int]$channel) {
-  foreach ($nv in @(Get-FsProp $observed 'nvrs' @())) {
-    foreach ($c in @(Get-FsProp $nv 'channels' @())) {
-      if (($ip -and [string](Get-FsProp $c 'ip' '') -eq $ip) -or ($channel -gt 0 -and [int](Get-FsProp $c 'channel' 0) -eq $channel)) { return [pscustomobject]@{ nvr = [string](Get-FsProp $nv 'ip' ''); ch = $c } }
+function Get-FsChannelFor($observed, [string]$ip, [int]$channel, [string]$nvrIp = '') {
+  # 2.2.3 (Codex #14): an address match wins (on the named NVR first); a channel NUMBER alone only counts on the NVR the site list
+  # names (or when the site has just one NVR): ch 3 of another recorder is another camera.
+  $nvs = @(Get-FsProp $observed 'nvrs' @())
+  if ($ip) {
+    foreach ($pass in 1, 2) { foreach ($nv in $nvs) { $nip = [string](Get-FsProp $nv 'ip' ''); if ($pass -eq 1 -and $nvrIp -and $nip -ne $nvrIp) { continue }
+      foreach ($c in @(Get-FsProp $nv 'channels' @())) { if ([string](Get-FsProp $c 'ip' '') -eq $ip) { return [pscustomobject]@{ nvr = $nip; ch = $c } } } } }
+  }
+  if ($channel -gt 0) {
+    foreach ($nv in $nvs) {
+      $nip = [string](Get-FsProp $nv 'ip' '')
+      if ($nvrIp) { if ($nip -ne $nvrIp) { continue } } elseif ($nvs.Count -ne 1) { continue }
+      foreach ($c in @(Get-FsProp $nv 'channels' @())) { if ([int](Get-FsProp $c 'channel' 0) -eq $channel) { return [pscustomobject]@{ nvr = $nip; ch = $c } } }
     }
   }
   return $null
@@ -338,16 +350,16 @@ function New-FsPlan($expected, $observed, $opts = $null) {
       brand = $(if ($d) { $d.brand } else { Get-FsBrand ([string](Get-FsProp $e 'brand' '')) ([string](Get-FsProp $e 'model' '')) }); model = $(if ($d) { $d.model } else { [string](Get-FsProp $e 'model' '') })
       mac = $mac; serial = $(if ($d) { $d.serial } else { [string](Get-FsProp $e 'serial' '') }); firmware = $(if ($d) { $d.firmware } else { '' })
       ip = $(if ($d) { $d.ip } else { '' }); listIp = [string](Get-FsProp $e 'ip' ''); target = ''; channel = $ch; nvr = $(if ($d -and $d.nvr) { $d.nvr } else { [string](Get-FsProp $e 'nvr' '') })
-      switch = $sw; port = $port; state = 'ok'; why = @(); steps = @(); login = $(if ($d) { $d.login } else { '' }); problem = $false; broken = $true; pwOnly = $false; settings = $null; onList = [bool]$e; online = $(if ($d) { $d.online } else { $null }) }
+      switch = $sw; port = $port; state = 'ok'; why = @(); steps = @(); login = $(if ($d) { $d.login } else { '' }); problem = $false; broken = $true; pwOnly = $false; settings = $null; onList = [bool]$e; online = $(if ($d) { $d.online } else { $null }); links = $(if ($d) { @($d.links) } else { @() }) }
     $ownIp = ''; $chLooksAt = $null
     if ($d -and $guess.ContainsKey($d.key)) { $g = $guess[$d.key]; $c.channel = $g.ch.channel; $ch = $g.ch.channel; $c.nvr = $g.ch.nvr; $ownIp = $g.ch.ip; if ($g.ch.name -and $c.name -like 'Camera *') { $c.name = $g.ch.name }; $chLooksAt = $g.ch.ip; if (-not $g.sure) { $c.why += ('matched to NVR ch ' + $g.ch.channel + ' by order (no site list): check the picture name after') } }
-    elseif ($e) { $ownIp = $c.listIp; if ($ch -and $d -and -not $d.nvr) { $ci = Get-FsChannelFor $observed '' $ch; if ($ci) { $c.nvr = $ci.nvr; $chLooksAt = [string](Get-FsProp $ci.ch 'ip' '') } } }
+    elseif ($e) { $ownIp = $c.listIp; if ($ch -and $d -and -not $d.nvr) { $ci = Get-FsChannelFor $observed '' $ch ([string](Get-FsProp $e 'nvr' '')); if ($ci) { $c.nvr = $ci.nvr; $chLooksAt = [string](Get-FsProp $ci.ch 'ip' '') } } }
     if ($c.nvr -and $nvrIpMap.ContainsKey($c.nvr)) { $c.nvr = $nvrIpMap[$c.nvr] }
     if (-not $d) {
       $c.state = 'missing'
       $where = $(if ($sw -and $null -ne $port) { 'should be on ' + $sw + ' port ' + $port + ': go check port ' + $port } elseif ($null -ne $port) { 'should be on switch port ' + $port + ': go check port ' + $port } else { 'its switch port is not on the site list: check its cable and power' })
       $c.why += ('missing - ' + $where)
-      $chInfo = Get-FsChannelFor $observed $c.listIp $ch
+      $chInfo = Get-FsChannelFor $observed $c.listIp $ch ([string](Get-FsProp $e 'nvr' ''))
       if ($chInfo -and $c.listIp) { $c.why[0] = ('missing (NVR ch ' + (Get-FsProp $chInfo.ch 'channel' $ch) + ' has no video) - ' + $where) }
       if ($null -ne $port -and $sw) { $c.steps += @('poe', 'verify') }
       $plan.missing += [pscustomobject]$c; $plan.cams += [pscustomobject]$c; continue

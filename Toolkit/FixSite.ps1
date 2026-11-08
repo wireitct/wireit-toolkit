@@ -901,6 +901,7 @@ foreach ($c in $ordered) {
     # 2.2.3 (Codex #13): a camera recorded by an NVR keeps its password unless that NVR can be updated too (its login is known);
     # otherwise the NVR loses the picture and recording while a direct camera picture still looks fine.
     if ($c.nvr -and -not $nvrCred.ContainsKey($c.nvr)) { & $step ('password not changed: NVR ' + $c.nvr + ' records this camera and its login is unknown') $false }
+    elseif (@($c.links | Select-Object -ExpandProperty nvr -Unique).Count -gt 1) { & $step ('password not changed: ' + @($c.links).Count + ' NVRs record this camera (' + (@($c.links | ForEach-Object { $_.nvr + ' ch ' + $_.channel }) -join ', ') + ') - change it on all of them by hand') $false }
     elseif ((Test-FsLogin $ip $c.brand $sitePw) -eq 'ok') { $pw = $sitePw; $cr = Fs-Cred $pw; & $step 'password already set' $true }
     else {
       $sec.rollback[$stamp][$c.mac + '|' + $c.ip] = $pw; Save-FsSecrets $SecretsDir $sec; $pwBefore = $pw
@@ -955,7 +956,7 @@ foreach ($c in $ordered) {
     if (-not $nvrCred.ContainsKey($c.nvr)) { & $step ('NVR ' + $c.nvr + ' password unknown - put it on ch ' + $c.channel + ' by hand') $false }
     else {
       $ch = [int]$c.channel
-      if (-not $ch) { $chs = @(Get-FsNvrChannels $c.nvr $nvrCred[$c.nvr]); $ch = Get-FsFreeNvrChannel $chs $ip ([string]$c.ip_before); if (-not $ch) { $used = @($chs | ForEach-Object { $_.channel }); for ($k = 1; $k -le 64; $k++) { if ($used -notcontains $k) { $ch = $k; break } } } }
+      if (-not $ch) { $chs = @(Get-FsNvrChannels $c.nvr $nvrCred[$c.nvr]); $ch = Get-FsFreeNvrChannel $chs $ip ([string]$rbc.ip_before); if (-not $ch) { $used = @($chs | ForEach-Object { $_.channel }); for ($k = 1; $k -le 64; $k++) { if ($used -notcontains $k) { $ch = $k; break } } } }
       $w = Set-FsNvrChannel $c.nvr $nvrCred[$c.nvr] $ch $ip $pw $c.brand (Join-Path $runDir 'backup'); Say-PlainWarning $c.nvr
       $rbc.nvr = [ordered]@{ nvr = $c.nvr; channel = $ch; action = $w.action; before_file = $(if ($w.before) { 'backup\nvr-' + $c.nvr + '-ch' + $ch + '.xml' } else { '' }) }; Save-Rb
       & $step ('back on NVR ch ' + $ch) ([bool]$w.ok); $c.channel = $ch

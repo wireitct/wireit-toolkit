@@ -77,6 +77,35 @@ Write-Host '#13 no camera password change when its NVR cannot be updated; no dir
 $fs = Read-Src 'Toolkit/FixSite.ps1'
 Check ($fs -match "if \(\`$c\.nvr -and -not \`$nvrCred\.ContainsKey\(\`$c\.nvr\)\) \{ & \`$step \('password not changed: NVR") 'reproduction: camera on an NVR with unknown login -> password not changed (2.2.2 changed it first)'
 Check ($fs -match "video not checked on NVR") '...and its video is not "verified" from the camera picture alone'
+Write-Host '#14 several recorders: channel lookups stay on the right NVR, every association is kept'
+$obs = [pscustomobject]@{ devices = @([pscustomobject]@{ ip = '192.168.1.50'; mac = 'aa:bb:cc:00:00:50'; kind = 'camera'; brand = 'Hikvision'; model = 'DS-2CD' }); nvrs = @(
+  [pscustomobject]@{ ip = '192.168.1.20'; channels = @([pscustomobject]@{ channel = 3; ip = '192.168.1.77' }, [pscustomobject]@{ channel = 5; ip = '192.168.1.50' }) },
+  [pscustomobject]@{ ip = '192.168.1.19'; channels = @([pscustomobject]@{ channel = 3; ip = '192.168.1.99' }, [pscustomobject]@{ channel = 2; ip = '192.168.1.50' }) }) }
+$hit = Get-FsChannelFor $obs '' 3 '192.168.1.19'
+Eq $hit.nvr '192.168.1.19' 'reproduction: ch 3 asked for NVR .19 -> NVR .19 (2.2.2 returned .20)'
+Check ($null -eq (Get-FsChannelFor $obs '' 3 '')) 'two NVRs and no NVR named -> a channel number alone matches nothing'
+Eq (Get-FsChannelFor $obs '192.168.1.50' 0 '192.168.1.19').ch.channel 2 'an address match prefers the named NVR'
+$d = @(ConvertTo-FsObserved $obs)[0]
+Eq @($d.links).Count 2 'reproduction: the camera on both NVRs keeps both associations'
+Eq $d.nvr '192.168.1.20' '...the first stays its main NVR (not overwritten by the second)'
+Eq $d.channel 5 '...with its channel'
+Check ((Read-Src 'Toolkit/FixSite.ps1') -match 'NVRs record this camera') 'FixSite: no password change on a camera that several NVRs record'
+Write-Host '#15 an offline channel of another camera is not free'
+$chs = @([pscustomobject]@{ channel = 1; ip = '192.168.1.21'; online = $true }, [pscustomobject]@{ channel = 2; ip = '192.168.1.22'; online = $false }, [pscustomobject]@{ channel = 3; ip = '192.168.1.23'; online = $null })
+Eq (Get-FsFreeNvrChannel $chs '192.168.1.40' '192.168.1.60') 0 'reproduction: offline ch 2 / unknown ch 3 belong to other cameras -> no channel taken (2.2.2 took ch 2)'
+Eq (Get-FsFreeNvrChannel ($chs + @([pscustomobject]@{ channel = 4; ip = '0.0.0.0'; online = $false })) '192.168.1.40') 4 'an empty channel is free'
+Eq (Get-FsFreeNvrChannel $chs '192.168.1.40' '192.168.1.22') 2 'the camera''s own old channel (by its old address) is found'
+Check ((Read-Src 'Toolkit/FixSite.ps1') -match 'Get-FsFreeNvrChannel \$chs \$ip \(\[string\]\$rbc\.ip_before\)') 'FixSite passes the real old address (rollback ip_before), not the nonexistent $c.ip_before'
+Write-Host '#16 video check: the channel must point at the camera being verified'
+$script:Fake = @{
+  'GET 192.168.1.20/ISAPI/ContentMgmt/InputProxy/channels' = '<InputProxyChannelList><InputProxyChannel><id>5</id><sourceInputPortDescriptor><ipAddress>192.168.1.99</ipAddress></sourceInputPortDescriptor></InputProxyChannel></InputProxyChannelList>'
+  'GET 192.168.1.20/ISAPI/ContentMgmt/InputProxy/channels/status' = '<InputProxyChannelStatusList><InputProxyChannelStatus><id>5</id><online>true</online></InputProxyChannelStatus></InputProxyChannelStatusList>'
+  'GET 192.168.1.20/ISAPI/Streaming/channels/501/picture' = @{ code = 200; body = 'JPEGDATA' }
+}
+function Test-FsPicture { return $true }
+Check (-not (Test-FsVideo '192.168.1.20' $null 5 '192.168.1.50' 'Hikvision' $null)) 'reproduction: ch 5 online with a picture but pointing at .99 -> camera .50 NOT verified'
+Check (Test-FsVideo '192.168.1.20' $null 5 '192.168.1.99' 'Hikvision' $null) 'the camera the channel points at is verified'
+Remove-Item function:Test-FsPicture
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

@@ -411,6 +411,8 @@ function Test-FsVideo([string]$nvrIp, $nvrCred, [int]$ch, [string]$camIp, [strin
   if ($nvrIp -and $ch -gt 0) {
     $chs = @(Get-FsNvrChannels $nvrIp $nvrCred); $c = $chs | Where-Object { $_.channel -eq $ch } | Select-Object -First 1
     if (-not $c -or $c.online -ne $true) { return $false }
+    # 2.2.3 (Codex #16): the channel must point at THIS camera; an online ch 5 showing another camera is not this camera's video
+    if ($camIp -and [string]$c.ip -ne ($camIp -replace ':\d+$', '')) { return $false }
     # 2.1.0: some NVRs (ERI-K108-P8, seen at 3 Hewlett) only hand the picture out on the StreamingProxy path: try both
     if (Test-FsPicture $nvrIp ('/ISAPI/Streaming/channels/' + $ch + '01/picture') $nvrCred) { return $true }
     return (Test-FsPicture $nvrIp ('/ISAPI/ContentMgmt/StreamingProxy/channels/' + $ch + '01/picture') $nvrCred)
@@ -831,6 +833,6 @@ function Get-FsFreeNvrChannel($Channels, [string]$CamIp, [string]$OldIp = '', [i
   $c = @($Channels)
   foreach ($ip in @($CamIp, $OldIp)) { if (-not $ip) { continue }; $m = $c | Where-Object { $_.ip -eq $ip -and [int]$_.channel -notin $Taken } | Select-Object -First 1; if ($m) { return [int]$m.channel } }
   $m = $c | Where-Object { (-not $_.ip -or $_.ip -eq '0.0.0.0') -and [int]$_.channel -notin $Taken } | Sort-Object { [int]$_.channel } | Select-Object -First 1; if ($m) { return [int]$m.channel }
-  $m = $c | Where-Object { $_.online -ne $true -and [int]$_.channel -notin $Taken } | Sort-Object { [int]$_.channel } | Select-Object -First 1; if ($m) { return [int]$m.channel }
+  # 2.2.3 (Codex #15): an OFFLINE (or unknown) channel that points at another camera is that camera's slot, not a free one
   return 0
 }
