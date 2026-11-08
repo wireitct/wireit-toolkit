@@ -314,6 +314,15 @@ $r22 = & $nm22 { Get-FwResultLine 1 0 2 }; Check (-not $r22.ok -and $r22.text -m
 $src22 = Read-Src 'Toolkit/modules/NvrHealth/NvrHealth.psm1'
 Check (([regex]::Matches($src22, '\$fwUnread\+\+')).Count -ge 3 -and $src22 -match 'ok = \$res\.ok; not_judged = \$notJudged') 'unreadable recorder/cameras are counted; the result carries it'
 Remove-Module NvrHealth -ErrorAction SilentlyContinue
+Write-Host '#23 retention: every camera on its own footage'
+$nm23 = Import-Module (Join-Path $tk 'modules\NvrHealth\NvrHealth.psm1') -Force -PassThru -DisableNameChecking
+$ch23 = @([pscustomobject]@{ ch = 1; days_held = 45 }, [pscustomobject]@{ ch = 2; days_held = 1 }, [pscustomobject]@{ ch = 3; days_held = 44.5 })
+$s23 = @(& $nm23 { param($c) Get-RetentionShort $c 45 45 } $ch23)
+Check (@($s23 | ForEach-Object { $_.ch }) -contains 2) 'reproduction: 45 days on one camera, 1 day on another -> the 1-day camera is a problem (2.2.2: "target met")'
+Check (@($s23 | ForEach-Object { $_.ch }) -contains 3) '...and 44.5 days is under 45 too'
+$src23 = Read-Src 'Toolkit/modules/NvrHealth/NvrHealth.psm1'
+Check ($src23 -match "problems\.Add\(\(''\s*\+\s*\`$short\.Count \+ ' camera\(s\) below the '") 'short cameras are counted in the RESULT (not green)'
+Remove-Module NvrHealth -ErrorAction SilentlyContinue
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

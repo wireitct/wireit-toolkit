@@ -772,11 +772,13 @@ function Get-RecordingStatus {
 
   # The recorder overwrites its oldest footage for ALL cameras together, so the deepest camera = how far back the drives reach.
   # A camera whose footage starts later was added / re-added or was not recording before that (listed, not counted as retention).
-  $short = @($chans | Where-Object { $null -ne $_.days_held -and $_.days_held -lt $TargetDays -and $_.days_held -lt ($maxDays - 2) })
+  $short = @(Get-RetentionShort $chans $TargetDays $maxDays)
   Say ''
-  if ($short.Count) { Warn ('' + $short.Count + ' camera(s) have less footage than the others (' + (($short | ForEach-Object { $(if ($t.vendor -eq 'DW' -and $_.name) { [string]$_.name } else { 'cam ' + $_.ch }) + ': ' + $_.days_held + ' days' }) -join ', ') + '): added / re-added later, or were not recording before. Check they were not off.') }
+  # 2.2.3 (Codex #23): every camera is judged on its OWN footage: one deep camera does not meet the target for the others. Short ones
+  # are a problem until somebody confirms they were added later (the tool cannot know that).
+  if ($short.Count) { Warn ('' + $short.Count + ' camera(s) have less footage than the ' + $TargetDays + '-day target (' + (($short | ForEach-Object { $(if ($t.vendor -eq 'DW' -and $_.name) { [string]$_.name } else { 'cam ' + $_.ch }) + ': ' + $_.days_held + ' days' }) -join ', ') + '): not recording before, or added later. Check they were not off.'); $problems.Add(('' + $short.Count + ' camera(s) below the ' + $TargetDays + '-day target')) }
   if ($null -ne $maxDays) {
-    if ($maxDays -ge $TargetDays) { Say ('DAYS HELD: ' + $maxDays + ' days (target ' + $TargetDays + '). OK.') 'Green' }
+    if ($maxDays -ge $TargetDays) { Say ('DAYS HELD: ' + $maxDays + ' days on the deepest camera (target ' + $TargetDays + ')' + $(if ($short.Count) { '; ' + $short.Count + ' camera(s) below it (above).' } else { '. OK.' })) $(if ($short.Count) { 'Yellow' } else { 'Green' }) }
     elseif (-not $diskApi) { Say ('DAYS HELD: only ' + $maxDays + ' days (target ' + $TargetDays + '). Could not read whether the drives are full - check the recorder''s Storage page.') 'Yellow'; $problems.Add('only ' + $maxDays + ' of ' + $TargetDays + ' days (drive fill unknown)') }
     elseif ($filling) { Say ('DAYS HELD: ' + $maxDays + ' days so far (target ' + $TargetDays + '). The drives are not full yet, so this keeps growing. Check again after they fill.') 'Yellow' }
     else { Say ('DAYS HELD: only ' + $maxDays + ' days (target ' + $TargetDays + '). Drives are full and overwriting. Add storage or lower the recording bitrate.') 'Red'; $problems.Add('only ' + $maxDays + ' of ' + $TargetDays + ' days') }
@@ -784,6 +786,12 @@ function Get-RecordingStatus {
   Say $(if ($problems.Count) { 'RESULT: ' + $problems.Count + ' problem(s): ' + ($problems -join '; ') } else { 'RESULT: all ' + $rec + ' cameras recording, drives healthy, ' + $TargetDays + '-day target met.' }) $(if ($problems.Count) { 'Red' } else { 'Green' })
   $result.streams = $streams; $result.ok = ($problems.Count -eq 0); $result.days_held = $maxDays; $result.shortest_days = $minDays; $result.short_cameras = @($short | ForEach-Object { $_.ch }); $result.recording = $rec; $result.channels = $chans; $result.disks = $disks; $result.problems = @($problems); $result.log = $script:LogFile
   return [pscustomobject]$result
+}
+
+function Get-RetentionShort($chans, [int]$TargetDays, $maxDays) {
+  # cameras whose OWN footage is under the target - only when the recorder as a whole reaches it (else the overall line says it)
+  if ($null -eq $maxDays -or [int]$maxDays -lt $TargetDays) { return @() }
+  return @(@($chans) | Where-Object { $null -ne $_.days_held -and [double]$_.days_held -lt $TargetDays })
 }
 
 # ================= Get-ClockStatus =================
