@@ -21,9 +21,11 @@ New-NetFirewallRule -DisplayName $names[0] -Direction Inbound -Protocol UDP -Loc
 foreach ($ps in @((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'), (Join-Path $env:SystemRoot 'SysWOW64\WindowsPowerShell\v1.0\powershell.exe'))) {
   if (Test-Path $ps) { New-NetFirewallRule -DisplayName $names[3] -Direction Inbound -Program $ps -Protocol UDP -RemoteAddress LocalSubnet -Action Allow -Profile Any | Out-Null }
 }
-$hit = 'C:\Program Files (x86)\HiToolsDelivery\client'
-if (Test-Path "$hit\HiToolsDelivery.exe") { New-NetFirewallRule -DisplayName $names[1] -Direction Inbound -Program "$hit\HiToolsDelivery.exe" -Action Allow -Profile Any | Out-Null }
-if (Test-Path "$hit\hscan\hscan.exe") { New-NetFirewallRule -DisplayName $names[2] -Direction Inbound -Program "$hit\hscan\hscan.exe" -Action Allow -Profile Any | Out-Null }
+# HiTools Delivery installs under either Program Files folder (the Office PC has it in the 64-bit one): a rule for every copy found
+foreach ($hit in @((Join-Path ${env:ProgramFiles(x86)} 'HiToolsDelivery\client'), (Join-Path $env:ProgramFiles 'HiToolsDelivery\client'), 'C:\Program Files (x86)\HiToolsDelivery\client', 'C:\Program Files\HiToolsDelivery\client') | Where-Object { $_ } | Select-Object -Unique) {
+  if (Test-Path "$hit\HiToolsDelivery.exe") { New-NetFirewallRule -DisplayName $names[1] -Direction Inbound -Program "$hit\HiToolsDelivery.exe" -Action Allow -Profile Any | Out-Null }
+  if (Test-Path "$hit\hscan\hscan.exe") { New-NetFirewallRule -DisplayName $names[2] -Direction Inbound -Program "$hit\hscan\hscan.exe" -Action Allow -Profile Any | Out-Null }
+}
 if (-not $FirewallOnly) { foreach ($d in 'out', 'replies', 'requests', 'state') { New-Item -ItemType Directory -Force -Path (Join-Path $here $d) | Out-Null } }
 'Installed. Rules: ' + ((Get-NetFirewallRule -DisplayName 'WireIt CamReset*' | Select-Object -ExpandProperty DisplayName | Sort-Object -Unique) -join '; ')
 $blk = @(Get-NetFirewallRule -DisplayName 'Windows PowerShell' -ErrorAction SilentlyContinue | Where-Object { [string]$_.Direction -eq 'Inbound' -and [string]$_.Action -eq 'Block' -and [string]$_.Enabled -eq 'True' })

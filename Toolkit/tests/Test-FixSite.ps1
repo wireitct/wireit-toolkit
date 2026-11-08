@@ -233,7 +233,7 @@ Remove-Item $sd -Recurse -Force
 $script:FsTestSecrets = $false
 
 Write-Host '2. dry run on recorded scans'
-function RunFix([string[]]$a) { $o = & $psx -NoProfile -ExecutionPolicy Bypass -File (Join-Path $tk 'FixSite.ps1') @a 2>&1 | Out-String; return $o }
+function RunFix([string[]]$a) { $o = & $psx -NoProfile -ExecutionPolicy Bypass -File (Join-Path $tk 'FixSite.ps1') @a 2>&1 | Out-String; if ($env:FSDBG) { $script:dbgN++; Set-Content -Path (Join-Path $env:FSDBG ('run' + $script:dbgN + '.txt')) -Value $o }; return $o }
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('fstest-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $o = RunFix @('-Mode', 'DryRun', '-Site', 'Lieber', '-Recorded', (Join-Path $fx 'lieber-scan.json'), '-RunsRoot', "$tmp\runs", '-SecretsDir', "$tmp\sec", '-SitesDir', "$tmp\sites")
 Check ($o -match 'Nothing on the network is touched') 'dry run says it touches nothing'
@@ -265,13 +265,13 @@ Check (-not (Test-Path "$tmp\n0\sites") -and -not @(Get-ChildItem "$tmp\n0\sec" 
 
 # 2.0.3 "Site password..." button (no network): make / type THIS site's password; never printed
 $spd = "$tmp\sp\sec"; $script:FsTestSecrets = $true; Save-FsSitePrefix $spd 'Testpw'; $script:FsTestSecrets = $false
-$ansp = Join-Path $tmp 'ansp.txt'; Set-Content -Path $ansp -Value @('M', '')
+$ansp = Join-Path $tmp 'ansp.txt'; Set-Content -Path $ansp -Value @('N', '')
 $spArgs = @('-Mode', 'SitePassword', '-Site', 'Qq Nosuch Test 203', '-MockUrl', 'http://127.0.0.1:9', '-Answers', $ansp, '-RunsRoot', "$tmp\sp\runs", '-SecretsDir', $spd, '-SitesDir', "$tmp\sp\sites")
 $osp = RunFix $spArgs
 function Read-SpSec { $f = @(Get-ChildItem $spd -Filter 'site-*.dat')[0]; if (-not $f) { return [pscustomobject]@{ password = ''; known = @(); shownOnce = $false; bitwardenSaved = $false } }; $script:FsTestSecrets = $true; try { return ((Unprotect-FsText ((Get-Content $f.FullName -Raw).Trim())) | ConvertFrom-Json) } finally { $script:FsTestSecrets = $false } }
 $sx = Read-SpSec
-Check ($osp -match 'This site has no site password yet' -and $osp -match 'SHOWN ONCE' -and $osp -match 'Save this in Bitwarden') 'Site password...: no password yet -> M makes one, shown once with Copy, "Save this in Bitwarden"'
-Check ($sx.password -cmatch '^Testpw\d{4}$' -and $sx.shownOnce -and -not $sx.bitwardenSaved) 'Site password...: word + 4 digits, kept encrypted on this PC'
+Check ($osp -match 'This site has no site password yet\. Do you know the site password\?' -and $osp -match 'SHOWN ONCE' -and $osp -match 'Save this in Bitwarden') 'Site password...: no password yet, "No, make one" -> made, shown once with Copy, "Save this in Bitwarden"'
+Check ($sx.password -cmatch '^Testpw\d{4}$' -and $sx.shownOnce -and -not $sx.bitwardenSaved) 'Site password...: made = word + 4 digits, kept encrypted on this PC'
 Check ($sx.password -and -not ($osp -match [regex]::Escape([string]$sx.password)) -and -not @(Get-ChildItem "$tmp\sp\runs" -Recurse -File | Select-String -SimpleMatch -Pattern ([string]$sx.password) -List).Count) 'Site password...: never printed in the console or a log'
 $oldSp = [string]$sx.password
 Set-Content -Path $ansp -Value @('T', 'Typed#Site9', 'Typed#Site9', '')
@@ -279,6 +279,12 @@ $osp2 = RunFix $spArgs
 $sx2 = Read-SpSec
 Check ($sx2.password -eq 'Typed#Site9' -and @($sx2.known) -contains $oldSp) 'Site password...: T sets the one in use; the old one stays a try at THIS site'
 Check (-not (Test-Path (Join-Path $spd 'wireit-usual.dat'))) 'Site password...: no shared-password file'
+# 2.1.0 Yes/No design: "Yes, I know it" on a site with no password -> exactly what the tech typed, nothing made, nothing shown
+$spdY = "$tmp\spy\sec"; $anspY = Join-Path $tmp 'anspy.txt'; Set-Content -Path $anspY -Value @('Y', 'Newpw#1234', 'Newpw#1234', '')
+$ospY = RunFix @('-Mode', 'SitePassword', '-Site', 'Qq Nosuch Test 204', '-MockUrl', 'http://127.0.0.1:9', '-Answers', $anspY, '-RunsRoot', "$tmp\spy\runs", '-SecretsDir', $spdY, '-SitesDir', "$tmp\spy\sites")
+$fY = @(Get-ChildItem $spdY -Filter 'site-*.dat')[0]; $sxY = $null; if ($fY) { $script:FsTestSecrets = $true; try { $sxY = (Unprotect-FsText ((Get-Content $fY.FullName -Raw).Trim())) | ConvertFrom-Json } finally { $script:FsTestSecrets = $false } }
+Check ($sxY -and $sxY.password -ceq 'Newpw#1234' -and -not $sxY.bitwardenSaved -and -not ($ospY -match 'SHOWN ONCE') -and $ospY -match 'Save this in Bitwarden' -and -not ($ospY -match [regex]::Escape('Newpw#1234'))) 'Site password...: "Yes, I know it" -> exactly what the tech typed, not shown, "Save this in Bitwarden"'
+Check (-not (Test-Path (Join-Path $spdY 'password-word.dat'))) 'Site password...: "Yes, I know it" never asks for the word (nothing is made)'
 
 $py = $null; foreach ($n in $(if ($env:OS -eq 'Windows_NT') { @('python', 'py') } else { @('python3') })) { $cmd = Get-Command $n -ErrorAction SilentlyContinue; if ($cmd) { $py = $cmd.Source; break } }
 if (-not $NoEndToEnd -and $py) {
@@ -301,7 +307,7 @@ if (-not $NoEndToEnd -and $py) {
   $m = Start-Mock 'mock-lieber.json'
   try {
     Seed-Site "$tmp\e\sec" 'Lieber' @('Old#Site1')
-    $o = E2E $m @('NvrPass9', 'Typed#Pw77', 'YES', 'y', 'SAVED') 'Fix' 'Lieber'
+    $o = E2E $m @('y', 'Site#Pw1234', 'Site#Pw1234', 'NvrPass9', 'Typed#Pw77', 'n', 'YES', 'n', 'y', 'SAVED') 'Fix' 'Lieber'
     # 2.0.1 default: only the 3 broken cameras (2 on the wrong scheme + the Dahua with no video) are changed; Front Door + Driveway work and are NOT touched
     Check ($o -match 'Changes only the 3 camera\(s\) listed below\. 2 working camera\(s\) will not be touched\.') 'Lieber e2e: plan says 3 change, 2 working not touched'
     Check ($o -match 'Fixed: 3   Still a problem: 0') 'Lieber e2e: the 3 broken cameras fixed'
@@ -309,8 +315,8 @@ if (-not $NoEndToEnd -and $py) {
     Check ($o -match 'OK, not touched: 2 working camera') 'Lieber e2e: checklist ends with "OK, not touched: 2"'
     $st = Mock-State $m.port
     $sp = $st.devices.'192.168.1.23'.password
-    Check ($sp -cmatch '^Testpw\d{4}$') 'Lieber e2e: new site password = the word + 4 digits on the fixed cameras'
-    Check ($o -match 'SHOWN ONCE' -and $o -match 'Save this in Bitwarden') 'Lieber e2e: no Bitwarden on the PC -> kept encrypted + shown once with a Copy button'
+    Check ($sp -ceq 'Site#Pw1234') 'Lieber e2e: the password the tech typed is on the fixed cameras'
+    Check ($o -match 'New site: do you know the site password\?' -and -not ($o -match 'SHOWN ONCE') -and $o -match 'Save this in Bitwarden') 'Lieber e2e: "Yes, I know it" -> what the tech typed, not shown again, "Save this in Bitwarden", nothing made up'
     Eq (@('192.168.1.23', '192.168.1.24', '192.168.1.25' | ForEach-Object { $st.devices.$_.password } | Select-Object -Unique) -join ',') $sp 'Lieber e2e: all 3 fixed cameras have the site password'
     foreach ($ip in @('192.168.1.21', '192.168.1.22')) {
       $wc = $st.devices.$ip
@@ -339,7 +345,7 @@ if (-not $NoEndToEnd -and $py) {
     Check ($st4.devices.'192.168.1.21'.stream.gop -eq 30) 'Lieber e2e -PasswordAll: password only, settings untouched'
     Eq $st4.devices.'192.168.1.20'.password $sp 'Lieber e2e -PasswordAll: the NVR gets the site password too'
     # tick "Apply settings to ALL cameras" with frame rate 12: every camera gets 12 fps (+ I-frame 12), passwords untouched
-    $o5 = E2E $m @('YES', 'n', 'n') 'Fix' 'Lieber' @('-AllCameras', '-Fps', '12')
+    $o5 = E2E $m @('n', 'YES', 'n', 'n') 'Fix' 'Lieber' @('-AllCameras', '-Fps', '12')
     Check ($o5 -match 'because you ticked "Apply settings to ALL cameras"') 'Lieber e2e -AllCameras: plan says so'
     $st5 = Mock-State $m.port
     Check ($st5.devices.'192.168.1.21'.stream.fps -eq 12 -and $st5.devices.'192.168.1.21'.stream.gop -eq 12 -and $st5.devices.'192.168.1.21'.stream.codec -eq 'H.265') 'Lieber e2e -AllCameras: working camera gets only the picked frame rate (+ I-frame)'
@@ -364,7 +370,7 @@ if (-not $NoEndToEnd -and $py) {
   $m = Start-Mock 'mock-byw.json'
   try {
     Seed-Site "$tmp\e\sec" 'BYW' @('Old#Site1')
-    $o = E2E $m @('NvrPass9', 'YES', 'SAVED') 'Fix' 'BYW' @('-ListFile', (Join-Path $fx 'byw-site-list.json'), '-Bitrate', '2048')
+    $o = E2E $m @('n', 'NvrPass9', 'n', 'YES', 'n', 'SAVED') 'Fix' 'BYW' @('-ListFile', (Join-Path $fx 'byw-site-list.json'), '-Bitrate', '2048')
     Check ($o -match 'DR Side: power-cycled Gym switch port 10 .*video back') 'BYW e2e: hung Dahua power-cycled through its port, then fixed'
     Check ($o -match 'Gym 2: power-cycled Gym switch port 11, still missing - go check port 11') 'BYW e2e: missing camera -> "go check port 11"'
     $st = Mock-State $m.port
@@ -376,7 +382,7 @@ if (-not $NoEndToEnd -and $py) {
     Eq $st.devices.'192.168.1.83'.stream.bitrate 2048 'BYW e2e: bitrate drop-down goes on the broken camera'
     Check ($st.devices.'192.168.1.85'.stream.bitrate -eq 3584 -and -not $st.devices.'192.168.1.85'.pw_changes -and $st.devices.'192.168.1.85'.backups -eq 0) 'BYW e2e: working camera .85 untouched by the bitrate drop-down (no tick)'
     Check ($st.devices.'192.168.1.31'.stream.bitrate -eq 4096 -and -not $st.devices.'192.168.1.31'.pw_changes) 'BYW e2e: working camera .31 untouched'
-    $o6 = E2E $m @('YES', 'n', 'n') 'Fix' 'BYW' @('-ListFile', (Join-Path $fx 'byw-site-list.json'), '-Bitrate', '2048', '-AllCameras')
+    $o6 = E2E $m @('n', 'YES', 'n', 'n') 'Fix' 'BYW' @('-ListFile', (Join-Path $fx 'byw-site-list.json'), '-Bitrate', '2048', '-AllCameras')
     $st6 = Mock-State $m.port
     Check ($o6 -match 'because you ticked "Apply settings to ALL cameras"') 'BYW e2e -AllCameras: plan says working ones are included'
     Check ($st6.devices.'192.168.1.85'.stream.bitrate -eq 2048 -and $st6.devices.'192.168.1.31'.stream.bitrate -eq 2048) 'BYW e2e -AllCameras: bitrate on the working cameras too'
@@ -391,7 +397,7 @@ if (-not $NoEndToEnd -and $py) {
   try {
     $script:FsTestSecrets = $true; Save-FsSitePrefix "$tmp\n\sec" 'Testpw'; $script:FsTestSecrets = $false   # the password word, set once on this PC
     Check (-not @(Get-ChildItem "$tmp\n\sec" -Filter 'site-*' -ErrorAction SilentlyContinue).Count) 'new site e2e: starts with no site secrets and no list'
-    $on = E2EN $m @('Old#Site1', '12 Elm St', 'YES', '') 'Fix' @('-NewSite')
+    $on = E2EN $m @('n', 'Old#Site1', 'n', '12 Elm St', 'YES', '') 'Fix' @('-NewSite')
     Check ($on -match 'New site \(no saved list\): found 1 NVR \(10\.0\.5\.64, 5 channels\) and 5 camera\(s\) on 10\.0\.5\.x, router 10\.0\.5\.1\.') 'new site e2e: plan line 1 = new site + what it found'
     Check ($on -match 'Changes the 3 camera\(s\) listed below: 2 with a problem \+ 1 working one\(s\) still on the factory password\. 2 working camera\(s\) will not be touched\.') 'new site e2e: the 2 problem cameras + the 1 on the factory password change, 2 working not touched'
     Check ($on -match 'NVR 10\.0\.5\.64: NVR still on the factory password  ->  gets the site password') 'new site e2e: NVR on the factory password is in the plan'
@@ -403,13 +409,13 @@ if (-not $NoEndToEnd -and $py) {
     Check ($on -match 'Back: password set .*moved \.64 -> \.23 .*back on NVR ch 3 .*video back') 'new site e2e: wrong-IP camera moved to the address its NVR channel looks for, back on ch 3, video back'
     Check ($on -match 'Side: unplugged and plugged back.*password set .*back on NVR ch 4 .*video back') 'new site e2e: hung camera came back after the unplug and was fixed'
     Check ($on -match 'Fixed: 4   Still a problem: 0') 'new site e2e: 2 fixed + Office + NVR on the site password, 0 left'
-    Check ($on -match 'SHOWN ONCE' -and $on -match 'Save this in Bitwarden') 'new site e2e: no Bitwarden -> shown once with a Copy button, "Save this in Bitwarden"'
+    Check ($on -match 'New site: do you know the site password\?' -and $on -match 'SHOWN ONCE' -and $on -match 'Save this in Bitwarden') 'new site e2e: "No, make one for me" -> made, no Bitwarden -> shown once with a Copy button, "Save this in Bitwarden"'
     Check ($on -match 'Site name: 12 Elm St') 'new site e2e: the address typed after the plan names the site'
     Check ($on.IndexOf('Optional: type this site') -gt $on.IndexOf('Changes the 3 camera')) 'new site e2e: the address is asked only AFTER the plan screen'
     Check ($on.IndexOf('Optional: type this site') -lt $on.IndexOf('Type YES to fix')) 'new site e2e: ... and before the YES'
     $st = Mock-State $m.port
     $sp = $st.devices.'10.0.5.23'.password
-    Check ($sp -cmatch '^Testpw\d{4}$') 'new site e2e: site password = the word + 4 random digits'
+    Check ($sp -cmatch '^Testpw\d{4}$') 'new site e2e: made site password = the word + 4 random digits'
     Eq $st.devices.'10.0.5.24'.password $sp 'new site e2e: hung camera has the site password too'
     Eq (@($st.devices.PSObject.Properties.Name | Where-Object { $_ -like '192.168.*' }).Count) 0 'new site e2e: nobody left on the wrong scheme'
     Eq $st.devices.'10.0.5.22'.password $sp 'new site e2e: Office (was factory 12345) has the site password'

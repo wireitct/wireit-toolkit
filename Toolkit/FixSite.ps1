@@ -26,12 +26,11 @@
    plan screen it asks for the address (optional) and saves the site list + secrets under that name. If the NVR (or 2+ cameras) match a
    site already saved on this PC, it uses that site instead.
  2.0.3 (Moshe, Nov 4 2026: "There are no usual passwords. Every single password is specific to that site."): no shared passwords
-   between sites. Each site gets ONE site password: his word + 4 random digits (the word comes from config.json or is typed once; it is
-   not in this code). A new site / a site with no site password yet: every device still on its FACTORY password (cameras + NVR) gets it,
+   between sites. Each site has ONE site password (2.1.0: typed by the tech, never made up by the Toolkit). A new site / a site with no site password yet: every device still on its FACTORY password (cameras + NVR) gets it,
    with its NVR channel updated and the picture checked. -PasswordAll ("Make every device use the site password", off unless ticked):
    every device on a different working password gets it; one camera at a time: password -> NVR channel -> picture checked; a picture
    that does not come back = that camera's old password is put back (camera + channel) and it is reported. Then: Bitwarden item
-   "<site> - site password" when the bw command is on this PC (logged in), else kept encrypted here and shown once with a Copy button.
+   "<site> - site password" when the bw command is on this PC (logged in), else kept encrypted here and offered for saving in Bitwarden.
  Modes: Fix (default) | Plan (look only) | DryRun (-Recorded <scan.json>, no network at all) | Rollback (-RollbackDir) | SitePassword (show / copy / set)
  Passwords: typed hidden, kept only in the encrypted site store on this PC (secrets\), never in a log, a file, Drive or a chat.
 #>
@@ -57,6 +56,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'FixSiteCore.ps1')
 . (Join-Path $here 'FixSiteDevices.ps1')
 if (Test-Path (Join-Path $here 'ToolkitCore.ps1')) { . (Join-Path $here 'ToolkitCore.ps1') }
+$hikFlowOk = $false; if (Test-Path (Join-Path $here 'HikResetFlow.ps1')) { try { . (Join-Path $here 'HikResetFlow.ps1'); $hikFlowOk = $true } catch {} }   # 2.1.0 Hikvision official reset
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 
 # ---------------- settings ----------------
@@ -92,6 +92,22 @@ function Ask([string]$q, [switch]$Secret) {
   if ($Answers) { $a = ''; if ($script:AnswerQ.Count) { $a = [string]$script:AnswerQ.Dequeue() }; Fs-Log ('ANSWER ' + $(if ($Secret) { '(hidden)' } else { $a })); return $a }
   if ($Secret) { $ss = Read-Host -AsSecureString '>'; $a = (New-Object PSCredential('x', $ss)).GetNetworkCredential().Password; Fs-Log 'ANSWER (hidden)'; return $a }
   $a = Read-Host '>'; Fs-Log ('ANSWER ' + $a); return $a
+}
+function Ask-Choice([string]$q, [string]$yes, [string]$no) {
+  # 2.1.0 (Moshe, Nov 6 2026): a yes/no question is two buttons, not a typed prompt. Test runs and dry runs still use the typed answer file.
+  if ($Answers -or $MockUrl -or $Mode -eq 'DryRun') { $a = Ask ($q + '  [' + $yes + ']  [' + $no + ']  (type Y or N)'); return ([string]$a).Trim() -match '^(?i)y' }
+  try {
+    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+    Write-Host ''; Write-Host $q -ForegroundColor Yellow; Fs-Log ('ASK ' + $q)
+    $fm = New-Object Windows.Forms.Form; $fm.Text = 'WireIt Toolkit'; $fm.StartPosition = 'CenterScreen'; $fm.TopMost = $true; $fm.FormBorderStyle = 'FixedDialog'; $fm.MaximizeBox = $false; $fm.MinimizeBox = $false
+    $fm.AutoScaleMode = 'Dpi'; $fm.ClientSize = New-Object Drawing.Size(520, 170); $fm.Font = New-Object Drawing.Font('Segoe UI', 10)
+    $l = New-Object Windows.Forms.Label; $l.Text = $q; $l.SetBounds(16, 14, 488, 90)
+    $b1 = New-Object Windows.Forms.Button; $b1.Text = $yes; $b1.SetBounds(16, 114, 236, 42); $b1.DialogResult = [Windows.Forms.DialogResult]::Yes
+    $b2 = New-Object Windows.Forms.Button; $b2.Text = $no; $b2.SetBounds(268, 114, 236, 42); $b2.DialogResult = [Windows.Forms.DialogResult]::No
+    $fm.Controls.AddRange(@($l, $b1, $b2)); $fm.AcceptButton = $b1
+    $r = $fm.ShowDialog(); $fm.Dispose()
+    $y = ($r -eq [Windows.Forms.DialogResult]::Yes); Fs-Log ('ANSWER ' + $(if ($y) { $yes } else { $no })); return $y
+  } catch { $a = Ask ($q + '  (type Y for "' + $yes + '", N for "' + $no + '")'); return ([string]$a).Trim() -match '^(?i)y' }
 }
 function Remember-Secret([string]$p) { if ($p) { $script:Secrets += $p } }
 function Set-Clip([string]$s) { if ($MockUrl -or $Answers) { return }; try { Set-Clipboard -Value $s } catch {} }
@@ -148,6 +164,36 @@ if ($NewSite) {
 $sec = Read-FsSecrets $SecretsDir $siteName
 foreach ($p in @($sec.password) + @($sec.known)) { Remember-Secret $p }
 
+# ---------------- 2.1.0 site password (Moshe, Nov 6 2026 2:09-2:13 PM) ----------------
+# A saved site loads its password with no prompt. A site with no password asks ONCE: "Do you know the site password?"
+#   Yes = the tech types it once (hidden, twice to confirm) -> it is every device's password (and a login try on this run).
+#   No  = the Toolkit makes one (the word + 4 random digits); it is saved after the YES and offered for Bitwarden at the end.
+# Nothing is saved before the YES. A made password is never used as a login try (no device can have it yet).
+$sitePwPending = $false; $sitePwMake = $false; $sitePwAsked = $false
+function Ask-SitePassword {
+  $script:sitePwAsked = $true
+  $knowIt = Ask-Choice 'New site: do you know the site password?' 'Yes, I know it' 'No, make one for me'
+  if (-not $knowIt) { $script:sitePwMake = $true; return '' }
+  for ($k = 0; $k -lt 2; $k++) {
+    $p1 = Ask 'Type the site password (hidden):' -Secret
+    if (-not $p1) { break }
+    Remember-Secret $p1
+    $p2 = Ask 'Type it again to confirm (hidden):' -Secret
+    if ($p1 -cne $p2) { Say 'The two did not match.' 'Yellow'; continue }
+    if ($p1.Length -lt 8 -or $p1.Length -gt 16) { Say 'Camera passwords are 8-16 characters. Try again.' 'Yellow'; continue }
+    $sec.password = $p1; $sec.bitwardenSaved = $false; $sec.shownOnce = $true; $script:sitePwPending = $true
+    return $p1
+  }
+  Say 'No site password was typed, so nothing was changed. Press the button again.' 'Yellow'; Done 2
+}
+function Complete-SitePassword {
+  # after the scan: a "No, make one" answer gets its password now (never tried as a login during the scan)
+  if (-not $script:sitePwMake -or $sec.password) { return }
+  $pfx = Get-SitePrefix
+  if (-not $pfx) { Say 'No site password word was typed, so nothing was changed. Press the button again and type it when asked.' 'Yellow'; Done 2 }
+  $sec.password = New-FsSitePassword $pfx; $sec.bitwardenSaved = $false; $sec.shownOnce = $false; Remember-Secret $sec.password; $script:sitePwPending = $true
+  Say 'A new site password was made (your word + 4 random digits). It is saved after you type YES and offered for Bitwarden at the end.' 'Green'
+}
 # ---------------- 2.0.3: the site password - its word, Bitwarden, shown once ----------------
 function Get-SitePrefix {
   $p = Get-FsSitePrefix $fsCfg $SecretsDir
@@ -207,8 +253,9 @@ if ($Mode -eq 'SitePassword') {
       Say $(if ($sec.bitwardenSaved) { 'It is saved in Bitwarden and kept encrypted on this PC.' } else { 'It is kept encrypted on this PC (not marked as saved in Bitwarden yet).' })
       $a = (Ask 'S = show it (window with a Copy button)   C = copy it   B = save it in Bitwarden   T = type the one this site really uses   Enter = close').Trim()
     } else {
-      Say 'This site has no site password yet.' 'Yellow'
-      $a = (Ask 'M = make one now (your word + 4 random digits; devices get it on the next Fix this site)   T = type the one this site already uses   Enter = close').Trim()
+      Say 'This site has no site password yet. Do you know the site password?' 'Yellow'
+      $a = (Ask 'Y = yes, I know it (type it once)   N = no, make one for me (your word + 4 random digits)   Enter = close').Trim()
+      if ($a -match '^(?i)y(es)?$') { $a = 'T' } elseif ($a -match '^(?i)no?$') { $a = 'M' }
     }
     if (-not $a) { break }
     if ($a -match '^(?i)s$' -and $sec.password) { Show-SitePasswordOnce $sec.password; $sec.shownOnce = $true; Save-FsSecrets $SecretsDir $sec }
@@ -217,17 +264,19 @@ if ($Mode -eq 'SitePassword') {
     elseif ($a -match '^(?i)m$' -and -not $sec.password) {
       $pfx = Get-SitePrefix; if (-not $pfx) { Say 'No word typed - no password made.' 'Yellow'; continue }
       $sec.password = New-FsSitePassword $pfx; $sec.bitwardenSaved = $false; $sec.shownOnce = $false; Remember-Secret $sec.password; Save-FsSecrets $SecretsDir $sec
-      Say 'Made and kept encrypted on this PC. The devices get it on the next "Fix this site" (only the ones on a factory password, or all of them if you tick "Make every device use the site password").' 'Green'
+      Say 'Made and kept encrypted on this PC. The devices get it on the next "Fix this site".' 'Green'
       Save-SitePasswordAway $sec.password
     }
     elseif ($a -match '^(?i)t$') {
+      $wasNone = -not $sec.password
       $p1 = Ask 'Type this site''s password (hidden):' -Secret; Remember-Secret $p1
       $p2 = Ask 'Type it again (hidden):' -Secret
       if (-not $p1 -or $p1 -cne $p2) { Say 'The two did not match - nothing changed.' 'Yellow'; continue }
       if ($p1.Length -lt 8) { Say 'Too short for cameras (8 or more) - nothing changed.' 'Yellow'; continue }
       if ($sec.password -and $sec.password -cne $p1 -and @($sec.known) -notcontains $sec.password) { $sec.known = @($sec.known) + @($sec.password) }   # the old one stays a try at this site
       $sec.password = $p1; $sec.bitwardenSaved = $false; $sec.shownOnce = $true; Save-FsSecrets $SecretsDir $sec
-      Say 'Saved as this site''s password (encrypted, this PC only). Press B to put it in Bitwarden.' 'Green'
+      Say 'Saved as this site''s password (encrypted, this PC only).' 'Green'
+      if ($wasNone) { Save-SitePasswordAway $sec.password } else { Say 'Press B to put it in Bitwarden.' }
     }
     else { Say 'Type one of the letters shown.' }
   }
@@ -333,6 +382,7 @@ if ($Mode -eq 'DryRun') {
     $adm = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $adm) { Say 'Please start it from the Toolkit (it asks Windows for permission): it needs that to reach cameras on the wrong IP scheme.' 'Red'; Done 2 }
   }
+  if ($Mode -eq 'Fix' -and -not $NewSite -and -not $sec.password) { [void](Ask-SitePassword) }   # 2.1.0: asked once, at the start
   Say 'Looking at the site network (about a minute). Nothing is changed yet.'
   $pc = Get-FsPcNet
   if (-not $pc -or -not $pc.gw) { Say 'This PC is not on a network with a router. Plug it into the site network (or its Wi-Fi) and press the button again.' 'Red'; Done 2 }
@@ -399,9 +449,26 @@ if ($Mode -eq 'DryRun') {
   }
   if ($camPwSeen -and -not $NewSite) { try { Save-FsSecrets $SecretsDir $sec } catch {} }   # 2.0.2: a new site's secrets are saved under its final name (after the address question)
   if ($pmSite) { $observed.ports = Get-FsPortsFromPortMap $pmSite }
+  # 2.1.0: a new site (named only by the scan) with no saved password is asked here, once; "Yes" = its password is the one try on the cameras nobody could log in to
+  $skipCamAsk = $false
+  if ($Mode -eq 'Fix' -and -not $sec.password -and -not $sitePwAsked) {
+    $tp = Ask-SitePassword
+    if ($tp) {
+      $unkS = @($observed.devices | Where-Object { $_.kind -eq 'camera' -and $_.login -in @('unknown', 'refused') -and [int]$_.tries -lt [int]$opts.maxPasswordTries })
+      $workedS = 0
+      foreach ($u in $unkS) {
+        if ((Test-FsLogin $u.ip $u.brand $tp) -eq 'ok') {
+          $u.login = 'site password'; $pwFor[$u.ip] = $tp; $workedS++; $mk = ConvertTo-FsMac ([string]$u.mac); if ($mk) { $sec.cams[$mk] = $tp }
+          $st = Get-FsStream $u.ip $u.brand (Fs-Cred $tp); if ($st) { $u.streams = [ordered]@{ codec = $st.codec; fps = $st.fps; width = $st.width; height = $st.height; bitrate = $st.bitrate; gop = $st.gop; smartCodec = $st.smartCodec; maxWidth = $st.maxWidth; maxHeight = $st.maxHeight } }
+        } else { $u.tries = [int]$u.tries + 1 }
+      }
+      if ($unkS.Count) { Say ('The site password works on ' + $workedS + ' of the ' + $unkS.Count + ' camera(s) nobody could log in to (tried once each).') $(if ($workedS) { 'Green' } else { 'Yellow' }); $skipCamAsk = $true }
+    }
+  }
+  Complete-SitePassword
   # 5. ONE question for the unknown passwords (Moshe Nov 3 5:24 PM: "sometimes I will know")
   $unk = @($observed.devices | Where-Object { $_.kind -eq 'camera' -and $_.login -in @('unknown', 'refused') })
-  if ($unk.Count) {
+  if ($unk.Count -and -not $skipCamAsk) {
     $chNames = @{}; foreach ($nv in @($observed.nvrs)) { foreach ($cc in @($nv.channels)) { if ($cc.ip -and $cc.name) { $chNames[[string]$cc.ip] = [string]$cc.name } } }
     $names = @($unk | ForEach-Object { if ($chNames.ContainsKey([string]$_.ip)) { $chNames[[string]$_.ip] + ' ' + $_.ip } else { $_.ip } })
     $typed = Ask ('Know the password for ' + $(if ($unk.Count -eq 1) { 'this camera' } else { 'these ' + $unk.Count + ' cameras' }) + ' (' + ($names -join ', ') + ')? Type it (hidden), or press Enter to skip - a camera with a problem gets the official reset; one whose video is fine is left alone.') -Secret
@@ -421,6 +488,14 @@ if ($Mode -eq 'DryRun') {
 $opts.newSite = [bool]$NewSite
 $opts.factoryToSite = [bool]($NewSite -or -not $sec.password)   # 2.0.3: no site password yet = devices on a factory password get it
 $plan = New-FsPlan $list $observed $opts
+# 2.1.0 (Moshe, Nov 6 2026): devices that work with ANOTHER password: by default switch them to the site password so everything matches - asked first.
+if ($Mode -eq 'Fix' -and -not $opts.passwordAll) {
+  $diff = @(@($plan.cams) + @($plan.nvrs) | Where-Object { $_.login -and $_.login -ne 'site password' -and $_.login -notmatch '^(factory default|unknown|locked|refused|unreachable|noanswer|notfound)$' })
+  if ($diff.Count) {
+    if (Ask-Choice ([string]$diff.Count + ' device(s) use a different password. Switch them to the site password so all match?') 'Yes, make all the same' 'No, keep different') { $opts.passwordAll = $true; $plan = New-FsPlan $list $observed $opts }
+    else { Say ('Kept as they are: ' + $diff.Count + ' device(s) keep their own password. Each one is saved on this PC under its own device (' + (@($diff | ForEach-Object { if ($_.name) { $_.name } else { $_.ip } }) -join ', ') + ').') 'Yellow' }
+  }
+}
 $plan.site = $siteName
 if ($NewSite) { $plan.notes += ('It saves this site as "' + $siteName + '" on this PC when it finishes (no passwords in the list), so next time it knows what should be here.') }
 ($plan | ConvertTo-Json -Depth 8) | Set-Content -Path (Join-Path $runDir 'plan.json') -Encoding UTF8
@@ -488,13 +563,11 @@ if ($Mode -ne 'DryRun') {
   $a = Ask ('Type YES to fix all of this (one camera at a time; backups first). Anything else = stop, nothing changed.')
   if ($a.Trim() -cne 'YES' -and $a.Trim() -ne 'yes') { Say 'Stopped - nothing was changed.'; Done 2 }
 }
-# the site password: made once per site, saved BEFORE anything changes, so it is never lost
+# the site password: ONE per site, saved BEFORE anything changes, so it is never lost (asked once after the scan, see "2.1.0 site password").
 $newPw = $false
-if (-not $sec.password) {
-  $pfx = Get-SitePrefix
-  if (-not $pfx) { Say 'No site password word was typed, so nothing was changed. Press the button again and type it when asked.' 'Yellow'; Done 2 }
-  $sec.password = New-FsSitePassword $pfx; $sec.bitwardenSaved = $false; $sec.shownOnce = $false; $newPw = $true; Remember-Secret $sec.password; if ($Mode -ne 'DryRun') { Save-FsSecrets $SecretsDir $sec }
-}
+if ($Mode -eq 'DryRun' -and -not $sec.password) { $sec.password = 'Dryrun-not-a-password'; $newPw = $true }   # a dry run asks nothing and saves nothing; the real run asks
+elseif ($sitePwPending) { $newPw = $true; Save-FsSecrets $SecretsDir $sec }
+elseif (-not $sec.password) { Say 'This site has no site password, so nothing was changed. Press the button again.' 'Yellow'; Done 2 }
 $sitePw = $sec.password; Remember-Secret $sitePw
 $rb = [ordered]@{ tool = ('WireIt Toolkit ' + $script:FsVersion + ' Fix this site'); site = $siteName; run = $stamp; taken_on = $env:COMPUTERNAME; note = 'Old passwords are NOT in this file: they are in the site secret store on this PC (encrypted), under this run.'; nvrs = @(); cameras = @() }
 $rbPath = Join-Path $runDir 'rollback.json'
@@ -521,9 +594,35 @@ if ($Mode -eq 'DryRun') {
   }
   foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'missing' })) { Say ('  ' + $c.name + ': ' + $(if ($c.steps -contains 'poe') { 'power-cycle ' + $c.switch + ' port ' + $c.port + ', look again; if still gone: ' } else { '' }) + 'go check ' + $(if ($null -ne $c.port) { 'port ' + $c.port } else { 'its cable' })) }
   foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'password' })) { Say ('  NVR ' + $n.ip + ': site password set') }
-  if ($newPw) { Say '  A new site password would be made (your word + 4 random digits), kept encrypted on this PC and saved in Bitwarden (or shown once to save there).' }
+  if ($newPw) { Say '  The site password (typed, or made for you) would be kept encrypted on this PC and offered for saving in Bitwarden.' }
   Offer-List
   Say ''; Say 'Dry run done: nothing was changed.' 'Green'; Done 0
+}
+
+# =====================================================================================
+#  2.1.0  HIKVISION OFFICIAL RESET: every Hik device nobody can log in to (NVR and cameras), automatic up to the page's picture check
+# =====================================================================================
+$hikFixed = @{}      # mac -> $true when the official reset set the site password
+$hikPending = @{}    # mac -> 'waiting for Hikvision's reply' / reason
+if ($hikFlowOk -and $Mode -ne 'DryRun' -and -not $MockUrl) {
+  $hikT = @(); foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'reset' })) { $hikT += [pscustomobject]@{ mac = (ConvertTo-FsMac ([string]$n.mac)); ip = $n.ip; kind = 'nvr' } }
+  foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'fix' -and $_.steps -contains 'reset' -and $_.brand -eq 'Hikvision' })) { $hikT += [pscustomobject]@{ mac = (ConvertTo-FsMac ([string]$c.mac)); ip = $c.ip; kind = 'camera' } }
+  if ($hikT.Count) {
+    Say ''; Say ('----- Hikvision official password reset: ' + $hikT.Count + ' device(s) (NVR and cameras alike; no power-cycle, no reset button) -----') 'Cyan'
+    $script:HkSay = { param($t, $c) if ($c) { Say $t $c } else { Say $t } }
+    $script:HkAsk = { param($t) Ask $t }
+    $script:SadpLog = { param($l) Fs-Log $l }
+    $hikCfg = Get-HikConfig $cfgAll (Join-Path $here 'secrets')
+    $hikState = Join-Path $SecretsDir ('hikreset-' + ($siteName -replace '[^A-Za-z0-9_-]+', '_'))
+    $verify = { param($ip, $p) return ((Test-FsLogin $ip 'Hikvision' $p) -eq 'ok') }
+    $hs = Invoke-HikResetStage -Targets $hikT -SitePassword $sitePw -StateDir $hikState -Config $hikCfg -SecretDir $SecretsDir -VerifyLogin $verify -WaitMinutes ([int]$hikCfg.waitMinutes)
+    foreach ($m in @($hs.fixed)) { $hikFixed[$m] = $true }
+    foreach ($p in @($hs.pending)) { $hikPending[[string]$p.mac] = [string]$p.reason }
+    foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'reset' })) {
+      if ($hikFixed.ContainsKey((ConvertTo-FsMac ([string]$n.mac)))) { $nvrPw[$n.ip] = $sitePw; $sec.nvr[$n.ip] = $sitePw; Save-FsSecrets $SecretsDir $sec; $l = Format-FsCheckLine ('NVR ' + $n.ip) @([pscustomobject]@{ text = 'official reset done, site password set'; ok = $true }); Say $l 'Green'; $results += $l; $okCount++ }
+      else { $l = Format-FsCheckLine ('NVR ' + $n.ip) @([pscustomobject]@{ text = $(if ($hikPending.ContainsKey((ConvertTo-FsMac ([string]$n.mac)))) { $hikPending[(ConvertTo-FsMac ([string]$n.mac))] } else { 'official reset not finished' }); ok = $false }); Say $l 'Yellow'; $results += $l; $badCount++ }
+    }
+  }
 }
 
 # =====================================================================================
@@ -572,6 +671,13 @@ function Undo-CamPassword($c, [string]$ip, [string]$oldPw) {
 # =====================================================================================
 function Human-Reset($c) {
   # official vendor reset only. Returns $true when the site password works afterwards.
+  # 2.1.0: Hikvision = the automatic official reset above (request file -> Hikvision's page -> unlock file -> import). Nothing for the tech to do by hand here.
+  if ($c.brand -eq 'Hikvision' -and $c.steps -contains 'reset') {
+    $mk = ConvertTo-FsMac ([string]$c.mac)
+    if ($hikFixed.ContainsKey($mk)) { return $true }
+    if ($hikPending.ContainsKey($mk)) { Say ('    ' + $hikPending[$mk]) 'Yellow' } else { Say '    The official reset was not run for this camera.' 'Yellow' }
+    return $false
+  }
   Set-Clip $sitePw
   $how = $(if ($c.brand -eq 'Dahua') { 'Open http://' + $c.ip + ' in the browser, click "Forgot password", scan the QR code with the DMSS app (or get the email code), and set the new password: it is on the clipboard (Ctrl+V).' }
            elseif ($c.steps -contains 'activate') { 'In SADP (or HiTools), tick the camera ' + $c.ip + ' (serial ...' + ([string]$c.serial).Substring([math]::Max(0, ([string]$c.serial).Length - 9)) + '), click Activate, and paste the new password: it is on the clipboard (Ctrl+V).' }
@@ -643,6 +749,16 @@ foreach ($c in $ordered) {
         $w = Set-FsNet $ip $c.brand $cr $net $t $pc.mask $pc.gw
         if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $ip $c.brand $cr) }
         $back = $w.ok -and (Wait-FsDevice $t $c.brand $pw ([int]$opts.moveWaitSec))
+        if (-not $back -and $w.ok -and $t -ne $ip) {
+          # 2.1.0 (3 Hewlett, cam .7 stayed on its old address): the new address was accepted but the camera did not move.
+          # Look where it is. Still on the old address = restart it once (the address applies on restart) and wait again; never a second wrong-password try.
+          $st0 = Test-FsLogin $ip $c.brand $pw
+          if ($st0 -eq 'ok') {
+            Say ('    still answering on ' + (Get-FsShort $ip) + ' - restarting it once so the new address takes') 'Yellow'
+            [void](Restart-FsDevice $ip $c.brand $cr)
+            $back = Wait-FsDevice $t $c.brand $pw ([int]$opts.rebootWaitSec)
+          }
+        }
         if ($back) { & $step $(if ($t -ne $ip) { 'moved ' + (Get-FsShort $ip) + ' -> ' + (Get-FsShort $t) } else { 'address set fixed' }) $true; $ip = $t; $rbc.ip_after = $t; $c.target = $t }
         elseif ($w.ok) { & $step ('moved to ' + (Get-FsShort $t) + ' but it does not answer there yet') $false; $stop = $true; $rbc.ip_after = $t }
         else { & $step 'the camera refused the new address' $false }
@@ -657,7 +773,7 @@ foreach ($c in $ordered) {
     if (-not $nvrCred.ContainsKey($c.nvr)) { & $step ('NVR ' + $c.nvr + ' password unknown - put it on ch ' + $c.channel + ' by hand') $false }
     else {
       $ch = [int]$c.channel
-      if (-not $ch) { $chs = @(Get-FsNvrChannels $c.nvr $nvrCred[$c.nvr]); $used = @($chs | ForEach-Object { $_.channel }); for ($k = 1; $k -le 64; $k++) { if ($used -notcontains $k) { $ch = $k; break } } }
+      if (-not $ch) { $chs = @(Get-FsNvrChannels $c.nvr $nvrCred[$c.nvr]); $ch = Get-FsFreeNvrChannel $chs $ip ([string]$c.ip_before); if (-not $ch) { $used = @($chs | ForEach-Object { $_.channel }); for ($k = 1; $k -le 64; $k++) { if ($used -notcontains $k) { $ch = $k; break } } } }
       $w = Set-FsNvrChannel $c.nvr $nvrCred[$c.nvr] $ch $ip $pw $c.brand (Join-Path $runDir 'backup')
       $rbc.nvr = [ordered]@{ nvr = $c.nvr; channel = $ch; action = $w.action; before_file = $(if ($w.before) { 'backup\nvr-' + $c.nvr + '-ch' + $ch + '.xml' } else { '' }) }; Save-Rb
       & $step ('back on NVR ch ' + $ch) ([bool]$w.ok); $c.channel = $ch

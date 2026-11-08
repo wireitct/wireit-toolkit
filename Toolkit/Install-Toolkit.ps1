@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $tk = Join-Path $Root 'Toolkit'
 New-Item -ItemType Directory -Force -Path $tk, (Join-Path $tk 'logs'), (Join-Path $tk 'previous') | Out-Null
-$files = 'WireItToolkit.ps1', 'ToolkitCore.ps1', 'WireIt Toolkit.cmd', 'Install-Toolkit.ps1', 'README.txt', 'wireit.ico', 'wireit-logo.png', 'version.json', 'CamViews.ps1', 'Set upload key.cmd', 'NvrCheck.ps1', 'ScanUpload.ps1', 'FixIt.ps1', 'FixSite.ps1', 'FixSiteCore.ps1', 'FixSiteDevices.ps1', 'FixSiteWindow.ps1'
+$files = 'WireItToolkit.ps1', 'ToolkitCore.ps1', 'WireIt Toolkit.cmd', 'Install-Toolkit.ps1', 'README.txt', 'wireit.ico', 'wireit-logo.png', 'version.json', 'CamViews.ps1', 'Set upload key.cmd', 'NvrCheck.ps1', 'ScanUpload.ps1', 'FixIt.ps1', 'FixSite.ps1', 'FixSiteCore.ps1', 'FixSiteDevices.ps1', 'FixSiteWindow.ps1', 'HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1'
 if ((Resolve-Path $here).Path.TrimEnd('\') -ne (Resolve-Path $tk).Path.TrimEnd('\')) {
   foreach ($f in $files) { if (Test-Path (Join-Path $here $f)) { Copy-Item (Join-Path $here $f) (Join-Path $tk $f) -Force } }
   foreach ($d in 'tests', 'modules') { if (Test-Path (Join-Path $here $d)) { Copy-Item (Join-Path $here $d) $tk -Recurse -Force } }
@@ -61,7 +61,8 @@ if (-not (Get-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue
     'Added the camera-discovery firewall rules.'
   }
 }
-$h = 'C:\Program Files (x86)\HiToolsDelivery\client\HiToolsDelivery.exe'
-if (-not (Test-Path $h)) { 'NOTE: HiTools Delivery (Hikvision''s free tool) is not installed. Button 4 needs it: hikvision.com > Support > Tools > HiTools Delivery.' }
+# HiTools Delivery can be in either Program Files folder (the Office PC has the 64-bit one): look in both
+$hitPaths = @((Join-Path ${env:ProgramFiles(x86)} 'HiToolsDelivery\client\HiToolsDelivery.exe'), (Join-Path $env:ProgramFiles 'HiToolsDelivery\client\HiToolsDelivery.exe'), 'C:\Program Files (x86)\HiToolsDelivery\client\HiToolsDelivery.exe', 'C:\Program Files\HiToolsDelivery\client\HiToolsDelivery.exe') | Where-Object { $_ } | Select-Object -Unique
+if (-not @($hitPaths | Where-Object { Test-Path $_ }).Count) { 'NOTE: HiTools Delivery (Hikvision''s free tool) is not installed. Button 4 needs it: hikvision.com > Support > Tools > HiTools Delivery.' }
 foreach ($t in 'FixNVR\FixNVR.ps1', 'CamReset\Find-Cameras.ps1', 'NetCheck\NetCheck.ps1') { if (-not (Test-Path (Join-Path $Root $t))) { 'MISSING: ' + (Join-Path $Root $t) + ' (copy the whole C:\WireIt folder from the old PC)' } }
 'WireIt Toolkit installed in ' + $tk

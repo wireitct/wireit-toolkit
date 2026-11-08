@@ -244,6 +244,8 @@ function Set-FsNvrChannel([string]$nvrIp, $nvrCred, [int]$ch, [string]$camIp, [s
     $before = $r.body
     $cur = Fs-XText $x 'proxyProtocol'; if ($cur) { $proto = $cur; $port = Fs-XText $x 'managePortNo' }
     [void](Fs-XSet $x 'ipAddress' $camIp); [void](Fs-XSet $x 'userName' 'admin')
+    # 2.1.0: a plug-and-play (PoE port) channel ignores a new address until it is switched to manual (3 Hewlett, ch1)
+    if ((Fs-XText $x 'connMode') -eq 'plugplay') { [void](Fs-XSet $x 'connMode' 'manual') }
     if (-not (Fs-XSet $x 'password' $camPw)) {
       $sd = @(Fs-XFind $x 'sourceInputPortDescriptor')[0]; if ($sd) { $e = $x.CreateElement('password', $sd.NamespaceURI); $e.InnerText = $camPw; [void]$sd.AppendChild($e) }
     }
@@ -259,7 +261,9 @@ function Test-FsVideo([string]$nvrIp, $nvrCred, [int]$ch, [string]$camIp, [strin
   if ($nvrIp -and $ch -gt 0) {
     $chs = @(Get-FsNvrChannels $nvrIp $nvrCred); $c = $chs | Where-Object { $_.channel -eq $ch } | Select-Object -First 1
     if (-not $c -or $c.online -ne $true) { return $false }
-    return (Test-FsPicture $nvrIp ('/ISAPI/Streaming/channels/' + $ch + '01/picture') $nvrCred)
+    # 2.1.0: some NVRs (ERI-K108-P8, seen at 3 Hewlett) only hand the picture out on the StreamingProxy path: try both
+    if (Test-FsPicture $nvrIp ('/ISAPI/Streaming/channels/' + $ch + '01/picture') $nvrCred) { return $true }
+    return (Test-FsPicture $nvrIp ('/ISAPI/ContentMgmt/StreamingProxy/channels/' + $ch + '01/picture') $nvrCred)
   }
   if ($camBrand -eq 'Dahua') { return (Test-FsPicture $camIp '/cgi-bin/snapshot.cgi?channel=1' $camCred) }
   return (Test-FsPicture $camIp '/ISAPI/Streaming/channels/101/picture' $camCred)
@@ -461,4 +465,14 @@ function Find-FsDahua([int]$seconds = 4) {
     }
   } catch { Fs-LogLine ('Dahua search could not run: ' + $_.Exception.Message) } finally { if ($u) { $u.Close() } }
   return @($out.Values)
+}
+
+# 2.1.0: which NVR channel a camera goes on: the one that already holds its address, else the one that held its OLD address, else the first
+# empty channel, else the first channel that is offline (a plug-and-play slot nobody uses). Never an online channel of another camera.
+function Get-FsFreeNvrChannel($Channels, [string]$CamIp, [string]$OldIp = '', [int[]]$Taken = @()) {
+  $c = @($Channels)
+  foreach ($ip in @($CamIp, $OldIp)) { if (-not $ip) { continue }; $m = $c | Where-Object { $_.ip -eq $ip -and [int]$_.channel -notin $Taken } | Select-Object -First 1; if ($m) { return [int]$m.channel } }
+  $m = $c | Where-Object { (-not $_.ip -or $_.ip -eq '0.0.0.0') -and [int]$_.channel -notin $Taken } | Sort-Object { [int]$_.channel } | Select-Object -First 1; if ($m) { return [int]$m.channel }
+  $m = $c | Where-Object { $_.online -ne $true -and [int]$_.channel -notin $Taken } | Sort-Object { [int]$_.channel } | Select-Object -First 1; if ($m) { return [int]$m.channel }
+  return 0
 }

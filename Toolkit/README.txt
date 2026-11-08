@@ -1,4 +1,4 @@
-WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.0.3, 2026-11-04
+WireIt Toolkit  (C:\WireIt\Toolkit)                    version 2.1.0, 2026-11-06
 ==============================================================================
 HOW TO USE (2.0)
   1. Double-click "WireIt Toolkit" on the desktop.
@@ -11,8 +11,8 @@ HOW TO USE (2.0)
   6. Watch the checklist: a green check per camera. A red X says exactly what to go check.
 
 SITE PASSWORD (2.0.3) - every site has its own password, nothing is shared between sites.
-  - A site with no site password yet gets one when it is fixed: your word + 4 random digits (the word is
-    asked once on each PC). Devices still on a factory password (cameras + NVR) get it; their NVR channels
+  - A site with no site password yet asks once: "Do you know the password?" Yes = type it; No = type the new
+    one you want. The Toolkit never makes one up. Devices still on a factory password (cameras + NVR) get it; their NVR channels
     are updated and each picture is checked.
   - "Make every device use the site password" (tick, off unless you tick it): for sites you took over with
     mixed passwords. Every camera/NVR on a different password gets the site password, one at a time;
@@ -20,6 +20,28 @@ SITE PASSWORD (2.0.3) - every site has its own password, nothing is shared betwe
   - Saved in Bitwarden as "<site> - site password" if Bitwarden's bw command is on this PC (logged in),
     otherwise kept encrypted on this PC and shown once with a Copy button - save it in Bitwarden.
   - "Site password..." button: show (with Copy), copy, save in Bitwarden, make one, or type the one in use.
+
+HIKVISION OFFICIAL PASSWORD RESET (2.1.0) - for a Hikvision NVR or camera nobody knows the password of
+  No reset button, no power-cycle. Fix this site does it by itself, in this order, for the NVR and EVERY camera:
+    1. Finds every Hikvision device on ANY IP range (SADP) and shows model, serial, MAC, IP, firmware, activated or not.
+    2. Asks each device for its reset request file (the same step as SADP "Forgot password > Export file").
+       A device is asked ONCE: asking again cancels the first file. The file is good 48 hours and only if the device does not restart.
+    3. Opens Hikvision's official reset page (Edge or Chrome, in YOUR logged-in session) and fills it from config.json "form"
+       (name, email, company, state, zip, role), types the serial and model and attaches the file.
+       WHAT STILL NEEDS YOU: Hikvision's page shows a "slide the piece" / picture check. That is there to tell a person from a
+       program and the Toolkit does not defeat it: you slide it and press Submit, one device at a time, ~20 seconds each.
+       (Tried 6 Nov 2026: the browser service's built-in solver did not pass this slider, so there is no automatic option.)
+    4. Hikvision emails the unlock file/key to the address in config.json (moshe@wireitct.com). The Toolkit watches that mailbox:
+       "hikReset.mail.mode": "folder" = drop the files in the replies folder (Tab's mail watcher does this for WireIt),
+       or "imap" (mail.user + an app password kept encrypted on this PC). Each reply is matched to its device by serial.
+    5. Imports it the way SADP does (key exchange, then the new password encrypted with it + Hikvision's 8-character key),
+       sets the SITE password, and believes it only after a real login with that password. If the device will not take it,
+       it says so and tells you to finish that one in SADP (Forgot password > Import file) - never loops (at most 2 tries).
+    6. Then the usual Fix this site: moves it to the WireIt IP plan, adds the cameras to the NVR (a plug-and-play NVR slot is
+       switched to manual first), checks the picture. The temporary address on this PC is removed at the end.
+  Safety: at most one bad login per device per 30 minutes (Hikvision locks a device after a few); passwords and keys are never
+  written to a log; the request/answer state is in runs\HikReset\state.json and a run can be stopped and started again.
+  Command line: HikReset.ps1 -Mode Run|Find|Export|Submit|Watch|Import|Status (-Only <serial/ip>, -Site "<site>").
 
 NEW SITE, NOT LISTED (2.0.2): press the blue "New site (not listed)" beside the big button. Nothing to type.
   - It finds the router, the NVR and the cameras by itself (SADP, Dahua search, ONVIF/sweep, the NVR's channels)
@@ -63,14 +85,14 @@ WHAT "FIX THIS SITE" DOES (no order to remember, safe to run again)
     password that last worked on that camera, this site's password, ones typed at this site before, and
     the makers' factory passwords (new sites only) - at most 3 tries per camera. Unknown: one question;
     then the official Hikvision / Dahua reset with one plain step for you.
-    A site with no site password yet gets one: your word + 4 random digits (the word is asked once per PC,
-    or set in config.json "fixSite": {"sitePasswordPrefix": ...}). Every device still on its factory
+    A site with no site password yet asks once: "Do you know the password?" Yes = type it; No = type the new
+    one you want (never made up by the Toolkit). Every device still on its factory
     password (cameras + the NVR) gets it, with its NVR channel updated and the picture checked.
     It goes into Bitwarden as "<site> - site password" when the Bitwarden command (bw) is on this PC and
-    logged in; otherwise it stays encrypted on this PC (secrets\) and is shown once with a Copy button:
-    save it in Bitwarden. Never in Drive, logs, plan files or messages.
-  - Site password... (button): show it (Copy button), copy it, save it in Bitwarden, make one, or type
-    the one this site already uses.
+    logged in; otherwise it stays encrypted on this PC (secrets\) and is offered for saving in Bitwarden.
+    Save it there. Never in Drive, logs, plan files or messages.
+  - Site password... (button): show it (Copy button), copy it, save it in Bitwarden, or type
+    the one this site uses (or the new one you want).
   - Undo the last fix: puts every camera and the NVR back the way that run found them.
   - Just look (change nothing): the same list, no YES, nothing touched.
   - Every run: runs\FixSite-<date>\ (log, plan, backups, undo file).

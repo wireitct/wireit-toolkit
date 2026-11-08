@@ -10,7 +10,7 @@
      cameras:[{name, brand, model, serial, mac, ip, channel, nvr, switch, port, settings:{codec,fps,resolution,bitrate}}] }
  No passwords are ever in it.
 #>
-$script:FsVersion = '2.0.3'
+$script:FsVersion = '2.1.0'
 $script:FsPoeNets = @('192.168.254')
 
 function Get-FsDefaults {
@@ -268,6 +268,8 @@ function New-FsPlan($expected, $observed, $opts = $null) {
       $plan.leftAlone += ('NVR ' + $ip + ': WireIt standard puts the NVR at .' + @($o.nvrHosts)[0] + ' (it works where it is, so it is not moved)')
     }
     if ($item.login -eq 'unknown') { $item.why += 'NVR password not known (asked once before the fixes)' }
+    # 2.1.0: a Hikvision NVR nobody can log in to gets Hikvision's official reset too (never the reset button)
+    if ($br -eq 'Hikvision' -and $item.login -in @('unknown', 'refused', 'locked')) { $item.why += 'Hikvision''s official password reset (request file -> Hikvision''s page -> unlock file)'; $item.steps += 'reset' }
     # 2.0.3: the NVR gets the site password too - when it is still on the factory password at a new site, or when the tech ticked the option
     if ($br -eq 'Hikvision' -and $item.login -eq 'factory default' -and $o.factoryToSite) { $item.why += 'NVR still on the factory password'; $item.steps += 'password' }
     elseif ($br -eq 'Hikvision' -and $o.passwordAll -and $item.login -and $item.login -notin @('unknown', 'locked', 'refused', 'site password')) { $item.why += 'NVR is on a different password (you ticked "Make every device use the site password")'; $item.steps += 'password' }
@@ -420,7 +422,7 @@ function Get-FsStepWords($c) {
     switch ($s) {
       'move' { if ($c.target -ne $c.ip) { $w += ('move ' + $c.ip + ' -> ' + (Get-FsShort $c.target)) } else { $w += 'set its address fixed' } }
       'password' { $w += 'set the site password' }
-      'reset' { $w += 'official password reset (one step for you)' }
+      'reset' { $w += $(if ($c.brand -eq 'Hikvision') { 'Hikvision''s official password reset, automatic (you only type the page''s picture check)' } else { 'official password reset (one step for you)' }) }
       'activate' { $w += 'activate with the site password (one step for you)' }
       'settings' { $w += 'camera settings' }
       'nvr' { if ($c.channel) { $w += ('back on NVR ch ' + $c.channel) } else { $w += 'back on the NVR' } }

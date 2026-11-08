@@ -1,0 +1,30 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Fake Hikvision password reset (test copy of the real page's field names)</title></head><body>
+<h1>Password Reset</h1>
+<form id="enquiry-form" onsubmit="return false">
+ <input name="firstName"><input name="lastName"><input name="email"><input name="company">
+ <input id="selected-province" readonly><input type="hidden" name="province"><input type="hidden" name="country" value="United States">
+ <ul id="global-province" style="display:none"><li data-value="Connecticut">Connecticut</li><li data-value="Texas">Texas</li></ul>
+ <div class="business-type"><div class="hik-select-input">type</div><ul><li data-value="Distributor">Distributor</li><li data-value="End User">End User</li><li data-value="Installer">Installer</li></ul></div>
+ <input type="hidden" name="type">
+ <input name="zipCode"><input name="serialNo" maxlength="9"><input name="modelNumber">
+ <input type="file" class="screenshot-file" multiple><div class="file-display"></div>
+ <img class="verification" alt="picture code"><input name="Verification" maxlength="6">
+ <button id="formSubmit" type="button">Submit</button>
+</form>
+<div class="password-reset-dialog" style="display:none"><span class="close-btn">x</span></div>
+<script>
+document.querySelector('#selected-province').addEventListener('click',function(){document.querySelector('#global-province').style.display='block'});
+document.querySelectorAll('#global-province li').forEach(function(li){li.addEventListener('click',function(){document.querySelector('#selected-province').value=li.dataset.value;document.querySelector('input[name=province]').value=li.dataset.value;})});
+document.querySelector('.business-type .hik-select-input').addEventListener('click',function(){});
+document.querySelectorAll('.business-type li').forEach(function(li){li.addEventListener('click',function(){document.querySelector('input[name=type]').value=li.dataset.value;})});
+document.querySelector('input[type=file]').addEventListener('change',function(e){document.querySelector('.file-display').innerText=e.target.files.length?e.target.files[0].name:'';});
+document.querySelector('#formSubmit').addEventListener('click',function(){
+  var f=document.querySelector('input[type=file]').files.length, v=document.querySelector('input[name=Verification]').value;
+  if(v!=='ABC123'||!f){document.body.insertAdjacentHTML('beforeend','<p id="err">Incorrect verification code</p>');return;}
+  window.__posted={sn:document.querySelector('input[name=serialNo]').value,file:document.querySelector('input[type=file]').files[0].name,email:document.querySelector('input[name=email]').value,type:document.querySelector('input[name=type]').value,province:document.querySelector('input[name=province]').value};
+  document.body.innerHTML='<h2>Thank you. Your request has been submitted.</h2>';
+});
+// like Hikvision's page: a field only "takes" (label floats) on a REAL key press - a scripted value stays invisible
+document.querySelectorAll('form#enquiry-form input[type=text], form#enquiry-form input:not([type])').forEach(function(i){ i.addEventListener('keydown',function(e){ if(e.isTrusted) i.dataset.typed='1'; }); });
+window.__looksFilled=function(){ var o={}; ['firstName','lastName','email','company','zipCode','serialNo','modelNumber'].forEach(function(n){ var i=document.querySelector('form#enquiry-form input[name='+n+']'); o[n]=!!(i&&i.value&&i.dataset.typed==='1'); }); return o; };
+</script></body></html>

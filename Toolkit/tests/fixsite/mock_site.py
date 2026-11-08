@@ -15,7 +15,7 @@ def p3(ip): return '.'.join(ip.split('.')[:3])
 
 def load(path):
     global S
-    S = json.load(open(path))
+    S = json.load(open(path, encoding='utf-8-sig'))
     S.setdefault('temps', []); S.setdefault('log', []); S.setdefault('poe_calls', [])
     S.setdefault('pc', {'ip': '192.168.1.105', 'gw': '192.168.1.1', 'mask': '255.255.255.0', 'dhcp': True})
     for ip, d in S['devices'].items():
