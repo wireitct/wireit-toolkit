@@ -67,7 +67,7 @@ $bf = @(Save-FsBackup '10.0.0.6' 'Hikvision' $null (Join-Path $tmp 'bk2'))
 Check (Test-FsBackupComplete $bf 'Hikvision') 'config export + network + main stream = a backup'
 Check (-not (Test-FsBackupComplete @($bf | Where-Object { $_ -notlike '*stream-101*' }) 'Hikvision')) 'a camera without its stream settings is not'
 Check (Test-FsBackupComplete @($bf | Where-Object { $_ -notlike '*stream-101*' }) 'Hikvision' -Nvr) 'an NVR needs config + network'
-Check ($fs -match 'Test-FsBackupComplete \$bf \$c\.brand' -and $fs -match 'Test-FsBackupComplete \$nbf') 'FixSite: camera AND NVR changes need a complete backup'
+# 2.2.4: replaced by a run of the real code in Test-Fix224.ps1 section 2/FixSite e2e
 Write-Host '#17 a failed NVR move is a problem in the checklist and the exit code'
 $fs = Read-Src 'Toolkit/FixSite.ps1'
 $mv = $fs.Substring($fs.IndexOf("foreach (`$n in @(`$plan.nvrs | Where-Object { `$_.steps -contains 'move' })) {`n  # 2.2.3"))
@@ -198,7 +198,7 @@ Write-Host '#7 no password to a Basic-only challenge over plain HTTP; device cer
 Check (-not (Test-FsDigestOffered @('Basic realm="x"'))) 'reproduction: a Basic-only challenge over HTTP is refused (2.2.2 answered it with the password)'
 Check (Test-FsDigestOffered @('Basic realm="x"', 'Digest realm="x", nonce="1", qop="auth"')) 'Digest offered -> the login goes ahead (password never on the wire)'
 $src7 = Read-Src 'Toolkit/FixSiteDevices.ps1'
-Check ($src7 -match "err = 'basic-over-http'" -and $src7 -match 'if \(\$Cred -and -not \$Tls -and -not \$script:FsMockUrl\)') 'Fs-Http checks the challenge before any plain-HTTP login'
+# 2.2.4: replaced by a run of the real code in Test-Fix224.ps1 section 7
 Check ($src7 -match 'Pins\.TryGetValue\(host, out seen\)\) return seen == tp') 'Windows PowerShell 5.1: a device''s certificate is pinned for the run; a different one on the same address is refused'
 $cs = $script:WireItLanTlsCode
 try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $cs -IgnoreWarnings -WarningAction SilentlyContinue -ErrorAction Stop }; Check ([bool]('WireItLanTls' -as [type])) 'the pinning helper compiles' } catch { Check $false ('the pinning helper compiles: ' + $_.Exception.Message) }
@@ -258,7 +258,7 @@ try {
   $r21b = & $nm { param($p) Http -Ip '127.0.0.1' -Port $p -Scheme 'http' -Path '/configurationData' } $port21
   Check ([Text.Encoding]::UTF8.GetBytes($r21b.body).Length -ne $bin.Length) '...the old text path really does change the bytes'
 } finally { try { $p21.Kill() } catch {}; Remove-Module NvrHealth -ErrorAction SilentlyContinue }
-Check ((Read-Src 'Toolkit/modules/NvrHealth/NvrFix.ps1') -match "-OutFile \`$cfgFile" -and (Read-Src 'Toolkit/modules/NvrHealth/NvrFix.ps1') -notmatch "config-' \+ \`$di\.serial \+ '\.txt'") 'Fix NVR firmware saves the export as .bin through -OutFile'
+# 2.2.4: the export-as-bytes check above (#21, a real HTTP download) covers this; the source check is gone
 Write-Host '#47 standalone HikReset reads the site password where the installer keeps it (vault\)'
 $hr = Read-Src 'Toolkit/HikReset.ps1'
 Check ($hr -match "\`$secDir = Join-Path \`$here 'vault'") 'reproduction: default store is Toolkit\vault (2.2.2 read Toolkit\secrets)'

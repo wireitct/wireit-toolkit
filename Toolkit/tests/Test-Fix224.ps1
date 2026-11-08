@@ -14,6 +14,7 @@ $tmp = Join-Path ([IO.Path]::GetTempPath()) ('fix224-' + [guid]::NewGuid().ToStr
 . (Join-Path $tk 'FixSiteCore.ps1'); . (Join-Path $tk 'FixSiteDevices.ps1')
 $script:LogLines = New-Object System.Collections.ArrayList
 function Fs-LogLine([string]$s) { [void]$script:LogLines.Add($s) }
+$script:RealFsHttp = ${function:Fs-Http}
 try {
 
 # ------------------------------------------------------------------------------------------------------------------------------
@@ -238,6 +239,23 @@ Check (-not @($again | Where-Object { $_ -match '/reset|^remove|^taskDelete' }).
 Check ((@($r4c.log) -join ' ') -match 'nothing to remove') '...and the log says "nothing to remove"'
 Check ($m4.acl[$tk4 + $sep + 'vault'].prot -and @($m4.acl[$tk4 + $sep + 'secrets' + $sep + 'upload-key.bin'].aces) -contains 'S-1-5-21-9-9-9-1002:R') '...and vault\ is still locked, the key still readable'
 # the installer itself uses it (run the real installer script in plan-only mode is not possible off Windows; its migration block is the function above)
+
+# ------------------------------------------------------------------------------------------------------------------------------
+Write-Host '7. (replaces 2.2.3 source-reading checks) the real code, run'
+Set-Item -Path function:global:Fs-Http -Value $script:RealFsHttp
+$py7 = $(if (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' } elseif (Get-Command python -ErrorAction SilentlyContinue) { 'python' } else { '' })
+if ($py7) {
+  $seen7 = Join-Path $tmp 'auth7.txt'; $srv7 = Join-Path $tmp 'srv7.py'
+  [IO.File]::WriteAllText($srv7, "import http.server, sys`nclass H(http.server.BaseHTTPRequestHandler):`n  def log_message(self, *a): pass`n  def do_GET(self):`n    if self.headers.get('Authorization'): open(sys.argv[1], 'a').write('AUTH ' + self.headers.get('Authorization')[:6] + '\n')`n    self.send_response(401); self.send_header('WWW-Authenticate', 'Basic realm=""cam""'); self.send_header('Content-Length', '0'); self.end_headers()`ns = http.server.HTTPServer(('127.0.0.1', 0), H); print(s.server_address[1], flush=True); s.serve_forever()`n")
+  $psi7 = New-Object Diagnostics.ProcessStartInfo; $psi7.FileName = (Get-Command $py7).Source; $psi7.Arguments = '"' + $srv7 + '" "' + $seen7 + '"'; $psi7.UseShellExecute = $false; $psi7.RedirectStandardOutput = $true; $psi7.CreateNoWindow = $true
+  $p7 = [Diagnostics.Process]::Start($psi7); $port7 = [int]$p7.StandardOutput.ReadLine()
+  try {
+    $script:FsMockUrl = ''
+    $r7 = Fs-Http -Ip ('127.0.0.1:' + $port7) -Path '/ISAPI/System/deviceInfo' -Cred (New-Object PSCredential('admin', (ConvertTo-SecureString 'NotSent#123' -AsPlainText -Force))) -Timeout 5
+    Eq $r7.err 'basic-over-http' '#7 (was a source grep): a Basic-only challenge over plain HTTP -> refused'
+    Check (-not (Test-Path -LiteralPath $seen7)) '#7: the camera never received an Authorization header (the password was not sent)'
+  } finally { try { $p7.Kill() } catch {} }
+} else { Write-Host '  skip  #7 live check: no Python on this PC' }
 
 #@@NEXT@@
 
