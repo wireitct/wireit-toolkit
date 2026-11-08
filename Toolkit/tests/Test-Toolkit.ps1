@@ -316,12 +316,13 @@ if ($py -and (Test-Path $mockSc)) {
     $sent = Get-Content $bodies -Raw
     Check 'upload: what reached the server has the key but no password' ($sent -match '"key":"TTTT' -and $sent -notmatch 'Secret|password' -and $sent -match '"pc":') ''
     $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $su -Site '2336 main' -CamResetDir $scr -ApiUrl 'http://127.0.0.1:1/' 2>&1 | Out-String
-    $pend = Join-Path $tkDir 'outbox\scan-2336_main.json'
-    Check 'upload: offline = ONE waiting list, no key in it' ((Test-Path $pend) -and -not ((Get-Content $pend -Raw) -match 'TTTT|"key"') -and $o -match 'no internet') $o
+    # 2.2.6: the waiting list's file name has the site's fingerprint since 2.2.5 (scan-2336_main-<8 hex>.json): found by the site it holds
+    $pendAll = @(Get-ChildItem (Join-Path $tkDir 'outbox') -Filter 'scan-*.json' -ErrorAction SilentlyContinue | Where-Object { [string]((Get-Content $_.FullName -Raw | ConvertFrom-Json).site) -eq '2336 main' })
+    Check 'upload: offline = ONE waiting list, no key in it' ($pendAll.Count -eq 1 -and $pendAll[0].Name -like 'scan-2336_main-*.json' -and -not ((Get-Content $pendAll[0].FullName -Raw) -match 'TTTT|"key"') -and $o -match 'no internet') $o
     $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $su -Site '2336 main' -CamResetDir $scr -ApiUrl 'http://127.0.0.1:1/' 2>&1 | Out-String
     Check 'upload: offline twice = still ONE waiting list' (@(Get-ChildItem (Join-Path $tkDir 'outbox') -Filter 'scan-*.json').Count -eq 1)
     $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $su -Site 'WI-070' -CamResetDir $scr -ApiUrl ($sbase + 'first') 2>&1 | Out-String
-    Check 'upload: waiting list of the other site goes with the next scan' ($o -match 'Sent the list that was waiting for 2336 main' -and -not (Test-Path $pend)) $o
+    Check 'upload: waiting list of the other site goes with the next scan' ($o -match 'Sent the list that was waiting for 2336 main' -and -not ($pendAll.Count -and (Test-Path $pendAll[0].FullName))) $o
   } finally {
     Remove-Item Env:\WIREIT_UPLOAD_KEY -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $tkDir 'outbox\scan-*.json') -Force -ErrorAction SilentlyContinue; Remove-Item (Join-Path $tkDir 'logs\scan-upload-last.json') -Force -ErrorAction SilentlyContinue
