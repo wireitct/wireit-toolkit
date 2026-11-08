@@ -379,6 +379,22 @@ function Hik-Search($t, [int]$trackId, [DateTime]$fromLocal, [DateTime]$toLocal,
   }
   return @{ status = (XText $x 'responseStatusStrg'); segs = $segs }
 }
+function Get-HikContinuousDays($t, [int]$trackId, [DateTime]$anchor, [DateTime]$nowLocal, [int]$daysHeld) {
+  # how many days back from now the footage is continuous: one 36 h window at each checkpoint (1, 2, 3, 7, 14, ... the target);
+  # an empty window = a gap, retention stops at the checkpoint before it. A search that fails = $null (unknown, never a pass).
+  $tg = [int]$script:NhTargetDays; $pts = @(1, 2, 3, 5, 7, 10, 14, 21, 28, 35, 42, 49, 60, 75, 90, 120, 180, 270, 365)
+  if ($tg -gt 1) { $pts += @(($tg - 1), $tg) }
+  $off = [int][math]::Floor(($nowLocal - $anchor).TotalDays)
+  $pts = @($pts | Where-Object { $_ -gt $off -and $_ -le $daysHeld } | Sort-Object -Unique)
+  $ok = [math]::Min($off, $daysHeld)
+  foreach ($d in $pts) {
+    $from = $nowLocal.AddDays(-$d); $r = Hik-Search $t $trackId $from $from.AddHours(36) 1
+    if ($null -eq $r) { return $null }
+    if (-not @($r.segs).Count) { return $ok }
+    $ok = $d
+  }
+  return $daysHeld
+}
 function Hik-Tracks($t) {
   $r = Http -Ip $t.ip -Path '/ISAPI/ContentMgmt/record/tracks' -Credential $t.cred -Port $t.port
   $out = @{}
@@ -434,6 +450,11 @@ function Hik-Recording($t) {
       $span = $nowLocal - $o.oldest
       if ($tm -and $tm.tz -and $tm.tz.ok) { $span = $span.Add([TimeSpan]::FromMinutes((Tz-OffsetAtLocal $tm.tz $o.oldest) - (Tz-OffsetAtLocal $tm.tz $nowLocal))) }
       $o.days_held = [int][math]::Floor($span.TotalDays)
+      # 2.2.4 (Codex re-review): the oldest clip alone is not retention: a full drive with 1 day of footage plus one old locked /
+      # event clip said "45-day target met". Footage must be there all the way back: probe days in between; a gap ends it.
+      $cd = Get-HikContinuousDays $t $tid $(if ($o.newest) { $o.newest } else { $nowLocal }) $nowLocal ([int]$o.days_held)
+      if ($null -eq $cd) { Log ('ch ' + $c.ch + ': footage check between ' + $o.oldest + ' and now failed - days held unknown'); $o.days_held = $null; $o | Add-Member -NotePropertyName days_note -NotePropertyValue 'unknown (search failed)' -Force }
+      elseif ($cd -lt $o.days_held) { Log ('ch ' + $c.ch + ': oldest clip ' + $o.oldest + ' but footage is continuous only ' + $cd + ' days back'); $o | Add-Member -NotePropertyName days_note -NotePropertyValue ('older clip ' + (Fmt-Local $o.oldest 'MMM d') + ' is isolated') -Force; $o.days_held = $cd }
     }
     $res += $o
   }
@@ -604,7 +625,11 @@ function Dw-Periods($t, [string]$id, [DateTime]$nowUtc) {
   $p = @(); if ($j -and $j.reply) { $p = @($j.reply) } elseif ($j) { $p = @($j) }
   $p = @($p | Where-Object { $_ -and $null -ne $_.startTimeMs } | Sort-Object { [double]$_.startTimeMs })
   if (-not $p.Count) { return $null }
-  $first = $p[0]; $last = $p[$p.Count - 1]
+  $last = $p[$p.Count - 1]
+  # 2.2.4: the oldest period that is part of continuous footage back from the newest (a gap over 36 h ends it; an isolated old chunk is not retention)
+  $fi = $p.Count - 1
+  while ($fi -gt 0) { $pe = [double]$p[$fi - 1].startTimeMs + [math]::Max(0, [double]$p[$fi - 1].durationMs); if (([double]$p[$fi].startTimeMs - $pe) -gt 129600000) { break }; $fi-- }
+  $first = $p[$fi]
   $live = ([double]$last.durationMs -lt 0)
   $lastEnd = $(if ($live) { $nowUtc } else { Ms-ToUtc ([double]$last.startTimeMs + [double]$last.durationMs) })
   return @{ oldest = (Ms-ToUtc $first.startTimeMs); newest = $lastEnd; live = $live }
@@ -672,6 +697,7 @@ function Get-RecordingStatus {
         [pscredential]$Credential, [int]$TargetDays = 0, [int]$Port = 0, [switch]$NoLog)
   if (-not $NoLog) { Start-Log 'recording' }
   if (-not $TargetDays) { $TargetDays = [int]$script:Opt.TargetDays }
+  $script:NhTargetDays = $TargetDays
   $t = Resolve-Target $Ip $Vendor $Credential $Port
   Say ''; Say ('----- Recording check: ' + $Ip + ' (target ' + $TargetDays + ' days) -----') 'Cyan'
   $result = [ordered]@{ check = 'recording'; ip = $Ip; vendor = $t.vendor; streams = $null; target_days = $TargetDays; ok = $false; days_held = $null; shortest_days = $null; short_cameras = @(); recording = 0; channels = @(); disks = @(); problems = @(); log = $script:LogFile }
@@ -751,7 +777,8 @@ function Get-RecordingStatus {
     $label = $(if ($t.vendor -eq 'DW' -and $c.name) { [string]$c.name + $(if ($c.ip) { ' (' + $c.ip + ')' } else { '' }) } else { 'Camera ' + $c.ch + $(if ($c.ip) { ' (' + $c.ip + ')' } else { '' }) })
     $tag = $(if ($t.vendor -eq 'DW' -and ($c.name -or $c.ip)) { $(if ($c.name) { $label } else { $c.ip }) } else { $c.ch })
     if ($null -ne $c.days_held) { if ($null -eq $minDays -or $c.days_held -lt $minDays) { $minDays = $c.days_held }; if ($null -eq $maxDays -or $c.days_held -gt $maxDays) { $maxDays = $c.days_held } }
-    $held = $(if ($null -ne $c.days_held) { ', footage back to ' + (Fmt-Local $c.oldest 'MMM d') + ' (' + $c.days_held + ' days)' } else { '' })
+    $note = $(if ($c.PSObject.Properties['days_note'] -and $c.days_note) { ' - ' + $c.days_note } else { '' })
+    $held = $(if ($null -ne $c.days_held) { ', footage continuous for ' + $c.days_held + ' days' + $(if ($note) { $note } else { ' (back to ' + (Fmt-Local $c.oldest 'MMM d') + ')' }) } elseif ($note) { ', days held ' + $c.days_note } else { '' })
     if ($c.recording_now) { $rec++; Ok ($label + ': recording' + $held) }
     elseif ($c.online -eq $false) { Bad ($label + ': camera OFFLINE, not recording' + $(if ($c.newest) { ' (last footage ' + (Fmt-Local $c.newest) + ')' } else { '' })); $notRec += $tag }
     elseif ($c.scheduled -eq $false) { Bad ($label + ': recording is turned OFF in its schedule' + $held); $notRec += $tag }
@@ -760,6 +787,7 @@ function Get-RecordingStatus {
     else { Bad ($label + ': NO footage found at all'); $notRec += $tag }
   }
   if (-not $chans.Count) { Warn 'No camera channels found on this recorder.'; $problems.Add('no channels') }
+  $unk = @($chans | Where-Object { $_.PSObject.Properties['days_note'] -and $null -eq $_.days_held }); if ($unk.Count -and $null -ne $maxDays) { Warn ('' + $unk.Count + ' camera(s): days held could not be measured.'); $problems.Add(('days held unknown on ' + $unk.Count + ' camera(s)')) }   # 2.2.4
   if ($notRec.Count) { $problems.Add(('' + $notRec.Count + ' camera(s) not recording: ' + (@($notRec | Select-Object -First 10) -join ', ') + $(if ($notRec.Count -gt 10) { ' and ' + ($notRec.Count - 10) + ' more (see the log)' } else { '' }))) }
   # stream audit (report only; never counted as a recording problem, never changes anything)
   $streams = $null

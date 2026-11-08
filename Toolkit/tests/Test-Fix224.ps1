@@ -101,6 +101,57 @@ Check ((& $nm2 { param($p) Test-NhBackupFile $p } $f2) -match 'login') 'reproduc
 Eq (& $nm2 { param($p) Test-NhBackupFile $p } $f3) '' 'Fix NVR: a real-looking export passes'
 Remove-Module NvrHealth -Force -ErrorAction SilentlyContinue
 
+# ------------------------------------------------------------------------------------------------------------------------------
+Write-Host '3. retention comes from continuous footage back from now, never from the oldest clip or the drive size alone'
+$nm3 = Import-Module (Join-Path $tk 'modules\NvrHealth\NvrHealth.psm1') -Force -PassThru -DisableNameChecking
+& $nm3 { param($ld) Set-NvrHealthOption LogDir $ld } (Join-Path $tmp 'nhlogs')
+# a fake Hikvision NVR inside the module: one camera; $segs = the recorded spans (local time); drive 100% full
+$run3 = {
+  param($nm, [object[]]$spans, [switch]$FailSearch, [int]$Target = 45)
+  & $nm {
+    param($spans, $fail, $target)
+    $script:FakeSpans = $spans; $script:FakeFail = $fail; $script:FakeNow = [datetime]'2026-11-08T10:00:00'
+    function script:Http {
+      param([string]$Ip, [string]$Method = 'GET', [string]$Path, [string]$Body = '', [string]$ContentType = '', $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0, [byte[]]$BodyBytes = $null, [string]$OutFile = '')
+      $ok = { param($b) [pscustomobject]@{ code = 200; body = $b; err = '' } }
+      switch -Wildcard ($Path) {
+        '/ISAPI/System/deviceInfo' { return (& $ok '<DeviceInfo><model>DS-7608NI-K2</model><serialNumber>S1</serialNumber><firmwareVersion>V4.1</firmwareVersion></DeviceInfo>') }
+        '/ISAPI/System/time' { return (& $ok ('<Time><timeMode>NTP</timeMode><localTime>' + $script:FakeNow.ToString('yyyy-MM-ddTHH:mm:ss') + '</localTime><timeZone>CST+5:00:00DST01:00:00,M3.2.0/02:00:00,M11.1.0/02:00:00</timeZone></Time>')) }
+        '/ISAPI/ContentMgmt/InputProxy/channels' { return (& $ok '<InputProxyChannelList><InputProxyChannel><id>1</id><name>Door</name><ipAddress>10.0.0.64</ipAddress></InputProxyChannel></InputProxyChannelList>') }
+        '/ISAPI/ContentMgmt/InputProxy/channels/status' { return (& $ok '<InputProxyChannelStatusList><InputProxyChannelStatus><id>1</id><online>true</online><chanDetectResult>connect</chanDetectResult></InputProxyChannelStatus></InputProxyChannelStatusList>') }
+        '/ISAPI/ContentMgmt/record/tracks' { return (& $ok '<TrackList><Track><id>101</id><Enable>true</Enable></Track></TrackList>') }
+        '/ISAPI/ContentMgmt/Storage' { return (& $ok '<storage><hddList><hdd><id>1</id><capacity>3815447</capacity><freeSpace>0</freeSpace><status>ok</status><property>RW</property></hdd></hddList></storage>') }
+        '/ISAPI/ContentMgmt/search' {
+          if ($script:FakeFail -and $Body -notmatch '<startTime>2000-') { return [pscustomobject]@{ code = 500; body = ''; err = 'x' } }
+          $fs = [datetime][regex]::Match($Body, '<startTime>([^<Z]+)').Groups[1].Value; $fe = [datetime][regex]::Match($Body, '<endTime>([^<Z]+)').Groups[1].Value
+          $hit = @($script:FakeSpans | Where-Object { [datetime]$_[0] -lt $fe -and [datetime]$_[1] -gt $fs } | Sort-Object { [datetime]$_[0] })
+          if ($Body -match '<maxResults>1<') { $hit = @($hit | Select-Object -First 1) }
+          $items = -join ($hit | ForEach-Object { '<searchMatchItem><timeSpan><startTime>' + ([datetime]$_[0]).ToString('yyyy-MM-ddTHH:mm:ss') + 'Z</startTime><endTime>' + ([datetime]$_[1]).ToString('yyyy-MM-ddTHH:mm:ss') + 'Z</endTime></timeSpan></searchMatchItem>' })
+          return (& $ok ('<CMSearchResult><responseStatusStrg>OK</responseStatusStrg><matchList>' + $items + '</matchList></CMSearchResult>'))
+        }
+        default { return [pscustomobject]@{ code = 404; body = ''; err = '' } }
+      }
+    }
+    $script:LoginState = @{}
+    Get-RecordingStatus -Ip '10.0.0.20' -Vendor Hikvision -Credential (New-Object PSCredential('admin', (ConvertTo-SecureString 'x1234567' -AsPlainText -Force))) -TargetDays $target -NoLog
+  } $spans ([bool]$FailSearch) $Target
+}
+$now3 = [datetime]'2026-11-08T10:00:00'
+$oneDay = @(,@($now3.AddHours(-26).ToString('s'), $now3.AddMinutes(-1).ToString('s')))
+$orphan = @(,@($now3.AddDays(-60).ToString('s'), $now3.AddDays(-60).AddMinutes(5).ToString('s')))
+$r3 = & $run3 $nm3 ($orphan + $oneDay)
+Check (-not $r3.ok) 'reproduction: 1 day of footage + one isolated 60-day-old clip, drive full -> NOT "45-day target met" (2.2.3 said met)'
+Check ($null -ne $r3.days_held -and [int]$r3.days_held -le 2) ('...days held is the continuous footage, not 60 (got ' + $r3.days_held + ')')
+Check (@($r3.problems | Where-Object { $_ -match 'of 45 days' }).Count -eq 1) '...and the problem says "only N of 45 days"'
+$r3 = & $run3 $nm3 $oneDay
+Check (-not $r3.ok -and [int]$r3.days_held -le 1) '1 day of footage, drive full -> red, not met'
+$full = @(,@($now3.AddDays(-50).ToString('s'), $now3.AddMinutes(-1).ToString('s')))
+$r3 = & $run3 $nm3 $full
+Check ($r3.ok -and [int]$r3.days_held -ge 45) ('50 days of continuous footage -> target met (got ' + $r3.days_held + ', ok=' + $r3.ok + ')')
+$r3 = & $run3 $nm3 $full -FailSearch
+Check (-not $r3.ok -and $null -eq $r3.days_held) 'the in-between footage search fails -> days held UNKNOWN, not met'
+Remove-Module NvrHealth -Force -ErrorAction SilentlyContinue
+
 #@@NEXT@@
 
 } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }

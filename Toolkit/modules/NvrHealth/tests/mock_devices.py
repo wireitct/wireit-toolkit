@@ -264,8 +264,11 @@ class H(BaseHTTPRequestHandler):
         if p == '/ec2/recordedTimePeriods':
             x = next(x for x in d['devices'] if x['id'] == requests_unquote(q.get('cameraId', '')))
             st = now - timedelta(days=x['oldest_days'])
-            per = [{'startTimeMs': str(ms(st)), 'durationMs': str(3600 * 1000)}]
             last = now - timedelta(hours=x.get('last_hours', 3)) if not x['live'] else now - timedelta(minutes=30)
+            # 2.2.4: continuous footage from the oldest day up to the last chunk (one 23 h chunk a day), as a real recorder holds it
+            per = []; t0 = st
+            while t0 < last - timedelta(hours=23): per.append({'startTimeMs': str(ms(t0)), 'durationMs': str(23 * 3600 * 1000)}); t0 += timedelta(days=1)
+            if not per: per = [{'startTimeMs': str(ms(st)), 'durationMs': str(3600 * 1000)}]
             per.append({'startTimeMs': str(ms(last)), 'durationMs': '-1' if x['live'] else str(1800 * 1000)})
             return self.send(200, json.dumps({'error': '0', 'reply': per}), 'application/json')
         mm = re.match(r'^/rest/v3/devices/(.+)$', p)
