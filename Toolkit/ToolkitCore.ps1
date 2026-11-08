@@ -478,7 +478,9 @@ function New-TkHiddenPsi([string]$psexe, [string]$file, [string]$argLine, [strin
 # service site (op scanPush, the same upload key as Save camera pictures). Only the fields below are ever sent: never a password.
 function Get-TkDeviceKind([string]$model, [string]$brand = '') {
   $m = ([string]$model).Trim().ToUpper()
-  if ($m -match '^I?DS-[789]\d{3}' -or $m -match '^(NVR|DVR|XVR)') { return 'recorder' }
+  # 2.2.3 (Codex #11): OEM recorders (ERI-K108-P8 at 3 Hewlett, HWN-, Dahua DHI-NVR/XVR, Uniview NVR301) are recorders too, the same
+  # list SADP discovery (HikSadp.ps1) already uses; a recorder must never get camera planning.
+  if ($m -match '^I?DS-[789]\d' -or $m -match '^(ERI-|HWN-|HNR|DHI-(NVR|XVR|HCVR|DVR)|DH-(NVR|XVR|HCVR))' -or $m -match '(^|[-_ ])(NVR|DVR|XVR|HCVR)') { return 'recorder' }
   if ($m) { return 'camera' }
   return 'other'
 }

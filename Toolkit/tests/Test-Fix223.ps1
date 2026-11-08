@@ -43,6 +43,10 @@ $script:Fake['GET 192.168.1.30/ISAPI/System/Network/interfaces/1/ipAddress'] = '
 Eq (Get-FsNet '192.168.1.30' 'Hikvision' $null).iface '1' 'single interface still works'
 $script:Fake['GET 192.168.1.31/ISAPI/System/Network/interfaces'] = '<NetworkInterfaceList><NetworkInterface><id>1</id><IPAddress><ipAddress>10.1.1.1</ipAddress></IPAddress></NetworkInterface><NetworkInterface><id>2</id><IPAddress><ipAddress>10.2.2.2</ipAddress></IPAddress></NetworkInterface></NetworkInterfaceList>'
 Check ($null -eq (Get-FsNet '192.168.1.31' 'Hikvision' $null)) 'several interfaces and none carries the contacted address -> no answer (nothing is changed), not a guess'
+Write-Host '#11 OEM / other-brand recorders are recorders, not cameras'
+. (Join-Path $tk 'ToolkitCore.ps1')
+foreach ($m in @('ERI-K108-P8', 'HWN-4108MH-8P', 'DHI-NVR4108HS-8P-4KS2', 'NVR4216-16P-4KS2', 'XVR5108HS', 'NVR301-08S', 'DS-7608NI-K2/8P', 'iDS-7204HUHI-M1/S', 'DS-9632NI-I8')) { Eq (Get-TkDeviceKind $m) 'recorder' ('reproduction: ' + $m + ' is a recorder') }
+foreach ($m in @('DS-2CD2143G2-I', 'IPC2124LB-SF28KM-G', 'ECI-T44F2', 'IPC-HFW2431S-S-S2', 'DS-2DE4425IW-DE')) { Eq (Get-TkDeviceKind $m) 'camera' ($m + ' stays a camera') }
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
