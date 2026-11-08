@@ -48,9 +48,9 @@ $script:FsTestSecrets = $false
 # camera pictures folder (CamViews): run the real save twice, same camera key
 $cvd = Join-Path $tmp 'cv1'; New-Item -ItemType Directory -Force -Path $cvd | Out-Null
 $job = Start-Job -ScriptBlock { param($tk, $cvd)
-  . (Join-Path $tk 'CamViews.ps1') -Lib; $script:CvPics = $cvd
+  . (Join-Path $tk 'CamViews.ps1') -Lib; $script:CvLogDir = Join-Path $cvd '_logs'; $script:CvPics = $cvd
   Save-CvLocal 'A B' 'ch1' '10.0.0.5' '20261108-1000' ([byte[]](1, 2, 3)); Save-CvLocal 'A/B' 'ch1' '10.0.0.5' '20261108-1000' ([byte[]](4, 5, 6)); Save-CvLocal 'A?B' 'ch1' '10.0.0.5' '20261108-1000' ([byte[]](7, 8, 9))
-  @(Get-ChildItem -LiteralPath $cvd -Directory).Count } -ArgumentList $tk, $cvd
+  @(Get-ChildItem -LiteralPath $cvd -Directory | Where-Object { $_.Name -ne '_logs' }).Count } -ArgumentList $tk, $cvd
 $nCv = Receive-Job -Job $job -Wait -AutoRemoveJob
 Eq $nCv 3 'reproduction: "A B", "A/B", "A?B" camera pictures go to 3 folders (2.2.3: "A/B" and "A?B" shared one)'
 
@@ -217,7 +217,7 @@ Check (-not (@($m4.acl[$tk4 + $sep + 'vault' + $sep + 'site-x.dat'].aces) -match
 $kd = Join-Path $tmp 'tk5'; New-Item -ItemType Directory -Force -Path (Join-Path $kd 'secrets') | Out-Null; $kf = Join-Path (Join-Path $kd 'secrets') 'upload-key.bin'; [IO.File]::WriteAllBytes($kf, [byte[]](1, 2, 3))
 $canDeny = $false; if ($IsLinux -or $IsMacOS) { & chmod 000 $kf; try { [void][IO.File]::ReadAllBytes($kf) } catch { $canDeny = $true } }
 if ($canDeny) {
-  $job5 = Start-Job -ScriptBlock { param($tk, $kd) . (Join-Path $tk 'CamViews.ps1') -Lib; $script:CvHere = $kd; $env:WIREIT_UPLOAD_KEY = ''; $script:said = @(); function CvSay([string]$s, [string]$c = '') { $script:said += $s }; $k = Get-CvKey; Write-Output ($script:said -join ' | '); Write-Output ('KEY[' + $k + ']') } -ArgumentList $tk, $kd
+  $job5 = Start-Job -ScriptBlock { param($tk, $kd) . (Join-Path $tk 'CamViews.ps1') -Lib; $script:CvHere = $kd; $script:CvLogDir = Join-Path $kd 'logs'; $env:WIREIT_UPLOAD_KEY = ''; $script:said = @(); function CvSay([string]$s, [string]$c = '') { $script:said += $s }; $k = Get-CvKey; Write-Output ($script:said -join ' | '); Write-Output ('KEY[' + $k + ']') } -ArgumentList $tk, $kd
   $o5 = @(Receive-Job -Job $job5 -Wait -AutoRemoveJob)
   Check ((@($o5) -join "`n") -match 'Run as administrator') 'reproduction: an unreadable key -> a clear "Run as administrator" message (2.2.3: silently no key)'
   Check ((@($o5) -join "`n") -match 'KEY\[\]') '...and no key is used'
