@@ -1,8 +1,8 @@
 {
   "version": "2.2.5",
   "released": "2026-11-08",
-  "commit": "81f5d2ec44a6fb8f756fb4bb0b726b80a5755e67",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/81f5d2ec44a6fb8f756fb4bb0b726b80a5755e67/",
+  "commit": "e56f439bc835395a1026d1828dbd527fbc7a8824",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/e56f439bc835395a1026d1828dbd527fbc7a8824/",
   "notes": "",
   "files": [
     {
@@ -97,8 +97,8 @@
     },
     {
       "path": "Toolkit/FixSiteDevices.ps1",
-      "sha256": "13059d6ea363cba0d41eda3c96a11c140cf6fecdf0c48a85eda5ac9c5c1a0132",
-      "size": 82550
+      "sha256": "de40502e3ad394c973abbd4ddf20c8f7aa4a65916d4c74c29c531ee8d2677ee8",
+      "size": 82644
     },
     {
       "path": "Toolkit/FixSiteWindow.ps1",
