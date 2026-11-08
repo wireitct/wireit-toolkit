@@ -880,3 +880,21 @@ function Get-FsFreeNvrChannel($Channels, [string]$CamIp, [string]$OldIp = '', [i
   # 2.2.3 (Codex #15): an OFFLINE (or unknown) channel that points at another camera is that camera's slot, not a free one
   return 0
 }
+
+# 2.2.3: moved here from WireItAcl.ps1 (removed with the Crew/SYSTEM split); the installer blanks 2.1's logged site-password word
+function Clear-WordAnswerFromLogs([string[]]$LogRoots) {
+  $n = 0
+  foreach ($r in @($LogRoots)) {
+    if (-not $r -or -not (Test-Path -LiteralPath $r)) { continue }
+    foreach ($f in @(Get-ChildItem -LiteralPath $r -Recurse -Filter 'log.txt' -File -ErrorAction SilentlyContinue)) {
+      try {
+        $lines = [IO.File]::ReadAllLines($f.FullName); $chg = $false
+        for ($i = 0; $i -lt $lines.Count - 1; $i++) {
+          if ($lines[$i] -match 'ASK Site passwords start with your word' -and $lines[$i + 1] -match '^(\d\d:\d\d:\d\d )?ANSWER (?!\(hidden\))') { $lines[$i + 1] = ($Matches[1] + 'ANSWER (hidden)'); $chg = $true; $n++ }
+        }
+        if ($chg) { [IO.File]::WriteAllLines($f.FullName, $lines) }
+      } catch {}
+    }
+  }
+  return $n
+}

@@ -1,5 +1,5 @@
 <#
- FixSiteWindow.ps1 - WireIt Toolkit 2.0 (2.2.0: runs through the admin-made task, no admin password): the ONE screen. A site box, camera-setting drop-downs, one big "Fix this site" button.
+ FixSiteWindow.ps1 - WireIt Toolkit 2.0 (2.2.3: Crew is a local admin; the fix runs in the blue window on this login): the ONE screen. A site box, camera-setting drop-downs, one big "Fix this site" button.
  Returns 'classic' when the user asks for the old numbered buttons ("More tools"); anything else = done.
  The work itself runs in FixSite.ps1 (a blue window asks Windows for permission, takes the YES, and does the fixing);
  this window shows the same checklist live and says when it is waiting for you. Passwords are only ever typed in that blue window.
@@ -10,19 +10,17 @@ param([string]$ToolkitDir = '', [string]$Version = '', [string]$Note = '', [stri
 $ErrorActionPreference = 'Continue'
 if (-not $ToolkitDir) { $ToolkitDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
 . (Join-Path $ToolkitDir 'FixSiteCore.ps1')
-. (Join-Path $ToolkitDir 'FixSiteIpc.ps1')      # 2.2.0: the Crew login starts Fix this site through the admin-made task (no admin name or password)
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-. (Join-Path $ToolkitDir 'FixSiteAsk.ps1')
 . (Join-Path $ToolkitDir 'HikEmailDrop.ps1')
 $psexe = Join-Path $PSHOME 'powershell.exe'
-$runsDir = Get-FsRunnerRunsDir $ToolkitDir; $stateDir = Join-Path $ToolkitDir 'state'; New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+$runsDir = Join-Path $ToolkitDir 'fixsite-runs'; $stateDir = Join-Path $ToolkitDir 'state'; New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
 $lastSiteFile = Join-Path $stateDir 'last-site.txt'
 $g = [Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $sc = [math]::Max(1.0, $g.DpiX / 96.0); $g.Dispose()
 function Px([double]$n) { return [int]($n * $sc) }
 function Fnt([double]$pt, [string]$style = 'Regular') { try { return New-Object Drawing.Font('Segoe UI', $pt, [Drawing.FontStyle]$style) } catch { return [Drawing.SystemFonts]::DefaultFont } }
 $cGreen = [Drawing.Color]::FromArgb(22, 140, 80); $cInk = [Drawing.Color]::FromArgb(30, 41, 59); $cMuted = [Drawing.Color]::FromArgb(100, 116, 139); $cBg = [Drawing.Color]::FromArgb(246, 248, 250)
 
-$st = @{ proc = $null; since = $null; runDir = ''; offset = 0; mode = ''; newSite = $false; runner = $false; id = ''; session = ''; portal = $null; asking = $false; seen = $false }
+$st = @{ proc = $null; since = $null; runDir = ''; offset = 0; mode = ''; newSite = $false }
 $siteRootsW = @()
 $f = New-Object Windows.Forms.Form
 $f.Text = 'WireIt Toolkit  v' + $Version; $f.StartPosition = 'CenterScreen'; $f.BackColor = $cBg; $f.Font = Fnt 10
@@ -94,12 +92,6 @@ $tips.SetToolTip($bSitePw, 'THIS site''s own password (every site has its own): 
 $result = 'done'
 
 function Set-Busy([bool]$busy) { foreach ($b in @($big, $bNew, $bLook, $bUndo, $bSitePw, $bMore, $site, $pCodec, $pFps, $pRes, $pBit, $kAll, $kPw)) { $b.Enabled = -not $busy } }
-function Test-WinAdmin { try { return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { return $false } }
-# the site's list from the tech's Google Drive, for the background run (it runs as SYSTEM, which cannot see the G: drive)
-function Get-SiteListText([string]$s) {
-  foreach ($rr in $siteRootsW) { $fd = Join-Path $rr $s; $lf = Join-Path (Join-Path $fd 'Docs') 'WireIt site list.json'; if (Test-Path -LiteralPath $lf) { try { $tx = [IO.File]::ReadAllText($lf); if ($tx.Length -lt 500000) { return $tx } } catch {} } }
-  return ''
-}
 function Start-Run([string]$mode, $req, [bool]$needSite, [bool]$newSite = $false) {
   $s = $site.Text.Trim(); if ($newSite) { $s = '' }   # 2.0.2: New site ignores the site box
   if ($needSite -and -not $s) { [void][Windows.Forms.MessageBox]::Show($f, 'Type the site first (the Site ID on the QR sticker, like WI-061, or the address).', 'WireIt Toolkit'); return }
@@ -107,27 +99,16 @@ function Start-Run([string]$mode, $req, [bool]$needSite, [bool]$newSite = $false
   if ($s) { try { Set-Content -LiteralPath $lastSiteFile -Value $s -Encoding UTF8 } catch {} }
   $file = Join-Path $ToolkitDir 'FixSite.ps1'
   if (-not (Test-Path $file)) { $status.Text = 'FixSite.ps1 is missing from the Toolkit folder. Run the Toolkit installer again.'; return }
-  $out.Clear(); $st.since = Get-Date; $st.runDir = ''; $st.offset = 0; $st.mode = $mode; $st.newSite = $newSite; $st.session = ''; $st.portal = $null; $st.seen = $false
+  $out.Clear(); $st.since = Get-Date; $st.runDir = ''; $st.offset = 0; $st.mode = $mode; $st.newSite = $newSite
   $hikBanner.Visible = $false
-  if (Test-FsRunnerTask) {
-    # 2.2.0 (review H3): no Windows permission box and no admin password: the admin-made task runs it; questions come up here
-    $rq = @{ mode = $mode; site = $s; newSite = $newSite }
-    if ($req) { foreach ($k in @($req.Keys)) { if ($k -ne 'rollbackDir') { $rq[$k] = $req[$k] } } }
-    if ($s -and $mode -in @('Fix', 'Plan')) { $lt = Get-SiteListText $s; if ($lt) { $rq['siteList'] = $lt } }
-    $r = Start-FsRunner $ToolkitDir $rq
-    if (-not $r.ok) { $status.Text = ('Fix this site did not start: ' + $r.why + '.'); return }
-    $st.runner = $true; $st.id = $r.id; $st.proc = $null
-    $status.Text = 'Starting... Everything you have to answer comes up on this screen.'
-    Set-Busy $true; return
-  }
-  if (-not (Test-WinAdmin)) { $status.Text = 'Fix this site is not set up for this login yet: an admin runs the Toolkit installer once on this PC (it makes the "Fix this site" task, so no admin password is needed here).'; return }
-  # an admin login on a PC without the task (the office): the old blue window, through Windows' permission box
+  # 2.2.3: Crew is a local admin, so there is no background task, no question folder and no admin-only refusal: the fix runs in the
+  # blue window on this login (Windows asks Yes once), every question is asked there, and closing it stops the fix (its clean-up runs).
   $a = '-NoProfile -ExecutionPolicy Bypass -File "' + $file + '" -Mode ' + $mode
   if ($s) { $a += ' -Site "' + $s + '"' }
   if ($newSite) { $a += ' -NewSite' }
   foreach ($e in @(ConvertTo-RunCli $req)) { if ($e) { $a += ' ' + $e } }
   $status.Text = 'A blue window opens (Windows asks permission first: click Yes). Everything you have to answer is asked there.'
-  try { $st.proc = Start-Process -FilePath $psexe -ArgumentList $a -Verb RunAs -PassThru -WorkingDirectory $ToolkitDir -ErrorAction Stop; $st.runner = $false }
+  try { $st.proc = Start-Process -FilePath $psexe -ArgumentList $a -Verb RunAs -PassThru -WorkingDirectory $ToolkitDir -ErrorAction Stop }
   catch { $status.Text = 'Windows asked for permission and it was not given, so nothing ran.'; $st.proc = $null; return }
   Set-Busy $true
 }
@@ -148,13 +129,12 @@ function ConvertTo-RunCli($e) {
   return $o
 }
 function Show-HikDrop {
-  $sess = $(if ($st.session) { Join-Path (Get-FsIpcRoot $ToolkitDir) $st.session } else { '' })
-  $devs = @(Get-HikWaitingDevices $ToolkitDir $sess)
+  $devs = @(Get-HikWaitingDevices $ToolkitDir '')
   if (-not $devs.Count) { [void][Windows.Forms.MessageBox]::Show($f, 'No device on this PC is waiting for Hikvision''s reply right now. Press Fix this site first: it sends the reset request and then waits for the email.', 'WireIt Toolkit'); return }
   $inbox = Get-HikInboxDir $ToolkitDir
   $r = Show-HikEmailDialog $f $devs { param($sn, $file, $code) $x = Save-HikEmailDrop $inbox $sn $file $code; return $x }
   if (-not $r) { return }
-  if ($st.runner -and $st.session) { $status.Text = 'Got it - the fix that is running picks it up in a few seconds and carries on by itself.' }
+  if ($st.proc) { $status.Text = 'Got it - the fix that is running picks it up in a few seconds and carries on by itself.' }
   else {
     $q = [Windows.Forms.MessageBox]::Show($f, 'Saved. Finish the reset now? (Runs Fix this site for this site.)', 'WireIt Toolkit', 'YesNo')
     if ($q -eq 'Yes') { Start-Run 'Fix' (Get-Settings) $true }
@@ -167,7 +147,6 @@ $bSitePw.Add_Click({ Start-Run 'SitePassword' $null $true })   # 2.0.3: was "Usu
 $bUndo.Add_Click({
   $d = Get-FsLastRun $runsDir -Undoable
   if (-not $d) { [void][Windows.Forms.MessageBox]::Show($f, 'There is no fix to undo (no un-undone Fix this site run on this PC).', 'WireIt Toolkit'); return }
-  # 2.2.0: the background task picks the last undoable run itself (no folder is passed to it)
   Start-Run 'Rollback' @{ rollbackDir = $d.FullName } $false
 })
 $bHik.Add_Click({ Show-HikDrop })
@@ -181,12 +160,12 @@ function Update-LogView([bool]$exited) {
       $v = ConvertFrom-FsLog ($all -split "`r?`n")
       $txt = (($v.lines | ForEach-Object { $_ }) -join "`r`n")
       if ($txt.Length -ne $out.TextLength) { $out.Text = $txt; $out.SelectionStart = $out.TextLength; $out.ScrollToCaret() }
-      if (-not $exited) { $status.Text = $(if ($v.waiting -and -not $st.runner) { 'Waiting for you in the blue window: ' + $v.waiting } elseif ($v.waiting) { 'Waiting for you: ' + $v.waiting } else { 'Working... (one camera at a time, you do not have to do anything).' }) }
+      if (-not $exited) { $status.Text = $(if ($v.waiting) { 'Waiting for you in the blue window: ' + $v.waiting } else { 'Working... (one camera at a time, you do not have to do anything).' }) }
     } catch {}
   }
 }
 function Finish-Run([int]$code) {
-  $st.proc = $null; $st.runner = $false; Set-Busy $false; $status.Text = Get-FsExitWords $code
+  $st.proc = $null; Set-Busy $false; $status.Text = Get-FsExitWords $code
   $kAll.Checked = $false; $kPw.Checked = $false   # tick again each run (2.0.1)
   # 2.0.2: a New site run that saved the site: its name goes in the site box (and the drop-down) for next time and for Undo
   if ($st.newSite -and $st.runDir) { $sn = ''; try { $sn = (Get-Content -LiteralPath (Join-Path $st.runDir 'site.txt') -Raw).Trim() } catch {}; if ($sn) { $site.Text = $sn; if (-not $site.Items.Contains($sn)) { [void]$site.Items.Add($sn) }; try { Set-Content -LiteralPath $lastSiteFile -Value $sn -Encoding UTF8 } catch {} } }
@@ -195,43 +174,12 @@ function Finish-Run([int]$code) {
   try { [Windows.Forms.SystemSounds]::Asterisk.Play() } catch {}
 }
 $timer.Add_Tick({
-  if ($st.runner) {
-    if ($st.asking) { return }
-    $root = Get-FsIpcRoot $ToolkitDir
-    $cur = Read-FsIpcJson (Join-Path $root 'current.json')
-    if ($cur -and [string]$cur.id -eq $st.id) {
-      $st.seen = $true
-      if ($cur.session) { $st.session = [string]$cur.session }
-      if ([string]$cur.state -eq 'refused') { $st.runner = $false; Set-Busy $false; $status.Text = ('Fix this site did not run: ' + [string]$cur.why); return }
-      $sess = $(if ($st.session) { Join-Path $root $st.session } else { '' })
-      if ($sess) {
-        # the waiting / mailbox line from the run
-        $hj = Read-FsIpcJson (Join-Path $sess 'hik.json')
-        if ($hj -and [string]$hj.line) { $hikBanner.Text = [string]$hj.line; $hikBanner.Visible = $true } elseif ($hj) { $hikBanner.Visible = $false }
-        # one question at a time
-        $qs = @(Get-FsIpcQuestions $sess)
-        if ($qs.Count) {
-          $st.asking = $true
-          try { Invoke-FsIpcQuestion $f $sess $qs[0] $ToolkitDir $st } catch {} finally { $st.asking = $false }
-        }
-        if ($st.portal -and $st.portal.proc) { try { if ($st.portal.proc.HasExited) { $st.portal = $null } } catch { $st.portal = $null } }
-      }
-      $ended = ([string]$cur.state -eq 'ended')
-      Update-LogView $ended
-      if ($ended) { $code = -1; try { $code = [int]$cur.code } catch {}; Finish-Run $code }
-    } elseif (-not $st.seen -and ((Get-Date) - $st.since).TotalSeconds -gt 90) {
-      $st.runner = $false; Set-Busy $false; $status.Text = 'The "Fix this site" task did not start within 90 seconds. Try again; if it keeps happening, an admin runs the Toolkit installer once on this PC.'
-    }
-    return
-  }
   if (-not $st.proc) { return }
   $exited = $false; try { $exited = $st.proc.HasExited } catch { $exited = $true }
   Update-LogView $exited
   if ($exited) { $code = -1; try { $code = $st.proc.ExitCode } catch {}; Finish-Run $code }
 })
-# 2.2.0: a run that was going when this window opened (the window was closed mid-run) is picked up again
-try { $cur0 = Read-FsIpcJson (Join-Path (Get-FsIpcRoot $ToolkitDir) 'current.json'); if ($cur0 -and [string]$cur0.state -eq 'running' -and $cur0.started -and ([datetime]$cur0.started) -gt (Get-Date).AddHours(-4)) { $st.runner = $true; $st.id = [string]$cur0.id; $st.session = [string]$cur0.session; $st.since = [datetime]$cur0.started; $st.seen = $true; Set-Busy $true; $status.Text = 'A Fix this site run is going - picking it up.' } } catch {}
-if (-not $st.runner -and @(Get-HikWaitingDevices $ToolkitDir '').Count) { $hikBanner.Text = 'Waiting for Hikvision''s email for ' + @(Get-HikWaitingDevices $ToolkitDir '').Count + ' device(s). When it comes, press "I got Hik''s email".'; $hikBanner.Visible = $true }
+if (@(Get-HikWaitingDevices $ToolkitDir '').Count) { $hikBanner.Text = 'Waiting for Hikvision''s email for ' + @(Get-HikWaitingDevices $ToolkitDir '').Count + ' device(s). When it comes, press "I got Hik''s email".'; $hikBanner.Visible = $true }
 if ($Screenshot) {
   $out.Text = "Front Door: password set " + [char]0x2705 + ", I-frame 15 " + [char]0x2705 + ", back on NVR ch 1 " + [char]0x2705 + ", video back " + [char]0x2705; $status.Text = 'Waiting for you in the blue window: Type YES to fix all of this'
   $f.CreateControl(); $f.PerformLayout(); $bmp = New-Object Drawing.Bitmap($f.Width, $f.Height); $f.DrawToBitmap($bmp, (New-Object Drawing.Rectangle(0, 0, $f.Width, $f.Height))); $bmp.Save($Screenshot, [Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); $f.Dispose(); return 'shot'
@@ -239,7 +187,6 @@ if ($Screenshot) {
 $timer.Start()
 $f.Add_FormClosing({
   if ($st.proc) { $r = [Windows.Forms.MessageBox]::Show($f, 'A fix is still running in the blue window. Close this window anyway? (The fix keeps going.)', 'WireIt Toolkit', 'YesNo'); if ($r -ne 'Yes') { $_.Cancel = $true } }
-  elseif ($st.runner) { $r = [Windows.Forms.MessageBox]::Show($f, 'A fix is still running and may need your answers here. Close anyway? (Open the Toolkit again to carry on answering; a question nobody answers stops the fix safely.)', 'WireIt Toolkit', 'YesNo'); if ($r -ne 'Yes') { $_.Cancel = $true } }
 })
 [void]$f.ShowDialog()
 $timer.Stop()

@@ -14,8 +14,7 @@ $here0 = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 $script:HkSay = { param($t, $c) Write-Host $t }
 $script:HkAsk = { param($t) Read-Host $t }
-$script:HkPortalHook = $null   # 2.2.0: set by Fix this site when it runs in the background (FixSiteRunner)
-$script:HkStatus = $null       # 2.2.0: gets the waiting state for the screen
+$script:HkStatus = $null       # 2.2.0: optional: gets the waiting state for a screen (2.2.3: nothing sets it in the Toolkit)
 function Hk-Say([string]$t, [string]$c = '') { & $script:HkSay $t $c }
 function Hk-Ask([string]$t) { return (& $script:HkAsk $t) }
 $script:HkValidHours = 48
@@ -74,16 +73,6 @@ function Submit-HikRequests($State, [string]$StatePath, $Form, [int]$PerDeviceTi
     Hk-Say ''
     Hk-Say ('[' + $n + '/' + $todo.Count + '] ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ', form serial ' + $d.shortSerial + ')') 'Cyan'
     $ok = $false
-    if ($script:HkPortalHook) {
-      # 2.2.0: Fix this site runs in the background (no screen): the Toolkit window on the tech's own login opens Hikvision's page for this device
-      Hk-Say '  YOUR STEP: Hikvision''s page opens on this screen, filled in. Slide the picture check and press Submit. (The check is there to tell a person from a program, so the Toolkit leaves it to you.)' 'Cyan'
-      $res = 'failed'; try { $res = [string](& $script:HkPortalHook $d $Form $PerDeviceTimeoutSec) } catch { $res = 'failed: ' + $_.Exception.Message }
-      if ($res -eq 'submitted') { $ok = $true; Set-HikStateField $d 'status' 'submitted'; Set-HikStateField $d 'submittedAt' (Get-Date -Format 's'); Hk-Say ('  Hikvision accepted it. The reply goes to ' + $Form.email) 'Green' }
-      else { Hk-Say ('  Not submitted (' + $res + '). Press Fix this site again to retry this one.') 'Yellow' }
-      Save-HikState $StatePath $State
-      if ($ok) { $sent += $d }
-      continue
-    }
     if ($exe) {
       $s = Start-HikBrowserSession $script:PortalUrl
       if ($s) {

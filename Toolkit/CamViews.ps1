@@ -197,7 +197,9 @@ function Send-CvOutbox {
   $sent = 0
   foreach ($f in @(Get-ChildItem $script:CvOutbox -Filter *.json | Sort-Object Name)) {
     try { $o = Get-Content $f.FullName -Raw | ConvertFrom-Json } catch { Remove-Item $f.FullName -Force; continue }
-    $body = @{}; foreach ($p in $o.PSObject.Properties) { $body[$p.Name] = $p.Value }; $body.key = $key
+    # 2.2.3 (Codex #60): only a camera-pictures push leaves the outbox with the key, and only with its own fields (anything else is dropped)
+    if ([string]$o.op -ne 'camPush') { Remove-Item $f.FullName -Force; continue }
+    $body = @{}; foreach ($p in @('op', 'site', 'source', 'pc', 'pics', 'complete')) { if ($o.PSObject.Properties[$p]) { $body[$p] = $o.$p } }; $body.key = $key
     $r = Send-CvBody $body
     if ($r -and $r.ok) { Remove-Item $f.FullName -Force; $sent++ } elseif ($r -and -not $r.ok -and $r.msg -notmatch '(?i)busy|too many') { CvSay ('Waiting pictures refused: ' + $r.msg) 'Yellow'; Remove-Item $f.FullName -Force } else { break }
   }

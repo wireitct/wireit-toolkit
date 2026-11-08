@@ -11,7 +11,7 @@ function Check([bool]$ok, [string]$what) { if ($ok) { $script:pass++; Write-Host
 function Eq($a, $b, [string]$what) { Check ("$a" -eq "$b") ($what + ' (got "' + $a + '", want "' + $b + '")') }
 function Read-Src([string]$rel) { return [IO.File]::ReadAllText((Join-Path $repo $rel)) }
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('fix223-' + [guid]::NewGuid().ToString('N').Substring(0, 8)); New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-. (Join-Path $tk 'WireItAcl.ps1'); . (Join-Path $tk 'FixSiteIpc.ps1'); . (Join-Path $tk 'FixSiteCore.ps1'); . (Join-Path $tk 'FixSiteDevices.ps1')
+. (Join-Path $tk 'FixSiteCore.ps1'); . (Join-Path $tk 'FixSiteDevices.ps1')
 $script:LogLines = New-Object System.Collections.ArrayList
 function Fs-LogLine([string]$s) { [void]$script:LogLines.Add($s) }
 # fake device: $script:Fake = @{ 'GET 1.2.3.4/path' = 'body' or @{code=..;body=..} }; every call is recorded in $script:Calls
@@ -368,7 +368,7 @@ Check (Test-PortalAccepted ([pscustomobject]@{ url = 'x'; formShown = $true; pos
 Check (Test-PortalAccepted ([pscustomobject]@{ url = 'x'; formShown = $false; posts = @([pscustomobject]@{ u = 'https://www.hikvision.com/api/enquiry/save'; s = 200 }); modal = $false; text = 'x'; base = $base }) $t0) 'the form''s own POST answered 2xx and the form went away -> submitted'
 Check (-not (Test-PortalAccepted ([pscustomobject]@{ url = 'x'; formShown = $true; posts = @(); modal = $false; text = $base + ' Thank you'; base = $base }) $null)) 'nothing counts before Submit was clicked'
 Check (@(Test-PortalFilled ([pscustomobject]@{ firstName = 'ok'; lastName = 'ok'; email = 'ok'; company = 'ok'; zipCode = 'ok'; serialNo = 'ok'; modelNumber = 'ok'; state = 'CT'; businessType = 'x'; file = 'no file box on the page' }) $null).Count -eq 1) 'a missing upload box is a fill problem'
-Check ((Read-Src 'Toolkit/HikPortalStep.ps1') -match 'if \(@\(Test-PortalFilled \$fill \$d\)\.Count\) \{ \$res = ''failed'' \}') 'the Crew portal helper checks the fill before waiting'
+Check (-not (Test-Path (Join-Path $tk 'HikPortalStep.ps1'))) 'the separate Crew portal helper is gone (2.2.3: the page runs inside the fix, which checks the fill)'
 Write-Host '#28 unsupported brands are refused plainly'
 $pc28 = [pscustomobject]@{ ip = '192.168.1.105'; gw = '192.168.1.1'; mask = '255.255.255.0'; prefix = 24 }
 $obs28 = [pscustomobject]@{ pc = $pc28; nvrs = @([pscustomobject]@{ ip = '192.168.1.20'; brand = 'Uniview'; model = 'NVR302'; mac = 'aa:00:00:00:00:20'; login = 'not supported'; channels = @() })
@@ -424,6 +424,36 @@ $D63 = Get-ScDiagnosis $R63
 $t63 = (@($D63.Findings | ForEach-Object { [string]$_.Text }) -join ' | ')
 Check ($t63 -notmatch 'NVR 192\.168\.1\.20 is NOT answering' -and $t63 -match 'ping is turned off') 'reproduction: an NVR whose login worked is not "frozen / power-cycle" for no ping (2.2.2 said power-cycle)'
 Check ($t63 -notmatch 'probably frozen' -and $t63 -match 'ports 80/554 are open') 'a camera with open ports and no ping is not called frozen'
+Write-Host '#60 the outbox sends only camera-picture pushes, with their own fields'
+$cv = Read-Src 'Toolkit/CamViews.ps1'
+Check ($cv -match "if \(\[string\]\`$o\.op -ne 'camPush'\) \{ Remove-Item" -and $cv -match "foreach \(\`$p in @\('op', 'site', 'source', 'pc', 'pics', 'complete'\)\)") 'reproduction: a queued file with another op (or extra fields) is not sent with the upload key (2.2.2 copied every property)'
+Write-Host 'split removed (#1-5, 26, 31-34, 39, 45, 46, 60): Crew is a local admin - no SYSTEM runner, IPC or ACL lock'
+foreach ($gone in @('FixSiteRunner.ps1', 'FixSiteIpc.ps1', 'FixSiteAsk.ps1', 'HikPortalStep.ps1', 'WireItAcl.ps1')) { Check (-not (Test-Path (Join-Path $tk $gone))) ('#1-5/#32: ' + $gone + ' is gone (no SYSTEM runner, no ipc\ folder, no ACL plan)') }
+$all = @(Get-ChildItem -LiteralPath $repo -Recurse -File -Include *.ps1, *.psm1, *.cmd | Where-Object { $_.FullName -notmatch '[\\/]tests[\\/]' })
+$hits = @($all | Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match 'Start-FsRunner|Test-FsRunnerTask|Send-FsIpc|Wait-FsIpcAnswer|Read-FsIpcJson|Install-WireItCrewSetup|Test-WireItLocked|Register-WireItRunnerTask|Get-WireItAclPlan' } | ForEach-Object { $_.Name })
+Eq ($hits -join ',') '' '#1-5: no tool calls the runner, IPC or ACL functions any more'
+$fs = Read-Src 'Toolkit/FixSite.ps1'
+Check ($fs -notmatch '\$Ipc\b') '#5/#34: FixSite has no -Ipc path: questions are only asked in its own window (Read-Host), nothing in JSON files'
+$fw = Read-Src 'Toolkit/FixSiteWindow.ps1'
+Check ($fw -notmatch 'Test-WinAdmin|is not set up for this login' -and $fw -match "-Verb RunAs") '#45: the window starts the fix on this login (Windows asks Yes once), no "not set up for this login" refusal'
+$wt = Read-Src 'Toolkit/WireItToolkit.ps1'
+Check ($wt -notmatch 'needs an admin login on this PC' -and $wt -notmatch 'Invoke-TkUpdateTask') '#45: no admin-only refusal for the classic tools; updates run here, not through a task'
+Check ($wt -match "schtasks\.exe /Delete /TN '\\WireIt\\Fix this site'") '#1-4: an old 2.2.x SYSTEM task is deleted when the Toolkit or installer runs'
+$it = Read-Src 'Toolkit/Install-Toolkit.ps1'
+Check ($it -notmatch 'Install-WireItCrewSetup' -and $it -match 'icacls\.exe \$Root /reset /T' -and $it -match "schtasks\.exe /Delete /TN '\\WireIt\\Fix this site'") '#1/#2/#26: the installer makes no task and no lock; it removes the old task and resets the old lock'
+Check ($fs -notmatch 'Get-FsRunnerRunsDir' -and $fw -notmatch 'siteList') '#39: the site list is read and saved by the fix itself on the tech''s login (no SYSTEM hand-over)'
+# kept protections
+Check ($fs.IndexOf('if (Test-Path -LiteralPath $tempState) { try { $nr0 = Remove-FsTempIps $tempState') -gt 0 -and $fs.IndexOf('if (Test-Path -LiteralPath $tempState) { try { $nr0') -lt $fs.IndexOf('function Done(')) '#31/#33 kept: a killed run''s temporary addresses are removed first thing on the next start'
+Check ($fs -match "trap \{ try \{ \[void\]\(Remove-FsTempIps \`$tempState\) \}" -and $fs -match 'function Done\(\[int\]\$code\) \{\s+\$nr = \$null; try \{ \$nr = Remove-FsTempIps') '#31/#33 kept: every normal or failing end cleans the network before it reports (exit 6 if not back)'
+$ask = $fs.Substring($fs.IndexOf('function Ask('), 900)
+Check ($ask -notmatch 'Wait-FsIpcAnswer' -and $ask -match 'Read-Host') '#34 kept: a question waits for the person; closing the window ends the run (no timeout turns into "continue")'
+foreach ($cr in @('CamReset/Find-Cameras.ps1', 'CamReset/Make-Request.ps1')) { $src = Read-Src $cr; Check ($src -match 'LOCALAPPDATA' -and $src -match 'catch \{\}') ('#46 kept: ' + $cr + ' logs where it can write and never fails on the log') }
+$mr = Join-Path $tmp 'cr46'; New-Item -ItemType Directory -Force -Path (Join-Path $mr 'out') | Out-Null; Copy-Item (Join-Path $repo 'CamReset\Make-Request.ps1') $mr
+[IO.File]::WriteAllText((Join-Path $mr 'out\latest.json'), '{"devices":[{"Brand":"Hikvision","Model":"DS-2CD2143G2-I","Serial":"DS-2CD2143G2-I20230101AAWRK12345678","IP":"192.168.1.64","MAC":"aa-bb","StartTime":"x"}]}')
+New-Item -ItemType Directory -Force -Path (Join-Path $mr 'camreset.log') | Out-Null   # a "log" that cannot be appended to
+$x46 = Join-Path $tmp 'K12345678b.xml'; [IO.File]::WriteAllText($x46, '<x/>')
+$o46 = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $mr 'Make-Request.ps1') -Serial K12345678 -XmlPath $x46 2>&1 | Out-String
+Check ($o46 -match 'Request ready for') '#46 kept: Make-Request still reports success when CamReset\camreset.log cannot be written'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

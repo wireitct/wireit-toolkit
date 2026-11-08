@@ -4,9 +4,9 @@
  - makes C:\WireIt\Toolkit (logs\, previous\) and copies itself there if run from somewhere else (USB stick, Downloads)
  - copies NetCheck into C:\WireIt\NetCheck if it came along in .\bundle\NetCheck
  - desktop shortcut "WireIt Toolkit" (+ Start menu) with the WireIt icon
- - (2.2.0, admin only) locks C:\WireIt with icacls (Crew = read + execute; Administrators + SYSTEM = full control), makes the
-   admin-owned "Fix this site" task the Crew login starts, moves 2.1's saved site passwords into the machine-wide vault\, and blanks the
-   site-password word that 2.1 logged. Run this installer once as an admin on every PC (it is safe to run again).
+ - (2.2.3) Crew is a local admin: there is no SYSTEM task and no folder lock any more. Run as admin, it removes 2.2.x's "Fix this
+   site" task and folder lock (back to Windows' normal permissions) and the files only that design used, moves 2.1's saved site
+   passwords into vault\, and blanks the site-password word that 2.1 logged. Safe to run again.
  - camera-discovery firewall rules (UDP answers to PowerShell from the local network + SADP 37020) when run as admin and missing
  Nothing is downloaded and no password is asked or stored.
 #>
@@ -14,7 +14,7 @@ param([string]$Root = 'C:\WireIt', [switch]$NoShortcut, [switch]$PlanOnly)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $tk = Join-Path $Root 'Toolkit'
-$files = 'WireItToolkit.ps1', 'ToolkitCore.ps1', 'WireIt Toolkit.cmd', 'Install-Toolkit.ps1', 'README.txt', 'wireit.ico', 'wireit-logo.png', 'version.json', 'CamViews.ps1', 'Set upload key.cmd', 'NvrCheck.ps1', 'ScanUpload.ps1', 'FixIt.ps1', 'FixSite.ps1', 'FixSiteCore.ps1', 'FixSiteDevices.ps1', 'FixSiteWindow.ps1', 'HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'FixSiteIpc.ps1', 'FixSiteRunner.ps1', 'FixSiteAsk.ps1', 'HikEmailDrop.ps1', 'HikPortalStep.ps1', 'WireItAcl.ps1', 'FixSiteBw.ps1'
+$files = 'WireItToolkit.ps1', 'ToolkitCore.ps1', 'WireIt Toolkit.cmd', 'Install-Toolkit.ps1', 'README.txt', 'wireit.ico', 'wireit-logo.png', 'version.json', 'CamViews.ps1', 'Set upload key.cmd', 'NvrCheck.ps1', 'ScanUpload.ps1', 'FixIt.ps1', 'FixSite.ps1', 'FixSiteCore.ps1', 'FixSiteDevices.ps1', 'FixSiteWindow.ps1', 'HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'HikEmailDrop.ps1', 'FixSiteBw.ps1'
 # 2.2.1 (review M3): the companion tools come from .\bundle\<tool> (a release zip) OR from beside the Toolkit folder (a copy of the
 # repository: Toolkit\, FixNVR\, CamReset\, NetCheck\ side by side). Every file the Toolkit needs is checked BEFORE anything is
 # installed; a missing one stops the install with its name (it used to be skipped and the install still said "installed").
@@ -96,39 +96,29 @@ if (-not (Get-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue
 $hitPaths = @((Join-Path ${env:ProgramFiles(x86)} 'HiToolsDelivery\client\HiToolsDelivery.exe'), (Join-Path $env:ProgramFiles 'HiToolsDelivery\client\HiToolsDelivery.exe'), 'C:\Program Files (x86)\HiToolsDelivery\client\HiToolsDelivery.exe', 'C:\Program Files\HiToolsDelivery\client\HiToolsDelivery.exe') | Where-Object { $_ } | Select-Object -Unique
 if (-not @($hitPaths | Where-Object { Test-Path $_ }).Count) { 'NOTE: HiTools Delivery (Hikvision''s free tool) is not installed. Button 4 needs it: hikvision.com > Support > Tools > HiTools Delivery.' }
 foreach ($t in 'FixNVR\FixNVR.ps1', 'CamReset\Find-Cameras.ps1', 'NetCheck\NetCheck.ps1') { if (-not (Test-Path (Join-Path $Root $t))) { 'MISSING: ' + (Join-Path $Root $t) + ' (copy the whole C:\WireIt folder from the old PC)' } }
-# ---------------- 2.2.0: permissions, the Fix this site task, the password vault (admin only) ----------------
-$acl = Join-Path $tk 'WireItAcl.ps1'
-if (Test-Path $acl) {
-  . $acl
-  if (-not $adm) { 'NOT LOCKED: run this installer as administrator once (the Toolkit folder is still writable by the Crew login, and Fix this site cannot run without an admin password).' }
-  else {
-    # 1) move 2.1's saved site passwords (encrypted for the admin who typed them) into vault\ as machine-wide, before the folder is locked
-    $fsd = Join-Path $tk 'FixSiteDevices.ps1'
-    if (Test-Path $fsd) {
-      try {
-        . $fsd
-        $cv = Convert-FsSecretStores (Join-Path $tk 'secrets') (Join-Path $tk 'vault')
-        if ($cv.moved) { 'Moved ' + $cv.moved + ' saved site password file(s) into the machine-wide vault.' }
-        if (@($cv.unreadable).Count) { 'WARNING: ' + @($cv.unreadable).Count + ' saved password file(s) were made by another Windows account and cannot be read here: ' + (@($cv.unreadable) -join ', ') + '. Run this installer as that account, or type those sites'' passwords again (Site password... > T; they are in Bitwarden).' }
-      } catch { 'Could not move the saved site passwords: ' + $_.Exception.Message }
-    }
-    # 1b) 2.2.1 (review M2): remembered NVR logins (CamViews) leave the Crew-readable secrets\ for vault\ (Administrators + SYSTEM only)
-    # 2.2.2 (Codex M2): icacls' answer is checked; a file it could not lock stops the install like any other permission failure
-    $aclBad = @()
-    foreach ($nf in @(Get-ChildItem -LiteralPath (Join-Path $tk 'secrets') -Filter 'nvr-*.bin' -File -ErrorAction SilentlyContinue)) {
-      try { New-Item -ItemType Directory -Force -Path (Join-Path $tk 'vault') | Out-Null; $to = Join-Path (Join-Path $tk 'vault') $nf.Name; Move-Item -LiteralPath $nf.FullName -Destination $to -Force; $null = & icacls.exe $to /inheritance:r /grant:r '*S-1-5-32-544:F' '*S-1-5-18:F' 2>&1; if ($LASTEXITCODE -ne 0) { $aclBad += ('vault\' + $nf.Name + ': icacls answered ' + $LASTEXITCODE) } else { 'Moved the remembered NVR login ' + $nf.Name + ' into the vault.' } } catch { $aclBad += ('could not move ' + $nf.Name + ': ' + $_.Exception.Message) }
-    }
-    # 2) the site-password word that 2.1 wrote in clear text to the run logs
-    $wn = Clear-WordAnswerFromLogs @((Join-Path $tk 'runs'), (Join-Path $tk 'fixsite-runs'), (Join-Path $Root 'FixNVR\runs'))
-    if ($wn) { 'Blanked the site-password word in ' + $wn + ' old log file(s).' }
-    # 3) + 4) 2.2.2 (Codex H3/installer): lock the folders, read the locks back, and ONLY THEN make (or keep) the "Fix this site" task.
-    # Any failure stops here with the task switched OFF - also a task an earlier install made - so nothing runs as SYSTEM while the
-    # Crew login could still change what it runs.
-    if ($aclBad.Count) { [void](Disable-WireItRunnerTask); 'INSTALL STOPPED - PERMISSIONS NOT SET: ' + ($aclBad -join '; ') + '. The "Fix this site" task is switched off. Fix this and run the installer again as administrator.'; exit 5 }
-    $cs = Install-WireItCrewSetup $Root
-    if (-not $cs.ok) { 'INSTALL STOPPED - ' + (@($cs.why) -join '; ') + '. The "Fix this site" task is switched off until this installer finishes as administrator.'; exit 5 }
-    'Locked ' + $Root + ': Administrators + SYSTEM full control, the Crew login read + execute only (plus its own logs, state and inbox folders).'
-    'Made the "Fix this site" task (runs as SYSTEM; the Crew login can start it, nobody but an admin can change it).'
+# ---------------- 2.2.3: no SYSTEM task, no folder lock (Crew is a local admin); the password vault stays ----------------
+if (-not $adm) { 'NOTE: run this installer as administrator once to remove 2.2.x''s "Fix this site" task and folder lock if this PC had them.' }
+else {
+  # 1) 2.2.x's SYSTEM task and the files only it used are removed
+  $null = & schtasks.exe /Query /TN '\WireIt\Fix this site' 2>$null
+  if ($LASTEXITCODE -eq 0) { $null = & schtasks.exe /Delete /TN '\WireIt\Fix this site' /F 2>$null; if ($LASTEXITCODE -eq 0) { 'Removed the old "Fix this site" task (nothing runs as SYSTEM any more).' } else { 'WARNING: could not remove the old "Fix this site" task (Task Scheduler > WireIt): delete it by hand.' } }
+  foreach ($gone in @('FixSiteIpc.ps1', 'FixSiteRunner.ps1', 'FixSiteAsk.ps1', 'HikPortalStep.ps1', 'WireItAcl.ps1')) { $gp = Join-Path $tk $gone; if (Test-Path -LiteralPath $gp) { Remove-Item -LiteralPath $gp -Force -ErrorAction SilentlyContinue } }
+  $ipcDir = Join-Path $tk 'ipc'; if (Test-Path -LiteralPath $ipcDir) { Remove-Item -LiteralPath $ipcDir -Recurse -Force -ErrorAction SilentlyContinue }
+  # 2) the 2.2.x folder lock is taken off: the folders inherit Windows' normal permissions again
+  if (Test-Path -LiteralPath $Root) { $null = & icacls.exe $Root /reset /T /C /Q 2>&1; if ($LASTEXITCODE -ne 0) { 'WARNING: could not put the normal permissions back on ' + $Root + ' (icacls answered ' + $LASTEXITCODE + ').' } }
+  # 3) 2.1's saved site passwords (encrypted for the admin who typed them) and the remembered NVR logins go into vault\
+  $fsd = Join-Path $tk 'FixSiteDevices.ps1'
+  if (Test-Path $fsd) {
+    try {
+      . $fsd
+      $cv = Convert-FsSecretStores (Join-Path $tk 'secrets') (Join-Path $tk 'vault')
+      if ($cv.moved) { 'Moved ' + $cv.moved + ' saved site password file(s) into the machine-wide vault.' }
+      if (@($cv.unreadable).Count) { 'WARNING: ' + @($cv.unreadable).Count + ' saved password file(s) were made by another Windows account and cannot be read here: ' + (@($cv.unreadable) -join ', ') + '. Run this installer as that account, or type those sites'' passwords again (Site password... > T; they are in Bitwarden).' }
+      foreach ($nf in @(Get-ChildItem -LiteralPath (Join-Path $tk 'secrets') -Filter 'nvr-*.bin' -File -ErrorAction SilentlyContinue)) { try { New-Item -ItemType Directory -Force -Path (Join-Path $tk 'vault') | Out-Null; Move-Item -LiteralPath $nf.FullName -Destination (Join-Path (Join-Path $tk 'vault') $nf.Name) -Force; 'Moved the remembered NVR login ' + $nf.Name + ' into the vault.' } catch { 'Could not move ' + $nf.Name + ': ' + $_.Exception.Message } }
+      # 4) the site-password word that 2.1 wrote in clear text to the run logs
+      $wn = Clear-WordAnswerFromLogs @((Join-Path $tk 'runs'), (Join-Path $tk 'fixsite-runs'), (Join-Path $Root 'FixNVR\runs'))
+      if ($wn) { 'Blanked the site-password word in ' + $wn + ' old log file(s).' }
+    } catch { 'Could not move the saved site passwords: ' + $_.Exception.Message }
   }
 }
 'WireIt Toolkit installed in ' + $tk

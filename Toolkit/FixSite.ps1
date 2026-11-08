@@ -48,8 +48,7 @@ param(
   [string]$MockUrl = '',            # TEST HARNESS ONLY: all device calls go to tests\fixsite\mock_site.py
   [string]$Answers = '',            # TEST HARNESS ONLY: answers to the questions, one per line
   [string]$BwPath = '',             # TEST HARNESS ONLY: a fake bw command (test runs never look for the real Bitwarden)
-  [int]$CloseAfter = 0,
-  [string]$Ipc = ''                 # 2.2.0: set by FixSiteRunner.ps1 (the "Fix this site" task): questions go to the Toolkit window through this folder
+  [int]$CloseAfter = 0
 )
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
@@ -57,7 +56,6 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'FixSiteCore.ps1')
 . (Join-Path $here 'FixSiteDevices.ps1')
 if (Test-Path (Join-Path $here 'ToolkitCore.ps1')) { . (Join-Path $here 'ToolkitCore.ps1') }
-. (Join-Path $here 'FixSiteIpc.ps1')
 $hikFlowOk = $false; if (Test-Path (Join-Path $here 'HikResetFlow.ps1')) { try { . (Join-Path $here 'HikResetFlow.ps1'); $hikFlowOk = $true } catch {} }   # 2.1.0 Hikvision official reset
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 
@@ -77,7 +75,7 @@ $opts.settings.codec = $Codec; $opts.settings.fps = $Fps; $opts.settings.resolut
 $opts.settingsAll = [bool]$AllCameras; $opts.passwordAll = [bool]$PasswordAll   # per run, never from config: a working camera is only touched when the tech ticks it this time
 # 2.2.0: the site password store is vault\ (Administrators + SYSTEM only, machine-wide DPAPI); 2.1's secrets\ is read once and moved
 if (-not $SecretsDir) { $SecretsDir = Join-Path $here 'vault'; $script:FsLegacySecretsDir = Join-Path $here 'secrets' }
-if (-not $RunsRoot) { $RunsRoot = Get-FsRunnerRunsDir $here }
+if (-not $RunsRoot) { $RunsRoot = Join-Path $here 'fixsite-runs' }
 if (-not $SitesDir) { $SitesDir = Join-Path $here 'sites' }
 $camResetDir = Join-Path $root 'CamReset'; $portMapDir = Join-Path $root 'PortMap'
 if ($MockUrl) { $script:FsMockUrl = $MockUrl; $script:FsTestSecrets = $true }
@@ -85,7 +83,10 @@ if ($Mode -eq 'DryRun') { $script:FsTestSecrets = $true }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'; $runStart = Get-Date
 $runDir = Join-Path $RunsRoot ('FixSite-' + $stamp); New-Item -ItemType Directory -Force -Path $runDir | Out-Null
 $logFile = Join-Path $runDir 'log.txt'
-$tempState = Join-Path (Join-Path $RunsRoot '_state') 'fixsite-temp-ips.json'; New-Item -ItemType Directory -Force -Path (Split-Path $tempState) | Out-Null   # 2.2.0: not in the Crew-writable state\
+$tempState = Join-Path (Join-Path $RunsRoot '_state') 'fixsite-temp-ips.json'; New-Item -ItemType Directory -Force -Path (Split-Path $tempState) | Out-Null
+# 2.2.3 (Codex #31/#33, kept without the task): a run that was killed (window closed, power lost) left its temporary PC addresses in
+# this file; they are taken off FIRST, before anything else, every time Fix this site starts
+if (Test-Path -LiteralPath $tempState) { try { $nr0 = Remove-FsTempIps $tempState; if ($nr0 -and -not $nr0.ok) { Write-Host ('This PC''s network from an earlier, interrupted run could not be fully put back: ' + (@($nr0.problems) -join '; ')) -ForegroundColor Yellow } } catch {} }
 $script:Secrets = @()   # every password this run has handled: scrubbed from anything written
 function Fs-Redact([string]$s) { foreach ($p in $script:Secrets) { if ($p -and $p.Length -ge 4) { $s = $s.Replace($p, '****') } }; return $s }
 function Fs-Log([string]$s) { try { $fs = [IO.File]::Open($logFile, 'Append', 'Write', 'ReadWrite'); $b = [Text.Encoding]::UTF8.GetBytes((Get-Date -Format 'HH:mm:ss') + ' ' + (Fs-Redact $s) + "`r`n"); $fs.Write($b, 0, $b.Length); $fs.Close() } catch {} }
@@ -97,27 +98,12 @@ if ($Answers -and (Test-Path $Answers)) { foreach ($l in (Get-Content $Answers))
 function Ask([string]$q, [switch]$Secret) {
   Write-Host ''; Write-Host $q -ForegroundColor Yellow; Fs-Log ('ASK ' + $q)
   if ($Answers) { $a = ''; if ($script:AnswerQ.Count) { $a = [string]$script:AnswerQ.Dequeue() }; if ($Secret) { Remember-Secret $a }; Fs-Log ('ANSWER ' + $(if ($Secret) { '(hidden)' } else { $a })); return $a }
-  if ($Ipc) {
-    # 2.2.0: the Toolkit window asks it (a masked box for -Secret); nothing typed is ever on this run's screen or in its log
-    $n = Send-FsIpc $Ipc @{ kind = $(if ($Secret) { 'secret' } else { 'text' }); text = $q }
-    $a = Wait-FsIpcAnswer $Ipc $n 'text' 3600
-    if ($null -eq $a) { Fs-Log 'ANSWER (none - no answer from the window)'; return '' }
-    if ($Secret) { Remember-Secret $a; Fs-Log 'ANSWER (hidden)' } else { Fs-Log ('ANSWER ' + $a) }
-    return [string]$a
-  }
   if ($Secret) { $ss = Read-Host -AsSecureString '>'; $a = (New-Object PSCredential('x', $ss)).GetNetworkCredential().Password; Remember-Secret $a; Fs-Log 'ANSWER (hidden)'; return $a }
   $a = Read-Host '>'; Fs-Log ('ANSWER ' + $a); return $a
 }
 function Ask-Choice([string]$q, [string]$yes, [string]$no) {
   # 2.1.0 (Moshe, Nov 6 2026): a yes/no question is two buttons, not a typed prompt. Test runs and dry runs still use the typed answer file.
-  if ($Answers -or (-not $Ipc -and ($MockUrl -or $Mode -eq 'DryRun'))) { $a = Ask ($q + '  [' + $yes + ']  [' + $no + ']  (type Y or N)'); return ([string]$a).Trim() -match '^(?i)y' }
-  if ($Ipc) {
-    Write-Host ''; Write-Host $q -ForegroundColor Yellow; Fs-Log ('ASK ' + $q)
-    $n = Send-FsIpc $Ipc @{ kind = 'choice'; text = $q; yes = $yes; no = $no }
-    $y = Wait-FsIpcAnswer $Ipc $n 'choice' 3600
-    if ($null -eq $y) { $y = $false; Fs-Log ('ANSWER (none) = ' + $no) } else { Fs-Log ('ANSWER ' + $(if ($y) { $yes } else { $no })) }
-    return [bool]$y
-  }
+  if ($Answers -or $MockUrl -or $Mode -eq 'DryRun') { $a = Ask ($q + '  [' + $yes + ']  [' + $no + ']  (type Y or N)'); return ([string]$a).Trim() -match '^(?i)y' }
   try {
     Add-Type -AssemblyName System.Windows.Forms, System.Drawing
     Write-Host ''; Write-Host $q -ForegroundColor Yellow; Fs-Log ('ASK ' + $q)
@@ -142,8 +128,8 @@ function Say-PlainWarning([string]$ip) {
   $script:PlainWarned[$ip] = 1
   Say ('    WARNING: ' + $ip + ' has no HTTPS, so its password went over plain HTTP on this network. Turn on HTTPS on it when you can.') 'Yellow'
 }
-function Set-Clip([string]$s) { if (-not $Ipc -and ($MockUrl -or $Answers)) { return }; if ($Ipc) { [void](Send-FsIpc $Ipc @{ kind = 'clip'; value = $s }); return }; try { Set-Clipboard -Value $s } catch {} }
-function Clear-Clip { if (-not $Ipc -and ($MockUrl -or $Answers)) { return }; if ($Ipc) { [void](Send-FsIpc $Ipc @{ kind = 'clipclear' }); return }; try { Set-Clipboard -Value ' ' } catch {} }
+function Set-Clip([string]$s) { if ($MockUrl -or $Answers) { return }; try { Set-Clipboard -Value $s } catch {} }
+function Clear-Clip { if ($MockUrl -or $Answers) { return }; try { Set-Clipboard -Value ' ' } catch {} }
 function Say-NetRestore($r) {
   # 2.2.1 (review H4): the tech hears it when this PC's own network could not be put back
   if (-not $r -or $r.ok) { return }
@@ -153,8 +139,7 @@ function Done([int]$code) {
   $nr = $null; try { $nr = Remove-FsTempIps $tempState } catch { $nr = [pscustomobject]@{ ok = $false; problems = @('the clean-up stopped: ' + $_.Exception.Message) } }; Say-NetRestore $nr
   # 2.2.2 (re-review H4): this PC's network not back = the run did NOT end well, whatever else worked (exit 6, the window says so)
   if ($nr -and -not $nr.ok -and $code -in @(0, 4)) { $code = 6 }
-  if ($Ipc) { }
-  elseif ($CloseAfter -gt 0) { Write-Host ''; Write-Host ('This window closes in ' + $CloseAfter + ' seconds.'); Start-Sleep -Seconds $CloseAfter }
+  if ($CloseAfter -gt 0) { Write-Host ''; Write-Host ('This window closes in ' + $CloseAfter + ' seconds.'); Start-Sleep -Seconds $CloseAfter }
   elseif (-not $Answers -and -not $MockUrl -and $Mode -ne 'DryRun') { Write-Host ''; [void](Read-Host 'Press Enter to close this window') }
   exit $code
 }
@@ -269,15 +254,7 @@ function Get-SitePrefix {
 }
 function Show-SitePasswordOnce([string]$pw) {
   # the ONLY place the password is shown: a small window with a Copy button (never the console, the log or a file)
-  if (-not $Ipc -and ($MockUrl -or $Answers -or $Mode -eq 'DryRun')) { Say 'SHOWN ONCE: the site password window with the Copy button (test run - not opened).'; return }
-  if ($Ipc) {
-    # 2.2.0: the Toolkit window on the tech's login shows it (with Copy); the question file is deleted as soon as it is shown
-    Say 'SHOWN ONCE: the site password, in the Toolkit window with a Copy button.'
-    $n = Send-FsIpc $Ipc @{ kind = 'show'; site = $siteName; value = $pw; bwItem = (Get-FsBwItemName $siteName) }
-    $ok = Wait-FsIpcAnswer $Ipc $n 'text' 1800
-    if ($null -eq $ok) { Say 'The password window was not closed in time. Use "Site password..." in the Toolkit to see and copy it.' 'Yellow' }
-    Clear-Clip; return
-  }
+  if ($MockUrl -or $Answers -or $Mode -eq 'DryRun') { Say 'SHOWN ONCE: the site password window with the Copy button (test run - not opened).'; return }
   Show-SitePasswordWindow $pw
 }
 # the WinForms window on its own (its types load only when it really opens: test runs and the window path never touch them)
@@ -299,21 +276,6 @@ function Show-SitePasswordWindow([string]$pw) {
 function Save-SitePasswordAway([string]$pw, [switch]$ShowAgain) {
   # 1) Bitwarden when the bw command is on this PC and logged in; 2) else encrypted here (it already is) + shown once to save in Bitwarden
   $shown = $siteName + ' - site password'   # the console shows a plain dash; the Bitwarden item has the real one
-  if ($Ipc -and -not $BwPath) {
-    # 2.2.2 (re-review H11 + NEW-3): a background run is SYSTEM, whose profile has no Bitwarden login: the Toolkit window does the
-    # save on the tech's own login (FixSiteAsk.ps1) and answers with the result only
-    $n = Send-FsIpc $Ipc @{ kind = 'bitwarden'; site = $siteName; value = $pw; bwItem = (Get-FsBwItemName $siteName) }
-    $a = Wait-FsIpcAnswer $Ipc $n 'bitwarden' 900
-    if ($null -eq $a) { Say 'The Toolkit window did not answer about Bitwarden in time: the site password is NOT in Bitwarden yet.' 'Yellow' }
-    elseif ($a.result -in @('saved', 'updated', 'exists')) {
-      $last = [pscustomobject]@{ where = $a.where; org = $a.org; collection = $a.collection; why = $a.why }
-      Say (Format-FsBwResult $a.result $last $shown) $(if ($a.where -eq 'org') { 'Green' } else { 'Yellow' })
-      if ($a.where -eq 'org') { $sec.bitwardenSaved = $true; Save-FsSecrets $SecretsDir $sec; return }
-    }
-    elseif ($a.result -eq 'unauthenticated') { Say 'Bitwarden is on this PC but not logged in on this Windows login (bw login), so it could not be saved there.' 'Yellow' }
-    elseif ($a.result -eq 'locked') { Say $(if ($a.why -eq 'skipped') { 'Bitwarden is locked and no master password was typed: not saved there.' } else { 'Bitwarden did not unlock (wrong master password?).' }) 'Yellow' }
-    elseif ($a.result -eq 'failed') { Say (Format-FsBwResult 'failed' ([pscustomobject]@{ where = ''; why = $a.why }) $shown) 'Yellow' }
-  } else {
   $bw = $(if ($BwPath) { $BwPath } elseif ($MockUrl -or $Answers) { '' } else { Find-FsBitwarden $fsCfg })
   $st = Get-FsBwStatus $bw; $session = ''
   if ($st -eq 'locked') {
@@ -328,7 +290,6 @@ function Save-SitePasswordAway([string]$pw, [switch]$ShowAgain) {
       if ($script:FsBwLast.where -eq 'org') { $sec.bitwardenSaved = $true; Save-FsSecrets $SecretsDir $sec; return }
     } else { Say (Format-FsBwResult $r $script:FsBwLast $shown) 'Yellow' }
   } elseif ($bw -and $st -eq 'unauthenticated') { Say 'Bitwarden is on this PC but not logged in (bw login), so it could not be saved there.' 'Yellow' }
-  }
   Say 'The site password is kept encrypted on this PC. Save this in Bitwarden (WireIt CT > Sites).' 'Yellow'
   if (-not $sec.shownOnce -or $ShowAgain) { Show-SitePasswordOnce $pw; $sec.shownOnce = $true; Save-FsSecrets $SecretsDir $sec }
   else { Say 'To see or copy it again: "Site password..." in the Toolkit.' }
@@ -791,17 +752,6 @@ if ($hikFlowOk -and $Mode -ne 'DryRun' -and -not $MockUrl) {
     $hikCfg = Get-HikConfig $cfgAll $here   # 2.2.0: reply relay (no mail password on this PC) + the "I got Hik's email" button
     $hikState = Join-Path $SecretsDir ('hikreset-' + (Get-FsSiteSlug $siteName))
     $verify = { param($ip, $p) return ((Test-FsLogin $ip 'Hikvision' $p) -eq 'ok') }
-    if ($Ipc) {
-      # 2.2.0: this run has no screen (the "Fix this site" task): Hikvision's page opens in the Toolkit window's login, the waiting state is shown there
-      $script:HkPortalHook = {
-        param($d, $form, $tmo)
-        $rq = [IO.File]::ReadAllText([string]$d.requestFile)
-        $n = Send-FsIpc $Ipc @{ kind = 'portal'; model = [string]$d.model; serial = [string]$d.serial; shortSerial = [string]$d.shortSerial; ip = [string]$d.ip; requestName = (Split-Path -Leaf ([string]$d.requestFile)); request = $rq; form = $form; timeoutSec = $tmo }
-        $r = Wait-FsIpcAnswer $Ipc $n 'portal' ($tmo + 120)
-        if ($null -eq $r) { return 'timeout' }; return $r
-      }
-      $script:HkStatus = { param($st) try { Write-FsIpcJson (Join-Path $Ipc 'hik.json') $st } catch {} }
-    }
     $hs = Invoke-HikResetStage -Targets $hikT -SitePassword $sitePw -StateDir $hikState -Config $hikCfg -ToolkitDir $here -VerifyLogin $verify -WaitMinutes ([int]$hikCfg.waitMinutes) -InboxDir (Join-Path $here 'inbox\hik') -Site $siteName
     # 2.2.1 (review H5): the reset module names MACs aa-bb-cc-..., this script aa:bb:cc:...: one form (ConvertTo-FsMac) for every key
     foreach ($m in @($hs.fixed)) { $mk = ConvertTo-FsMac ([string]$m); if ($mk) { $hikFixed[$mk] = $true } }

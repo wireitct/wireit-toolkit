@@ -36,7 +36,9 @@ $outRoot = Join-Path $here 'out'; $out = Join-Path $outRoot ('scan-' + $stamp)
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 $sum = New-Object System.Collections.Generic.List[string]
 function Say($s) { Write-Host $s; $sum.Add($s) }
-function Log($s) { Add-Content -Path (Join-Path $here 'camreset.log') -Value ((Get-Date -Format 's') + ' FIND ' + $s) }
+# 2.2.3 (Codex #46): the log goes where this login can write (CamReset\ first, else %LOCALAPPDATA%\WireIt); a log that cannot be written never stops the tool
+function Get-CrLogPath { $p = Join-Path $here 'camreset.log'; try { [IO.File]::AppendAllText($p, ''); return $p } catch { $d = Join-Path $env:LOCALAPPDATA 'WireIt'; if (-not $env:LOCALAPPDATA) { $d = Join-Path ([IO.Path]::GetTempPath()) 'WireIt' }; try { New-Item -ItemType Directory -Force -Path $d | Out-Null } catch {}; return (Join-Path $d 'camreset.log') } }
+function Log($s) { try { Add-Content -Path (Get-CrLogPath) -Value ((Get-Date -Format 's') + ' FIND ' + $s) -ErrorAction Stop } catch {} }
 
 # ---- local IPv4 addresses to probe from (skip loopback, link-local, Tailscale 100.64/10, cellular) ----
 $allLocals = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {

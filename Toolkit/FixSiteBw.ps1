@@ -1,12 +1,11 @@
 <#
  FixSiteBw.ps1 - WireIt Toolkit 2.2.2: the site password into Bitwarden (the bw command), as "<site> - site password".
- 2.2.2 (re-review H11 + NEW-3): moved out of FixSiteDevices.ps1 so the Toolkit WINDOW can run it on the tech's own login. A Crew run of
- "Fix this site" runs as SYSTEM, and SYSTEM's profile has no Bitwarden login: the run now hands the save to the window (FixSiteAsk.ps1,
- question kind "bitwarden"), which runs bw with the Crew user's own PATH, APPDATA and Bitwarden login.
+ 2.2.3: Fix this site runs on the tech's own login again (no SYSTEM task), so FixSite.ps1 calls this directly with that login's
+ Bitwarden.
  New items go into the WireIt CT organization, collection "Sites" (config.json fixSite.bitwardenOrg / bitwardenCollection change the
  names). Every answer is read back from Bitwarden after a sync that WORKED, and the message says where the item really is.
  The password only goes to bw on its stdin (base64 item JSON), never on a command line or in a file. Dot-sourced by FixSiteDevices.ps1
- (so FixSite.ps1 and the tests have it) and by FixSiteAsk.ps1 (the window).
+ (so FixSite.ps1 and the tests have it).
 #>
 if (-not (Get-Variable -Name FsVersion -Scope Script -ErrorAction SilentlyContinue)) { $script:FsVersion = '2.2.2' }
 $script:FsBwLast = $null   # { where ('org' | 'personal' | ''); org; collection; why } of the last Save-FsBitwarden

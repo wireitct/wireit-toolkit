@@ -11,22 +11,10 @@ $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'ToolkitCore.ps1')
-if (Test-Path (Join-Path $here 'FixSiteIpc.ps1')) { . (Join-Path $here 'FixSiteIpc.ps1') }
-foreach ($lib in @('HikMail.ps1', 'HikEmailDrop.ps1')) { if (Test-Path (Join-Path $here $lib)) { . (Join-Path $here $lib) } }   # 2.2.0: Hik's reply - relay + the "I got Hik's email" button   # 2.2.0: update / go back through the admin-made task
-# 2.2.0 (review H1): the Toolkit folder is read-only for the Crew login, so an update (or Go back) runs in the "Fix this site" task (SYSTEM).
+foreach ($lib in @('HikMail.ps1', 'HikEmailDrop.ps1')) { if (Test-Path (Join-Path $here $lib)) { . (Join-Path $here $lib) } }   # 2.2.0: Hik's reply - relay + the "I got Hik's email" button
+# 2.2.3: Crew is a local admin - an update (or Go back) runs right here; there is no background task to hand it to
 function Test-TkCanWrite([string]$dir) { $p = Join-Path $dir ('.w' + [guid]::NewGuid().ToString('N').Substring(0, 6)); try { [IO.File]::WriteAllText($p, 'x'); Remove-Item -LiteralPath $p -Force; return $true } catch { return $false } }
-function Invoke-TkUpdateTask([string]$dir, [string]$mode, [int]$waitSec = 240) {
-  if (-not (Get-Command Start-FsRunner -ErrorAction SilentlyContinue) -or -not (Test-FsRunnerTask)) { throw 'Updates need an admin on this PC (the Toolkit folder is locked and the "Fix this site" task is missing - run the Toolkit installer once as admin).' }
-  $r = Start-FsRunner $dir @{ mode = $mode }
-  if (-not $r.ok) { throw ('The update did not start: ' + $r.why) }
-  $end = (Get-Date).AddSeconds($waitSec)
-  while ((Get-Date) -lt $end) {
-    Start-Sleep -Milliseconds 700
-    $c = Read-FsIpcJson (Join-Path (Get-FsIpcRoot $dir) 'current.json')
-    if ($c -and [string]$c.id -eq $r.id -and [string]$c.state -in @('ended', 'refused')) { if ($c.ok) { if ($c.PSObject.Properties['to'] -and $c.to) { return [string]$c.to }; return [string]$c.message }; throw ([string]$c.message + [string]$c.why) }
-  }
-  throw 'The update is taking long - it carries on by itself; open the Toolkit again in a few minutes.'
-}
+$script:TkNoWriteMsg = 'This login cannot write the Toolkit folder. Open the Toolkit with "Run as administrator" and try again.'
 $script:WireItUiCode = @'
 using System;
 using System.Drawing;
@@ -384,7 +372,7 @@ if (-not $NoUpdate -and -not $Screenshot) {
   if ($u.state -eq 'available' -and $TK.cfg.autoUpdate -and ([string]$u.manifest.version -ne (Get-TkSkipVersion $here))) {
     try {
       if (Test-TkCanWrite $here) { $old = Install-TkUpdate $u.manifest $here }
-      else { [void](Invoke-TkUpdateTask $here 'Update'); $old = [string]$u.current }
+      else { throw $script:TkNoWriteMsg }
       Write-TkLog $TK.P.Logs 'update' ('Updated from ' + $old + ' to ' + $u.manifest.version + ' at ' + (Get-Date)) | Out-Null
       $TK.mutex.ReleaseMutex(); $TK.mutex.Dispose()
       Start-Process -FilePath $TK.psexe -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "' + (Join-Path $here 'WireItToolkit.ps1') + '" -NoUpdate -UpdatedFrom ' + $old) -WindowStyle Hidden
@@ -395,22 +383,8 @@ if (-not $NoUpdate -and -not $Screenshot) {
 if ($UpdatedFrom) { $TK.updateMsg = 'Updated itself from v' + $UpdatedFrom + '.' }
 # 2.0.4: right after an update, check in once with the download service so it records this PC's new version
 if ($UpdatedFrom -and -not $Screenshot) { try { [void](Get-TkUpdateInfo $TK.cfg $here) } catch {} }
-# 2.2.2 (release package): an update (or an old install) can leave the Crew set-up missing - the "Fix this site" task, the locked
-# permissions, vault\ and the data folders. An admin window puts them in place now; any other login is told plainly to run the
-# installer as administrator (the update itself is not a success until then).
-if (-not $Screenshot -and $env:OS -eq 'Windows_NT' -and (Test-Path (Join-Path $here 'WireItAcl.ps1'))) {
-  try {
-    . (Join-Path $here 'WireItAcl.ps1')
-    $su = Test-WireItCrewSetup (Split-Path -Parent $here)
-    if (-not $su.ok) {
-      $isAdmS = $false; try { $isAdmS = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch {}
-      $pre = $(if ($TK.updateMsg) { $TK.updateMsg + ' ' } else { '' })
-      if ($isAdmS) { New-Item -ItemType Directory -Force -Path (Join-Path $here 'vault') | Out-Null; $cs = Install-WireItCrewSetup (Split-Path -Parent $here); $TK.updateMsg = $pre + $(if ($cs.ok) { 'Set up for the Crew login (permissions, vault, Fix this site task).' } else { 'NOT SET UP for the Crew login: ' + (@($cs.why) -join '; ') + '. Run the Toolkit installer as administrator.' }) }
-      else { $TK.updateMsg = $pre + 'NOT FINISHED: ' + (@($su.missing) -join ', ') + ' missing on this PC. Run the Toolkit installer as administrator (Fix this site needs it).' }
-      Write-TkLog $TK.P.Logs 'update' ('Crew set-up check: ' + $TK.updateMsg) | Out-Null
-    }
-  } catch {}
-}
+# 2.2.3: an older install may still have the 2.2.x "Fix this site" task: it is switched off and deleted once (nothing runs as SYSTEM)
+if (-not $Screenshot -and $env:OS -eq 'Windows_NT') { try { $null = & schtasks.exe /Query /TN '\WireIt\Fix this site' 2>$null; if ($LASTEXITCODE -eq 0) { $null = & schtasks.exe /Delete /TN '\WireIt\Fix this site' /F 2>$null; Write-TkLog $TK.P.Logs 'update' 'removed the old "Fix this site" SYSTEM task' | Out-Null } } catch {} }
 
 # ---------------- 2.0: ONE screen first ("Fix this site"). The numbered buttons are behind "More tools" (or -Classic) ----------------
 if (-not $Classic -and -not $Screenshot) {
@@ -561,10 +535,6 @@ function Start-Fix([string]$name, [string]$mode, [string[]]$extra, [scriptblock]
   $a = '-NoProfile -ExecutionPolicy Bypass -File "' + $file + '" -Mode ' + $mode
   if ($TK.bw) { $a += ' -BitwardenExport "' + $TK.bw + '"' }
   foreach ($e in $extra) { if ($e) { $a += ' ' + $e } }
-  # 2.2.1 (review H3): the old Fix NVR tools need an admin login; the Crew login is told so instead of an admin-password box it cannot answer
-  $isAdmF = $false; try { $isAdmF = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch {}
-  $inAdmins = $true; try { $wg = (& whoami.exe /groups 2>$null) -join "`n"; if ($wg) { $inAdmins = ($wg -match 'S-1-5-32-544') } } catch {}   # an admin behind UAC lists it as "deny only": still an admin
-  if (-not $isAdmF -and -not $inAdmins) { Add-Out ($name + ' needs an admin login on this PC. On the Crew login use the big "Fix this site" button - it needs no admin password.'); End-Run 2 ''; return }
   Add-Out 'A blue tool window opens (Windows asks permission first: click Yes).'
   Add-Out 'Type passwords there - they are hidden and never saved. Results show up here as it works.'
   Add-Out ''
@@ -1292,7 +1262,7 @@ $status = New-Object Windows.Forms.Label; $status.AutoSize = $true; $status.Anch
 $foot.Controls.Add($status, 0, 0)
 $back = New-Btn 'Go back to the previous version' {
   if ([Windows.Forms.MessageBox]::Show($TK.form, 'Go back to the Toolkit version that was installed before the last update?', 'WireIt Toolkit', 'YesNo', 'Question') -ne 'Yes') { return }
-  try { if (Test-TkCanWrite $here) { $v = Undo-TkUpdate $here } else { $v = Invoke-TkUpdateTask $here 'UndoUpdate' }; [void][Windows.Forms.MessageBox]::Show($TK.form, ('Back on version ' + $v + '. The Toolkit will close; open it again.'), 'WireIt Toolkit'); $TK.form.Close() }
+  try { if (Test-TkCanWrite $here) { $v = Undo-TkUpdate $here } else { throw $script:TkNoWriteMsg }; [void][Windows.Forms.MessageBox]::Show($TK.form, ('Back on version ' + $v + '. The Toolkit will close; open it again.'), 'WireIt Toolkit'); $TK.form.Close() }
   catch { [void][Windows.Forms.MessageBox]::Show($TK.form, $_.Exception.Message, 'WireIt Toolkit') } }
 $back.Font = $fSmall; $back.MinimumSize = New-Object Drawing.Size((Px 60), (Px 30)); if ($TK_UI) { $back.TextColor = $cMuted; $back.Accent = $cSlate; $back = Set-Glyph $back ([string][char]0xE777); $back.GlyphFont = Ico 8.5 }
 $back.Margin = New-Object Windows.Forms.Padding 0; $foot.Controls.Add($back, 1, 0)

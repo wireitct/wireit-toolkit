@@ -37,7 +37,9 @@ if ($now.AddHours(48) -le (Get-Date)) { Write-Host ('That export is from ' + $no
 $req = [ordered]@{ brand = 'Hikvision'; model = $dev.Model; serial = $sn; shortSerial = $short; startTime = $dev.StartTime; ip = $dev.IP; mac = $dev.MAC
   xmlFile = [IO.Path]::GetFileName($XmlPath); exportedAt = $now.ToString('s'); validUntil = $now.AddHours(48).ToString('s'); status = 'exported'; pc = $env:COMPUTERNAME }
 Set-Content -Path (Join-Path $dir 'request.json') -Value ($req | ConvertTo-Json) -Encoding UTF8
-Add-Content -Path (Join-Path $here 'camreset.log') -Value ((Get-Date -Format 's') + ' REQUEST ' + $sn + ' xml=' + $req.xmlFile)
+# 2.2.3 (Codex #46): the log is best-effort and goes where this login can write; the request is already saved, so it never fails here
+$crLog = Join-Path $here 'camreset.log'; try { [IO.File]::AppendAllText($crLog, '') } catch { $crLog = Join-Path $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'WireIt' } else { Join-Path ([IO.Path]::GetTempPath()) 'WireIt' }) 'camreset.log'; try { New-Item -ItemType Directory -Force -Path (Split-Path $crLog) | Out-Null } catch {} }
+try { Add-Content -Path $crLog -Value ((Get-Date -Format 's') + ' REQUEST ' + $sn + ' xml=' + $req.xmlFile) -ErrorAction Stop } catch {}
 Write-Host ''
 Write-Host ('Request ready for ' + $dev.Model + '  serial ' + $sn)
 Write-Host ('  Short serial (form): ' + $short)
