@@ -39,7 +39,7 @@ $key = Get-CvKey
 # lists that waited for internet (other sites; this site's newest list is the one being sent now)
 if ($key -and (Test-Path $box)) {
   foreach ($f in @(Get-ChildItem $box -Filter 'scan-*.json' -ErrorAction SilentlyContinue)) {
-    if ($f.FullName -eq (Pending-Path $Site)) { Remove-Item $f.FullName -Force; continue }
+    if ($f.FullName -eq (Pending-Path $Site)) { continue }   # 2.2.3 (Codex #59): replaced only once the new list is sent or kept (below)
     try { $o = Get-Content $f.FullName -Raw | ConvertFrom-Json } catch { Remove-Item $f.FullName -Force; continue }
     $b = @{}; foreach ($p in $o.PSObject.Properties) { $b[$p.Name] = $p.Value }; $b.key = $key
     $r0 = Send-CvBody $b
@@ -54,7 +54,10 @@ if (-not $key) {
   $b = @{}; foreach ($k in $body.Keys) { $b[$k] = $body[$k] }; $b.key = $key
   $r = Send-CvBody $b
 }
-if (-not $r) {
+# 2.2.3 (Codex #59): a "busy / too many" answer is not a refusal: the list waits like a no-answer one (it was lost in 2.2.2)
+$retry = (-not $r) -or ($r -and -not $r.ok -and ([string]$r.msg) -match '(?i)busy|too many|try again')
+if ($r -and $r.ok) { Remove-Item -LiteralPath (Pending-Path $Site) -Force -ErrorAction SilentlyContinue }
+if ($retry) {
   # keep ONLY the newest list per site (no pile-up); the key is never written
   New-Item -ItemType Directory -Force -Path $box | Out-Null
   ($body | ConvertTo-Json -Depth 5 -Compress) | Set-Content -Path (Pending-Path $Site) -Encoding UTF8

@@ -397,6 +397,10 @@ $hf = Read-Src 'Toolkit/HikResetFlow.ps1'
 $i57 = $hf.IndexOf('Codex #57'); $blk = $hf.Substring($i57, 900)
 Check ($blk -match '& \$VerifyLogin \$ipNow \$SitePassword' -and $blk -match "'status' 'stale'") 'reproduction: a device verified in an earlier run is logged into again; a failure sends it back through the reset (2.2.2 trusted it forever)'
 Check ($hf.IndexOf('Codex #57') -lt $hf.IndexOf('$todo = @($devs | Where-Object { $_.activated -and $fixed -notcontains')) 'the check runs before the to-do list is made'
+Write-Host '#59 a busy answer keeps the scan for later'
+$su = Read-Src 'Toolkit/ScanUpload.ps1'
+Check ($su -match "\`$retry = \(-not \`$r\) -or \(\`$r -and -not \`$r\.ok -and \(\[string\]\`$r\.msg\) -match '\(\?i\)busy\|too many\|try again'\)" -and $su -match 'if \(\$retry\) \{') 'reproduction: {ok:false,msg:"busy"} queues the list (2.2.2 queued only on no answer)'
+Check ($su -notmatch "if \(\`$f\.FullName -eq \(Pending-Path \`$Site\)\) \{ Remove-Item") 'the site''s older waiting list is not deleted before the new one is safe'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
