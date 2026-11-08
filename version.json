@@ -1,8 +1,8 @@
 {
   "version": "2.2.3",
   "released": "2026-11-08",
-  "commit": "d3e53b1c76df9c8bb6bebc3a5a2cc4bea9bbf2f6",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/d3e53b1c76df9c8bb6bebc3a5a2cc4bea9bbf2f6/",
+  "commit": "9d6a9f565f86131f66c0d3fe6c03d6895aba7373",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/9d6a9f565f86131f66c0d3fe6c03d6895aba7373/",
   "notes": "2.2.3 (not released): fixes from Codex's full review of 2.2.2 (5e465b9), findings #6-64; the Crew/SYSTEM split is removed (Crew is a local admin): no SYSTEM task, IPC folder or ACL lock. See files/pc-setup/toolkit-2.2.3-fixes.md.",
   "files": [
     {
@@ -162,8 +162,8 @@
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/mock_devices.py",
-      "sha256": "eec6f2c4d95e5606dab93921576536669c9608720d276d2a978ec2ff589cb4fb",
-      "size": 33232
+      "sha256": "71ea3f94333e7628eb4180e4d8a534f5577241f6469a6bbc7f7cfdf5c86de882",
+      "size": 33316
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/Test-NvrHealth.ps1",
