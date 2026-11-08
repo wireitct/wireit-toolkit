@@ -1,8 +1,8 @@
 {
   "version": "2.2.3",
   "released": "2026-11-08",
-  "commit": "3e365374c488450b7c89f011f25ec8d7773d642a",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/3e365374c488450b7c89f011f25ec8d7773d642a/",
+  "commit": "c2b224d1eeb286323b8ee5662c913d64014ae84b",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/c2b224d1eeb286323b8ee5662c913d64014ae84b/",
   "notes": "2.2.3 (not released): fixes from Codex's full review of 2.2.2 (5e465b9), findings #6-64; the Crew/SYSTEM split is removed (Crew is a local admin): no SYSTEM task, IPC folder or ACL lock. See files/pc-setup/toolkit-2.2.3-fixes.md.",
   "files": [
     {
@@ -82,8 +82,8 @@
     },
     {
       "path": "Toolkit/FixSite.ps1",
-      "sha256": "323cf59882ccc9bbefc4aa3007837cc7df0f4cfd5d29ca7e7d2ec09d5c2e70ad",
-      "size": 101564
+      "sha256": "ea762754fdd89237188e19090c7f47c985295f79b1db46f37420562bf591b162",
+      "size": 101513
     },
     {
       "path": "Toolkit/FixSiteBw.ps1",
@@ -107,8 +107,8 @@
     },
     {
       "path": "Toolkit/HikEmailDrop.ps1",
-      "sha256": "23daf060eda56c8ba1c5fb8d2433e37864848977761d54efe93dfec750c2a195",
-      "size": 7152
+      "sha256": "3b60025f5fa20c4e22d317e54b3ba22d7f3befe1c67e96afa2e607a1a13e6c34",
+      "size": 7180
     },
     {
       "path": "Toolkit/HikMail.ps1",
