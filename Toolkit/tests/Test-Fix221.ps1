@@ -11,7 +11,7 @@ function Check([bool]$ok, [string]$what) { if ($ok) { $script:pass++; Write-Host
 function Eq($a, $b, [string]$what) { Check ("$a" -eq "$b") ($what + ' (got "' + $a + '", want "' + $b + '")') }
 $isWin = ($env:OS -eq 'Windows_NT')
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('fix221-' + [guid]::NewGuid().ToString('N').Substring(0, 8)); New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-. (Join-Path $tk 'WireItAcl.ps1'); . (Join-Path $tk 'FixSiteIpc.ps1'); . (Join-Path $tk 'FixSiteCore.ps1'); . (Join-Path $tk 'FixSiteDevices.ps1')
+. (Join-Path $tk 'FixSiteCore.ps1'); . (Join-Path $tk 'FixSiteDevices.ps1')
 $script:LogLines = New-Object System.Collections.ArrayList
 function Fs-LogLine([string]$s) { [void]$script:LogLines.Add($s) }
 function Read-Src([string]$rel) { return [IO.File]::ReadAllText((Join-Path $repo $rel)) }
@@ -123,8 +123,8 @@ Set-Content -LiteralPath $st1 -Value '[{"p3":"192.168.0","ip":"192.168.0.253","i
 $r = Clear-FsLeftoverTemps $st1
 Check ($r.ok -and -not @($sim.addrs | Where-Object { $_.ip -eq '192.168.0.253' }).Count -and -not (Test-Path -LiteralPath $st1)) 'a 2.2.0 state file: its address is removed'
 $script:FsNetOps = $null
-$rn = Read-Src 'Toolkit/FixSiteRunner.ps1'
-Check ($rn -match 'finally \{[\s\S]{0,400}Clear-FsLeftoverTemps') 'the "Fix this site" task puts the network back in its finally (also when the run crashed or was stopped)'
+# 2.2.3: no task any more - a run that was killed is cleaned up when Fix this site next starts
+Check ($fs -match 'if \(Test-Path -LiteralPath \$tempState\) \{ try \{ \$nr0 = Remove-FsTempIps \$tempState') 'a killed run''s network is put back when Fix this site starts again (2.2.3: replaces the task''s finally)'
 Check ($fs -match 'trap \{ try \{ \[void\]\(Remove-FsTempIps') 'FixSite itself cleans up on an error that stops it'
 
 # =====================================================================================
@@ -381,9 +381,7 @@ Check ($fw -match 'Get-FsWindowFit' -and $fw -match 'AutoScrollMinSize') 'the wi
 Check ($fw.IndexOf('$hikBanner =') -lt $fw.IndexOf('$pnl.Controls.Add($hikBanner')) 'the Hikvision banner is made before it is placed'
 
 # =====================================================================================
-Write-Host 'H3. Fix NVR on the Crew login'
-$wt = Read-Src 'Toolkit/WireItToolkit.ps1'
-Check ($wt -match 'needs an admin login on this PC\. On the Crew login use the big "Fix this site" button') 'the classic Fix NVR button tells Crew to use Fix this site (no admin box it cannot answer)'
+# 2.2.3: section 'H3. Fix NVR on the Crew login' removed with the Crew/SYSTEM split (Crew is a local admin; no refusal any more)
 
 Write-Host 'all new 2.2.1 files are installed'
 $il = Read-Src 'Toolkit/Install-Toolkit.ps1'

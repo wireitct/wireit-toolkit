@@ -13,7 +13,7 @@ function Check([bool]$ok, [string]$what) { if ($ok) { $script:pass++; Write-Host
 function Eq($a, $b, [string]$what) { Check ("$a" -eq "$b") ($what + ' (got "' + $a + '", want "' + $b + '")') }
 $isWin = ($env:OS -eq 'Windows_NT')
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('fix222-' + [guid]::NewGuid().ToString('N').Substring(0, 8)); New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-. (Join-Path $tk 'WireItAcl.ps1'); . (Join-Path $tk 'FixSiteIpc.ps1'); . (Join-Path $tk 'FixSiteCore.ps1'); . (Join-Path $tk 'FixSiteDevices.ps1')
+. (Join-Path $tk 'FixSiteCore.ps1'); . (Join-Path $tk 'FixSiteDevices.ps1')
 $script:LogLines = New-Object System.Collections.ArrayList
 function Fs-LogLine([string]$s) { [void]$script:LogLines.Add($s) }
 function Read-Src([string]$rel) { return [IO.File]::ReadAllText((Join-Path $repo $rel)) }
@@ -42,7 +42,7 @@ while True:
         except Exception:
             pass
 '@)
-$fs = Read-Src 'Toolkit/FixSite.ps1'; $rn = Read-Src 'Toolkit/FixSiteRunner.ps1'; $ins = Read-Src 'Toolkit/Install-Toolkit.ps1'
+$fs = Read-Src 'Toolkit/FixSite.ps1'; $ins = Read-Src 'Toolkit/Install-Toolkit.ps1'
 try {
 # =====================================================================================
 Write-Host 'H1. plain HTTP only when the device truly has no HTTPS (refused on 443, or a known no-HTTPS model)'
@@ -141,58 +141,8 @@ try { Add-Type -TypeDefinition $code2 -ErrorAction Stop; 'OLD=ok' } catch { 'OLD
 } else { Write-Host '  (no PowerShell 7.5 here: set WIREIT_PWSH75 to run the 7.5 compile check)' }
 
 # =====================================================================================
-Write-Host 'H3/M2/installer. the SYSTEM helper only exists while Crew cannot change what it runs (Codex H3, M2, EXTRA)'
-$wr = Join-Path $tmp 'acl/WireIt'; foreach ($d in @('Toolkit', 'Toolkit/modules/NvrHealth', 'CamReset', 'FixNVR', 'NetCheck')) { New-Item -ItemType Directory -Force -Path (Join-Path $wr $d) | Out-Null }
-foreach ($f in @('Toolkit/FixSite.ps1', 'Toolkit/FixSiteRunner.ps1', 'Toolkit/config.json', 'Toolkit/modules/NvrHealth/NvrHealth.psm1', 'CamReset/Find-Cameras.ps1')) { Set-Content -LiteralPath (Join-Path $wr $f) 'x' }
-$wrW = $wr.Replace('/', '\')
-$script:aclMode = 'locked'
-$script:WaGetAcl = { param($p)
-  $e = @([pscustomobject]@{ sid = 'S-1-5-32-544'; rights = 0x1F01FF; allow = $true }, [pscustomobject]@{ sid = 'S-1-5-18'; rights = 0x1F01FF; allow = $true }, [pscustomobject]@{ sid = 'S-1-5-32-545'; rights = 0x1200A9; allow = $true })
-  if ($script:aclMode -eq 'crewmodify' -and $p -like '*FixSiteRunner.ps1') { $e += [pscustomobject]@{ sid = 'S-1-5-32-545'; rights = 0x1301BF; allow = $true } }
-  if ($script:aclMode -eq 'authwrite' -and $p -like '*config.json') { $e += [pscustomobject]@{ sid = 'S-1-5-11'; rights = 0x116; allow = $true } }
-  if ($script:aclMode -eq 'unreadable' -and $p -like '*Find-Cameras.ps1') { throw 'access denied' }
-  return $e }
-function Wa-Join([string]$a, [string]$b) { return (Join-Path $a ($b -replace '\\', [string][IO.Path]::DirectorySeparatorChar)) }   # test: real paths on this OS
-$lk0 = Test-WireItLocked $wr
-Check ($lk0.ok -and @(Get-WireItLockPaths $wr).Count -ge 6) 'read back: Administrators + SYSTEM full, Users read + execute = locked (scripts, config.json, modules, CamReset all read)'
-$script:aclMode = 'crewmodify'; $lk = Test-WireItLocked $wr
-Check (-not $lk.ok -and (@($lk.why) -join ' ') -match 'FixSiteRunner\.ps1: S-1-5-32-545') 'Users with Modify on FixSiteRunner.ps1 = NOT locked (named)'
-$script:aclMode = 'authwrite'; Check (-not (Test-WireItLocked $wr).ok) 'Authenticated Users able to write config.json (its bitwardenCli is run) = NOT locked'
-$script:aclMode = 'unreadable'; Check (-not (Test-WireItLocked $wr).ok) 'a permission that cannot be read = NOT locked (never assumed fine)'
-$script:aclMode = 'locked'
-$env:WIREIT_ACL_TEST = '1'
-$script:sch = New-Object System.Collections.ArrayList; $script:schQuery = 0
-$schRun = { param($a) [void]$script:sch.Add(($a -join ' ')); if ($a[0] -eq '/Query') { return $script:schQuery }; return 0 }
-$sdRun = { param($n, $s) }
-$cs = Install-WireItCrewSetup $wr { param($a) return 5 } $schRun $sdRun
-Check (-not $cs.ok -and -not $cs.taskOn) 'reproduction (Codex H3): icacls fails -> the setup stops (2.2.1 registered the SYSTEM task anyway)'
-Check (-not @($script:sch | Where-Object { $_ -like '/Create*' }).Count -and @($script:sch | Where-Object { $_ -like '/Change*/DISABLE' }).Count -eq 1) '...no task is made, and a task an earlier install made is switched OFF'
-$script:sch.Clear(); $script:aclMode = 'crewmodify'
-$cs = Install-WireItCrewSetup $wr { param($a) return 0 } $schRun $sdRun
-Check (-not $cs.ok -and -not @($script:sch | Where-Object { $_ -like '/Create*' }).Count -and @($script:sch | Where-Object { $_ -like '/Change*/DISABLE' }).Count -eq 1) 'reproduction (Codex EXTRA, upgrade): icacls says OK but Crew can still write a script -> task switched off, not (re)made'
-$script:sch.Clear(); $script:aclMode = 'locked'
-$cs = Install-WireItCrewSetup $wr { param($a) return 0 } $schRun $sdRun
-Check ($cs.ok -and $cs.taskOn -and @($script:sch | Where-Object { $_ -like '/Create /F /TN \WireIt\Fix this site*' }).Count -eq 1) 'everything locked and read back: then (and only then) the task is made'
-$script:sch.Clear(); $script:schQuery = 1
-Check (Disable-WireItRunnerTask $schRun) 'no task yet: nothing to switch off'
-$script:schQuery = 0
-Check ($ins -notmatch 'Register-WireItRunnerTask' -and $ins -match '\$cs = Install-WireItCrewSetup \$Root' -and $ins -match "if \(-not \`$cs\.ok\) \{ 'INSTALL STOPPED") 'the installer makes the task only through the checked set-up, and stops (exit 5) when it fails'
-Check ($ins -match "if \(\`$LASTEXITCODE -ne 0\) \{ \`$aclBad \+=" -and $ins -match 'if \(\$aclBad\.Count\) \{ \[void\]\(Disable-WireItRunnerTask\)') 'reproduction (Codex M2): the NVR-login move checks icacls'' exit code; a failure stops the install, task off'
-Check ($rn -match 'Test-WireItLocked' -and $rn.IndexOf('Test-WireItLocked') -lt $rn.IndexOf('$psexe = ') -and $rn -match 'exit 8') 'the SYSTEM runner itself refuses while Crew could change the scripts (an upgrade nobody locked)'
-Remove-Item Env:\WIREIT_ACL_TEST
-Remove-Item Function:\Wa-Join; . (Join-Path $tk 'WireItAcl.ps1')
-
-# =====================================================================================
-Write-Host 'Release package. after an update the Crew set-up is put in place, or the update says "run the installer as admin"'
-$script:WaGetAcl = { param($p) @([pscustomobject]@{ sid = 'S-1-5-32-545'; rights = 0x1200A9; allow = $true }) }
-$su = Test-WireItCrewSetup $wr { param($a) return 1 }
-Check (-not $su.ok -and (@($su.missing) -join ', ') -match 'Fix this site" task' -and (@($su.missing) -join ', ') -match 'vault') 'an update onto a 2.0.x PC: no task, no vault -> named as missing'
-$script:WaGetAcl = $null
-Check ($rn -match 'Install-WireItCrewSetup \(Split-Path -Parent \$ToolkitDir\) -KeepTask' -and $rn -match '\$res\.ok = \[bool\]\$cs\.ok' -and $rn -match 'run the Toolkit installer as administrator') 'Update through the SYSTEM task: permissions + vault\ + folders made after the files; a failure is NOT reported as success'
-$wt = Read-Src 'Toolkit/WireItToolkit.ps1'
-Check ($wt -match 'Test-WireItCrewSetup' -and $wt -match 'Install-WireItCrewSetup' -and $wt -match 'NOT FINISHED: .*Run the Toolkit installer as administrator') 'the window: an admin start repairs it; any other login is told plainly to run the installer as admin'
-
-# =====================================================================================
+# 2.2.3: section 'H3/M2/installer.' removed with the Crew/SYSTEM split (Test-Fix223 proves the old path is gone)
+# 2.2.3: section 'Release package.' removed with the Crew/SYSTEM split (Test-Fix223 proves the old path is gone)
 Write-Host 'H4. network recovery: addresses, routes and gateway checked; a failure keeps the state and fails the run (Codex H4)'
 function New-SimNet2([bool]$dhcp) {
   $script:sim = @{ dhcp = $dhcp; coexist = 'disabled'; addrs = New-Object System.Collections.ArrayList; gw = @('192.168.1.1'); calls = New-Object System.Collections.ArrayList; lease = 0; noRoute = $false; n = 0 }
@@ -233,7 +183,7 @@ $r = Remove-FsTempIps $st4
 Check (-not $r.ok -and (@($r.problems) -join ' ') -match 'could not be read back' -and (Test-Path -LiteralPath $st4)) 'reproduction: the check-read fails = NOT back (2.2.1 swallowed it and deleted the state)'
 $script:FsRestoreChecks = 5; $script:FsNetOps = $null; $script:FsTemps.Clear(); $script:FsPcBefore = $null
 Check ($fs -match "if \(\`$nr -and -not \`$nr\.ok -and \`$code -in @\(0, 4\)\) \{ \`$code = 6 \}") 'reproduction: FixSite with the network not back exits 6, not success'
-Check ($rn -match "if \(-not \`$nr\.ok\) \{ if \(\`$code -in @\(0, 4\)\) \{ \`$code = 6 \}") 'the SYSTEM runner: its own clean-up failing also makes the run a failure'
+# 2.2.3: the SYSTEM runner check is gone with the runner (FixSite's own Done() exit 6 is checked above)
 Check ((Get-FsExitWords 6) -match 'network could not be put back') 'the window says it in words (code 6)'
 
 # =====================================================================================
@@ -292,9 +242,7 @@ if (-not $isWin) {
   function Find-FsBitwarden($cfg) { return $script:FsBwLookup }
   $ans = Invoke-FsBwForRun ([pscustomobject]@{ site = 'Strand'; value = 'Strandpw2468' }) $null { param($t) '' }
   Check ($ans -like 'saved;org;*' -and $ans -notmatch 'Strandpw2468') 'the window saves it on the tech''s own login and answers "saved;org" (no password in the answer)'
-  $pa = ConvertFrom-FsIpcAnswer 'bitwarden' ([pscustomobject]@{ answer = $ans })
-  Check ($pa.result -eq 'saved' -and $pa.where -eq 'org' -and $pa.org -eq 'WireIt CT' -and $pa.collection -eq 'Sites') 'the run reads the answer (checked values only)'
-  Eq (ConvertFrom-FsIpcAnswer 'bitwarden' ([pscustomobject]@{ answer = 'rm -rf;evil' })).result 'failed' 'a strange answer counts as failed'
+  # 2.2.3: the IPC answer parsing (ConvertFrom-FsIpcAnswer) is gone with the SYSTEM task
   $env:FAKEBW_STATUS = 'locked'
   Eq (Invoke-FsBwForRun ([pscustomobject]@{ site = 'S2'; value = 'S2pw13579x' }) $null { param($t) '' }) 'locked;;skipped' 'locked and nothing typed: not saved, said so'
   Check ((Invoke-FsBwForRun ([pscustomobject]@{ site = 'S2'; value = 'S2pw13579x' }) $null { param($t) 'Master#1' }) -like 'saved;org;*') 'locked: the master password is asked in the window, then saved'
@@ -303,15 +251,12 @@ if (-not $isWin) {
   $env:FAKEBW_STATUS = ''
   Remove-Item Function:\Find-FsBitwarden; . (Join-Path $tk 'FixSiteBw.ps1')
 } else { Write-Host '  (fakebw.py runs directly on Linux/macOS only; the source checks below still run)' }
-$ask = Read-Src 'Toolkit/FixSiteAsk.ps1'
-Check ($fs -match "kind = 'bitwarden'; site = \`$siteName; value = \`$pw" -and $fs -match "if \(\`$Ipc -and -not \`$BwPath\)") 'reproduction (NEW-3): a background (SYSTEM) run hands the Bitwarden save to the window instead of running bw as SYSTEM'
-Check ($ask -match "'bitwarden' \{" -and $ask -match "FixSiteBw\.ps1" -and $ask.IndexOf("Remove-Item -LiteralPath (Join-Path `$Session ('q-{0:D4}.json' -f `$n))", $ask.IndexOf("'bitwarden' {")) -lt $ask.IndexOf('Invoke-FsBwForRun', $ask.IndexOf("'bitwarden' {"))) 'the window answers it with bw on its own login, deleting the question file (it holds the password) first'
-Check ($fs -match "if \(\`$a\.where -eq 'org'\) \{ \`$sec\.bitwardenSaved = \`$true") 'only an item in the org counts as "saved for the office"'
+# 2.2.3: the window hand-over (FixSiteAsk.ps1) is gone with the SYSTEM task: Fix this site saves to Bitwarden on the tech's own login
+Check ($fs -notmatch "kind = 'bitwarden'" -and $fs -match 'Find-FsBitwarden \$fsCfg') 'Bitwarden is used directly by the run on the tech''s login (2.2.3)'
+Check ($fs -match "if \(\`$script:FsBwLast\.where -eq 'org'\) \{ \`$sec\.bitwardenSaved = \`$true") 'only an item in the org counts as "saved for the office"'
 
 # =====================================================================================
 Write-Host 'M3. install from a copy of the repository, and run the installer again in place (Codex M3)'
-$acp = Get-WireItAclPlan 'C:\WireIt'
-Check (@($acp | Where-Object { $_.path -eq 'C:\WireIt\NetCheck\runs' -and ($_.args -join ' ') -match '\(OI\)\(CI\)\(IO\)M' }).Count -eq 1) 'reproduction (Codex M3): NetCheck\runs gets the Crew write grant (the Network check writes there)'
 if (-not $isWin) {
   # a real run of the installer from a repository copy, then again from the installed folder (here it stops at the Windows-only firewall step)
   $src = Join-Path $tmp 'repo'; New-Item -ItemType Directory -Force -Path $src | Out-Null
@@ -402,8 +347,8 @@ $listed = @($man.files | ForEach-Object { [string]$_.path })
 $shipped = @(foreach ($top in @('Toolkit', 'FixNVR', 'CamReset', 'NetCheck')) { Get-ChildItem -LiteralPath (Join-Path $repo $top) -Recurse -File | Where-Object { $_.Name -ne 'config.json' -and $_.FullName -notmatch '[\\/](__pycache__|vault|secrets|ipc|inbox|logs)[\\/]' -and $_.Extension -ne '.pyc' } | ForEach-Object { $_.FullName.Substring($repo.Length + 1).Replace('\', '/') } })
 $miss = @($shipped | Where-Object { $listed -notcontains $_ })
 Check ($miss.Count -eq 0) ('every shipped file is in the manifest' + $(if ($miss.Count) { ' - missing: ' + ($miss -join ', ') } else { ' (' + $listed.Count + ' files)' }))
-foreach ($h in @('HikSadp.ps1', 'HikPortal.ps1', 'HikPortalStep.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'HikEmailDrop.ps1', 'FixSiteAsk.ps1', 'FixSiteIpc.ps1', 'FixSiteRunner.ps1', 'WireItAcl.ps1', 'FixSiteBw.ps1')) { if ($listed -notcontains ('Toolkit/' + $h)) { Check $false ('manifest lists Toolkit/' + $h) } }
-Check ((@('HikSadp.ps1', 'HikPortal.ps1', 'HikPortalStep.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'HikEmailDrop.ps1') | Where-Object { $listed -contains ('Toolkit/' + $_) }).Count -eq 7) 'reproduction (Codex): all the Hik reset files are in the manifest (2.0.4 listed none)'
+foreach ($h in @('HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'HikEmailDrop.ps1', 'FixSiteBw.ps1')) { if ($listed -notcontains ('Toolkit/' + $h)) { Check $false ('manifest lists Toolkit/' + $h) } }
+Check ((@('HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'HikEmailDrop.ps1') | Where-Object { $listed -contains ('Toolkit/' + $_) }).Count -eq 7) 'reproduction (Codex): all the Hik reset files are in the manifest (2.0.4 listed none)'
 $hb = @($man.files | Where-Object { (Get-TkSha256 (Join-Path $repo ([string]$_.path))) -ne ([string]$_.sha256).ToLower() } | ForEach-Object { $_.path })
 Check ($hb.Count -eq 0) ('every listed hash is the file on this branch' + $(if ($hb.Count) { ' - wrong: ' + ($hb -join ', ') } else { '' }))
 $bmOut = Join-Path $tmp 'version-built.json'
