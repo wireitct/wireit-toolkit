@@ -157,6 +157,13 @@ Eq $door.Count 1 'one entry per camera after the merge'
 Eq (Get-FsProp $door[0] 'ip' '') '192.168.1.22' 'reproduction: an existing entry gets the camera''s new address (2.2.2 kept the old one)'
 Eq (Get-FsProp $door[0] 'port' '') 7 '...and keeps what only the saved list knew (its switch port)'
 Check (@($m | Where-Object { (Get-FsProp $_ 'name' '') -eq 'Yard' }).Count -eq 1 -and @($m | Where-Object { (Get-FsProp $_ 'name' '') -eq 'Gate' }).Count -eq 1) 'cameras not seen keep their entry; new ones are added'
+Write-Host '#42 manual work is part of the overall result'
+$p42 = [pscustomobject]@{ nvrs = @([ordered]@{ ip = '10.0.0.20'; steps = @('manual'); why = @('moving a Dahua NVR is not built yet') }); cams = @([pscustomobject]@{ name = 'Pole'; state = 'manual'; why = @('Uniview: by hand') }, [pscustomobject]@{ name = 'Ok'; state = 'ok'; why = @() }) }
+$ml = @(Get-FsManualLines $p42)
+Eq $ml.Count 2 'reproduction: a manual NVR step and a manual camera are both listed (2.2.2 left them out of the result)'
+Check (($ml -join ' ') -like ('*' + $script:FsBad + '*')) '...as red lines'
+$fs = Read-Src 'Toolkit/FixSite.ps1'
+Check ($fs -match 'foreach \(\$l in @\(Get-FsManualLines \$plan\)\) \{ \$results \+= \$l; \$badCount\+\+ \}' -and $fs -match '@\(Get-FsManualLines \$plan\)\.Count\) \{ 4 \}') 'FixSite counts them in "Still a problem" and the exit code, also when nothing else had to be done'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

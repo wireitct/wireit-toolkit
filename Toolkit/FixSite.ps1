@@ -721,7 +721,8 @@ if ($hikNeed.Count -and $hikFlowOk -and $Mode -in @('Fix', 'Plan')) { foreach ($
 if (-not $work.Count) {
   Say ''; Say 'Nothing for the Toolkit to change.' 'Green'
   foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'missing' })) { Say ('  Go check: ' + $c.name + ' - ' + ($c.why -join '; ')) 'Yellow' }
-  Offer-List; Done $(if (@($plan.cams | Where-Object { $_.state -in @('missing', 'manual') }).Count) { 4 } else { 0 })
+  foreach ($l in @(Get-FsManualLines $plan)) { Say ('  ' + $l) 'Yellow' }
+  Offer-List; Done $(if (@($plan.cams | Where-Object { $_.state -in @('missing', 'manual') }).Count -or @(Get-FsManualLines $plan).Count) { 4 } else { 0 })
 }
 if ($Mode -eq 'Plan') { Say ''; Say 'Look-only run: nothing was changed.'; Done 0 }
 
@@ -1028,6 +1029,7 @@ foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'missing' })) {
   if ($line -like ('*' + $script:FsOk + '*') -and $line -notlike ('*' + $script:FsBad + '*')) { $okCount++ } else { $badCount++ }
   $results += $line; Say ('  ' + $line) $(if ($line -like ('*' + $script:FsBad + '*')) { 'Red' } else { 'Green' })
 }
+foreach ($l in @(Get-FsManualLines $plan)) { $results += $l; $badCount++ }   # 2.2.3 (Codex #42)
 Say-NetRestore (Remove-FsTempIps $tempState)
 Save-FsSecrets $SecretsDir $sec; Save-Rb
 

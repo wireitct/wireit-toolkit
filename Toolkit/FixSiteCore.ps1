@@ -575,6 +575,14 @@ function New-FsSiteList([string]$site, [string]$siteId, $plan, $observed) {
   return [ordered]@{ site = $site; siteId = $siteId; scheme = $plan.scheme; saved = (Get-Date -Format 's'); savedBy = ('WireIt Toolkit ' + $script:FsVersion + ' on ' + $env:COMPUTERNAME); note = 'No passwords in this file.'; nvrs = $nvrs; cameras = $cams }
 }
 
+function Get-FsManualLines($plan) {
+  # 2.2.3 (Codex #42): what needs a person (manual NVR steps, cameras the tool will not touch) is part of the result: each one is a
+  # red checklist line and counts as "still a problem" (never a green "all fixed")
+  $out = @()
+  foreach ($n in @($plan.nvrs | Where-Object { @($_.steps) -contains 'manual' })) { $out += ('NVR ' + $n.ip + ': needs a person - ' + (@($n.why) -join '; ') + ' ' + $script:FsBad) }
+  foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'manual' })) { $out += ($c.name + ': needs a person - ' + (@($c.why) -join '; ') + ' ' + $script:FsBad) }
+  return $out
+}
 function Merge-FsSiteListCams($oldCams, $newCams) {
   # 2.2.3 (Codex #38): adding cameras to a saved list also brings the ones already on it up to date (same MAC = same camera:
   # its address, channel, NVR as found now); cameras not seen this time keep their saved entry
