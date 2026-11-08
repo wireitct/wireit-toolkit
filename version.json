@@ -1,8 +1,8 @@
 {
   "version": "2.2.3",
   "released": "2026-11-08",
-  "commit": "c2b224d1eeb286323b8ee5662c913d64014ae84b",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/c2b224d1eeb286323b8ee5662c913d64014ae84b/",
+  "commit": "c2f3a4be1be288bb68e7a3ff421717a13017d551",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/c2f3a4be1be288bb68e7a3ff421717a13017d551/",
   "notes": "2.2.3 (not released): fixes from Codex's full review of 2.2.2 (5e465b9), findings #6-64; the Crew/SYSTEM split is removed (Crew is a local admin): no SYSTEM task, IPC folder or ACL lock. See files/pc-setup/toolkit-2.2.3-fixes.md.",
   "files": [
     {
@@ -72,8 +72,8 @@
     },
     {
       "path": "Toolkit/CamViews.ps1",
-      "sha256": "b9eba3184bdc250a457d45c6570092a4e6a6b2d588148ea3143e23eabe67b826",
-      "size": 30030
+      "sha256": "a81b93b5029651c07293ecdae920a009262bdfa5363994562c51677905a75ec0",
+      "size": 30606
     },
     {
       "path": "Toolkit/FixIt.ps1",
@@ -92,13 +92,13 @@
     },
     {
       "path": "Toolkit/FixSiteCore.ps1",
-      "sha256": "8091a5e51a750baca160f32c55727468170c08a278c7dd02051ae4535fc2ebc0",
-      "size": 68153
+      "sha256": "24ebaa79657f6959c58ad72c4ffb6ed874ddd711cdc542cbdaa37a8593e878c9",
+      "size": 69007
     },
     {
       "path": "Toolkit/FixSiteDevices.ps1",
-      "sha256": "9c4f961503d3a56bd144f281fd0c36310846ad1b75bcf2fd53d55212e72f5516",
-      "size": 76942
+      "sha256": "2c7ca8f0987c4707280f922164c9e8816f7ea4e19fa1fc70234ae553975836a7",
+      "size": 77670
     },
     {
       "path": "Toolkit/FixSiteWindow.ps1",
@@ -272,8 +272,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix22.ps1",
-      "sha256": "9a2587c95a2c6b54b1371074e5a9025707690f40d7ffee7b5f3219b44fad3850",
-      "size": 6411
+      "sha256": "0e80a07d68f2a21fa62cc2adac49938725a47fe5e80270f95f3a4d0afc2edc6b",
+      "size": 6407
     },
     {
       "path": "Toolkit/tests/Test-Fix221.ps1",
@@ -287,8 +287,13 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
-      "sha256": "491f399e0cdbca0b049fc93ee5fb2158285db270ac11ee60d34ceb9deb1a8906",
-      "size": 57026
+      "sha256": "41617a5eb3c337d6945ed57c36abdb4784ca8389f387fdecce5379272f6f3cfd",
+      "size": 57303
+    },
+    {
+      "path": "Toolkit/tests/Test-Fix224.ps1",
+      "sha256": "a14713b4c7dede681c795135be67a98f8bd8255f6fd5378d2795038e9911ac65",
+      "size": 5441
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
@@ -297,8 +302,8 @@
     },
     {
       "path": "Toolkit/tests/Test-FixSite.ps1",
-      "sha256": "d1837f32f794e8f4cd2c9c9a7905cc262c4596046e023eee3c396d81eb10439a",
-      "size": 60123
+      "sha256": "44142cba87434fe2282f92a809dd0adcb165492e149be8073bd78e8246ae2c87",
+      "size": 60176
     },
     {
       "path": "Toolkit/tests/Test-HikReset.ps1",
