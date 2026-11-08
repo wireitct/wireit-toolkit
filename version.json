@@ -1,8 +1,8 @@
 {
   "version": "2.2.3",
   "released": "2026-11-08",
-  "commit": "0b5dc3e470b77952526192cf336c53bf38b143a2",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/0b5dc3e470b77952526192cf336c53bf38b143a2/",
+  "commit": "8dc6764b71fc300f332fe0c0c0814633ad8c4121",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/8dc6764b71fc300f332fe0c0c0814633ad8c4121/",
   "notes": "2.2.3 (not released): fixes from Codex's full review of 2.2.2 (5e465b9), findings #6-64; the Crew/SYSTEM split is removed (Crew is a local admin): no SYSTEM task, IPC folder or ACL lock. See files/pc-setup/toolkit-2.2.3-fixes.md.",
   "files": [
     {
@@ -42,8 +42,8 @@
     },
     {
       "path": "FixNVR/FixNVR.ps1",
-      "sha256": "86692105b0afe43dcb6db809429ec2bdb12ee5f6dcfd154d7dbde15d9838cceb",
-      "size": 90894
+      "sha256": "45a00e002c3633c05a31af84d54efff5362fee161e1684cc5c682922612eaa7b",
+      "size": 92233
     },
     {
       "path": "FixNVR/NVR Snapshot.cmd",
@@ -282,13 +282,13 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "136185a6a0c3b8a61937baaac391fe056c136ceb20b46c3e71b027d38563b3f5",
+      "sha256": "2d00c0dcaf13fe7ad3548d87490de952973c97cba3eaea711f24b4b552def4f2",
       "size": 41272
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
-      "sha256": "b1a1537f923459a5e99c1074c760c65f9c442320cf9e4e4c61c8366afbfe5a3f",
-      "size": 52963
+      "sha256": "491f399e0cdbca0b049fc93ee5fb2158285db270ac11ee60d34ceb9deb1a8906",
+      "size": 57026
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
@@ -312,8 +312,8 @@
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
-      "sha256": "bd32b5385fed7a8056c44e0df59bbf6d4a59ca755a4699fe9125d113239c0fc6",
-      "size": 63298
+      "sha256": "bd0c9ee19e9eaa5d67b45cb4dee3d58eb1cd32c95a7bcc405b071db9cdc4a5ba",
+      "size": 65886
     },
     {
       "path": "Toolkit/WireIt Toolkit.cmd",
@@ -332,8 +332,8 @@
     },
     {
       "path": "Toolkit/WireItToolkit.ps1",
-      "sha256": "b1bc7c2191bb4d04bde05a7b4f06dd41d12e54467bbcd936af306b6aa8c1829c",
-      "size": 118425
+      "sha256": "79eb1cb3a5fd48e51e1c474d5e25cd4cecec0624a984ab941b1c19bf17927a5c",
+      "size": 118724
     }
   ]
 }
