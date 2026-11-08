@@ -1,9 +1,9 @@
 {
-  "version": "2.2.3",
+  "version": "2.2.5",
   "released": "2026-11-08",
-  "commit": "424968696d2a3fe506fcd0a2bccbf09f694c7138",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/424968696d2a3fe506fcd0a2bccbf09f694c7138/",
-  "notes": "2.2.3 (not released): fixes from Codex's full review of 2.2.2 (5e465b9), findings #6-64; the Crew/SYSTEM split is removed (Crew is a local admin): no SYSTEM task, IPC folder or ACL lock. See files/pc-setup/toolkit-2.2.3-fixes.md.",
+  "commit": "81f5d2ec44a6fb8f756fb4bb0b726b80a5755e67",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/81f5d2ec44a6fb8f756fb4bb0b726b80a5755e67/",
+  "notes": "",
   "files": [
     {
       "path": "CamReset/Find Cameras.cmd",
@@ -87,12 +87,12 @@
     },
     {
       "path": "Toolkit/FixSiteBw.ps1",
-      "sha256": "10037fead27c6566021a70523eede852d5a144cdc313c53c3453281d1fab2d6d",
+      "sha256": "b772fc9485282868cba6e5f6f2dd1d422727bc9747c5ddc194f9f32fa90b1570",
       "size": 12081
     },
     {
       "path": "Toolkit/FixSiteCore.ps1",
-      "sha256": "24ebaa79657f6959c58ad72c4ffb6ed874ddd711cdc542cbdaa37a8593e878c9",
+      "sha256": "f7ebe4b923b38e7f952ae5d43e9e22d257502ed208e5dade0368c007e2088fb7",
       "size": 69007
     },
     {
@@ -172,8 +172,8 @@
     },
     {
       "path": "Toolkit/README.txt",
-      "sha256": "da9e12f1417659bba87367894fad1eb6b3dc51f1276fb82ff663737b61d891dc",
-      "size": 24234
+      "sha256": "43b258f368fc304e8ef454ac8846254f4d1778f080fbda098463afbb2748c503",
+      "size": 25180
     },
     {
       "path": "Toolkit/ScanUpload.ps1",
@@ -287,13 +287,13 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "9d05648b71787191cf1eb55891e3c4c13593b1f739aeec15afc5e1387c940cb9",
+      "sha256": "00cf0c5e5d9c941a6ba0a6a4c085a4493ce40450ac4bc27a022263bf17442fbf",
       "size": 42820
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
-      "sha256": "e6b1f140bb19c50884e92608e8b6984dea6a362951f3b684797a5103dea23435",
-      "size": 56860
+      "sha256": "56cd3131c10c7dada4053181591a25e9455a951206a86411ab0743475dfe0365",
+      "size": 56900
     },
     {
       "path": "Toolkit/tests/Test-Fix224.ps1",
@@ -327,7 +327,7 @@
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
-      "sha256": "446967033813a007cd100298e399f5c66c49873a24da08311250c7e3ce2cbcac",
+      "sha256": "9ccca9fde1ee8acf67ebc0e28bddbe3031791f5f9bc986b58b60a2ef43229d63",
       "size": 66631
     },
     {
