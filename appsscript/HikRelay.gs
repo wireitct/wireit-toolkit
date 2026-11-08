@@ -31,8 +31,17 @@
  */
 var HR = {
   ADDRESS: 'hikreset@wireitct.com', FOLDER: 'WireIt Hik replies (relay)', KEEP_DAYS: 30, GRACE_MS: 15 * 60 * 1000,
-  MAX_BYTES: 2 * 1024 * 1024, SEARCH_DAYS: 7, BAD_KEY_MAX: 20, BAD_KEY_WINDOW_S: 600, EVERY_MIN: 5
+  MAX_BYTES: 2 * 1024 * 1024, SEARCH_DAYS: 7, BAD_KEY_MAX: 20, BAD_KEY_WINDOW_S: 600, EVERY_MIN: 5,
+  PAGE: 50, MAX_THREADS: 500, VALID_H: 48, TRUSTED: 'hikvision.com'
 };
+/** 2.2.3 (Codex #50): only mail from Hikvision (or a sender the admin names in Script Property HIK_TRUSTED_SENDERS, comma list of
+ *  addresses or domains) is filed. A reply from anyone else is kept as 'untrusted' for unmatchedHikReplies and never served. */
+function hrTrusted_(from) {
+  var m = /<([^>]+)>/.exec(String(from || '')), addr = String(m ? m[1] : from || '').trim().toLowerCase(), dom = addr.split('@')[1] || '';
+  if (!dom) return false;
+  var list = (HR.TRUSTED + ',' + String(hrProps_().getProperty('HIK_TRUSTED_SENDERS') || '')).toLowerCase().split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  return list.some(function (t) { return t.indexOf('@') >= 0 ? addr === t : (dom === t || dom.slice(-(t.length + 1)) === '.' + t); });
+}
 
 function hrProps_() { return PropertiesService.getScriptProperties(); }
 function hrAddress_() { var a = String(hrProps_().getProperty('HIK_ADDRESS') || '').trim(); return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a) ? a : HR.ADDRESS; }
@@ -59,12 +68,16 @@ function hrSerials_(text) {
 }
 /** Same pattern as the Toolkit's Get-HikCodeFromText. */
 function hrCode_(text) {
-  var m = /(?:verification|security|reset|unlock)?\s*(?:code|key)\s*(?:is)?\s*[:\uFF1A]?\s*([A-Za-z0-9]{8})(?![A-Za-z0-9])/i.exec(String(text || ''));
-  return m ? m[1] : '';
+  // 2.2.3 (Codex #53): same rule as the laptop: "code:" / "code is" before it, and the code has a digit ("the code provided" is prose)
+  var re = /(?:^|[^A-Za-z])(?:(?:verification|security|reset|unlock)\s+)?(?:code|key)\s*(?:is\s*[:\uFF1A]?|[:\uFF1A])\s*([A-Za-z0-9]{8})(?![A-Za-z0-9])/gi, m;
+  text = String(text || '');
+  while ((m = re.exec(text)) !== null) { if (/\d/.test(m[1])) return m[1]; }
+  return '';
 }
 function hrUsableAttachment_(a) {
   var ct = String(a.getContentType() || '').toLowerCase(), n = String(a.getName() || '');
-  if (/^image\//.test(ct) || /\.(png|jpe?g|gif|bmp|ico|svg|html?|exe|bat|cmd|ps1|vbs|js|scr|msi|lnk)$/i.test(n)) return false;
+  // 2.2.3 (Codex #52): the same rule as the laptop: never a picture, PDF, office document or web page (a cover letter is not the unlock file)
+  if (/^image\//.test(ct) || /^(application\/pdf|text\/html)/.test(ct) || /\.(png|jpe?g|gif|bmp|tiff?|webp|ico|svg|pdf|html?|docx?|xlsx?|exe|bat|cmd|ps1|vbs|js|scr|msi|lnk)$/i.test(n)) return false;
   var sz = a.getSize ? a.getSize() : a.getBytes().length;
   return sz > 0 && sz <= HR.MAX_BYTES;
 }
@@ -76,7 +89,9 @@ function scanHikReplies() {
     var p = hrProps_(), all = p.getProperties(), now = Date.now(), filed = 0, unmatched = 0, seen = 0;
     var folderId = p.getProperty('HIK_FOLDER_ID'); var folder = folderId ? DriveApp.getFolderById(folderId) : null;
     var q = 'to:(' + hrAddress_() + ') newer_than:' + HR.SEARCH_DAYS + 'd';
-    var threads = GmailApp.search(q, 0, 50);
+    // 2.2.3 (Codex #55): every page of the search, not only the newest 50 threads (old processed threads no longer starve new ones)
+    var threads = [];
+    for (var start = 0; start < HR.MAX_THREADS; start += HR.PAGE) { var pg = GmailApp.search(q, start, HR.PAGE) || []; threads = threads.concat(pg); if (pg.length < HR.PAGE) break; }
     for (var t = 0; t < threads.length; t++) {
       var msgs = threads[t].getMessages();
       for (var i = 0; i < msgs.length; i++) {
@@ -84,6 +99,7 @@ function scanHikReplies() {
         if (all[key]) { seen++; continue; }
         var from = String(msg.getFrom() || '');
         if (from.toLowerCase().indexOf(hrAddress_().toLowerCase()) >= 0) { p.setProperty(key, JSON.stringify({ skip: 'own', at: now })); continue; }
+        if (!hrTrusted_(from)) { p.setProperty(key, JSON.stringify({ at: now, kind: 'untrusted', from: from.slice(0, 120), subject: String(msg.getSubject() || '').slice(0, 200), receivedAt: new Date(msg.getDate()).toISOString(), serials: [] })); unmatched++; continue; }
         var subject = String(msg.getSubject() || ''), body = String(msg.getPlainBody() || '');
         var atts = (msg.getAttachments() || []).filter(hrUsableAttachment_);
         var names = atts.map(function (a) { return String(a.getName() || ''); }).join(' ');
@@ -118,7 +134,7 @@ function scanHikReplies() {
 /** For Moshe in the editor: replies the scan could not tie to a serial (forward the mail to a tech; the button takes it). */
 function unmatchedHikReplies() {
   var all = hrProps_().getProperties(), out = [];
-  for (var k in all) { if (k.indexOf('HIKR_') !== 0) continue; try { var r = JSON.parse(all[k]); if (!r.skip && (r.kind === 'none' || !(r.serials || []).length)) out.push({ subject: r.subject, receivedAt: r.receivedAt, kind: r.kind }); } catch (e) {} }
+  for (var k in all) { if (k.indexOf('HIKR_') !== 0) continue; try { var r = JSON.parse(all[k]); if (!r.skip && (r.kind === 'none' || r.kind === 'untrusted' || !(r.serials || []).length)) out.push({ subject: r.subject, receivedAt: r.receivedAt, kind: r.kind, from: r.from || '' }); } catch (e) {} }
   return out;
 }
 
@@ -134,11 +150,19 @@ function hrBadKey_() {
 /** POST {op:'hikReplyGet', key, serial, shortSerial, pc} -> {ok,found:false} | {ok,found:true,kind:'file',data,name,...} | {ok,found:true,kind:'code',code,...} | {ok:false,msg} */
 function hikReplyGet_(req) {
   var cache = CacheService.getScriptCache();
-  if (Number(cache.get('hr_bad') || 0) >= HR.BAD_KEY_MAX) { Utilities.sleep(1000); return { ok: false, msg: 'Too many wrong keys - try again in 10 minutes.' }; }
   var want = String(hrProps_().getProperty('STATUS_PUSH_KEY') || ''), k = String(req.key || '');
-  if (!want || k.length !== want.length || k !== want) return hrBadKey_();
+  // 2.2.3 (Codex #54): the right key always gets in. The wrong-key count only slows and then refuses WRONG keys, so strangers
+  // sending bad keys cannot lock the site boxes out.
+  if (!want || k.length !== want.length || k !== want) {
+    if (Number(cache.get('hr_bad') || 0) >= HR.BAD_KEY_MAX) { Utilities.sleep(1000); return { ok: false, msg: 'Too many wrong keys - try again in 10 minutes.' }; }
+    return hrBadKey_();
+  }
   var serial = String(req.serial || ''), ss = String(req.shortSerial || ''), pc = String(req.pc || '').replace(/[^A-Za-z0-9._-]/g, '').slice(0, 40);
   if (!/^[A-Za-z0-9-]{4,64}$/.test(serial) || (ss && !/^[A-Za-z0-9-]{4,64}$/.test(ss))) return { ok: false, msg: 'Bad serial.' };
+  // 2.2.3 (Codex #51): only a reply that came AFTER this box's request file was made (and inside its 48 hours) answers it
+  var nowMs = Date.now(), since = Date.parse(String(req.exportedAt || ''));
+  if (isNaN(since)) since = nowMs - HR.VALID_H * 3600000;
+  since = Math.max(since - 10 * 60000, nowMs - HR.VALID_H * 3600000);   // 10 min of clock skew between the PC and Google
   var lock = LockService.getScriptLock(); if (!lock.tryLock(15000)) return { ok: false, msg: 'Busy - try again in a minute.' };
   try {
     var p = hrProps_(), all = p.getProperties(), now = Date.now(), best = null, bestKey = '';
@@ -146,6 +170,7 @@ function hikReplyGet_(req) {
       if (key.indexOf('HIKR_') !== 0) continue;
       var r = null; try { r = JSON.parse(all[key]); } catch (e) { continue; }
       if (!r || r.skip || (r.kind !== 'file' && r.kind !== 'code') || !hrSerialMatch_(r, serial, ss)) continue;
+      if (!(Date.parse(String(r.receivedAt || '')) >= since)) continue;
       if (r.servedAt && (now - r.servedAt > HR.GRACE_MS || (r.servedTo && r.servedTo !== pc))) continue;   // served once; grace only for the same box
       if (!best || String(r.receivedAt) > String(best.receivedAt)) { best = r; bestKey = key; }
     }

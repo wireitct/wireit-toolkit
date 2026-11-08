@@ -65,7 +65,8 @@ $c2 = $found | Where-Object { $_.serial -eq $SN_C2 }; $e2 = Request-HikResetExpo
 Check ($e2.ok -and $e2.type -eq 'exchangecode') 'a device that only answers the second form of the ask is still exported (forms tried in order)'
 $c3 = $found | Where-Object { $_.serial -eq $SN_C3 }; $e3 = Request-HikResetExport $c3 1.5
 Check (-not $e3.ok) 'a not-activated device has no request code (it needs activation, not a reset)'
-# import
+# import (2.2.3, Codex #6: the fake device speaks the old plain-password forms, which are now the Admin's opt-in only)
+$script:SadpAllowPlainPassword = $true
 $u = [pscustomobject]@{ kind = 'file'; code = $devs[1].unlock; file = '' }
 $r = Import-HikUnlock $c1 $u $PW 2.0
 Check $r.ok 'import: the right unlock file + new password is accepted'
@@ -119,6 +120,7 @@ Eq @($rr.unmatched).Count 1 'replies: the file for an unknown device is listed a
 Check ((Get-HikStateDevice $st2 $SN_C1).status -eq 'replied') 'status replied'
 # import step with the login check; the camera must not have restarted
 $ok = { param($ip, $p) $true }
+$script:SadpAllowPlainPassword = $true   # 2.2.3 (Codex #6): opt-in for the fake device's old forms
 $devsNow = @(Find-HikSadp 2)
 $done = @(Import-HikReplies $st2 $sp $PW $ok)
 Eq $done.Count 1 'import: reset done and the login check passed'; Eq (Get-HikStateDevice $st2 $SN_C1).status 'verified' 'status verified'

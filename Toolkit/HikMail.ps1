@@ -100,6 +100,8 @@ function Get-HikRelayReply($Relay, [string]$Key, $Device, [int]$TimeoutSec = 20)
   if (-not $Key) { return [pscustomobject]@{ state = 'failed'; msg = 'this PC has no upload key yet (an admin runs "Set upload key.cmd" once)'; message = $null } }
   try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
   $body = [ordered]@{ op = 'hikReplyGet'; key = $Key; serial = [string]$Device.serial; shortSerial = [string]$Device.shortSerial; pc = [string]$env:COMPUTERNAME }
+  # 2.2.3 (Codex #51): when this request file was made, so the relay answers only with a reply that came after it
+  if ($Device.PSObject.Properties['exportedAt'] -and $Device.exportedAt) { try { $body.exportedAt = ([datetime]$Device.exportedAt).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } catch {} }
   $json = $body | ConvertTo-Json -Compress
   try {
     $r = Invoke-WebRequest -Uri $url -Method Post -Body ([Text.Encoding]::UTF8.GetBytes($json)) -ContentType 'text/plain;charset=utf-8' -UseBasicParsing -TimeoutSec $TimeoutSec -UserAgent 'WireIt-Toolkit' -ErrorAction Stop

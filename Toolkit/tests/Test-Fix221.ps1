@@ -185,7 +185,10 @@ if ($ok2) {
   Check ([WireItLanTls]::IsLanHost('192.168.1.64') -and [WireItLanTls]::IsLanHost('10.0.0.5') -and [WireItLanTls]::IsLanHost('172.20.1.1') -and [WireItLanTls]::IsLanHost('169.254.3.3')) 'private / link-local addresses: a camera''s own certificate is accepted'
   Check (-not [WireItLanTls]::IsLanHost('wireit-api.wireitct.workers.dev') -and -not [WireItLanTls]::IsLanHost('8.8.8.8') -and -not [WireItLanTls]::IsLanHost('172.32.0.1') -and -not [WireItLanTls]::IsLanHost('')) 'a name (the service log) or a public address: normal check'
   Check ([WireItLanTls]::Check('wireit-api.wireitct.workers.dev', $null, $null, [Net.Security.SslPolicyErrors]::RemoteCertificateNameMismatch) -eq $false) 'a bad certificate on the cloud upload is refused'
-  Check ([WireItLanTls]::Check('192.168.1.20', $null, $null, [Net.Security.SslPolicyErrors]::RemoteCertificateChainErrors) -eq $true) 'a self-made certificate on an NVR is accepted'
+  # 2.2.3 (Codex #7): a LAN device's self-made certificate is accepted and pinned for the run (a missing certificate is not)
+  $rsa221 = [Security.Cryptography.RSA]::Create(2048); $cr221 = New-Object Security.Cryptography.X509Certificates.CertificateRequest('CN=nvr', $rsa221, [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+  $cert221 = $cr221.CreateSelfSigned([DateTimeOffset]::Now.AddDays(-1), [DateTimeOffset]::Now.AddDays(30))
+  Check ([WireItLanTls]::Check('192.168.1.20', $cert221, $null, [Net.Security.SslPolicyErrors]::RemoteCertificateChainErrors) -eq $true) 'a self-made certificate on an NVR is accepted'
   Check ([WireItLanTls]::Check('example.com', $null, $null, [Net.Security.SslPolicyErrors]::None) -eq $true) 'a good certificate is always accepted'
   [Net.ServicePointManager]::ServerCertificateValidationCallback = $null
 }

@@ -355,6 +355,8 @@ Check (-not @((@((New-FsPlan $null $obs30).nvrs)[0]).steps).Count) 'good setting
 $fs = Read-Src 'Toolkit/FixSite.ps1'
 Check ($fs -match '\$t = \$\(if \(\$n\.target -eq \$n\.ip\) \{ \$n\.ip \}' -and $fs -match 'ntN = Get-FsNet \$nip') 'FixSite reads the NVR''s settings and fixes them on the same address'
 Check ($fs -match "Add-Member -NotePropertyName moved") 'the plan''s NVR (an object) records whether it moved'
+Write-Host '#51 the laptop tells the relay when its request file was made'
+Check ((Read-Src 'Toolkit/HikMail.ps1') -match '\$body\.exportedAt = \(\[datetime\]\$Device\.exportedAt\)\.ToUniversalTime\(\)') 'reproduction: hikReplyGet carries exportedAt (2.2.2 sent only the serial)'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
