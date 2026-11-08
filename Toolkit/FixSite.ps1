@@ -538,7 +538,9 @@ if ($Mode -eq 'DryRun') {
   }
   if ($NewSite) { Resolve-NewSite $found $pc.gw }
   # list addresses nobody answered for: try them too (a camera can miss the discovery)
-  foreach ($c in @($(if ($list) { $list.cameras } else { @() }))) { $lip = [string]$c.ip; if ($lip -and -not @($found | Where-Object { $_.ip -eq $lip }).Count -and (Get-FsP3 $lip) -eq $scheme) { $s = Test-FsLogin $lip (Get-FsBrand ([string]$c.brand) ([string]$c.model)) ''; if ($s -ne 'noanswer') { $found += [pscustomobject]@{ brand = (Get-FsBrand ([string]$c.brand) ([string]$c.model)); model = [string]$c.model; serial = [string]$c.serial; mac = [string]$c.mac; ip = $lip; kind = 'camera'; activated = $true } } } }
+  # 2.2.6 (Codex file-by-file C): a device answering at a saved camera's address is NOT that camera until it says so itself: it gets no
+  # MAC or serial from the list (another camera may have the address now). Its own MAC/serial is read after it logs in (step 4).
+  foreach ($c in @($(if ($list) { $list.cameras } else { @() }))) { $lip = [string]$c.ip; if ($lip -and -not @($found | Where-Object { $_.ip -eq $lip }).Count -and (Get-FsP3 $lip) -eq $scheme) { $s = Test-FsLogin $lip (Get-FsBrand ([string]$c.brand) ([string]$c.model)) ''; if ($s -ne 'noanswer') { $found += [pscustomobject]@{ brand = (Get-FsBrand ([string]$c.brand) ([string]$c.model)); model = [string]$c.model; serial = ''; mac = ''; listMac = [string]$c.mac; ip = $lip; kind = 'camera'; activated = $true } } } }
   $found = @($found | Where-Object { $_.ip -and $_.ip -ne $pc.ip -and $_.ip -ne $pc.gw -and ($_.kind -in @('camera', 'nvr')) })
   $found = @(Select-FsFoundOnNet $found $pc $pcAll)   # 2.2.3 (Codex #8): devices on the PC's OTHER network are not this site's
   foreach ($d in $found) { if ($d.model) { $script:FsModels[[string]$d.ip] = [string]$d.model } }   # 2.2.2 (H1): the no-HTTPS model list
@@ -578,10 +580,12 @@ if ($Mode -eq 'DryRun') {
     if (Test-FsPoeNet $d.ip) { $observed.devices += [pscustomobject]$o; continue }
     if (-not (& $reach $d.ip)) { $o.login = 'unreachable'; $observed.devices += [pscustomobject]$o; continue }
     if ($d.activated -eq $false) { $observed.devices += [pscustomobject]$o; continue }
-    $fp = Find-FsPassword $d.ip $o.brand @(Get-FsPasswordCandidates $sec ([int]$opts.maxPasswordTries - 1) $o.mac (Get-NewSiteDefaults $o.brand)) ([int]$opts.maxPasswordTries - 1)
+  # 2.2.6: a device found only at a saved camera's address may try that camera's saved password (a try, not its identity)
+    $fp = Find-FsPassword $d.ip $o.brand @(Get-FsPasswordCandidates $sec ([int]$opts.maxPasswordTries - 1) $(if ($o.mac) { $o.mac } else { [string](Get-FsProp $d 'listMac' '') }) (Get-NewSiteDefaults $o.brand)) ([int]$opts.maxPasswordTries - 1)
     if ($fp.state -eq 'noanswer') { $o.answers = $false; $o.login = '' }
     elseif ($fp.state -eq 'ok') {
       $o.login = $fp.label; $pwFor[$d.ip] = $fp.value; $cr = Fs-Cred $fp.value
+      if ([string](Get-FsProp $d 'listMac' '') -and (-not $o.mac -or -not $o.serial)) { $inf = $null; try { $inf = Get-FsInfo $d.ip $o.brand $cr } catch {}; if ($inf) { if (-not $o.mac -and $inf.PSObject.Properties['mac'] -and $inf.mac) { $o.mac = [string]$inf.mac }; if (-not $o.serial -and $inf.serial) { $o.serial = [string]$inf.serial }; if (-not $o.model -and $inf.model) { $o.model = [string]$inf.model } } }   # 2.2.6: its own identity, before anything is saved under it
       $mk = ConvertTo-FsMac $o.mac; if ($mk) { $sec.cams[$mk] = $fp.value; $camPwSeen = $true }   # 2.0.1: remembered (encrypted) so a working camera on its own password is found first next run
       $st = Get-FsStream $d.ip $o.brand $cr; if ($st) { $o.streams = [ordered]@{ codec = $st.codec; fps = $st.fps; width = $st.width; height = $st.height; bitrate = $st.bitrate; gop = $st.gop; smartCodec = $st.smartCodec; maxWidth = $st.maxWidth; maxHeight = $st.maxHeight } }
       $nt = Get-FsNet $d.ip $o.brand $cr; if ($nt) { $o.dhcp = [bool]$nt.dhcp; if (-not $o.mac -and $o.brand -eq 'Hikvision') { $o.mac = (Get-FsInfo $d.ip $o.brand $cr).mac } }
