@@ -265,6 +265,14 @@ Check ($hr -match "FsLegacySecretsDir = Join-Path \`$here 'secrets'") '...and an
 Write-Host '#58 HikReset -Only limits the submission too'
 $hr = Read-Src 'Toolkit/HikReset.ps1'
 Check ($hr -match 'Submit-HikRequests \$state \$statePath \(Get-HikFormFor \$cfg\) 900 \$onlySerials') 'reproduction: -Only is passed to the submission (2.2.2 submitted every saved pending device)'
+Write-Host '#48 the browser profile path with a space stays one argument'
+. (Join-Path $tk 'HikPortal.ps1') 2>$null
+$line = Join-HikArgs @('--remote-debugging-port=2222', '--user-data-dir=C:\Users\Jose Maria\AppData\Local\Temp\wireit-hik-1', '--no-first-run', 'https://example.com/a?b=c')
+Check ($line -match '"--user-data-dir=C:\\Users\\Jose Maria\\AppData\\Local\\Temp\\wireit-hik-1"') 'reproduction: --user-data-dir with a space is quoted (2.2.2 split it)'
+Check ($line -match '^--remote-debugging-port=2222 ') 'plain arguments stay as they are'
+Eq (Join-HikArgs @('a"b')) '"a\"b"' 'an inner quote is escaped'
+Eq (Join-HikArgs @('C:\x y\')) '"C:\x y\\"' 'a trailing backslash before the closing quote is doubled'
+Check ((Read-Src 'Toolkit/HikPortal.ps1') -match '-ArgumentList \(Join-HikArgs \$args2\)') 'the browser is started with the quoted line'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

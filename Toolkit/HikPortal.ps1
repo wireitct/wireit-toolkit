@@ -58,6 +58,14 @@ function Invoke-CdpJs($c, [string]$Js, [int]$TimeoutSec = 20) {
   return $r.result.value
 }
 function Test-RunningAsSystem { try { return [bool][Security.Principal.WindowsIdentity]::GetCurrent().IsSystem } catch { return $false } }
+# 2.2.3 (Codex #48): Start-Process joins an argument array with plain spaces, so a profile path with a space ("C:\Users\Jose Maria\...")
+# split into two arguments. Each argument is quoted the Windows way (CommandLineToArgvW rules) when it needs it.
+function Join-HikArgs([string[]]$a) {
+  return (@($a | ForEach-Object {
+    $s = [string]$_
+    if ($s -and $s -notmatch '[\s"]') { $s } else { '"' + ([regex]::Replace(([regex]::Replace($s, '(\\*)"', '$1$1\"')), '(\\+)$', '$1$1')) + '"' }
+  }) -join ' ')
+}
 function Start-HikBrowserSession([string]$Url) {
   # 2.1.0 (3 Hewlett, Nov 6 2026): a window opened by a SYSTEM process lands on a Desktop nobody can see or use (systemprofile\Desktop is unavailable). Never do that.
   if (Test-RunningAsSystem) { throw 'This is running as the SYSTEM account, which has no screen. Start the Toolkit from the logged-in user (the Toolkit window or a scheduled task set to run as that user, only when logged on).' }
@@ -67,7 +75,7 @@ function Start-HikBrowserSession([string]$Url) {
   $prof = Join-Path ([IO.Path]::GetTempPath()) ('wireit-hik-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
   New-Item -ItemType Directory -Force -Path $prof | Out-Null
   $args2 = @('--remote-debugging-port=' + $port, '--user-data-dir=' + $prof, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--remote-allow-origins=*') + @($script:PortalExtraArgs) + @($Url)
-  $proc = Start-Process -FilePath $exe -ArgumentList $args2 -PassThru
+  $proc = Start-Process -FilePath $exe -ArgumentList (Join-HikArgs $args2) -PassThru   # 2.2.3 (Codex #48): one quoted command line
   $ws = ''; $end = (Get-Date).AddSeconds(25)
   while ((Get-Date) -lt $end -and -not $ws) {
     Start-Sleep -Milliseconds 400
