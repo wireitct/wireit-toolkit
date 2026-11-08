@@ -471,6 +471,21 @@ Check ($script:put62 -match '<addressingType>dynamic</addressingType>') 'reprodu
 Check ($script:put62 -match '<addressingType>static</addressingType>') 'a normal fix still writes static'
 Check ($fn62 -match "\`$toDhcp = \(\`$rev -and \[string\]\`$st\.old_addressing -eq 'dhcp'\)" -and $fn62 -match "\`$toDhcpN = \(\`$rev -and \[string\]\`$st\.old_addressing -eq 'dhcp'\)") 'Undo passes the recorded DHCP mode for cameras and the NVR'
 Check ($fn62 -match "\`$fails \+= @\(\`$manual \| ForEach-Object" -and $fn62 -match "Undo does not turn platform access") 'steps left to a person, and platform access Undo cannot reverse, make the run end with code 4'
+Write-Host '#61 an update cut off half-way is undone at the next start'
+. (Join-Path $tk 'ToolkitCore.ps1') 2>$null
+$r61 = Join-Path $tmp 'u61'; $tk61 = Join-Path $r61 'Toolkit'; New-Item -ItemType Directory -Force -Path $tk61 | Out-Null
+[IO.File]::WriteAllText((Join-Path $tk61 'A.ps1'), 'old A'); [IO.File]::WriteAllText((Join-Path $tk61 'version.json'), '{"version":"2.2.2"}')
+$P61 = Get-TkPaths $tk61; $prev61 = Join-Path $P61.Previous '2.2.2'; New-Item -ItemType Directory -Force -Path (Join-Path $prev61 'Toolkit') | Out-Null
+Copy-Item (Join-Path $tk61 'A.ps1') (Join-Path $prev61 'Toolkit\A.ps1'); Copy-Item (Join-Path $tk61 'version.json') (Join-Path $prev61 'version.json.prev')
+# the power dies after A.ps1 and a new file were written, before version.json
+[IO.File]::WriteAllText((Join-Path $tk61 'A.ps1'), 'NEW A'); [IO.File]::WriteAllText((Join-Path $tk61 'B.ps1'), 'new B'); [IO.File]::WriteAllText((Join-Path $tk61 'version.json'), '{"version":"half"}')
+Save-TkJson ([ordered]@{ prev = $prev61; from = '2.2.2'; to = '2.2.3'; added = @('Toolkit/B.ps1'); at = 'x' }) (Join-Path $P61.Previous 'update-pending.json')
+$m61 = Repair-TkInterruptedUpdate $tk61
+Check ([IO.File]::ReadAllText((Join-Path $tk61 'A.ps1')) -eq 'old A' -and -not (Test-Path (Join-Path $tk61 'B.ps1'))) 'reproduction: the old files are back and the new one is gone (2.2.2 left a mixed version)'
+Check (([IO.File]::ReadAllText((Join-Path $tk61 'version.json'))) -match '2\.2\.2' -and -not (Test-Path (Join-Path $P61.Previous 'update-pending.json')) -and $m61 -match 'put back') 'version.json is the old one, the journal is cleared, and the window is told'
+Eq (Repair-TkInterruptedUpdate $tk61) '' 'no journal: nothing to do'
+$tcs = Read-Src 'Toolkit/ToolkitCore.ps1'
+Check ($tcs.IndexOf("Save-TkJson ([ordered]@{ prev = `$prev; from = `$old") -lt $tcs.IndexOf('$done.Add([string]$f.path)') -and $tcs -match "Remove-Item -LiteralPath \`$journal -Force -ErrorAction SilentlyContinue\r?\n  \} catch") 'Install-TkUpdate writes the journal before the first copy and clears it only at the end'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
