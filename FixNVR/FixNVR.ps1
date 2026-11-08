@@ -434,9 +434,10 @@ function Hik-Read($dev) {
   }
   return $true
 }
-function Hik-SetNet($dev, [string]$ip, [string]$mask, [string]$gw, [string]$dns1, [string]$dns2) {
+function Hik-SetNet($dev, [string]$ip, [string]$mask, [string]$gw, [string]$dns1, [string]$dns2, [switch]$Dhcp) {
   $doc = [xml]$dev.net_xml
-  XSet $doc 'addressingType' 'static'; XSet $doc 'ipAddress' $ip; XSet $doc 'subnetMask' $mask; XSet $doc 'DefaultGateway/ipAddress' $gw
+  XSet $doc 'addressingType' $(if ($Dhcp) { 'dynamic' } else { 'static' })   # 2.2.3 (Codex #62): Undo gives a DHCP device DHCP back
+  XSet $doc 'ipAddress' $ip; XSet $doc 'subnetMask' $mask; XSet $doc 'DefaultGateway/ipAddress' $gw
   if ($dns1) { XSet $doc 'PrimaryDNS/ipAddress' $dns1 }; if ($dns2) { XSet $doc 'SecondaryDNS/ipAddress' $dns2 }
   $r = Http $dev.ip 'PUT' ('/ISAPI/System/Network/interfaces/' + $dev.if_id + '/ipAddress') $doc.OuterXml 'application/xml' (Cred-For $dev) 15
   if ($r.code -eq 0 -and $r.err -match '(?i)timed out|closed|aborted|reset') { return @{ ok = $true; reboot = $false; note = 'device dropped the connection while moving (normal)' } }
@@ -924,13 +925,15 @@ function Invoke-Main {
         if ($rev -or -not $d.login) { $d.login = ''; $d.net_xml = ''; Read-Dev $d }
         $mask = $(if ($rev -and $st.old_mask) { $st.old_mask } else { $newMask }); $gw = $(if ($rev) { $st.old_gw } else { $pc.gw })
         $d1 = $(if ($rev) { $st.old_dns1 } else { $cfg.dns1 }); $d2 = $(if ($rev) { $st.old_dns2 } else { $cfg.dns2 })
-        Write-Host ('Moving camera ' + $st.channel + ' ' + $from + ' -> ' + $to + ' ...')
+        Write-Host ('Moving camera ' + $st.channel + ' ' + $from + ' -> ' + $to + ' ...'); $toDhcp = $false
         if ($d.brand -eq 'hik' -and $d.net_xml) {
-          $res = Hik-SetNet $d $to $mask $gw $d1 $d2
+          $toDhcp = ($rev -and [string]$st.old_addressing -eq 'dhcp')
+          $res = Hik-SetNet $d $to $mask $gw $d1 $d2 -Dhcp:$toDhcp
           if ($res.ok -and $res.reboot) { [void](Hik-RebootNow $d) }
         } elseif ($d.onvif -or (Onvif-Read $d)) { $res = Onvif-SetNet $d $to (MaskToPrefix $mask) $gw $d1 $d2 }
         else { $res = @{ ok = $false; note = 'could not log in to the camera' } }
-        if ($res.ok) { $ans2 = Wait-Answer $to ([int]$cfg.camera_wait_seconds) $script:credCam; if (-not $ans2) { $res.ok = $false; $res.note = ($res.note + ' camera did not answer on ' + $to).Trim() } }
+        if ($res.ok -and $toDhcp) { $res.note = ($res.note + ' back on DHCP (the router gives its address)').Trim() }
+        elseif ($res.ok) { $ans2 = Wait-Answer $to ([int]$cfg.camera_wait_seconds) $script:credCam; if (-not $ans2) { $res.ok = $false; $res.note = ($res.note + ' camera did not answer on ' + $to).Trim() } }
         if ($res.ok) { $d.ip = $to }
       }
       'nvr-channel' {
@@ -951,9 +954,12 @@ function Invoke-Main {
         $mask = $(if ($rev -and $st.old_mask) { $st.old_mask } else { $newMask }); $gw = $(if ($rev) { $st.old_gw } else { $pc.gw })
         $d1 = $(if ($rev) { $st.old_dns1 } else { $cfg.dns1 }); $d2 = $(if ($rev) { $st.old_dns2 } else { $cfg.dns2 })
         Write-Host ('Moving the NVR ' + $from + ' -> ' + $to + ' (DNS ' + $d1 + ' / ' + $d2 + ') ...')
-        if ($st.how -eq 'isapi') { $res = Hik-SetNet $n $to $mask $gw $d1 $d2; if ($res.ok -and $res.reboot) { Write-Host '  NVR asked for a restart; restarting it now (about 2 min).'; [void](Hik-RebootNow $n) } }
+        $toDhcpN = ($rev -and [string]$st.old_addressing -eq 'dhcp')
+        if ($st.how -eq 'isapi') { $res = Hik-SetNet $n $to $mask $gw $d1 $d2 -Dhcp:$toDhcpN; if ($res.ok -and $res.reboot) { Write-Host '  NVR asked for a restart; restarting it now (about 2 min).'; [void](Hik-RebootNow $n) } }
         else { $r1 = Unv-Put $n $cfg.uniview.dns_path (Unv-PlanDns $n $d1 $d2); $r2 = Unv-Put $n $cfg.uniview.net_path (Unv-PlanNet $n $to $mask $gw); $res = @{ ok = ($r1.ok -and $r2.ok); note = ($r1.note + ' ' + $r2.note).Trim() } }
-        if ($res.ok) { Write-Host ('  waiting for the NVR on ' + $to + ' ...'); if (Wait-Answer $to ([int]$cfg.verify_wait_seconds) $script:credNvr) { $n.ip = $to } else { $res.ok = $false; $res.note = ($res.note + ' NVR did not answer on ' + $to + ' yet').Trim() } }
+        if ($res.ok -and $toDhcpN -and $st.how -eq 'isapi') { $res.note = ($res.note + ' back on DHCP (the router gives its address)').Trim() }
+        elseif ($res.ok -and $toDhcpN) { $res.ok = $false; $res.note = ($res.note + ' it was on DHCP before: set DHCP back in its own menu').Trim() }
+        elseif ($res.ok) { Write-Host ('  waiting for the NVR on ' + $to + ' ...'); if (Wait-Answer $to ([int]$cfg.verify_wait_seconds) $script:credNvr) { $n.ip = $to } else { $res.ok = $false; $res.note = ($res.note + ' NVR did not answer on ' + $to + ' yet').Trim() } }
       }
     }
     if ($res) { $st.done = [bool]$res.ok; $st.result = $(if ($res.ok) { 'done' } else { 'FAILED ' + $res.note }) }
@@ -996,8 +1002,12 @@ function Invoke-Main {
       }
     }
   }
-  $fails = @($applied | Where-Object { -not $_.done }); if ($fails.Count) { $script:exitCode = 4 }
-  Say ''; Say $(if ($fails.Count) { 'Finished with ' + $fails.Count + ' step(s) that did not work (see above). Undo everything with: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { 'Done.' + $(if (-not $rev) { ' Undo if needed: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { '' }) }) $(if ($fails.Count) { 'Yellow' } else { 'Green' })
+  $fails = @($applied | Where-Object { -not $_.done })
+  # 2.2.3 (Codex #62): steps left to a person, and platform access that Undo cannot turn back off, are NOT a clean finish
+  $fails += @($manual | ForEach-Object { [pscustomobject]@{ type = $_.type; done = $false; result = 'by hand' } })
+  if ($rev) { foreach ($pp in @($rb.steps | Where-Object { $_.done -and $_.type -eq 'nvr-platform' })) { Say ('Undo does not turn platform access (Hik-Connect / EZCloud) back off: turn it off in the NVR''s own menu if it was off before.') 'Yellow'; $fails += [pscustomobject]@{ type = 'nvr-platform'; done = $false; result = 'by hand' } } }
+  if ($fails.Count) { $script:exitCode = 4 }
+  Say ''; Say $(if ($fails.Count) { 'Finished with ' + $fails.Count + ' step(s) not done or not confirmed (failed, by hand, or not undoable - see above). Undo everything with: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { 'Done.' + $(if (-not $rev) { ' Undo if needed: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { '' }) }) $(if ($fails.Count) { 'Yellow' } else { 'Green' })
   if (-not $rev -and $Mode -eq 'Fix' -and -not $fails.Count) { Invoke-CamViews $nvrs }
   if (-not $rev) { Say 'Tip: run "NVR Snapshot.cmd" now so the site has a known-good record.' }
 }

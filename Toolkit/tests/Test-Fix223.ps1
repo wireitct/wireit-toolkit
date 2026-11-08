@@ -458,6 +458,19 @@ Write-Host 'version: 2.2.3 everywhere'
 $v223 = @(); foreach ($p in @(@('Toolkit/FixSiteCore.ps1', "\`$script:FsVersion = '([^']+)'"), @('Toolkit/ToolkitCore.ps1', "\`$script:TkBuiltVersion = '([^']+)'"), @('Toolkit/FixSiteBw.ps1', "\`$script:FsVersion = '([^']+)'"))) { if ((Read-Src $p[0]) -match $p[1]) { $v223 += $Matches[1] } }
 $v223 += [string]((Read-Src 'version.json') | ConvertFrom-Json).version
 Eq (($v223 | Select-Object -Unique) -join ',') '2.2.3' 'FixSiteCore, ToolkitCore, FixSiteBw and version.json all say 2.2.3'
+Write-Host '#62 classic Fix NVR Undo: DHCP back, and unfinished work is not success'
+$fn62 = Read-Src 'FixNVR/FixNVR.ps1'
+$i62 = $fn62.IndexOf('function Hik-SetNet('); $j62 = $fn62.IndexOf("`nfunction ", $i62 + 10); Invoke-Expression $fn62.Substring($i62, $j62 - $i62)
+function XSet($doc, [string]$path, [string]$v) { $n = $doc.SelectSingleNode('//*[local-name()="' + ($path -split '/')[0] + '"]'); if ($path -match '/') { $n = $n.SelectSingleNode('*[local-name()="' + ($path -split '/')[1] + '"]') }; if ($n) { $n.InnerText = $v } }
+function Cred-For($d) { return $null }; function Hik-Ok($r) { return $true }; function Hik-Reboot($r) { return $false }; function Hik-Status($b) { return @{ text = '' } }
+$script:put62 = ''; function Http($ip, $m, $p, $body) { $script:put62 = $body; return @{ code = 200; body = ''; err = '' } }
+$dev62 = [pscustomobject]@{ ip = '10.0.0.5'; if_id = 1; net_xml = '<IPAddress><addressingType>static</addressingType><ipAddress>10.0.0.5</ipAddress><subnetMask>255.255.255.0</subnetMask><DefaultGateway><ipAddress>10.0.0.1</ipAddress></DefaultGateway></IPAddress>' }
+[void](Hik-SetNet $dev62 '192.168.1.64' '255.255.255.0' '192.168.1.1' '' '' -Dhcp)
+Check ($script:put62 -match '<addressingType>dynamic</addressingType>') 'reproduction: Undo of a camera that was on DHCP writes DHCP back (2.2.2 always wrote static)'
+[void](Hik-SetNet $dev62 '192.168.1.64' '255.255.255.0' '192.168.1.1' '' '')
+Check ($script:put62 -match '<addressingType>static</addressingType>') 'a normal fix still writes static'
+Check ($fn62 -match "\`$toDhcp = \(\`$rev -and \[string\]\`$st\.old_addressing -eq 'dhcp'\)" -and $fn62 -match "\`$toDhcpN = \(\`$rev -and \[string\]\`$st\.old_addressing -eq 'dhcp'\)") 'Undo passes the recorded DHCP mode for cameras and the NVR'
+Check ($fn62 -match "\`$fails \+= @\(\`$manual \| ForEach-Object" -and $fn62 -match "Undo does not turn platform access") 'steps left to a person, and platform access Undo cannot reverse, make the run end with code 4'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
