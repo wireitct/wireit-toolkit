@@ -621,13 +621,14 @@ function Get-TkUpnpExposure([string[]]$Locations = @(), [string[]]$CameraIps = @
     break
   }
   $res.exposed = @($res.maps | Where-Object { $_.camera -and $_.on })
-  if (-not $res.answered) { $L.Add(@{ t = 'Router: UPnP did not answer (off or blocked) - good. Port forwards made by hand need the router login to read; not checked.'; k = 'ok' }) }
-  elseif (-not $res.upnp) { $L.Add(@{ t = 'Router (' + $res.router + '): no UPnP port-opening service - good.'; k = 'ok' }) }
+  # 2.2.3 (Codex #43): this check sees UPnP only. It does not show port forwards made by hand or other router services, so it never says "nothing is open".
+  if (-not $res.answered) { $L.Add(@{ t = 'Router: UPnP did not answer (off or blocked). Port forwards made by hand are NOT checked: look at the router''s port-forwarding page.'; k = 'plain' }) }
+  elseif (-not $res.upnp) { $L.Add(@{ t = 'Router (' + $res.router + '): no UPnP port-opening service. Port forwards made by hand are NOT checked: look at the router''s port-forwarding page.'; k = 'plain' }) }
   else {
     $L.Add(@{ t = 'Router UPnP is ON (' + $res.router + '): any device inside can open ports to the internet by itself. Turn UPnP off on the router.'; k = 'red' })
     foreach ($x in $res.exposed) { $L.Add(@{ t = 'OPEN TO THE INTERNET: port ' + $x.ext + '/' + $x.proto + ' -> ' + $x.client + ':' + $x.port + $(if ($x.desc) { ' (' + $x.desc + ')' } else { '' }) + ' - camera/NVR reachable from outside.'; k = 'red' }) }
     $other = @($res.maps | Where-Object { -not $_.camera }); if ($other.Count) { $L.Add(@{ t = 'Other ports the router opened (not cameras): ' + (($other | ForEach-Object { '' + $_.ext + '/' + $_.proto + ' -> ' + $_.client }) -join ', '); k = 'plain' }) }
-    if (-not $res.maps.Count) { $L.Add(@{ t = 'No ports are open through UPnP right now.'; k = 'ok' }) }
+    if (-not $res.maps.Count) { $L.Add(@{ t = 'No ports are open through UPnP right now (ports opened by hand are not visible here).'; k = 'ok' }) }
   }
   $res.lines = $L.ToArray()
   return [pscustomobject]$res
@@ -795,7 +796,7 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
   # router
   if ($Upnp) {
     $page.router = [ordered]@{ checked = $true; answered = [bool]$Upnp.answered; upnp = [bool]$Upnp.upnp; model = [string]$Upnp.router; exposed = @($Upnp.exposed | ForEach-Object { '' + $_.ext + '/' + $_.proto + ' -> ' + $_.client + ':' + $_.port }) }
-    if ($Upnp.upnp -or @($Upnp.exposed).Count) { foreach ($ul in @($Upnp.lines | Where-Object { $_.k -eq 'red' })) { & $add $ul.t 'red' } } else { & $add ('Router: ' + $(if ($Upnp.answered) { 'UPnP off, nothing opened to the internet.' } else { 'UPnP off or blocked - good.' })) 'ok' }
+    if ($Upnp.upnp -or @($Upnp.exposed).Count) { foreach ($ul in @($Upnp.lines | Where-Object { $_.k -eq 'red' })) { & $add $ul.t 'red' } } else { & $add ('Router: ' + $(if ($Upnp.answered) { 'no ports opened through UPnP' } else { 'UPnP did not answer (off or blocked)' }) + '. Port forwards made by hand are not checked - look in the router.') 'ok' }
   } else { $page.router = $null }
   $page.fixes = @($fix | Select-Object -Unique)
   $page.notChecked = @($nc | Select-Object -Unique)

@@ -323,6 +323,10 @@ Check (@($s23 | ForEach-Object { $_.ch }) -contains 3) '...and 44.5 days is unde
 $src23 = Read-Src 'Toolkit/modules/NvrHealth/NvrHealth.psm1'
 Check ($src23 -match "problems\.Add\(\(''\s*\+\s*\`$short\.Count \+ ' camera\(s\) below the '") 'short cameras are counted in the RESULT (not green)'
 Remove-Module NvrHealth -ErrorAction SilentlyContinue
+Write-Host '#43 the router line says only what the UPnP check can see'
+$tc = Read-Src 'Toolkit/ToolkitCore.ps1'
+Check ($tc -notmatch 'nothing opened to the internet' -and $tc -notmatch 'off or blocked\) - good' -and $tc -notmatch 'off or blocked - good') 'reproduction: no "nothing opened to the internet" / "UPnP off or blocked - good" (2.2.2 overclaimed)'
+Check (([regex]::Matches($tc, 'Port forwards made by hand (are|need)')).Count -ge 3) 'every no-UPnP line says port forwards made by hand are not checked'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
