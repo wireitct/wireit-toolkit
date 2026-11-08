@@ -224,9 +224,17 @@ function Get-FsNet([string]$ip, [string]$brand, $cred) {
     return [pscustomobject]@{ iface = $if; ip = [string]$h[$pre + 'IPAddress']; mask = [string]$h[$pre + 'SubnetMask']; gw = [string]$h[$pre + 'DefaultGateway']; dhcp = ([string]$h[$pre + 'DhcpEnable'] -eq 'true'); dns1 = [string]$h[$pre + 'DnsServers[0]']; dns2 = [string]$h[$pre + 'DnsServers[1]']; raw = $null }
   }
   $li = Fs-XmlDoc (Fs-Http -Ip $ip -Path '/ISAPI/System/Network/interfaces' -Cred $cred).body
-  $id = Fs-XText $li 'id'; if (-not $id) { $id = '1' }
-  $r = Fs-Http -Ip $ip -Path ('/ISAPI/System/Network/interfaces/' + $id + '/ipAddress') -Cred $cred
-  $x = Fs-XmlDoc $r.body; if (-not $x) { return $null }
+  # 2.2.3 (Codex #10): a recorder with a LAN port and a PoE camera port has two interfaces; the one to read/change is the one
+  # carrying the address we are talking to. One interface = that one. Several and none carries it = $null (nothing is changed).
+  $ids = @(); if ($li) { foreach ($nd in @(Fs-XFind $li 'NetworkInterface')) { $v = Fs-XText $nd 'id'; if ($v) { $ids += $v } } }
+  if (-not $ids.Count) { $ids = @('1') }
+  $want = ($ip -replace ':\d+$', ''); $r = $null; $x = $null; $id = ''
+  foreach ($cand in $ids) {
+    $rr = Fs-Http -Ip $ip -Path ('/ISAPI/System/Network/interfaces/' + $cand + '/ipAddress') -Cred $cred; $xx = Fs-XmlDoc $rr.body
+    if (-not $xx) { continue }
+    if ($ids.Count -eq 1 -or (Fs-XText $xx 'ipAddress') -eq $want) { $r = $rr; $x = $xx; $id = $cand; break }
+  }
+  if (-not $x) { return $null }
   $gwn = @(Fs-XFind $x 'DefaultGateway'); $gw = ''; if ($gwn.Count) { $gw = Fs-XText $gwn[0] 'ipAddress' }
   $d1 = @(Fs-XFind $x 'PrimaryDNS'); $d2 = @(Fs-XFind $x 'SecondaryDNS')
   return [pscustomobject]@{ iface = $id; ip = (Fs-XText $x 'ipAddress'); mask = (Fs-XText $x 'subnetMask'); gw = $gw; dhcp = ((Fs-XText $x 'addressingType') -eq 'dynamic'); dns1 = $(if ($d1.Count) { Fs-XText $d1[0] 'ipAddress' } else { '' }); dns2 = $(if ($d2.Count) { Fs-XText $d2[0] 'ipAddress' } else { '' }); raw = $r.body }
