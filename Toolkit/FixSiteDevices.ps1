@@ -107,7 +107,7 @@ function Fs-Http {
   }
 }
 # 2.2.5: does anything accept a TCP connection on the HTTPS port? 'yes' | 'refused' | 'no' (timeout / no route / error)
-function Test-FsTcpAnswers([string]$ip, [int]$ms = 2000) {
+function Test-FsTcpAnswers([string]$ip, [int]$ms = 4000) {   # 4 s: Windows retries a refused connect for ~2 s before it says so (Office PC, Nov 8 2026)
   $h = $ip; $port = 443; if ($ip -match '^(.+):(\d+)$') { $h = $Matches[1]; $port = [int]$Matches[2] }
   $c = New-Object Net.Sockets.TcpClient
   try {
