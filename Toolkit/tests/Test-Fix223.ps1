@@ -287,6 +287,24 @@ Check (@($script:FsSiteFolderAmbiguous).Count -eq 2) '...and the two are named f
 Eq (Split-Path -Leaf (Find-FsSiteFolder 'WI-12' @($dr))) '112 Main St (WI-12)' 'a Site ID matches as a whole word (WI-12 is not WI-123)'
 Eq (Split-Path -Leaf (Find-FsSiteFolder 'Strand' @($dr))) 'Strand 177 Main' 'one partial match is used'
 Eq (Split-Path -Leaf (Find-FsSiteFolder '12 Main St (WI-123)' @($dr))) '12 Main St (WI-123)' 'the exact name always wins'
+Write-Host '#41 NTP change: unreadable read-back is not success'
+$nm41 = Import-Module (Join-Path $tk 'modules\NvrHealth\NvrHealth.psm1') -Force -PassThru -DisableNameChecking
+$r41 = & $nm41 {
+  function Onvif-Call { return @{ code = 200; body = '' } }
+  function Onvif-Time { return $null }
+  function Log { }
+  Onvif-NtpApply @{ ip = '10.0.0.41' } 'time.nist.gov' @{ needNtp = $true; needMode = $false; needTz = $false; o = @{ mode = 'Manual'; dst = $true; tz = $null; ntp = @() } }
+}
+Check ($r41 -and -not $r41.ok -and $r41.why -match 'read back') 'reproduction: ONVIF NTP set, read-back unreadable -> NOT ok (2.2.2 said ok)'
+$r41h = & $nm41 {
+  function Http { return @{ code = 200; body = '<ResponseStatus><statusCode>1</statusCode></ResponseStatus>' } }
+  function Hik-Time { return $null }
+  function Hik-NtpPlan { return @{ ok = $false; why = 'x' } }
+  function Log { }
+  Hik-NtpApply @{ ip = '10.0.0.41' } 'time.nist.gov' @{ needNtp = $false; needMode = $false; needTz = $false; h = $null }
+}
+Check ($r41h -and -not $r41h.ok -and $r41h.why -match 'read back') 'reproduction: Hikvision NTP set, read-back unreadable -> NOT ok'
+Remove-Module NvrHealth -ErrorAction SilentlyContinue
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

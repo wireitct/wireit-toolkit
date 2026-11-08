@@ -938,7 +938,8 @@ function Hik-NtpApply($t, [string]$server, $plan) {
   $after = Hik-Time $t
   Log ('AFTER /ISAPI/System/time: ' + $(if ($after) { $after.raw } else { '(unreadable)' })); Log ('AFTER ntpServers: ' + $(if ($after) { $after.ntpRaw } else { '' }))
   $still = Hik-NtpPlan $t $server
-  if ($still.ok -and $still.changes.Count) { return @{ ok = $false; why = ('saved, but it still reads back wrong: ' + ($still.changes -join '; ')) } }
+  if (-not $still.ok) { return @{ ok = $false; why = 'saved, but its time settings could not be read back to check them' } }   # 2.2.3 (Codex #41)
+  if ($still.changes.Count) { return @{ ok = $false; why = ('saved, but it still reads back wrong: ' + ($still.changes -join '; ')) } }
   return @{ ok = $true }
 }
 function Onvif-NtpPlan($t, [string]$server) {
@@ -967,7 +968,8 @@ function Onvif-NtpApply($t, [string]$server, $plan) {
   $a = Onvif-Time $t
   Log ('AFTER (ONVIF) ' + $(if ($a) { 'mode=' + $a.mode + ' dst=' + $a.dst + ' tz=' + $a.tz.raw + ' ntp=' + (@($a.ntp | ForEach-Object { $_.host }) -join ',') } else { '(unreadable)' }))
   $still = Onvif-NtpPlan $t $server
-  if ($still.ok -and $still.changes.Count) { return @{ ok = $false; why = ('saved, but it still reads back wrong: ' + ($still.changes -join '; ')) } }
+  if (-not $still.ok) { return @{ ok = $false; why = 'saved, but its time settings could not be read back to check them' } }   # 2.2.3 (Codex #41)
+  if ($still.changes.Count) { return @{ ok = $false; why = ('saved, but it still reads back wrong: ' + ($still.changes -join '; ')) } }
   return @{ ok = $true }
 }
 function Set-NtpTime {
