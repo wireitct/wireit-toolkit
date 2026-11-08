@@ -1,8 +1,8 @@
 {
   "version": "2.2.5",
   "released": "2026-11-08",
-  "commit": "e56f439bc835395a1026d1828dbd527fbc7a8824",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/e56f439bc835395a1026d1828dbd527fbc7a8824/",
+  "commit": "243235a29c392c073bdce16878fc20b4f8c644fa",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/243235a29c392c073bdce16878fc20b4f8c644fa/",
   "notes": "",
   "files": [
     {
@@ -117,8 +117,8 @@
     },
     {
       "path": "Toolkit/HikPortal.ps1",
-      "sha256": "2cd9085344d1bb9d015894ca8ba60366f98217f536830bef0c19ed53f08bf1b6",
-      "size": 20284
+      "sha256": "0c11b6000fc5fa055c665608ccf3112129cafb9485762da4f3789d3b880b0c34",
+      "size": 21190
     },
     {
       "path": "Toolkit/HikReset.ps1",
@@ -251,6 +251,11 @@
       "size": 3195
     },
     {
+      "path": "Toolkit/tests/hikreset/argv_dump.py",
+      "sha256": "e31e07c446ff55c0111b82fe623edcd33125af8ba4af9932b85e02dba2406331",
+      "size": 384
+    },
+    {
       "path": "Toolkit/tests/hikreset/fake_hik_form.html",
       "sha256": "a71da3dcc704333d648e7bf7a3f3bbc1c99cdc530aa24ed0e5d66cc78bf1876d",
       "size": 3458
@@ -312,8 +317,8 @@
     },
     {
       "path": "Toolkit/tests/Test-HikReset.ps1",
-      "sha256": "579a1d637cc9c10bba88e2feb7737046ca2235174821e8e1cbfab13bd863f67e",
-      "size": 31299
+      "sha256": "8935e168006fc5331bba4efc98ed23d33aad3147c3d49b208b424c383423f87f",
+      "size": 33084
     },
     {
       "path": "Toolkit/tests/Test-Toolkit.ps1",
