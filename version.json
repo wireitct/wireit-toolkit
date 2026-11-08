@@ -1,8 +1,8 @@
 {
   "version": "2.2.3",
   "released": "2026-11-08",
-  "commit": "6010e7d1326a40e44f4a3722f1b277b438ea7b3f",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/6010e7d1326a40e44f4a3722f1b277b438ea7b3f/",
+  "commit": "7314b66851175f8c5fb8e9d9c2cb9c5d528f7cd5",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/7314b66851175f8c5fb8e9d9c2cb9c5d528f7cd5/",
   "notes": "2.2.3 (not released): fixes from Codex's full review of 2.2.2 (5e465b9), findings #6-64; the Crew/SYSTEM split is removed (Crew is a local admin): no SYSTEM task, IPC folder or ACL lock. See files/pc-setup/toolkit-2.2.3-fixes.md.",
   "files": [
     {
@@ -72,8 +72,8 @@
     },
     {
       "path": "Toolkit/CamViews.ps1",
-      "sha256": "4cd3d962e8a224ef1d6a8ba556002db4d074941a5c31824bb68a069bb05c718a",
-      "size": 31568
+      "sha256": "1027c907661fdbc672683d7cc89e6f3ebdb0e76833644e10ae09b57b3a358910",
+      "size": 33261
     },
     {
       "path": "Toolkit/FixIt.ps1",
@@ -97,8 +97,8 @@
     },
     {
       "path": "Toolkit/FixSiteDevices.ps1",
-      "sha256": "0321f22cf03d05428a9a2c3bb602198dce83a82090f3fea9370416a65138a4dc",
-      "size": 81006
+      "sha256": "13059d6ea363cba0d41eda3c96a11c140cf6fecdf0c48a85eda5ac9c5c1a0132",
+      "size": 82550
     },
     {
       "path": "Toolkit/FixSiteWindow.ps1",
@@ -282,13 +282,13 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix221.ps1",
-      "sha256": "52f9c8d318aab38d87c59a0b3555d2100ba7f22fa169bc3389d518dd26650a4c",
-      "size": 37171
+      "sha256": "e3b567c9683715214bda8ef7ee0806688a3a9e34fefc82b58b30bf6318b67d5c",
+      "size": 39521
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "b476b73e0d5552d1f236ca7ec87ccd0a0f13dd87fd4bdc7a6d76305a12324de1",
-      "size": 41315
+      "sha256": "9d05648b71787191cf1eb55891e3c4c13593b1f739aeec15afc5e1387c940cb9",
+      "size": 42820
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
@@ -307,8 +307,8 @@
     },
     {
       "path": "Toolkit/tests/Test-FixSite.ps1",
-      "sha256": "a2429e3c8e145c3cfab426347fb3c0a50081c30afbdb5e7882b7170ca4af511a",
-      "size": 60096
+      "sha256": "69f5a87f6b2a1c313d5cfeb0a33b03e3ea58751cfc846cf55b142a9fe1ac711d",
+      "size": 60741
     },
     {
       "path": "Toolkit/tests/Test-HikReset.ps1",
@@ -327,8 +327,8 @@
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
-      "sha256": "bd0c9ee19e9eaa5d67b45cb4dee3d58eb1cd32c95a7bcc405b071db9cdc4a5ba",
-      "size": 65886
+      "sha256": "446967033813a007cd100298e399f5c66c49873a24da08311250c7e3ce2cbcac",
+      "size": 66631
     },
     {
       "path": "Toolkit/ToolkitMigrate.ps1",
