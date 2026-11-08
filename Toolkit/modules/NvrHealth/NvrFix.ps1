@@ -89,7 +89,8 @@ function Invoke-NvrFix {
           $w = Http -Ip $Ip -Method 'PUT' -Path ('/ISAPI/ContentMgmt/record/tracks/' + $o.id) -Body $xml -Credential $t.cred -Port $t.port
           if (Hik-Ok $w) { $res.changed += ('camera ' + [math]::Floor($o.id / 100)) }
         }
-        $still = @((Hik-Tracks $t).Values | Where-Object { -not $_.enabled })
+        $afterTracks = Hik-Tracks $t
+        $still = @($off | Where-Object { -not $afterTracks.ContainsKey($_.id) -or -not $afterTracks[$_.id].enabled })
       } elseif ($v -eq 'DW') {
         if (-not (Dw-Login $t)) { return (& $done $false 'The DW server refused the login. Nothing changed.') }
         $devs = @(Dw-Devices $t); $off = @($devs | Where-Object { $_.scheduled -eq $false })
@@ -98,7 +99,8 @@ function Invoke-NvrFix {
         if (-not (& $ask @('Turn recording back ON in DW for: ' + (($off | ForEach-Object { $_.name + ' (' + $_.ip + ')' }) -join ', ') + '.', 'Backup of the camera list saved: ' + $res.backup))) { return (& $done $true 'Not confirmed - nothing changed.') }
         $res.ran = $true
         foreach ($o in $off) { $w = Dw-Send $t 'PATCH' ('/rest/v3/devices/' + [uri]::EscapeDataString($o.id)) @{ schedule = @{ isEnabled = $true } }; if ($w.code -eq 200) { $res.changed += $o.name } }
-        $still = @(Dw-Devices $t | Where-Object { $_.scheduled -eq $false })
+        $afterDevices = @(Dw-Devices $t)
+        $still = @($off | Where-Object { $id = $_.id; -not @($afterDevices | Where-Object { $_.id -eq $id -and $_.scheduled -eq $true }).Count })
       } else { return (& $done $false ('Turning recording on is not built for ' + $v + ' yet. Nothing changed.')) }
       $ok = (-not $still.Count)
       $res.history = 'Recording turned back on: ' + ($res.changed -join ', ') + ' (' + $Ip + ')'

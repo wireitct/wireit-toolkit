@@ -113,3 +113,34 @@ g = env(); g._props.STATUS_PUSH_KEY = KEY; g.setupHikRelay();
 g._mail('mA', 'support@hikvision.com', 'reset ' + SER, 'code: ZZ99ZZ99', [g._blob('big.bin', 'x'.repeat(3 * 1024 * 1024), 'application/octet-stream'), g._blob('run.exe', 'MZ', 'application/octet-stream')]);
 g.scanHikReplies(); eq([JSON.parse(g._props.HIKR_mA).kind, JSON.parse(g._props.HIKR_mA).code], ['code', 'ZZ99ZZ99'], 'over-2MB and .exe attachments ignored; falls back to the code');
 console.log('hikrelay: ' + pass + ' ok');
+
+// Full NVR serials contain model punctuation. The client must not have to remove it.
+g = env(); g._props.STATUS_PUSH_KEY = KEY; g.setupHikRelay();
+const nvrSerial = 'DS-7608NI-K2/8P20210505CCWRF99887766';
+g._mail('slash', 'support@hikvision.com', 'Reset ' + nvrSerial, 'code: AB12CD34', []); g.scanHikReplies();
+a = g._post({op:'hikReplyGet',key:KEY,serial:nvrSerial,shortSerial:'F99887766',pc:'NVRPC'});
+eq([a.ok,a.found,a.code],[true,true,'AB12CD34'],'full NVR serial with slash is accepted unchanged');
+
+// One email, two devices: a file and a delivery receipt for each device, including different PCs.
+g = env(); g._props.STATUS_PUSH_KEY = KEY; g.setupHikRelay();
+const ser2 = 'DS-2CD2143G2-I20230101AAWRK87654321';
+g._mail('two', 'support@hikvision.com', 'Reset '+SER+' and '+ser2, 'Two files', [g._blob('reset_'+SS+'.xml','UNLOCK-A','application/xml'),g._blob('reset_K87654321.xml','UNLOCK-B','application/xml')]);
+g.scanHikReplies();
+a = g._post({op:'hikReplyGet',key:KEY,serial:SER,shortSerial:SS,pc:'A'});
+eq(Buffer.from(a.data,'base64').toString(),'UNLOCK-A','first device receives its own attachment');
+a = g._post({op:'hikReplyGet',key:KEY,serial:ser2,shortSerial:'K87654321',pc:'B'});
+eq(Buffer.from(a.data,'base64').toString(),'UNLOCK-B','second device on another PC receives its own attachment');
+a = g._post({op:'hikReplyGet',key:KEY,serial:SER,shortSerial:SS,pc:'A'});
+eq(Buffer.from(a.data,'base64').toString(),'UNLOCK-A','retry remains per attachment');
+a = g._post({op:'hikReplyGet',key:KEY,serial:SER,shortSerial:SS,pc:'C'});
+eq(a.found,false,'another PC cannot claim an attachment already served');
+g._now(g._t()+31*86400000); g.scanHikReplies();
+ok(Object.values(g._files).every(f=>f.trashed),'expiry removes every file in a multiple-attachment record');
+g = env(); g._props.STATUS_PUSH_KEY = KEY; g.setupHikRelay();
+g._mail('ambiguous', 'support@hikvision.com', 'Reset '+SER+' and '+ser2, 'Two files', [g._blob('one.xml','UNLOCK-A','application/xml'),g._blob('two.xml','UNLOCK-B','application/xml')]);
+g.scanHikReplies();
+a = g._post({op:'hikReplyGet',key:KEY,serial:SER,shortSerial:SS,pc:'A'});
+eq(a.found,false,'multiple attachments with no individual serial are never guessed');
+eq(g.unmatchedHikReplies().length,1,'ambiguous attachments remain visible for manual handling');
+eq(Array.from(g.hrSerials_(nvrSerial)),[nvrSerial],'the complete slash serial is extracted without splitting it');
+console.log('hikrelay total: ' + pass + ' ok');

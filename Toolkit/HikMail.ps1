@@ -145,9 +145,10 @@ function Find-HikReplyMatches($Devices, $Messages) {
     }
     foreach ($c in $cands) {
       $txt = $l1.GetString($c.bytes); $hit = $null; $how = ''
+      $matchName = [uri]::UnescapeDataString([string]$c.name)
       foreach ($d in @($Devices)) {
         $sn = [string]$d.serial; $sh = [string]$d.shortSerial; $mac = ([string]$d.mac) -replace '[-:]', ''
-        if ($sn -and ($c.name -like ('*' + $sn + '*') -or $txt -like ('*' + $sn + '*'))) { $hit = $d; $how = 'serial'; break }
+        if ($sn -and ($matchName -like ('*' + $sn + '*') -or $txt -like ('*' + $sn + '*'))) { $hit = $d; $how = 'serial'; break }
       }
       if (-not $hit) { foreach ($d in @($Devices)) { $sh = [string]$d.shortSerial; if ($sh -and ($c.name -like ('*' + $sh + '*') -or $txt -like ('*' + $sh + '*'))) { if ($hit) { $hit = $null; $how = 'ambiguous'; break }; $hit = $d; $how = 'short serial' } } }
       if (-not $hit) { foreach ($d in @($Devices)) { $mac = ([string]$d.mac) -replace '[-:]', ''; if ($mac -and (($txt -replace '[-:]', '') -match ('(?i)' + $mac))) { $hit = $d; $how = 'MAC'; break } } }

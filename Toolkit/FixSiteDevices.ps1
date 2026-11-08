@@ -813,8 +813,26 @@ function Read-FsSecrets([string]$dir, [string]$site) {
   if (-not $r.unreadable -and ($script:FsLastWasLegacy -or $fromLegacy) -and -not $script:FsTestSecrets) { try { Save-FsSecrets $dir $r; if ($fromLegacy) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }; Fs-LogLine 'secret store moved to the machine-wide (LocalMachine) store' } catch {} }
   return $r
 }
+# A first save must be private even when the installer has never run. LocalMachine DPAPI is readable by anyone who can read
+# the file, so create and protect the directory BEFORE a password (including its temporary file) is written.
+$script:FsVaultAcl = $null   # tests: { param($dir) -> bool }
+function Initialize-FsSecretDirectory([string]$dir) {
+  New-Item -ItemType Directory -Force -Path $dir -ErrorAction Stop | Out-Null
+  if ($script:FsTestSecrets) { return }
+  if ($script:FsVaultAcl) { if (-not (& $script:FsVaultAcl $dir)) { throw 'The password folder could not be made private. No password was saved.' }; return }
+  if ($env:OS -ne 'Windows_NT') { return }
+  $acl = New-Object Security.AccessControl.DirectorySecurity
+  $acl.SetAccessRuleProtection($true, $false)
+  $sids = @('S-1-5-32-544', 'S-1-5-18', [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) | Select-Object -Unique
+  foreach ($sid in $sids) {
+    $rule = New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($sid)), 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')
+    $acl.AddAccessRule($rule)
+  }
+  Set-Acl -LiteralPath $dir -AclObject $acl -ErrorAction Stop
+}
 function Save-FsSecrets([string]$dir, $sec) {
-  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $ErrorActionPreference = 'Stop'
+  Initialize-FsSecretDirectory $dir
   $keep = [ordered]@{ site = $sec.site; password = $sec.password; known = @($sec.known); nvr = $sec.nvr; cams = $(if ($sec.PSObject.Properties['cams'] -and $sec.cams) { $sec.cams } else { @{} }); rollback = $sec.rollback; bitwardenSaved = [bool]$sec.bitwardenSaved; shownOnce = [bool]$sec.shownOnce; updated = (Get-Date -Format 's') }
   $p = Get-FsSecretPath $dir $sec.site; $tmp = $p + '.tmp'
   [IO.File]::WriteAllText($tmp, (Protect-FsText ($keep | ConvertTo-Json -Depth 6 -Compress)))
@@ -839,12 +857,12 @@ function Get-FsSitePrefix($cfg, [string]$dir) {
   if (-not (Test-FsSitePrefix $p)) { $p = '' }
   return $p
 }
-function Save-FsSitePrefix([string]$dir, [string]$p) { New-Item -ItemType Directory -Force -Path $dir | Out-Null; [IO.File]::WriteAllText((Join-Path $dir 'password-word.dat'), (Protect-FsText $p)) }
+function Save-FsSitePrefix([string]$dir, [string]$p) { Initialize-FsSecretDirectory $dir; [IO.File]::WriteAllText((Join-Path $dir 'password-word.dat'), (Protect-FsText $p)) }
 # 2.2.0: Install-Toolkit (run as an admin) moves every 2.1 store it can read into vault\ as LocalMachine. Returns { moved; unreadable = @(files) }.
 function Convert-FsSecretStores([string]$FromDir, [string]$ToDir) {
   $moved = 0; $bad = @()
   if (-not (Test-Path -LiteralPath $FromDir)) { return [pscustomobject]@{ moved = 0; unreadable = @() } }
-  New-Item -ItemType Directory -Force -Path $ToDir | Out-Null
+  Initialize-FsSecretDirectory $ToDir
   foreach ($f in @(Get-ChildItem -LiteralPath $FromDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'site-*.dat' -or $_.Name -eq 'password-word.dat' })) {
     $dst = Join-Path $ToDir $f.Name
     if (Test-Path -LiteralPath $dst) { continue }

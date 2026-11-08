@@ -16,7 +16,7 @@ if (-not $py) { Check 'python for the mocks' $false; Write-Output ('RESULT ' + $
 $mp = 18192; $mb = 'http://127.0.0.1:' + $mp
 $mock = Start-Process -FilePath $py -ArgumentList @($mockPy, $mp) -PassThru -WindowStyle Hidden
 $logs = Join-Path $tmp 'logs'; $runs = Join-Path $tmp 'runs'
-function W { return @(((Invoke-WebRequest ($mb + '/mockctl/writes') -UseBasicParsing).Content | ConvertFrom-Json)) }
+function W { $v = ((Invoke-WebRequest ($mb + '/mockctl/writes') -UseBasicParsing).Content | ConvertFrom-Json); foreach ($item in $v) { $item } }
 function Fx([string]$fix, [string]$ip, [string]$ans, [string[]]$more = @()) {
   $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $fx -Fix $fix -Ip $ip @more -RunsDir $runs -LogsDir $logs -MockUrl $mb -TestAnswer $ans -CloseAfter 0 -WaitSec 0 -Site WI-TEST 2>&1 | Out-String
   return @{ out = $o; j = (Read-TkJson (Join-Path $logs 'fix-last.json')); code = $LASTEXITCODE }

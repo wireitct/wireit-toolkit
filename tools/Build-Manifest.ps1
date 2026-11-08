@@ -1,6 +1,6 @@
 <#
  Build-Manifest.ps1 - writes version.json (the update manifest) from the files git tracks on this branch (2.2.5: without git, from the
- files on disk under the allowed folders, minus what is never shipped).
+ checked-in tools/shipped-files.txt inventory).
  Not shipped (tools\ is outside the Toolkit's allowed folders). Windows PowerShell 5.1 or pwsh 7.
  Usage: powershell -File tools\Build-Manifest.ps1 -Commit <40-hex commit that holds exactly these files> [-Released yyyy-MM-dd] [-Notes '...']
  The commit must be the one whose files are listed (commit the code first, then build the manifest naming that commit, then commit version.json):
@@ -25,13 +25,14 @@ $version = $m.Groups[1].Value
 $m2 = [regex]::Match($core, "\`$script:TkAllowedTop\s*=\s*@\(([^)]*)\)"); if (-not $m2.Success) { throw 'TkAllowedTop not found in ToolkitCore.ps1' }
 $tops = @([regex]::Matches($m2.Groups[1].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
 if (-not $Notes -and (Test-Path $Out)) { try { $old = [IO.File]::ReadAllText($Out) | ConvertFrom-Json; if ([string]$old.version -eq $version) { $Notes = [string]$old.notes } } catch {} }
-# 2.2.5: crew PCs have no git. Without it (or outside a clone) the files are listed from disk: everything under the allowed folders except
-# what is never shipped (config.json, logs, vault/secrets/ipc/inbox, Python caches) - the same rule Test-Fix222 uses for "shipped".
+# An exported tree has no git index. Its checked-in release inventory is the authority, never arbitrary files a tool created on disk.
 function Get-BmDiskFiles([string]$root, [string[]]$tops) {
-  foreach ($t in $tops) {
-    $d = Join-Path $root $t; if (-not (Test-Path -LiteralPath $d)) { continue }
-    Get-ChildItem -LiteralPath $d -Recurse -File | Where-Object { $_.Name -ne 'config.json' -and $_.Extension -ne '.pyc' -and $_.FullName -notmatch '[\\/](__pycache__|vault|secrets|ipc|inbox|logs)[\\/]' } |
-      ForEach-Object { $_.FullName.Substring($root.TrimEnd('\', '/').Length + 1).Replace('\', '/') }
+  $inventory = Join-Path $root 'tools/shipped-files.txt'
+  if (-not (Test-Path -LiteralPath $inventory)) { throw 'tools/shipped-files.txt is missing. Build from a complete source export, not an installed PC folder.' }
+  foreach ($p in @(Get-Content -LiteralPath $inventory | Where-Object { $_ -and -not $_.StartsWith('#') })) {
+    if ($p -match '\.\.|[\\:]|^/' -or $tops -notcontains ($p -split '/')[0]) { throw ('Invalid release inventory path: ' + $p) }
+    if (-not (Test-Path -LiteralPath (Join-Path $root $p) -PathType Leaf)) { throw ('Release file missing: ' + $p) }
+    $p
   }
 }
 $list = $null

@@ -377,6 +377,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
     $ownIp = ''; $chLooksAt = $null
     if ($d -and $guess.ContainsKey($d.key)) { $g = $guess[$d.key]; $c.channel = $g.ch.channel; $ch = $g.ch.channel; $c.nvr = $g.ch.nvr; $ownIp = $g.ch.ip; if ($g.ch.name -and $c.name -like 'Camera *') { $c.name = $g.ch.name }; $chLooksAt = $g.ch.ip; if (-not $g.sure) { $c.why += ('matched to NVR ch ' + $g.ch.channel + ' by order (no site list): check the picture name after') } }
     elseif ($e) { $ownIp = $c.listIp; if ($ch -and $d -and -not $d.nvr) { $ci = Get-FsChannelFor $observed '' $ch ([string](Get-FsProp $e 'nvr' '')); if ($ci) { $c.nvr = $ci.nvr; $chLooksAt = [string](Get-FsProp $ci.ch 'ip' '') } } }
+    $c.nvrOriginal = [string]$c.nvr
     if ($c.nvr -and $nvrIpMap.ContainsKey($c.nvr)) { $c.nvr = $nvrIpMap[$c.nvr] }
     if (-not $d) {
       $c.state = 'missing'
@@ -468,7 +469,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
       if ($taken.ContainsKey([string]$lc.nvr + '|' + [string]$lc.channel)) { continue }
       $nvT = $(if ($nvrIpMap.ContainsKey([string]$lc.nvr)) { $nvrIpMap[[string]$lc.nvr] } else { [string]$lc.nvr })
       $c = [ordered]@{ key = ('nvrch:' + $lc.nvr + ':' + $lc.channel); name = $(if ($lc.name) { [string]$lc.name } else { 'Camera ch ' + $lc.channel }); brand = ''; model = ''; mac = ''; serial = ''; firmware = ''
-        ip = ''; listIp = [string]$lc.ip; target = ''; channel = [int]$lc.channel; nvr = $nvT; switch = ''; port = $null; state = 'missing'
+        ip = ''; listIp = [string]$lc.ip; target = ''; channel = [int]$lc.channel; nvr = $nvT; nvrOriginal = [string]$lc.nvr; switch = ''; port = $null; state = 'missing'
         why = @('missing - NVR ch ' + $lc.channel + ' has no video and nothing answers at ' + $lc.ip + ': go check that camera (power, cable, switch port)')
         steps = @(); login = ''; problem = $false; broken = $true; pwOnly = $false; settings = $null; onList = $false; online = $false; fromNvr = $true }
       $plan.missing += [pscustomobject]$c; $plan.cams += [pscustomobject]$c
@@ -572,7 +573,15 @@ function Format-FsCheckLine([string]$name, $results) {
 $script:FsOk = [string][char]0x2705; $script:FsBad = [string][char]0x274C
 
 # ---------------- the site list ----------------
+function Resolve-FsPlanNvrAddresses($plan) {
+  foreach ($c in @($plan.cams)) {
+    $original = [string](Get-FsProp $c 'nvrOriginal' $c.nvr)
+    $n = @($plan.nvrs | Where-Object { $_.ip -eq $original }) | Select-Object -First 1
+    if ($n) { $c.nvr = $(if ($n.target -and (Get-FsProp $n 'moved' $false)) { [string]$n.target } else { [string]$n.ip }) }
+  }
+}
 function New-FsSiteList([string]$site, [string]$siteId, $plan, $observed) {
+  Resolve-FsPlanNvrAddresses $plan
   # "Save this as the site's list": what is there now, after the fixes (targets where a camera was moved). No passwords.
   $cams = @(); foreach ($c in @($plan.cams | Where-Object { $_.state -ne 'missing' })) {
     # 2.2.3 (Codex #38): where the camera IS now: the new address only when the move was verified (ipNow), never the planned one

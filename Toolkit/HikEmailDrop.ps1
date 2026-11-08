@@ -10,7 +10,7 @@ function Get-HikWaitingDevices([string]$ToolkitDir, [string]$SessionDir = '') {
   $list = @()
   if ($SessionDir) { $f = Join-Path $SessionDir 'hik.json'; if (Test-Path -LiteralPath $f) { try { $j = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json; $list = @($j.waiting | Where-Object { $_ }) } catch {} } }
   if (-not $list.Count) { $f = Join-Path (Get-HikInboxDir $ToolkitDir) 'waiting.json'; if (Test-Path -LiteralPath $f) { try { $j = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json; $list = @($j.devices | Where-Object { $_ }) } catch {} } }
-  return @($list | Where-Object { [string]$_.serial -match '^[A-Za-z0-9-]{6,48}$' })
+  return @($list | Where-Object { [string]$_.serial -match '^[A-Za-z0-9][A-Za-z0-9/._-]{5,127}$' })
 }
 function ConvertTo-HikCode([string]$Text) {
   $t = ([string]$Text).Trim() -replace '[\s\-]', ''
@@ -20,7 +20,9 @@ function ConvertTo-HikCode([string]$Text) {
 # returns { ok; why; path }
 function Save-HikEmailDrop([string]$InboxDir, [string]$Serial, [string]$File = '', [string]$Code = '') {
   $no = { param($w) return [pscustomobject]@{ ok = $false; why = $w; path = '' } }
-  if ([string]$Serial -notmatch '^[A-Za-z0-9-]{6,48}$') { return (& $no 'pick the device first') }
+  if ([string]$Serial -notmatch '^[A-Za-z0-9][A-Za-z0-9/._-]{5,127}$') { return (& $no 'pick the device first') }
+  # Keep the complete serial for matching; only its filename representation is escaped (a slash is common in NVR models).
+  $fileSerial = [uri]::EscapeDataString($Serial)
   New-Item -ItemType Directory -Force -Path $InboxDir | Out-Null
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
   if ($File) {
@@ -30,13 +32,13 @@ function Save-HikEmailDrop([string]$InboxDir, [string]$Serial, [string]$File = '
     if ($fi.Length -gt 2MB) { return (& $no 'that file is too big to be Hikvision''s reply (more than 2 MB)') }
     if ($fi.Extension -match '(?i)^\.(json|exe|bat|cmd|ps1|lnk|dll|vbs|js)$') { return (& $no 'that is not Hikvision''s reply file') }
     $ext = $(if ($fi.Extension -match '^\.[A-Za-z0-9]{1,5}$') { $fi.Extension.ToLower() } else { '.xml' })
-    $dst = Join-Path $InboxDir ('drop-' + $Serial + '-' + $stamp + $ext)
+    $dst = Join-Path $InboxDir ('drop-' + $fileSerial + '-' + $stamp + $ext)
     [IO.File]::WriteAllBytes($dst + '.tmp', [IO.File]::ReadAllBytes($fi.FullName)); Move-Item -LiteralPath ($dst + '.tmp') -Destination $dst -Force
     return [pscustomobject]@{ ok = $true; why = ''; path = $dst }
   }
   $c = ConvertTo-HikCode $Code
   if (-not $c) { return (& $no 'paste the code from Hikvision''s email (letters and digits only)') }
-  $dst = Join-Path $InboxDir ('drop-' + $Serial + '-' + $stamp + '-code.txt')
+  $dst = Join-Path $InboxDir ('drop-' + $fileSerial + '-' + $stamp + '-code.txt')
   [IO.File]::WriteAllText($dst + '.tmp', $c); Move-Item -LiteralPath ($dst + '.tmp') -Destination $dst -Force
   return [pscustomobject]@{ ok = $true; why = ''; path = $dst }
 }

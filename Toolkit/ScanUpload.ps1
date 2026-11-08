@@ -22,7 +22,13 @@ $ErrorActionPreference = 'Stop'
 if ($ApiUrl) { $script:CvApi = $ApiUrl }
 if (-not $CamResetDir) { $CamResetDir = Join-Path (Split-Path -Parent $here) 'CamReset' }
 $box = Join-Path $here 'outbox'
-function Pending-Path([string]$s) { return (Join-Path $box ('scan-' + (($s -replace '[^A-Za-z0-9_-]+', '_').Trim('_')) + '.json')) }
+function Pending-Path([string]$s) { return (Join-Path $box ('scan-' + (Get-CvSiteFolderName $s) + '.json')) }
+function Remove-OlderPendingSite([string]$site, [string]$keep = '') {
+  foreach ($f in @(Get-ChildItem -LiteralPath $box -Filter 'scan-*.json' -ErrorAction SilentlyContinue)) {
+    if ($f.FullName -eq $keep) { continue }
+    try { $v = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json; if ([string]$v.site -eq $site) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop } } catch {}
+  }
+}
 function Say-Lines($lines) {
   foreach ($l in @($lines)) { if (-not $l) { continue }; if ($l.k -eq 'red') { Write-Output ('!! ' + $l.t) } else { Write-Output $l.t } }
 }
@@ -41,6 +47,7 @@ if ($key -and (Test-Path $box)) {
   foreach ($f in @(Get-ChildItem $box -Filter 'scan-*.json' -ErrorAction SilentlyContinue)) {
     if ($f.FullName -eq (Pending-Path $Site)) { continue }   # 2.2.3 (Codex #59): replaced only once the new list is sent or kept (below)
     try { $o = Get-Content $f.FullName -Raw | ConvertFrom-Json } catch { Remove-Item $f.FullName -Force; continue }
+    if ([string]$o.site -eq $Site) { continue }   # an old filename for this site is replaced only after this run is sent or saved
     $b = @{}; foreach ($p in $o.PSObject.Properties) { $b[$p.Name] = $p.Value }; $b.key = $key
     $r0 = Send-CvBody $b
     if ($r0 -and $r0.ok) { Remove-Item $f.FullName -Force; Write-Output ('Sent the list that was waiting for ' + [string]$o.site + '.') }
@@ -56,11 +63,12 @@ if (-not $key) {
 }
 # 2.2.3 (Codex #59): a "busy / too many" answer is not a refusal: the list waits like a no-answer one (it was lost in 2.2.2)
 $retry = (-not $r) -or ($r -and -not $r.ok -and ([string]$r.msg) -match '(?i)busy|too many|try again')
-if ($r -and $r.ok) { Remove-Item -LiteralPath (Pending-Path $Site) -Force -ErrorAction SilentlyContinue }
+if ($r -and $r.ok) { Remove-OlderPendingSite $Site }
 if ($retry) {
   # keep ONLY the newest list per site (no pile-up); the key is never written
   New-Item -ItemType Directory -Force -Path $box | Out-Null
   ($body | ConvertTo-Json -Depth 5 -Compress) | Set-Content -Path (Pending-Path $Site) -Encoding UTF8
+  Remove-OlderPendingSite $Site (Pending-Path $Site)
 }
 $lines = Format-TkScanAnswer $r $Site
 Say-Lines $lines

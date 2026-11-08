@@ -119,3 +119,5 @@ Check 'upload: no password, no user, no camera names' { $b = $upState.Body; $b.L
 Check 'upload off without a code' { (Send-ScReport $mR $mD 'WI-061' '') -like 'Upload is off*' }
 Check 'upload goes to the WireIt service log' { $upOld -eq 'https://wireit-api.wireitct.workers.dev/' }
 Write-Output ('RESULT ' + $pass + ' passed, ' + $fail + ' failed')
+
+exit $fail

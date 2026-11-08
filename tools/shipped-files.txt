@@ -1,0 +1,76 @@
+# Release files for a complete source export without a git index.
+CamReset/Find Cameras.cmd
+CamReset/Find-Cameras.ps1
+CamReset/Install-CamReset.ps1
+CamReset/Make-Request.ps1
+CamReset/README.txt
+FixNVR/Check NVR.cmd
+FixNVR/Fix NVR.cmd
+FixNVR/FixNVR.ps1
+FixNVR/NVR Snapshot.cmd
+FixNVR/README.txt
+NetCheck/NetCheck.ps1
+NetCheck/Network Check.cmd
+NetCheck/README.txt
+Toolkit/CamViews.ps1
+Toolkit/FixIt.ps1
+Toolkit/FixSite.ps1
+Toolkit/FixSiteBw.ps1
+Toolkit/FixSiteCore.ps1
+Toolkit/FixSiteDevices.ps1
+Toolkit/FixSiteWindow.ps1
+Toolkit/HikEmailDrop.ps1
+Toolkit/HikMail.ps1
+Toolkit/HikPortal.ps1
+Toolkit/HikReset.ps1
+Toolkit/HikResetFlow.ps1
+Toolkit/HikSadp.ps1
+Toolkit/Install-Toolkit.ps1
+Toolkit/NvrCheck.ps1
+Toolkit/README.txt
+Toolkit/ScanUpload.ps1
+Toolkit/Set upload key.cmd
+Toolkit/ToolkitCore.ps1
+Toolkit/ToolkitMigrate.ps1
+Toolkit/ToolkitRecover.ps1
+Toolkit/WireIt Toolkit.cmd
+Toolkit/WireItToolkit.ps1
+Toolkit/modules/NvrHealth/NvrFix.ps1
+Toolkit/modules/NvrHealth/NvrHealth.psm1
+Toolkit/modules/NvrHealth/firmware-latest.json
+Toolkit/modules/NvrHealth/tests/Test-NvrHealth.ps1
+Toolkit/modules/NvrHealth/tests/mock_devices.py
+Toolkit/tests/Test-Fix22.ps1
+Toolkit/tests/Test-Fix221.ps1
+Toolkit/tests/Test-Fix222.ps1
+Toolkit/tests/Test-Fix223.ps1
+Toolkit/tests/Test-Fix224.ps1
+Toolkit/tests/Test-Fix225.ps1
+Toolkit/tests/Test-FixIt.ps1
+Toolkit/tests/Test-FixSite.ps1
+Toolkit/tests/Test-HikReset.ps1
+Toolkit/tests/Test-Review225.ps1
+Toolkit/tests/Test-Toolkit.ps1
+Toolkit/tests/TestPython.ps1
+Toolkit/tests/fixsite/byw-scan.json
+Toolkit/tests/fixsite/byw-site-list.json
+Toolkit/tests/fixsite/fakebw.py
+Toolkit/tests/fixsite/lieber-scan.json
+Toolkit/tests/fixsite/lieber-site-list.json
+Toolkit/tests/fixsite/mock-221.json
+Toolkit/tests/fixsite/mock-222.json
+Toolkit/tests/fixsite/mock-byw.json
+Toolkit/tests/fixsite/mock-lieber.json
+Toolkit/tests/fixsite/mock-mixed.json
+Toolkit/tests/fixsite/mock-newsite.json
+Toolkit/tests/fixsite/mock_site.py
+Toolkit/tests/fixsite/newsite-scan.json
+Toolkit/tests/hikreset/argv_dump.py
+Toolkit/tests/hikreset/fake_hik_form.html
+Toolkit/tests/hikreset/fake_sadp.py
+Toolkit/tests/hikreset/minicrypto.py
+Toolkit/tests/hikreset/mock_relay.py
+Toolkit/tests/mock_scan_server.py
+Toolkit/tests/review225/scenarios.py
+Toolkit/wireit-logo.png
+Toolkit/wireit.ico

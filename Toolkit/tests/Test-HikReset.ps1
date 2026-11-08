@@ -271,7 +271,10 @@ if (-not $NoPortal) {
   if (-not $br) { Write-Host '  skip  no Chrome/Edge here' }
   else {
     $script:PortalBrowser = $br; if ($IsLinux) { $script:PortalExtraArgs = @('--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage') }
-    $page = Join-Path $fx 'fake_hik_form.html'; $script:PortalUrl = $(if ($IsLinux) { 'file://' + $page } else { ([uri]$page).AbsoluteUri })
+    # A managed browser may block file:// pages. Serve this fixture on loopback, with a quoted command line on both hosts.
+    $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $listener.Start(); $httpPort = $listener.LocalEndpoint.Port; $listener.Stop()
+    $fixtureServer = Start-Process -FilePath $py -ArgumentList (Join-HikArgs @('-m', 'http.server', [string]$httpPort, '--bind', '127.0.0.1', '--directory', $fx)) -PassThru -RedirectStandardError (Join-Path $tmp 'fixture-http.err')
+    $script:PortalUrl = 'http://127.0.0.1:' + $httpPort + '/fake_hik_form.html'
     $s = Start-HikBrowserSession $script:PortalUrl
     Check ($null -ne $s) 'portal: browser window opened with its own throw-away profile'
     if ($s) {
@@ -320,7 +323,11 @@ Write-Host '5. secrets'
 $all = ($logLines -join "`n")
 Check ($all -notmatch [regex]::Escape($PW)) 'the new password is in no log line'
 Check ($all -notmatch [regex]::Escape($devs[1].unlock) -and $all -notmatch [regex]::Escape($devs[1].code)) 'no request code or unlock code in any log line'
-} finally { Stop-Fake $fk; try { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue } catch {} }
+} finally {
+  if ($s) { try { Stop-HikBrowserSession $s } catch {} }
+  if ($fixtureServer) { try { if (-not $fixtureServer.HasExited) { $fixtureServer.Kill(); $fixtureServer.WaitForExit() } } catch {} }
+  Stop-Fake $fk; try { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue } catch {}
+}
 Write-Host ''
 Write-Host ($script:pass.ToString() + ' passed, ' + $script:fail + ' failed')
 exit $script:fail

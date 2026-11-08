@@ -159,6 +159,33 @@ function Err-Body($ex) {
 # Nov 3 2026 (YKW Elm live test): on that DW server .NET HTTPS to https://127.0.0.1:7001 failed ("underlying connection was closed")
 # while curl.exe -k and plain http on 7001 worked. Fallbacks: curl.exe (ships with Windows 10/11), then http for this PC only.
 $script:ViaCurl = @{}
+$script:NhSecretTls = @{}
+function Test-NhSecretRequest([string]$path, [string]$body) {
+  return ($body -match '(?i)<(?:\w+:)?(?:password|loginPassword)(?:\s|>)|"(?:password|passwd|pwd)"\s*:' -or $path -match '(?i)[?&](?:pwd|pwdOld|password)=')
+}
+function Get-NhNetErrorKind($ex) {
+  for ($e = $ex; $e; $e = $e.InnerException) {
+    if ($e -is [Net.Sockets.SocketException] -and [string]$e.SocketErrorCode -eq 'ConnectionRefused') { return 'refused' }
+  }
+  return 'failed'
+}
+function Invoke-NhSecretHttp([hashtable]$a) {
+  $k = [string]$a.Ip + ':' + [int]$a.Port
+  $a.SecretTransport = $true
+  if ($script:NhSecretTls[$k] -ne 'no') {
+    $a.Scheme = 'https'
+    $r = Http @a
+    if ($r.code -gt 0) { $script:NhSecretTls[$k] = 'yes'; return $r }
+    if ($script:NhSecretTls[$k] -eq 'yes' -or $r.errKind -ne 'refused') {
+      Bad ('HTTPS did not work on ' + $a.Ip + ': the password was NOT sent over plain HTTP.')
+      return $r
+    }
+    $script:NhSecretTls[$k] = 'no'
+  }
+  Warn ($a.Ip + ' has no HTTPS (connection refused): the password goes over plain HTTP on this network.')
+  $a.Scheme = 'http'
+  return (Http @a)
+}
 function Http-Curl([string]$Uri, [string]$Method = 'GET', [string]$Body = '', [string]$ContentType = '', [hashtable]$Headers = $null, [int]$Timeout = 10) {
   $curl = Join-Path $env:SystemRoot 'System32\curl.exe'; if (-not (Test-Path $curl)) { $c = Get-Command curl.exe -ErrorAction SilentlyContinue; if ($c) { $curl = $c.Source } else { return $null } }
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ('nvrh-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $tmp -Force -WhatIf:$false -Confirm:$false | Out-Null
@@ -180,7 +207,11 @@ function Http-Curl([string]$Uri, [string]$Method = 'GET', [string]$Body = '', [s
 }
 function Http {
   param([string]$Ip, [string]$Method = 'GET', [string]$Path, [string]$Body = '', [string]$ContentType = 'application/xml',
-        $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0, [byte[]]$BodyBytes = $null, [string]$OutFile = '')
+        $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0, [byte[]]$BodyBytes = $null, [string]$OutFile = '', [switch]$SecretTransport)
+  if (-not $script:Opt.MockUrl -and -not $SecretTransport -and (Test-NhSecretRequest $Path $Body)) {
+    $secretArgs = @{}; foreach ($key in $PSBoundParameters.Keys) { $secretArgs[$key] = $PSBoundParameters[$key] }
+    return (Invoke-NhSecretHttp $secretArgs)
+  }
   if (-not $Timeout) { $Timeout = [int]$script:Opt.TimeoutSec }
   # 2.2.3 (Codex #21): -OutFile = the answer's bytes straight to a file (a config export is binary: never through a string)
   if ($OutFile) { $a = @{ Uri = ((Base $Ip $Port $Scheme) + $Path); Method = $Method; UseBasicParsing = $true; TimeoutSec = $Timeout; OutFile = $OutFile; ErrorAction = 'Stop' }; if ($Credential) { $a.Credential = $Credential }; if (-not $script:IsPs5) { if (Test-WireItLanHost $Ip) { $a.SkipCertificateCheck = $true }; if ($Credential) { $a.AllowUnencryptedAuthentication = $true } }
@@ -210,7 +241,7 @@ function Http {
       if ($code -eq 0 -and $a.Uri -like 'https://*' -and -not $Credential -and -not $script:Opt.MockUrl) {
         $c = Http-Curl -Uri $a.Uri -Method $Method -Body $Body -ContentType $ContentType -Headers $Headers -Timeout $Timeout
         if ($c -and $c.code -gt 0) { $script:ViaCurl[$hk] = $true; Log ('  -> ' + $c.code + ' (curl.exe, .NET HTTPS failed)'); return $c }
-        if ($Ip -in @('127.0.0.1', 'localhost', '::1')) {   # this PC only: plain http on the same port
+        if (-not $SecretTransport -and $Ip -in @('127.0.0.1', 'localhost', '::1')) {   # this PC only: plain http on the same port, never a password-bearing request
           try { $a.Uri = $a.Uri -replace '^https://', 'http://'; $r = Invoke-WebRequest @a; $c2 = [string]$r.Content; if ($r.Content -is [byte[]]) { $c2 = [Text.Encoding]::UTF8.GetString($r.Content) }; Log ('  -> ' + [int]$r.StatusCode + ' (http on this PC)'); return @{ code = [int]$r.StatusCode; body = $c2; err = '' } } catch {}
         }
       }
@@ -218,7 +249,7 @@ function Http {
         $key = $Ip + ':' + $Port
         if (-not $script:Scheme.ContainsKey($key)) { $script:Scheme[$key] = 'https'; $a.Uri = ((Base $Ip $Port) + $Path); continue }
       }
-      return @{ code = $code; body = $eb; err = $_.Exception.Message }
+      return @{ code = $code; body = $eb; err = $_.Exception.Message; errKind = (Get-NhNetErrorKind $_.Exception) }
     }
   }
   return @{ code = 0; body = ''; err = 'no answer' }

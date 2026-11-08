@@ -28,6 +28,7 @@ function Get-TkRealOps {
     isLocked   = { param($p) try { return [bool](Get-Acl -LiteralPath $p).AreAccessRulesProtected } catch { return $false } }
     adminUsers = { try { return @(Get-LocalGroupMember -SID $script:TkSidAdmins -ErrorAction Stop | Where-Object { $_.ObjectClass -eq 'User' } | ForEach-Object { [string]$_.SID.Value }) } catch { return @() } }
     exists     = { param($p) return (Test-Path -LiteralPath $p) }
+    create     = { param($p) New-Item -ItemType Directory -Force -Path $p -ErrorAction Stop | Out-Null }
     remove     = { param($p) Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction Stop }
     children   = { param($p) return @(Get-ChildItem -LiteralPath $p -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) }
   }
@@ -59,7 +60,11 @@ function Invoke-TkMigration {
   }
   # 4) vault\ and secrets\: Administrators + SYSTEM + the installing owner only (every run: cheap, and repairs a loosened one)
   foreach ($sd in $secret) {
-    if (-not (& $Ops.exists $sd)) { continue }
+    if (-not (& $Ops.exists $sd)) {
+      try {
+        if ($Ops.ContainsKey('create')) { & $Ops.create $sd } else { New-Item -ItemType Directory -Force -Path $sd -ErrorAction Stop | Out-Null }
+      } catch { throw ('Cannot create the private password folder ' + $sd + ': ' + $_.Exception.Message) }
+    }
     if ((& $Ops.icacls (Get-TkSecretLockArgs $sd $OwnerSid)) -ne 0) { [void]$warn.Add('Could not lock ' + $sd + ' to administrators + SYSTEM + you.') }
   }
   # 5) #26: the upload key readable by each local admin USER without elevation (that one file only)

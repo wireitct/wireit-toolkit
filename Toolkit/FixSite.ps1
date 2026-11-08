@@ -385,7 +385,8 @@ if ($Mode -eq 'Rollback') {
         # 2.2.3 (Codex #20): settings count as back only when the camera reads them back as they were
         if ($okS) { $rd = Get-FsStream $ip $c.brand $cr; $okS = [bool]($rd -and -not @(Get-FsSettingsDiff $rd $want).Count) }
         $res += [pscustomobject]@{ text = 'settings back'; ok = $okS }; if ($okS) { & $markDone ($ck + '|settings') } } else { & $markDone ($ck + '|settings') } }
-    if ($c.password_changed -and $oldPw -and -not (& $isDone ($ck + '|password'))) {
+    # An interrupted write may have taken effect before password_changed was saved. Reconcile every attempted write.
+    if (($c.password_changed -or $c.password_attempted) -and $oldPw -and -not (& $isDone ($ck + '|password'))) {
       $ok = $(if ($pw -ceq $oldPw) { $true } else { [void](Set-FsPassword $ip $c.brand $cr $oldPw); (Test-FsLogin $ip $c.brand $oldPw) -eq 'ok' })   # 2.2.3 (Codex #20): back = the old password logs in
       if ($ok) { $pw = $oldPw; $cr = Fs-Cred $pw; $mk = ConvertTo-FsMac ([string]$c.mac); if ($mk) { $sec.cams[$mk] = $oldPw }; & $markDone ($ck + '|password') }
       $res += [pscustomobject]@{ text = 'old password back'; ok = $ok }
@@ -423,7 +424,7 @@ if ($Mode -eq 'Rollback') {
     $line = Format-FsCheckLine $c.name $res; if ($line -like ('*' + $script:FsBad + '*')) { $bad++ }; Say ('  ' + $line)
   }
   # 2.0.3: NVR passwords back (before the NVR moves back, at the address the change was made on)
-  foreach ($np in @($r0.nvr_passwords | Where-Object { $_ -and $_.changed })) {
+  foreach ($np in @($r0.nvr_passwords | Where-Object { $_ -and ($_.changed -or $_.attempted) })) {
     $nip0 = [string]$np.ip; if (& $isDone ('nvrpw|' + $nip0)) { continue }
     $oldN = $(if ($old.ContainsKey('nvr|' + $nip0)) { [string]$old['nvr|' + $nip0] } else { '' })
     $nip = Resolve-FsUndoNvrIp @($r0.nvrs) $nip0 $isDone   # 2.2.2 (H8): moved back by an earlier Undo -> its old address
@@ -806,6 +807,8 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'password' })) {
   else { $l = Format-FsCheckLine ('NVR ' + $nip) @([pscustomobject]@{ text = 'the NVR refused the new password - it keeps its old one'; ok = $false }); $badCount++ }
   $results += $l; Say $l $(if ($np.changed) { 'Green' } else { 'Red' })
 }
+# Use the VERIFIED address, including a different free target picked at the live check, or the original address after failure.
+Resolve-FsPlanNvrAddresses $plan
 $nvrCred = @{}; foreach ($k in @($nvrPw.Keys)) { $nvrCred[$k] = Fs-Cred $nvrPw[$k] }
 function Undo-CamPassword($c, [string]$ip, [string]$oldPw) {
   # 2.0.3: the picture did not come back after the password change: the camera's old password goes back on it AND on its NVR channel

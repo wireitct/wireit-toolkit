@@ -59,9 +59,9 @@ function setupHikRelay() {
   return { ok: true, folder: id, address: hrAddress_(), trigger: have ? 'already there' : 'made' };
 }
 
-/** Upper-case serial-looking words: 9-64 chars of letters/digits/dashes with both letters and digits. */
+/** Upper-case serial-looking words, including the slash in NVR model names, with both letters and digits. */
 function hrSerials_(text) {
-  var out = {}, m, re = /[A-Za-z0-9][A-Za-z0-9-]{7,62}[A-Za-z0-9]/g;
+  var out = {}, m, re = /[A-Za-z0-9][A-Za-z0-9/-]{7,126}[A-Za-z0-9]/g;
   text = String(text || '');
   while ((m = re.exec(text)) !== null) { var w = m[0].toUpperCase(); if (/[A-Z]/.test(w) && /\d/.test(w)) out[w] = 1; }
   return Object.keys(out);
@@ -106,10 +106,19 @@ function scanHikReplies() {
         var serials = hrSerials_(subject + ' ' + body + ' ' + names);
         var rec = { at: now, receivedAt: new Date(msg.getDate()).toISOString(), subject: subject.slice(0, 200), serials: serials, servedAt: 0, servedTo: '' };
         if (atts.length) {
-          var a = atts[0];
-          rec.kind = 'file'; rec.name = String(a.getName() || 'reply.bin').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100);
-          if (folder) { var f = folder.createFile(a.copyBlob ? a.copyBlob() : a); f.setName((serials[0] || 'UNMATCHED') + '__' + mid + '__' + rec.name); rec.fileId = f.getId(); }
-          else rec.data = Utilities.base64Encode(a.getBytes());
+          // Each attachment has its own serials and delivery receipt. Never hand the first device's file to all serials in a mail.
+          var replies = atts.map(function (a, index) {
+            var own = hrSerials_(String(a.getName() || ''));
+            if (!own.length && a.getDataAsString) { try { own = hrSerials_(a.getDataAsString()); } catch (err) {} }
+            if (!own.length && atts.length === 1) own = serials;
+            var item = { at: now, receivedAt: rec.receivedAt, subject: rec.subject, serials: own, servedAt: 0, servedTo: '', kind: 'file', name: String(a.getName() || 'reply.bin').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100) };
+            if (folder) { var f = folder.createFile(a.copyBlob ? a.copyBlob() : a); f.setName(((atts.length === 1 ? serials[0] : own[0]) || 'UNMATCHED') + '__' + mid + '__' + (atts.length > 1 ? index + '__' : '') + item.name); item.fileId = f.getId(); }
+            else item.data = Utilities.base64Encode(a.getBytes());
+            return item;
+          });
+          // Keep the single-file record shape compatible with already deployed clients and stored records.
+          if (replies.length === 1) rec = replies[0];
+          else { rec.kind = 'files'; rec.items = replies; rec.serials = [].concat.apply([], replies.map(function (x) { return x.serials; })); }
         } else {
           var code = hrCode_(subject + '\n' + body);
           if (!code) { rec.kind = 'none'; }
@@ -117,7 +126,7 @@ function scanHikReplies() {
         }
         // a code word is not a serial
         if (rec.code) rec.serials = rec.serials.filter(function (s) { return s !== rec.code.toUpperCase(); });
-        if (rec.kind === 'none' || !rec.serials.length) unmatched++; else filed++;
+        if (rec.kind === 'none' || !rec.serials.length || (rec.items || []).some(function (x) { return !x.serials.length; })) unmatched++; else filed++;
         p.setProperty(key, JSON.stringify(rec));
       }
     }
@@ -125,7 +134,7 @@ function scanHikReplies() {
     for (var k in all) {
       if (k.indexOf('HIKR_') !== 0) continue;
       var r = null; try { r = JSON.parse(all[k]); } catch (e) { r = null; }
-      if (r && now - Number(r.at || 0) > HR.KEEP_DAYS * 86400000) { if (r.fileId) { try { DriveApp.getFileById(r.fileId).setTrashed(true); } catch (e2) {} } p.deleteProperty(k); }
+      if (r && now - Number(r.at || 0) > HR.KEEP_DAYS * 86400000) { [r].concat(r.items || []).forEach(function (x) { if (x.fileId) { try { DriveApp.getFileById(x.fileId).setTrashed(true); } catch (e2) {} } }); p.deleteProperty(k); }
     }
     return { ok: true, filed: filed, unmatched: unmatched, seen: seen };
   } finally { lock.releaseLock(); }
@@ -134,7 +143,7 @@ function scanHikReplies() {
 /** For Moshe in the editor: replies the scan could not tie to a serial (forward the mail to a tech; the button takes it). */
 function unmatchedHikReplies() {
   var all = hrProps_().getProperties(), out = [];
-  for (var k in all) { if (k.indexOf('HIKR_') !== 0) continue; try { var r = JSON.parse(all[k]); if (!r.skip && (r.kind === 'none' || r.kind === 'untrusted' || !(r.serials || []).length)) out.push({ subject: r.subject, receivedAt: r.receivedAt, kind: r.kind, from: r.from || '' }); } catch (e) {} }
+  for (var k in all) { if (k.indexOf('HIKR_') !== 0) continue; try { var r = JSON.parse(all[k]); if (!r.skip && (r.kind === 'none' || r.kind === 'untrusted' || !(r.serials || []).length || (r.items || []).some(function (x) { return !x.serials.length; }))) out.push({ subject: r.subject, receivedAt: r.receivedAt, kind: r.kind, from: r.from || '' }); } catch (e) {} }
   return out;
 }
 
@@ -158,27 +167,32 @@ function hikReplyGet_(req) {
     return hrBadKey_();
   }
   var serial = String(req.serial || ''), ss = String(req.shortSerial || ''), pc = String(req.pc || '').replace(/[^A-Za-z0-9._-]/g, '').slice(0, 40);
-  if (!/^[A-Za-z0-9-]{4,64}$/.test(serial) || (ss && !/^[A-Za-z0-9-]{4,64}$/.test(ss))) return { ok: false, msg: 'Bad serial.' };
+  if (!/^[A-Za-z0-9][A-Za-z0-9/._-]{3,127}$/.test(serial) || (ss && !/^[A-Za-z0-9-]{4,64}$/.test(ss))) return { ok: false, msg: 'Bad serial.' };
   // 2.2.3 (Codex #51): only a reply that came AFTER this box's request file was made (and inside its 48 hours) answers it
   var nowMs = Date.now(), since = Date.parse(String(req.exportedAt || ''));
   if (isNaN(since)) since = nowMs - HR.VALID_H * 3600000;
   since = Math.max(since - 10 * 60000, nowMs - HR.VALID_H * 3600000);   // 10 min of clock skew between the PC and Google
   var lock = LockService.getScriptLock(); if (!lock.tryLock(15000)) return { ok: false, msg: 'Busy - try again in a minute.' };
   try {
-    var p = hrProps_(), all = p.getProperties(), now = Date.now(), best = null, bestKey = '';
+    var p = hrProps_(), all = p.getProperties(), now = Date.now(), best = null, bestKey = '', bestRecord = null;
     for (var key in all) {
       if (key.indexOf('HIKR_') !== 0) continue;
       var r = null; try { r = JSON.parse(all[key]); } catch (e) { continue; }
-      if (!r || r.skip || (r.kind !== 'file' && r.kind !== 'code') || !hrSerialMatch_(r, serial, ss)) continue;
-      if (!(Date.parse(String(r.receivedAt || '')) >= since)) continue;
-      if (r.servedAt && (now - r.servedAt > HR.GRACE_MS || (r.servedTo && r.servedTo !== pc))) continue;   // served once; grace only for the same box
-      if (!best || String(r.receivedAt) > String(best.receivedAt)) { best = r; bestKey = key; }
+      if (!r || r.skip) continue;
+      var candidates = r.kind === 'files' ? (r.items || []) : [r];
+      for (var ci = 0; ci < candidates.length; ci++) {
+        var candidate = candidates[ci];
+        if ((candidate.kind !== 'file' && candidate.kind !== 'code') || !hrSerialMatch_(candidate, serial, ss)) continue;
+        if (!(Date.parse(String(candidate.receivedAt || '')) >= since)) continue;
+        if (candidate.servedAt && (now - candidate.servedAt > HR.GRACE_MS || (candidate.servedTo && candidate.servedTo !== pc))) continue;
+        if (!best || String(candidate.receivedAt) > String(best.receivedAt)) { best = candidate; bestKey = key; bestRecord = r; }
+      }
     }
     if (!best) return { ok: true, found: false };
     var out = { ok: true, found: true, kind: best.kind, subject: best.subject, receivedAt: best.receivedAt };
     if (best.kind === 'code') out.code = best.code;
     else { out.name = best.name; out.data = best.fileId ? Utilities.base64Encode(DriveApp.getFileById(best.fileId).getBlob().getBytes()) : best.data; }
-    if (!best.servedAt) { best.servedAt = now; best.servedTo = pc; p.setProperty(bestKey, JSON.stringify(best)); }
+    if (!best.servedAt) { best.servedAt = now; best.servedTo = pc; p.setProperty(bestKey, JSON.stringify(bestRecord)); }
     console.log('hikReplyGet served ' + best.kind + ' for ' + serial.slice(-9) + ' to ' + pc);
     return out;
   } finally { lock.releaseLock(); }

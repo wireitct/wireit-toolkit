@@ -13,7 +13,7 @@ for ($i = 0; $i -lt 50; $i++) { try { Invoke-WebRequest ($base + '/mockctl/write
 
 $script:pass = 0; $script:fail = 0; $script:failed = @()
 function Check([string]$name, [bool]$cond, $detail = '') { if ($cond) { $script:pass++; Write-Host ('PASS  ' + $name) } else { $script:fail++; $script:failed += $name; Write-Host ('FAIL  ' + $name + '  ' + $detail) -ForegroundColor Red } }
-function Writes { return @((Invoke-WebRequest ($base + '/mockctl/writes') -UseBasicParsing).Content | ConvertFrom-Json) }
+function Writes { $v = (Invoke-WebRequest ($base + '/mockctl/writes') -UseBasicParsing).Content | ConvertFrom-Json; foreach ($item in $v) { $item } }
 function Reset { Invoke-WebRequest ($base + '/mockctl/reset') -Method Post -UseBasicParsing | Out-Null }
 function Cred([string]$pw) { New-Object System.Management.Automation.PSCredential('admin', (ConvertTo-SecureString $pw -AsPlainText -Force)) }   # test only
 $good = Cred 'NvrPass#2026'; $wrong = Cred 'NotThePassword1'

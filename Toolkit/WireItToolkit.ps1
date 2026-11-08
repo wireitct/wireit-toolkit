@@ -10,8 +10,13 @@ param([string]$Screenshot = '', [switch]$NoUpdate, [switch]$Classic, [string]$De
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $here 'ToolkitRecover.ps1')
+$script:TkRepairMsg = ''
+if (-not $Screenshot) {
+  try { $script:TkRepairMsg = [string](Invoke-TkStartupRecovery $here) }
+  catch { Write-Error $_ -ErrorAction Continue; exit 1 }
+}
 . (Join-Path $here 'ToolkitCore.ps1')
-$script:TkRepairMsg = ''; if (-not $Screenshot) { try { $script:TkRepairMsg = [string](Repair-TkInterruptedUpdate $here) } catch {} }   # 2.2.3 (Codex #61): a half-done update is undone first
 foreach ($lib in @('HikMail.ps1', 'HikEmailDrop.ps1')) { if (Test-Path (Join-Path $here $lib)) { . (Join-Path $here $lib) } }   # 2.2.0: Hik's reply - relay + the "I got Hik's email" button
 # 2.2.3: Crew is a local admin - an update (or Go back) runs right here; there is no background task to hand it to
 function Test-TkCanWrite([string]$dir) { $p = Join-Path $dir ('.w' + [guid]::NewGuid().ToString('N').Substring(0, 6)); try { [IO.File]::WriteAllText($p, 'x'); Remove-Item -LiteralPath $p -Force; return $true } catch { return $false } }

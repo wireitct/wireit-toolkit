@@ -236,7 +236,7 @@ if ($py -and (Test-Path $mockPy) -and (Test-Path $nm)) {
     $nc = Join-Path $tkDir 'NvrCheck.ps1'
     function NcRun([string[]]$a) { $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $nc @a -RunsDir $runs -MockUrl $mbase -TestAnswer x -CloseAfter 0 2>&1 | Out-String; return @{ out = $o; code = $LASTEXITCODE } }
     function NcLog([string]$mode) { $d = Get-ChildItem $runs -Directory -Filter ('Nvr' + $mode + '-*') | Sort-Object Name -Descending | Select-Object -First 1; if ($d) { return @(ConvertFrom-TkFixLog (Get-Content (Join-Path $d.FullName 'log.txt'))) }; return @() }
-    function MockWrites { return @((Invoke-WebRequest ($mbase + '/mockctl/writes') -UseBasicParsing).Content | ConvertFrom-Json) }
+    function MockWrites { $v = (Invoke-WebRequest ($mbase + '/mockctl/writes') -UseBasicParsing).Content | ConvertFrom-Json; foreach ($item in $v) { $item } }
     Invoke-WebRequest ($mbase + '/mockctl/reset') -Method Post -UseBasicParsing | Out-Null
     $x = NcRun @('-Mode', 'Recording', '-Ip', '10.9.0.30', '-Vendor', 'Hikvision', '-Site', 'YKW Test', '-Days', '45')
     $said = (NcLog 'Recording') -join "`n"
