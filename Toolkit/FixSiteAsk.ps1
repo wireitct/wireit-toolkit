@@ -4,6 +4,9 @@
  password once with Copy), sets/clears the clipboard when the run asks, and opens Hikvision's page (HikPortalStep.ps1) for the
  picture check. Answers go back as a-<n>.json. Nothing here needs admin.
 #>
+# 2.2.2 (re-review H11 + NEW-3): the site password goes into Bitwarden HERE, on the tech's own login (a run as SYSTEM has no Bitwarden)
+. (Join-Path $PSScriptRoot 'FixSiteBw.ps1')
+function Get-FsAskBwCfg([string]$ToolkitDir) { try { $c = Get-Content -LiteralPath (Join-Path $ToolkitDir 'config.json') -Raw | ConvertFrom-Json; if ($c -and $c.PSObject.Properties['fixSite']) { return $c.fixSite } } catch {}; return $null }
 function New-FsAskForm([string]$Title, [int]$W = 540, [int]$H = 200) {
   $fm = New-Object Windows.Forms.Form; $fm.Text = $Title; $fm.StartPosition = 'CenterScreen'; $fm.TopMost = $true; $fm.FormBorderStyle = 'FixedDialog'; $fm.MaximizeBox = $false; $fm.MinimizeBox = $false
   $fm.AutoScaleMode = 'Dpi'; $fm.ClientSize = New-Object Drawing.Size($W, $H); $fm.Font = New-Object Drawing.Font('Segoe UI', 10); $fm.ControlBox = $false
@@ -49,6 +52,12 @@ function Invoke-FsIpcQuestion($Owner, [string]$Session, $Q, [string]$ToolkitDir,
     'text' { Write-FsIpcAnswer $Session $n (Show-FsAskText $Owner ([string]$Q.text) $false) }
     'secret' { Write-FsIpcAnswer $Session $n (Show-FsAskText $Owner ([string]$Q.text) $true) }
     'show' { Remove-Item -LiteralPath (Join-Path $Session ('q-{0:D4}.json' -f $n)) -Force -ErrorAction SilentlyContinue; Show-FsShowSecret $Owner ([string]$Q.site) ([string]$Q.value) ([string]$Q.bwItem); Write-FsIpcAnswer $Session $n 'shown' }
+    'bitwarden' {
+      # the question file holds the password: it goes at once; the answer holds only the result
+      Remove-Item -LiteralPath (Join-Path $Session ('q-{0:D4}.json' -f $n)) -Force -ErrorAction SilentlyContinue
+      $ans = 'failed;;window'; try { $ans = Invoke-FsBwForRun $Q (Get-FsAskBwCfg $ToolkitDir) { param($t) Show-FsAskText $Owner $t $true } } catch {}
+      Write-FsIpcAnswer $Session $n $ans
+    }
     'clip' { try { [Windows.Forms.Clipboard]::SetText([string]$Q.value) } catch {}; Write-FsIpcAnswer $Session $n 'ok' }
     'clipclear' { try { [Windows.Forms.Clipboard]::SetText(' ') } catch {}; Write-FsIpcAnswer $Session $n 'ok' }
     'portal' {

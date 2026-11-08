@@ -490,7 +490,7 @@ if (-not $NoEndToEnd -and $py) {
     Check (@($rjm.nvr_passwords | Where-Object { $_.ip -eq '192.168.1.20' -and $_.changed }).Count -eq 1) 'option ticked: rollback.json records the NVR password change'
     Check (Test-Path (Join-Path $rdm.FullName 'backup')) 'option ticked: backups taken first'
     if ($env:OS -eq 'Windows_NT') {
-      Check ($om -match 'Saved in Bitwarden: "Mixed - site password"') 'Bitwarden on the PC (logged in): saved as "Mixed - site password"'
+      Check ($om -match 'Saved in Bitwarden and checked: "Mixed - site password"') 'Bitwarden on the PC (logged in): saved as "Mixed - site password"'
       $item = $null; try { $item = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(((Get-Content (Join-Path $fb 'created.txt') -Raw).Trim()))) | ConvertFrom-Json } catch {}
       Check ($item -and $item.name -eq ('Mixed ' + [char]0x2013 + ' site password') -and $item.login.password -eq 'Testpw2468' -and $item.login.username -eq 'admin') 'Bitwarden item: name, user admin, the site password (handed over on stdin only)'
       Check (-not ($om -match 'SHOWN ONCE')) 'Bitwarden saved -> no shown-once window'

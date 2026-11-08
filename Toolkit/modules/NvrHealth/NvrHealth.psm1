@@ -57,7 +57,15 @@ public static class WireItLanTls {
   public static void Install() { ServicePointManager.ServerCertificateValidationCallback = Callback; }
 }
 "@
-function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
+# 2.2.2 (Codex): -IgnoreWarnings - PowerShell 7.5 (.NET 9) turned the SYSLIB0014 'ServicePointManager is obsolete' warning into a failed compile
+# 2.2.2 (Codex H2): the same private-IPv4 test in plain PowerShell, for PowerShell 7's per-call certificate skip and curl's -k
+function Test-WireItLanHost([string]$h) {
+  if (-not $h) { return $false }; $a = $null; if (-not [Net.IPAddress]::TryParse($h.Trim('[', ']'), [ref]$a)) { return $false }
+  if ($a.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) { return $false }
+  $b = $a.GetAddressBytes()
+  return ($b[0] -eq 10 -or $b[0] -eq 127 -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 169 -and $b[1] -eq 254))
+}
+function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -IgnoreWarnings -WarningAction SilentlyContinue -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
 $script:IsPs5 = $PSVersionTable.PSVersion.Major -lt 6
 if ($script:IsPs5) {
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -159,7 +167,10 @@ function Http-Curl([string]$Uri, [string]$Method = 'GET', [string]$Body = '', [s
     $h = @(); if ($Headers) { foreach ($k in $Headers.Keys) { $h += ($k + ': ' + $Headers[$k]) } }; if ($Body -and $ContentType) { $h += ('Content-Type: ' + $ContentType) }
     $hf = Join-Path $tmp 'h.txt'; [IO.File]::WriteAllText($hf, (($h -join "`r`n") + "`r`n"))
     $of = Join-Path $tmp 'o.bin'
-    $ca = @('-k', '-s', '-S', '-m', [string]$Timeout, '-X', $Method, '-H', ('@' + $hf), '-o', $of, '-w', '%{http_code}')
+    # 2.2.2 (Codex H2): -k (no certificate check) only for a private IPv4 address; a named host keeps curl's normal check
+    $hostK = ''; try { $hostK = [string]([uri]$Uri).Host } catch {}
+    $ca = @(); if (Test-WireItLanHost $hostK) { $ca += '-k' }
+    $ca += @('-s', '-S', '-m', [string]$Timeout, '-X', $Method, '-H', ('@' + $hf), '-o', $of, '-w', '%{http_code}')
     if ($Body) { $bf = Join-Path $tmp 'b.bin'; [IO.File]::WriteAllBytes($bf, [Text.Encoding]::UTF8.GetBytes($Body)); $ca += @('--data-binary', ('@' + $bf)) }
     $code = (& $curl @ca $Uri 2>$null | Out-String).Trim()
     $c = ''; if (Test-Path $of) { $c = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($of)) }
@@ -176,7 +187,7 @@ function Http {
   if ($Headers) { $a.Headers = $Headers }
   if ($Body) { $a.Body = [Text.Encoding]::UTF8.GetBytes($Body); $a.ContentType = $ContentType }
   if ($BodyBytes) { $a.Body = $BodyBytes; $a.ContentType = $ContentType }
-  if (-not $script:IsPs5) { $a.SkipCertificateCheck = $true; if ($Credential) { $a.AllowUnencryptedAuthentication = $true } }
+  if (-not $script:IsPs5) { if (Test-WireItLanHost $Ip) { $a.SkipCertificateCheck = $true }; if ($Credential) { $a.AllowUnencryptedAuthentication = $true } }   # 2.2.2 (Codex H2): the skip only for a device on the LAN
   Log ($Method + ' ' + $Ip + $(if ($Port) { ':' + $Port } else { '' }) + $Path + $(if ($Body -and -not $NoLogBody) { ' BODY ' + $Body } elseif ($Body) { ' BODY (not logged)' } else { '' }))
   $hk = $Ip + ':' + $Port
   if (-not $Credential -and ($script:Opt.ForceCurl -or $script:ViaCurl.ContainsKey($hk))) {

@@ -66,6 +66,8 @@ $root = Split-Path -Parent $here
 if (-not $ConfigPath) { $ConfigPath = Join-Path $here 'config.json' }
 $cfgAll = $null; if (Test-Path $ConfigPath) { try { $cfgAll = Get-Content $ConfigPath -Raw | ConvertFrom-Json } catch {} }
 $fsCfg = $null; if ($cfgAll -and $cfgAll.PSObject.Properties['fixSite']) { $fsCfg = $cfgAll.fixSite }
+# 2.2.2 (re-review H1): models known to have no HTTPS at all (regexes) may get a password over plain HTTP, with the warning
+if ($fsCfg -and $fsCfg.PSObject.Properties['noHttpsModels']) { $script:FsNoTlsModels = @($script:FsNoTlsModels) + @($fsCfg.noHttpsModels | ForEach-Object { [string]$_ } | Where-Object { $_ }) }
 $driveRoots = @('G:\My Drive\WireIt Sites', '%USERPROFILE%\My Drive\WireIt Sites', 'C:\Users\admin\My Drive\WireIt Sites')
 if ($fsCfg -and $fsCfg.PSObject.Properties['driveRoots']) { $driveRoots = @($fsCfg.driveRoots) }
 # 2.2.0: the "Fix this site" task runs as SYSTEM, which has no G: drive and no profile of its own: look in every user's My Drive too
@@ -133,6 +135,9 @@ function Remember-Secret([string]$p) { if ($p) { $script:Secrets += $p } }
 # 2.2.1 (review H1): said once per device whose password had to go over plain HTTP (it has no HTTPS)
 $script:PlainWarned = @{}
 function Say-PlainWarning([string]$ip) {
+  # 2.2.2 (re-review H1): HTTPS that did not work (timeout, TLS, certificate) is said in red - the password was NOT sent
+  $tf = Get-FsTlsFailure $ip
+  if ($tf -and -not $script:PlainWarned.ContainsKey('tls|' + $ip)) { $script:PlainWarned['tls|' + $ip] = 1; Say ('    ' + $ip + ': HTTPS did not work (' + $(switch ($tf) { 'timeout' { 'no answer in time' } 'tls' { 'TLS/certificate problem' } 'unreachable' { 'not reachable' } default { 'connection problem' } }) + '), so its password was NOT sent. It is never sent over plain HTTP to a device that has HTTPS. Check the device, then press the button again.') 'Red' }
   if (-not (Test-FsSentPlain $ip) -or $script:PlainWarned.ContainsKey($ip)) { return }
   $script:PlainWarned[$ip] = 1
   Say ('    WARNING: ' + $ip + ' has no HTTPS, so its password went over plain HTTP on this network. Turn on HTTPS on it when you can.') 'Yellow'
@@ -145,7 +150,9 @@ function Say-NetRestore($r) {
   Say ('THIS PC''S NETWORK IS NOT BACK TO NORMAL: ' + (@($r.problems) -join '; ') + '. The Toolkit tries again the next time it runs; restarting the PC also clears the temporary addresses.') 'Red'
 }
 function Done([int]$code) {
-  $nr = $null; try { $nr = Remove-FsTempIps $tempState } catch {}; Say-NetRestore $nr
+  $nr = $null; try { $nr = Remove-FsTempIps $tempState } catch { $nr = [pscustomobject]@{ ok = $false; problems = @('the clean-up stopped: ' + $_.Exception.Message) } }; Say-NetRestore $nr
+  # 2.2.2 (re-review H4): this PC's network not back = the run did NOT end well, whatever else worked (exit 6, the window says so)
+  if ($nr -and -not $nr.ok -and $code -in @(0, 4)) { $code = 6 }
   if ($Ipc) { }
   elseif ($CloseAfter -gt 0) { Write-Host ''; Write-Host ('This window closes in ' + $CloseAfter + ' seconds.'); Start-Sleep -Seconds $CloseAfter }
   elseif (-not $Answers -and -not $MockUrl -and $Mode -ne 'DryRun') { Write-Host ''; [void](Read-Host 'Press Enter to close this window') }
@@ -289,6 +296,22 @@ function Show-SitePasswordWindow([string]$pw) {
 }
 function Save-SitePasswordAway([string]$pw, [switch]$ShowAgain) {
   # 1) Bitwarden when the bw command is on this PC and logged in; 2) else encrypted here (it already is) + shown once to save in Bitwarden
+  $shown = $siteName + ' - site password'   # the console shows a plain dash; the Bitwarden item has the real one
+  if ($Ipc -and -not $BwPath) {
+    # 2.2.2 (re-review H11 + NEW-3): a background run is SYSTEM, whose profile has no Bitwarden login: the Toolkit window does the
+    # save on the tech's own login (FixSiteAsk.ps1) and answers with the result only
+    $n = Send-FsIpc $Ipc @{ kind = 'bitwarden'; site = $siteName; value = $pw; bwItem = (Get-FsBwItemName $siteName) }
+    $a = Wait-FsIpcAnswer $Ipc $n 'bitwarden' 900
+    if ($null -eq $a) { Say 'The Toolkit window did not answer about Bitwarden in time: the site password is NOT in Bitwarden yet.' 'Yellow' }
+    elseif ($a.result -in @('saved', 'updated', 'exists')) {
+      $last = [pscustomobject]@{ where = $a.where; org = $a.org; collection = $a.collection; why = $a.why }
+      Say (Format-FsBwResult $a.result $last $shown) $(if ($a.where -eq 'org') { 'Green' } else { 'Yellow' })
+      if ($a.where -eq 'org') { $sec.bitwardenSaved = $true; Save-FsSecrets $SecretsDir $sec; return }
+    }
+    elseif ($a.result -eq 'unauthenticated') { Say 'Bitwarden is on this PC but not logged in on this Windows login (bw login), so it could not be saved there.' 'Yellow' }
+    elseif ($a.result -eq 'locked') { Say $(if ($a.why -eq 'skipped') { 'Bitwarden is locked and no master password was typed: not saved there.' } else { 'Bitwarden did not unlock (wrong master password?).' }) 'Yellow' }
+    elseif ($a.result -eq 'failed') { Say (Format-FsBwResult 'failed' ([pscustomobject]@{ where = ''; why = $a.why }) $shown) 'Yellow' }
+  } else {
   $bw = $(if ($BwPath) { $BwPath } elseif ($MockUrl -or $Answers) { '' } else { Find-FsBitwarden $fsCfg })
   $st = Get-FsBwStatus $bw; $session = ''
   if ($st -eq 'locked') {
@@ -296,13 +319,15 @@ function Save-SitePasswordAway([string]$pw, [switch]$ShowAgain) {
     if ($mp) { Remember-Secret $mp; $session = Unlock-FsBitwarden $bw $mp; $mp = $null; if ($session) { Remember-Secret $session; $st = 'unlocked' } else { Say 'Bitwarden did not unlock (wrong master password?).' 'Yellow' } }
   }
   if ($st -eq 'unlocked') {
-    $r = Save-FsBitwarden $bw $siteName $pw $session
-    # 2.2.1 (review H11): every answer here was read back from Bitwarden after a sync, so "saved" means the office has THIS password
-    if ($r -in @('saved', 'updated', 'exists')) { $sec.bitwardenSaved = $true; Save-FsSecrets $SecretsDir $sec; $shown = $siteName + ' - site password'   # the console shows a plain dash; the Bitwarden item has the real one
-    Say $(switch ($r) { 'saved' { 'Saved in Bitwarden and checked: "' + $shown + '" (user admin). The office can see it.' } 'updated' { 'Bitwarden had an OLDER password in "' + $shown + '": changed to this one and checked (the old one stays in the item''s history).' } default { 'Bitwarden already has exactly this password in "' + $shown + '" (checked) - not added twice.' } }) 'Green'; return }
-    Say 'Bitwarden did not take it, or it could not be checked: it is NOT in Bitwarden yet (only on this PC).' 'Yellow'
+    $r = Save-FsBitwarden $bw $siteName $pw $session $fsCfg
+    # 2.2.1 (review H11): every answer here was read back from Bitwarden after a sync; 2.2.2: the words say where it really is
+    if ($r -in @('saved', 'updated', 'exists')) {
+      Say (Format-FsBwResult $r $script:FsBwLast $shown) $(if ($script:FsBwLast.where -eq 'org') { 'Green' } else { 'Yellow' })
+      if ($script:FsBwLast.where -eq 'org') { $sec.bitwardenSaved = $true; Save-FsSecrets $SecretsDir $sec; return }
+    } else { Say (Format-FsBwResult $r $script:FsBwLast $shown) 'Yellow' }
   } elseif ($bw -and $st -eq 'unauthenticated') { Say 'Bitwarden is on this PC but not logged in (bw login), so it could not be saved there.' 'Yellow' }
-  Say 'The site password is kept encrypted on this PC. Save this in Bitwarden.' 'Yellow'
+  }
+  Say 'The site password is kept encrypted on this PC. Save this in Bitwarden (WireIt CT > Sites).' 'Yellow'
   if (-not $sec.shownOnce -or $ShowAgain) { Show-SitePasswordOnce $pw; $sec.shownOnce = $true; Save-FsSecrets $SecretsDir $sec }
   else { Say 'To see or copy it again: "Site password..." in the Toolkit.' }
 }
@@ -372,7 +397,7 @@ if ($Mode -eq 'Rollback') {
   $pcIx = -1; if ($r0.PSObject.Properties['pc'] -and $r0.pc -and $r0.pc.PSObject.Properties['ifIndex']) { $pcIx = [int]$r0.pc.ifIndex }
   $pc = $(if ($Mode -ne 'DryRun') { Get-FsPcNet $pcIx } else { $null })
   if ($pc) { $script:FsSubnet = [pscustomobject]@{ ip = $pc.ip; prefix = [int]$pc.prefix } }
-  $pcScheme = $(if ($pc) { Get-FsP3 $pc.gw } else { '' })
+  $pcScheme = $(if ($pc) { Get-FsScheme ([pscustomobject]@{ pc = $pc }) $r0 } else { '' })   # 2.2.2 (H9): no router -> the run's saved scheme
   $nvrPwR = @{}; foreach ($k in @($sec.nvr.Keys)) { $nvrPwR[$k] = [string]$sec.nvr[$k] }
   $bad = 0
   $rcams = @($r0.cameras); [array]::Reverse($rcams)
@@ -415,7 +440,8 @@ if ($Mode -eq 'Rollback') {
     }
     # 2.2.1 (review H8): the NVR channel exactly as the backup has it; a channel this run ADDED is deleted again
     if ($c.nvr -and $c.nvr.nvr -and -not (& $isDone ($ck + '|nvr'))) {
-      $nv = [string]$c.nvr.nvr
+      $nv0 = [string]$c.nvr.nvr; $nv = Resolve-FsUndoNvrIp @($r0.nvrs) $nv0 $isDone   # 2.2.2 (H8): an NVR an earlier Undo moved back answers on its old address
+      if ($nv -ne $nv0) { if (-not $nvrPwR.ContainsKey($nv) -and $nvrPwR.ContainsKey($nv0)) { $nvrPwR[$nv] = $nvrPwR[$nv0] }; if (-not (Test-FsOnScheme $nv $pcScheme)) { [void](Add-FsTempIp (Get-FsP3 $nv) $pc $tempState) } }
       if (-not $nvrPwR.ContainsKey($nv)) { $res += [pscustomobject]@{ text = ('NVR ' + $nv + ': no saved login - put ch ' + $c.nvr.channel + ' back by hand'); ok = $false } }
       else {
         $ncr = Fs-Cred $nvrPwR[$nv]; $bfile = $(if ($c.nvr.PSObject.Properties['before_file'] -and [string]$c.nvr.before_file) { Join-Path $RollbackDir (([string]$c.nvr.before_file) -replace '[\\/]', [string][IO.Path]::DirectorySeparatorChar) } else { '' })
@@ -431,11 +457,13 @@ if ($Mode -eq 'Rollback') {
   }
   # 2.0.3: NVR passwords back (before the NVR moves back, at the address the change was made on)
   foreach ($np in @($r0.nvr_passwords | Where-Object { $_ -and $_.changed })) {
-    $nip = [string]$np.ip; if (& $isDone ('nvrpw|' + $nip)) { continue }
-    $oldN = $(if ($old.ContainsKey('nvr|' + $nip)) { [string]$old['nvr|' + $nip] } else { '' })
+    $nip0 = [string]$np.ip; if (& $isDone ('nvrpw|' + $nip0)) { continue }
+    $oldN = $(if ($old.ContainsKey('nvr|' + $nip0)) { [string]$old['nvr|' + $nip0] } else { '' })
+    $nip = Resolve-FsUndoNvrIp @($r0.nvrs) $nip0 $isDone   # 2.2.2 (H8): moved back by an earlier Undo -> its old address
+    if ($nip -ne $nip0) { if (-not $nvrPwR.ContainsKey($nip) -and $nvrPwR.ContainsKey($nip0)) { $nvrPwR[$nip] = $nvrPwR[$nip0] }; if (-not (Test-FsOnScheme $nip $pcScheme)) { [void](Add-FsTempIp (Get-FsP3 $nip) $pc $tempState) } }
     if (-not $oldN -or -not $nvrPwR.ContainsKey($nip)) { Say ('  NVR ' + $nip + ': its old password is not on this PC - not undone ' + $script:FsBad) 'Red'; $bad++; continue }
     $ok = Set-FsPassword $nip 'Hikvision' (Fs-Cred $nvrPwR[$nip]) $oldN; Say-PlainWarning $nip
-    if ($ok) { $nvrPwR[$nip] = $oldN; $sec.nvr[$nip] = $oldN; & $markDone ('nvrpw|' + $nip) } else { $bad++ }
+    if ($ok) { $nvrPwR[$nip] = $oldN; $sec.nvr[$nip] = $oldN; if ($nip -ne $nip0) { $nvrPwR[$nip0] = $oldN; $sec.nvr[$nip0] = $oldN }; & $markDone ('nvrpw|' + $nip0) } else { $bad++ }
     Say ('  NVR ' + $nip + ': old password back ' + $(if ($ok) { $script:FsOk } else { $script:FsBad }))
   }
   foreach ($n in @($r0.nvrs)) {
@@ -499,9 +527,14 @@ if ($Mode -eq 'DryRun') {
     foreach ($l in (Format-FsPcNetChoice $pcAll)) { Say ('  ' + $l) }
     for ($k = 0; $k -lt 3; $k++) { $sel = Select-FsPcNet $pcAll (Ask ('Which one are the cameras on? Type its number (Enter = 1).')); if ($sel) { $pc = $sel; break }; Say 'Type one of the numbers shown.' 'Yellow' }
   }
-  if ($pc) { $script:FsSubnet = [pscustomobject]@{ ip = $pc.ip; prefix = [int]$pc.prefix }; Say ('Camera network: ' + $(if ($pc.name) { $pc.name + ', ' } else { '' }) + 'this PC ' + $pc.ip + ', mask ' + $pc.mask + $(if ($pc.gw) { ', router ' + $pc.gw } else { '' }) + '.') }
-  if (-not $pc -or -not $pc.gw) { Say 'This PC is not on a network with a router. Plug it into the site network (or its Wi-Fi) and press the button again.' 'Red'; Done 2 }
-  $scheme = Get-FsP3 $pc.gw
+  if ($pc) { $script:FsSubnet = $(if (Test-FsLinkLocal ([string]$pc.ip)) { $null } else { [pscustomobject]@{ ip = $pc.ip; prefix = [int]$pc.prefix } }); Say ('Camera network: ' + $(if ($pc.name) { $pc.name + ', ' } else { '' }) + 'this PC ' + $pc.ip + ', mask ' + $pc.mask + $(if ($pc.gw) { ', router ' + $pc.gw } else { ', no router' }) + '.') }
+  if (-not $pc) { Say 'This PC is not on any network. Plug it into the site network (or its camera switch) and press the button again.' 'Red'; Done 2 }
+  # 2.2.2 (re-review H9): an isolated camera switch (no router, maybe only a 169.254 address) works too: the scheme comes from the
+  # router when there is one, else from the saved site list, else from this PC's own fixed address
+  $scheme = Get-FsScheme ([pscustomobject]@{ pc = $pc }) $list
+  if (-not $scheme) { Say 'This network has no router, and there is no saved site list or fixed PC address to tell the site''s IP scheme. Give this PC a fixed address on the site scheme (for example 192.168.1.250), or plug in the site router, and press the button again.' 'Red'; Done 2 }
+  if (-not $pc.gw) { Say ('No router on this network: using the site scheme ' + $scheme + '.x' + $(if ($list -and [string](Get-FsProp $list 'scheme' '')) { ' from the saved site list' } else { '' }) + '; moved devices get router ' + $scheme + '.1 (the WireIt standard).') 'Yellow' }
+  $devNet = Get-FsDeviceNet $pc $scheme
   $observed = [ordered]@{ taken = (Get-Date -Format 's'); pc = [ordered]@{ ip = $pc.ip; gw = $pc.gw; mask = $pc.mask; prefix = [int]$pc.prefix; dhcp = $pc.dhcp; ifIndex = [int]$pc.ifIndex; name = [string]$pc.name }; devices = @(); nvrs = @(); ports = @{} }
   # 1. discovery: Find cameras (SADP + ONVIF + sweep) and the Dahua search
   $found = @()
@@ -520,8 +553,10 @@ if ($Mode -eq 'DryRun') {
   # list addresses nobody answered for: try them too (a camera can miss the discovery)
   foreach ($c in @($(if ($list) { $list.cameras } else { @() }))) { $lip = [string]$c.ip; if ($lip -and -not @($found | Where-Object { $_.ip -eq $lip }).Count -and (Get-FsP3 $lip) -eq $scheme) { $s = Test-FsLogin $lip (Get-FsBrand ([string]$c.brand) ([string]$c.model)) ''; if ($s -ne 'noanswer') { $found += [pscustomobject]@{ brand = (Get-FsBrand ([string]$c.brand) ([string]$c.model)); model = [string]$c.model; serial = [string]$c.serial; mac = [string]$c.mac; ip = $lip; kind = 'camera'; activated = $true } } } }
   $found = @($found | Where-Object { $_.ip -and $_.ip -ne $pc.ip -and $_.ip -ne $pc.gw -and ($_.kind -in @('camera', 'nvr')) })
+  foreach ($d in $found) { if ($d.model) { $script:FsModels[[string]$d.ip] = [string]$d.model } }   # 2.2.2 (H1): the no-HTTPS model list
   # 2. reach the wrong schemes (temporary PC address, removed at the end)
   $schemes = @($found | Where-Object { -not (Test-FsOnScheme $_.ip $scheme) } | ForEach-Object { Get-FsP3 $_.ip } | Where-Object { $_ -and $_ -ne $scheme -and -not (Test-FsPoeNet ($_ + '.1')) } | Select-Object -Unique | Select-Object -First 3)
+  if ((Get-FsP3 ([string]$pc.ip)) -ne $scheme -and -not ($script:FsSubnet -and (Test-FsInSubnet ($scheme + '.1') ([string]$pc.ip) ([int]$pc.prefix)))) { $schemes = @($scheme) + @($schemes) }   # 2.2.2 (H9): a PC with only 169.254 needs an address on the site scheme too
   foreach ($p3 in $schemes) { $t = Add-FsTempIp $p3 $pc $tempState; if ($t) { Fs-Log ('temp address ' + $t + ' added') } else { Say ('Could not give this PC a temporary address on ' + $p3 + '.x - cameras there can only be listed.') 'Yellow' } }
   $reach = { param($ip) $p3 = Get-FsP3 $ip; return ((Test-FsOnScheme $ip $scheme) -or @($script:FsTemps | Where-Object { $_.p3 -eq $p3 }).Count -gt 0) }
   # 3. NVRs: log in (saved passwords, then ONE question), read the channel list
@@ -766,7 +801,7 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'move' })) {
   [void](Save-FsBackup $n.ip 'Hikvision' $cr (Join-Path $runDir ('backup\NVR-' + $n.ip)))
   $net = Get-FsNet $n.ip 'Hikvision' $cr
   $rb.nvrs += [ordered]@{ ip = $n.ip; target = $n.target; old = [ordered]@{ ip = $net.ip; mask = $net.mask; gw = $net.gw; dhcp = $net.dhcp; dns1 = $net.dns1; dns2 = $net.dns2 } }; Save-Rb
-  $w = Set-FsNet $n.ip 'Hikvision' $cr $net $n.target $pc.mask $pc.gw
+  $w = Set-FsNet $n.ip 'Hikvision' $cr $net $n.target $devNet.mask $devNet.gw
   if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $n.ip 'Hikvision' $cr) }
   $back = $w.ok -and (Wait-FsDevice $n.target 'Hikvision' $nvrPw[$n.ip] ([int]$opts.rebootWaitSec))
   Say (Format-FsCheckLine ('NVR ' + $n.ip) @([pscustomobject]@{ text = ('moved -> ' + (Get-FsShort $n.target)); ok = $back })) $(if ($back) { 'Green' } else { 'Red' })
@@ -880,7 +915,7 @@ foreach ($c in $ordered) {
       if ($t -ne $ip -and -not (Test-FsIpFree $t)) { $t = ''; for ($n = [int]$opts.camFirst; $n -le [int]$opts.camLast; $n++) { $x = $plan.scheme + '.' + $n; if (-not @($plan.cams | Where-Object { $_.target -eq $x -or $_.ip -eq $x }).Count -and (Test-FsIpFree $x)) { $t = $x; break } } }
       if (-not $t) { & $step 'no free address - not moved' $false }
       else {
-        $w = Set-FsNet $ip $c.brand $cr $net $t $pc.mask $pc.gw
+        $w = Set-FsNet $ip $c.brand $cr $net $t $devNet.mask $devNet.gw
         if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $ip $c.brand $cr) }
         $back = $w.ok -and (Wait-FsDevice $t $c.brand $pw ([int]$opts.moveWaitSec))
         if (-not $back -and $w.ok -and $t -ne $ip) {

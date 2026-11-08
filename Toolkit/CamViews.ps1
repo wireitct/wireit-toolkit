@@ -37,13 +37,20 @@ function CvSay([string]$s, [string]$color = '') { if (Get-Command -Name 'Say' -C
 function CvXVal([string]$xml, [string]$name) { $m = [regex]::Match($xml, '<(?:\w+:)?' + $name + '(?:\s[^>]*)?>([^<]*)</(?:\w+:)?' + $name + '>'); if ($m.Success) { return $m.Groups[1].Value.Trim() } else { return '' } }
 function CvBase([string]$ip) { if ($script:CvMock) { return ($script:CvMock + '/dev/' + $ip) }; return ('http://' + $ip) }
 
+# 2.2.2 (Codex H2): the same private-IPv4 test in plain PowerShell, for PowerShell 7's per-call certificate skip and curl's -k
+function Test-WireItLanHost([string]$h) {
+  if (-not $h) { return $false }; $a = $null; if (-not [Net.IPAddress]::TryParse($h.Trim('[', ']'), [ref]$a)) { return $false }
+  if ($a.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) { return $false }
+  $b = $a.GetAddressBytes()
+  return ($b[0] -eq 10 -or $b[0] -eq 127 -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 169 -and $b[1] -eq 254))
+}
 # ---- HTTP (digest / basic through -Credential; bytes kept as bytes) ----
 function CvGet([string]$url, $cred, [int]$timeout = 12) {
   $tmp = [IO.Path]::GetTempFileName()
   try {
     $a = @{ Uri = $url; Method = 'GET'; UseBasicParsing = $true; TimeoutSec = $timeout; OutFile = $tmp; PassThru = $true }
     if ($cred) { $a.Credential = $cred }
-    if (-not $script:CvIsPs5) { $a.SkipCertificateCheck = $true; if ($cred) { $a.AllowUnencryptedAuthentication = $true } }
+    if (-not $script:CvIsPs5) { if (Test-WireItLanHost ([string]([uri]$url).Host)) { $a.SkipCertificateCheck = $true }; if ($cred) { $a.AllowUnencryptedAuthentication = $true } }   # 2.2.2 (Codex H2): the skip only for a device on the LAN
     $r = Invoke-WebRequest @a
     $b = [IO.File]::ReadAllBytes($tmp)
     return @{ code = [int]$r.StatusCode; bytes = $b; text = [Text.Encoding]::UTF8.GetString($b) }

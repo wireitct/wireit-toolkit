@@ -86,6 +86,7 @@ function Get-FsRunArgs($Req, [string]$Session, [string]$RunsRoot, [string]$Rollb
 
 # ---------------- questions and answers (runner -> window -> runner) ----------------
 # kinds: text | secret | choice | show (the site password shown once with Copy) | clip | clipclear | portal (Hikvision's page) | info
+#        | bitwarden (2.2.2: the window saves the site password in Bitwarden on the tech's login; answer "result;where;why;org;collection")
 $script:FsIpcN = 0
 function Send-FsIpc([string]$Dir, [hashtable]$Msg) {
   $script:FsIpcN++
@@ -116,6 +117,13 @@ function ConvertFrom-FsIpcAnswer([string]$Kind, $a) {
   switch ($Kind) {
     'choice' { $t = ([string]$v).Trim().ToLower(); if ($t -eq 'yes') { return $true }; if ($t -eq 'no') { return $false }; return $null }
     'portal' { $t = ([string]$v).Trim().ToLower(); if ($t -in @('submitted', 'skipped', 'failed', 'timeout', 'no-browser')) { return $t }; return 'failed' }
+    'bitwarden' {
+      $p = @(([string]$v -replace '[\x00-\x1F\x7F]', '') -split ';'); while ($p.Count -lt 5) { $p += '' }
+      $res = $p[0].Trim().ToLower(); if ($res -notin @('saved', 'updated', 'exists', 'failed', 'nobw', 'unauthenticated', 'locked')) { $res = 'failed' }
+      $wh = $p[1].Trim().ToLower(); if ($wh -notin @('org', 'personal')) { $wh = '' }
+      $cut = { param($s) $s = ([string]$s).Trim(); if ($s.Length -gt 60) { $s = $s.Substring(0, 60) }; $s }
+      return [pscustomobject]@{ result = $res; where = $wh; why = (& $cut $p[2]); org = (& $cut $p[3]); collection = (& $cut $p[4]) }
+    }
     default { $t = [string]$v; $t = ($t -replace '[\x00-\x1F\x7F]', ''); if ($t.Length -gt 256) { $t = $t.Substring(0, 256) }; return $t }
   }
 }

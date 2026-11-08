@@ -297,20 +297,23 @@ function Invoke-HikResetStage {
   $devs = @(Find-HikSadp 4 | Where-Object { $want.ContainsKey($_.mac) })
   $fixed = @(); $pending = @()
   foreach ($m in $want.Keys) { if (-not @($devs | Where-Object { $_.mac -eq $m }).Count) { $pending += [pscustomobject]@{ mac = $m; reason = 'not seen on the network (check power and cable)' } } }
-  $todo = @($devs | Where-Object { $_.activated })
-  # an old state (reply still waiting from an earlier run) is picked up as it is
-  Hk-Say ('Asking each of the ' + $todo.Count + ' device(s) for its reset request file (same as SADP "Forgot password > Export file")...')
-  [void](Export-HikRequests $todo $reqDir $state $statePath)
-  $form = Get-HikFormFor $Config
-  if (-not $form) { return [pscustomobject]@{ fixed = @(); pending = @($pending) + @($todo | ForEach-Object { [pscustomobject]@{ mac = $_.mac; reason = 'config.json has no "form" (name, email, company)' } }) } }
   $forMine = { param($st) @($st.devices | Where-Object { $want.ContainsKey((ConvertTo-SadpMac ([string]$_.mac))) }) }
-  $mine = @(& $forMine $state | ForEach-Object { [string]$_.serial })
   # 2.2.1: a device whose unlock file was imported in an earlier run that stopped before the check: check its login now (once)
+  # 2.2.2 (Codex, reset resume): this check runs BEFORE any new export. 2.2.1 exported first, which reset an "imported" device to
+  # "exported", so the check never saw it (and a fresh request cancelled the reset that had worked).
   foreach ($d in @(& $forMine $state | Where-Object { $_.status -eq 'imported' })) {
     $okv = $false; try { $okv = [bool](& $VerifyLogin ([string]$d.ip) $SitePassword) } catch {}
     if ($okv) { Set-HikStateField $d 'status' 'verified'; Set-HikStateField $d 'verifiedAt' (Get-Date -Format 's'); Save-HikState $statePath $state; $fixed += (ConvertTo-SadpMac ([string]$d.mac)); Hk-Say ('  ' + $d.model + ' ' + $d.ip + ': the earlier reset worked - the site password logs in.') 'Green' }
   }
   foreach ($d in @(& $forMine $state | Where-Object { $_.status -eq 'verified' })) { $mv = ConvertTo-SadpMac ([string]$d.mac); if ($fixed -notcontains $mv) { $fixed += $mv } }
+  # a device that is already done is never asked for a new request file
+  $todo = @($devs | Where-Object { $_.activated -and $fixed -notcontains (ConvertTo-SadpMac ([string]$_.mac)) })
+  # an old state (reply still waiting from an earlier run) is picked up as it is
+  Hk-Say ('Asking each of the ' + $todo.Count + ' device(s) for its reset request file (same as SADP "Forgot password > Export file")...')
+  [void](Export-HikRequests $todo $reqDir $state $statePath)
+  $form = Get-HikFormFor $Config
+  if (-not $form) { return [pscustomobject]@{ fixed = @($fixed); pending = @($pending) + @($todo | ForEach-Object { [pscustomobject]@{ mac = $_.mac; reason = 'config.json has no "form" (name, email, company)' } }) } }
+  $mine = @(& $forMine $state | ForEach-Object { [string]$_.serial })
   [void](Submit-HikRequests $state $statePath $form $SubmitTimeoutSec $mine)
   Save-HikWaitingList $InboxDir $state $Site ([string]$Config.replyTo)
   $end = (Get-Date).AddMinutes($WaitMinutes); $lastLine = ''; $lastSaid = [datetime]::MinValue; $first = $true

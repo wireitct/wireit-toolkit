@@ -11,7 +11,8 @@
 #>
 $script:SidAdmins = '*S-1-5-32-544'; $script:SidSystem = '*S-1-5-18'; $script:SidUsers = '*S-1-5-32-545'; $script:SidAuth = '*S-1-5-11'
 # Crew-writable data folders, relative to C:\WireIt (everything else under the tool folders is read + execute only)
-$script:WireItCrewWritable = @('Toolkit\logs', 'Toolkit\outbox', 'Toolkit\state', 'Toolkit\runs', 'Toolkit\ipc', 'Toolkit\inbox', 'CamReset\out', 'CamReset\replies', 'CamReset\requests', 'CamReset\state')
+# 2.2.2 (Codex M3): + NetCheck\runs (the Toolkit's Network check writes its results there on the Crew login)
+$script:WireItCrewWritable = @('Toolkit\logs', 'Toolkit\outbox', 'Toolkit\state', 'Toolkit\runs', 'Toolkit\ipc', 'Toolkit\inbox', 'CamReset\out', 'CamReset\replies', 'CamReset\requests', 'CamReset\state', 'NetCheck\runs')
 $script:WireItAdminOnly = @('Toolkit\vault')
 function Wa-Join([string]$a, [string]$b) { return ($a.TrimEnd('\', '/') + '\' + $b) }   # plain text join: the plan is read on any OS
 function Get-WireItAclPlan([string]$Root = 'C:\WireIt') {
@@ -72,6 +73,70 @@ function Register-WireItRunnerTask([string]$ToolkitDir, [scriptblock]$Run = $nul
     try { & $SetSd '\WireIt\Fix this site' $script:WireItTaskSddl } catch { return [pscustomobject]@{ ok = $false; why = ('the task was made, but who may run it was not set: ' + $_.Exception.Message) } }
     return [pscustomobject]@{ ok = $true; why = '' }
   } finally { Remove-Item -LiteralPath $xml -Force -ErrorAction SilentlyContinue }
+}
+
+# ---------------- 2.2.2 (Codex H3/M2/installer): the SYSTEM helper only runs while Crew cannot change what it runs ----------------
+# Who may write is read back from the real ACLs. Anyone but Administrators, SYSTEM, TrustedInstaller and CREATOR OWNER with a write,
+# delete or permission right on a script, config.json or the tool folders = NOT locked. $GetAcl = { param($path) -> @({ sid; rights; allow }) } (tests).
+$script:WaTrusted = @('S-1-5-32-544', 'S-1-5-18', 'S-1-3-0', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+$script:WaWriteMask = 0x2 -bor 0x4 -bor 0x10 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
+$script:WaGetAcl = $null   # TESTS ONLY
+function Get-WireItAclEntries([string]$Path) {
+  if ($script:WaGetAcl) { return @(& $script:WaGetAcl $Path) }
+  $a = Get-Acl -LiteralPath $Path -ErrorAction Stop
+  return @($a.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { [pscustomobject]@{ sid = [string]$_.IdentityReference.Value; rights = [int64]$_.FileSystemRights; allow = ([string]$_.AccessControlType -eq 'Allow') } })
+}
+function Get-WireItLockPaths([string]$Root = 'C:\WireIt') {
+  $tk = Wa-Join $Root 'Toolkit'; $out = @($tk)
+  if (Test-Path -LiteralPath $tk) {
+    foreach ($f in @(Get-ChildItem -LiteralPath $tk -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.ps1', '.psm1', '.cmd', '.json') })) { $out += $f.FullName }
+    $md = Wa-Join $tk 'modules'; if (Test-Path -LiteralPath $md) { $out += $md; foreach ($f in @(Get-ChildItem -LiteralPath $md -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.ps1', '.psm1') })) { $out += $f.FullName } }
+  }
+  $cr = Wa-Join $Root 'CamReset'   # the SYSTEM run starts CamReset\Find-Cameras.ps1
+  if (Test-Path -LiteralPath $cr) { $out += $cr; foreach ($f in @(Get-ChildItem -LiteralPath $cr -File -Filter '*.ps1' -ErrorAction SilentlyContinue)) { $out += $f.FullName } }
+  return $out
+}
+function Test-WireItLocked([string]$Root = 'C:\WireIt') {
+  # { ok; why = @(path: who) }
+  $why = @()
+  foreach ($p in (Get-WireItLockPaths $Root)) {
+    $e = $null; try { $e = @(Get-WireItAclEntries $p) } catch { $why += ($p + ': its permissions could not be read'); continue }
+    foreach ($x in $e) { if ($x.allow -and ($script:WaTrusted -notcontains [string]$x.sid) -and (([int64]$x.rights -band [int64]$script:WaWriteMask) -ne 0)) { $why += ($p + ': ' + $x.sid + ' may change it') } }
+  }
+  return [pscustomobject]@{ ok = ($why.Count -eq 0); why = @($why | Select-Object -Unique) }
+}
+$script:WaTaskName = '\WireIt\Fix this site'
+function Disable-WireItRunnerTask([scriptblock]$Run = $null) {
+  if (-not $Run) { $Run = { param($a) & schtasks.exe @a 2>&1 | Out-Null; return $LASTEXITCODE } }
+  $q = 1; try { $q = [int](& $Run @('/Query', '/TN', $script:WaTaskName)) } catch {}
+  if ($q -ne 0) { return $true }   # no task: nothing to switch off
+  $c = 1; try { $c = [int](& $Run @('/Change', '/TN', $script:WaTaskName, '/DISABLE')) } catch {}
+  return ($c -eq 0)
+}
+# everything the Crew login needs, as an admin (or SYSTEM) puts it: permissions, vault\, then - only when the permissions are really
+# there - the task. A failure switches the task OFF (an old one too) and says why. Used by the installer and after an update.
+# Returns { ok; why = @(); taskOn }
+function Install-WireItCrewSetup([string]$Root = 'C:\WireIt', [scriptblock]$Icacls = $null, [scriptblock]$Schtasks = $null, [scriptblock]$SetSd = $null, [switch]$KeepTask) {
+  $why = @()
+  $ar = Invoke-WireItAclPlan $Root $Icacls
+  if (-not $ar.ok) { $why += @($ar.failed | ForEach-Object { 'permissions: ' + $_ }) }
+  if (-not $why.Count -and ($env:OS -eq 'Windows_NT' -or $script:WaGetAcl)) { $lk = Test-WireItLocked $Root; if (-not $lk.ok) { $why += @($lk.why | ForEach-Object { 'still writable: ' + $_ }) } }
+  if ($why.Count) { [void](Disable-WireItRunnerTask $Schtasks); return [pscustomobject]@{ ok = $false; why = @($why); taskOn = $false } }
+  if ($KeepTask) { return [pscustomobject]@{ ok = $true; why = @(); taskOn = $true } }
+  $rt = Register-WireItRunnerTask (Wa-Join $Root 'Toolkit') $Schtasks $SetSd
+  if (-not $rt.ok) { [void](Disable-WireItRunnerTask $Schtasks); return [pscustomobject]@{ ok = $false; why = @('task: ' + $rt.why); taskOn = $false } }
+  return [pscustomobject]@{ ok = $true; why = @(); taskOn = $true }
+}
+# what is missing for the Crew login (read only): { ok; missing = @() }. An update cannot do these as the Crew login; the window says so.
+function Test-WireItCrewSetup([string]$Root = 'C:\WireIt', [scriptblock]$Schtasks = $null) {
+  if (-not $Schtasks) { $Schtasks = { param($a) & schtasks.exe @a 2>&1 | Out-Null; return $LASTEXITCODE } }
+  $m = @()
+  $q = 1; try { $q = [int](& $Schtasks @('/Query', '/TN', $script:WaTaskName)) } catch {}
+  if ($q -ne 0) { $m += 'the "Fix this site" task' }
+  if (-not (Test-Path -LiteralPath (Wa-Join (Wa-Join $Root 'Toolkit') 'vault'))) { $m += 'the password vault folder' }
+  foreach ($rel in $script:WireItCrewWritable) { $tool = ($rel -split '\\')[0]; if ((Test-Path -LiteralPath (Wa-Join $Root $tool)) -and -not (Test-Path -LiteralPath (Wa-Join $Root $rel))) { $m += ('the folder ' + $rel); break } }
+  if ($env:OS -eq 'Windows_NT' -or $script:WaGetAcl) { $lk = Test-WireItLocked $Root; if (-not $lk.ok) { $m += 'locked permissions (the Crew login can still change the Toolkit)' } }
+  return [pscustomobject]@{ ok = ($m.Count -eq 0); missing = @($m) }
 }
 
 # ---------------- review H2: the site-password word that older runs wrote to a log ----------------

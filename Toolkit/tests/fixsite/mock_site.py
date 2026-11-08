@@ -59,14 +59,15 @@ class H(BaseHTTPRequestHandler):
         tls, ip, path = (m.group(1) == 'tls'), m.group(2), (m.group(3) or '/'); q = {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}
         self.tls = tls
         if tls:
-            # 2.2.1: /tls/<ip>/... = the device's HTTPS port. A device without "https": true has none: the connection just closes
+            # 2.2.1: /tls/<ip>/... = the device's HTTPS port. A device without "https": true has none.
+            # 2.2.2: what the wire would show comes back as 599 "MOCKNET:<kind>" (the Toolkit reads it only under -MockUrl):
+            #   no "https" -> refused (nothing on 443);  "https": "timeout" | "tls" -> that failure;  device gone / hung -> timeout
             d0 = S['devices'].get(ip)
-            if not d0 or not d0.get('https') or not reachable(ip) or not d0['answers']:
-                with LOCK: S['log'].append('TLS-NONE %s %s' % (method, ip))
-                self.close_connection = True
-                try: self.connection.shutdown(2)
-                except Exception: pass
-                return
+            hs = d0.get('https') if d0 else None
+            if not d0 or hs is not True or not reachable(ip) or not d0['answers']:
+                kind = 'timeout' if (not d0 or not reachable(ip) or not d0['answers']) else (hs if hs in ('timeout', 'tls', 'other') else 'refused')
+                with LOCK: S['log'].append('TLS-NONE %s %s' % (method, ip)); S.setdefault('tls_fail', []).append('%s %s' % (kind, ip))
+                return self.send(599, 'MOCKNET:' + kind)
         with LOCK:
             try: self.route(method, ip, path, q, body, u.query)
             except Exception as e:

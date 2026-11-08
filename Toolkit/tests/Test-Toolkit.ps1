@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $tkDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 if (-not $Root) { $Root = Split-Path -Parent $tkDir }
 . (Join-Path $tkDir 'ToolkitCore.ps1')
+$script:TkBuiltVersion = '0.0.0'   # 2.2.2: these tests use their own version numbers (1.0.0 -> 1.1.0); Test-Fix222 tests the real floor
 $script:pass = 0; $script:fail = 0
 $nb = $(if (Test-Path (Join-Path $tkDir 'FixIt.ps1')) { 15 } else { 14 })   # 1.6.0 adds 'Fix what failed'
 function Check([string]$name, [bool]$ok, [string]$info = '') { if ($ok) { $script:pass++; Write-Output ('PASS ' + $name) } else { $script:fail++; Write-Output ('FAIL ' + $name + '  ' + $info) } }

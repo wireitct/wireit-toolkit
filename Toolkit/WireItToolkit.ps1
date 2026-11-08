@@ -395,6 +395,22 @@ if (-not $NoUpdate -and -not $Screenshot) {
 if ($UpdatedFrom) { $TK.updateMsg = 'Updated itself from v' + $UpdatedFrom + '.' }
 # 2.0.4: right after an update, check in once with the download service so it records this PC's new version
 if ($UpdatedFrom -and -not $Screenshot) { try { [void](Get-TkUpdateInfo $TK.cfg $here) } catch {} }
+# 2.2.2 (release package): an update (or an old install) can leave the Crew set-up missing - the "Fix this site" task, the locked
+# permissions, vault\ and the data folders. An admin window puts them in place now; any other login is told plainly to run the
+# installer as administrator (the update itself is not a success until then).
+if (-not $Screenshot -and $env:OS -eq 'Windows_NT' -and (Test-Path (Join-Path $here 'WireItAcl.ps1'))) {
+  try {
+    . (Join-Path $here 'WireItAcl.ps1')
+    $su = Test-WireItCrewSetup (Split-Path -Parent $here)
+    if (-not $su.ok) {
+      $isAdmS = $false; try { $isAdmS = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch {}
+      $pre = $(if ($TK.updateMsg) { $TK.updateMsg + ' ' } else { '' })
+      if ($isAdmS) { New-Item -ItemType Directory -Force -Path (Join-Path $here 'vault') | Out-Null; $cs = Install-WireItCrewSetup (Split-Path -Parent $here); $TK.updateMsg = $pre + $(if ($cs.ok) { 'Set up for the Crew login (permissions, vault, Fix this site task).' } else { 'NOT SET UP for the Crew login: ' + (@($cs.why) -join '; ') + '. Run the Toolkit installer as administrator.' }) }
+      else { $TK.updateMsg = $pre + 'NOT FINISHED: ' + (@($su.missing) -join ', ') + ' missing on this PC. Run the Toolkit installer as administrator (Fix this site needs it).' }
+      Write-TkLog $TK.P.Logs 'update' ('Crew set-up check: ' + $TK.updateMsg) | Out-Null
+    }
+  } catch {}
+}
 
 # ---------------- 2.0: ONE screen first ("Fix this site"). The numbered buttons are behind "More tools" (or -Classic) ----------------
 if (-not $Classic -and -not $Screenshot) {

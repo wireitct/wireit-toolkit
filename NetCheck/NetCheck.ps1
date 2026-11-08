@@ -49,7 +49,15 @@ public static class WireItLanTls {
   public static void Install() { ServicePointManager.ServerCertificateValidationCallback = Callback; }
 }
 "@
-function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
+# 2.2.2 (Codex): -IgnoreWarnings - PowerShell 7.5 (.NET 9) turned the SYSLIB0014 'ServicePointManager is obsolete' warning into a failed compile
+# 2.2.2 (Codex H2): the same private-IPv4 test in plain PowerShell, for PowerShell 7's per-call certificate skip and curl's -k
+function Test-WireItLanHost([string]$h) {
+  if (-not $h) { return $false }; $a = $null; if (-not [Net.IPAddress]::TryParse($h.Trim('[', ']'), [ref]$a)) { return $false }
+  if ($a.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) { return $false }
+  $b = $a.GetAddressBytes()
+  return ($b[0] -eq 10 -or $b[0] -eq 127 -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 169 -and $b[1] -eq 254))
+}
+function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -IgnoreWarnings -WarningAction SilentlyContinue -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
 [void](Enable-WireItLanTls)   # 2.2.1 (review H2): devices on private addresses only
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 if (-not $OutDir) { $OutDir = Join-Path (Get-Location) ('NetCheck-' + $stamp) }

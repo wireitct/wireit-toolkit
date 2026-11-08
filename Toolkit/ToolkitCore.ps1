@@ -12,6 +12,10 @@ $script:TkDlKey = 'OXO1mhmkMJevVhd5f2Sk-ylPBogt6vmD'
 $script:TkOldUpdateUrl = 'https://raw.githubusercontent.com/wireitct/wireit-toolkit/main/version.json'
 $script:TkUpdatePrefixes = @(($script:TkDlBase + 'f/'), $script:TkUpdatePrefix)
 $script:TkCurVersion = ''
+# 2.2.2 (re-review NEW-2): the version these files ARE. Get-TkVersion never reads lower than this, so a copy installed from the
+# repository (no Toolkit\version.json) is not "0.0.0", and an update is only taken when the published one is NEWER (never a downgrade).
+# Same number as FixSiteCore.ps1 $FsVersion and the release manifest (version.json); Test-Fix222 checks all three.
+$script:TkBuiltVersion = '2.2.2'
 
 function Get-TkPaths([string]$toolkitDir) {
   $root = Split-Path -Parent $toolkitDir
@@ -98,8 +102,14 @@ function Get-TkNvrPlainEnd([string]$tool, [int]$code) {
 }
 
 function Get-TkVersion([string]$toolkitDir) {
-  $v = Read-TkJson (Join-Path $toolkitDir 'version.json')
-  if ($v -and $v.version) { return [string]$v.version } else { return '0.0.0' }
+  # Toolkit\version.json (written by the installer and by every update); a repository copy has it one folder up (the release manifest).
+  # 2.2.2: never lower than the version of the code itself ($TkBuiltVersion) - never "0.0.0"
+  $best = $script:TkBuiltVersion
+  foreach ($p in @((Join-Path $toolkitDir 'version.json'), (Join-Path (Split-Path -Parent $toolkitDir) 'version.json'))) {
+    $v = Read-TkJson $p
+    if ($v -and $v.version) { if ((Compare-TkVersion ([string]$v.version) $best) -gt 0) { $best = [string]$v.version }; break }
+  }
+  return $best
 }
 
 function Compare-TkVersion([string]$a, [string]$b) {
@@ -174,7 +184,8 @@ function Get-TkUpdateInfo($cfg, [string]$toolkitDir) {
   if (-not $m) { return [pscustomobject]@{ state = 'error'; manifest = $null; current = $cur; message = 'Update info unreadable - running this version.' } }
   $bad = Test-TkManifest $m
   if ($bad) { return [pscustomobject]@{ state = 'error'; manifest = $null; current = $cur; message = ('Update refused: ' + $bad) } }
-  if ((Compare-TkVersion ([string]$m.version) $cur) -le 0) { return [pscustomobject]@{ state = 'current'; manifest = $m; current = $cur; message = ('Up to date (v' + $cur + ').') } }
+  # only a NEWER published version is ever installed (2.2.2: also checked against the code's own version, never a downgrade)
+  if ((Compare-TkVersion ([string]$m.version) $cur) -le 0 -or (Compare-TkVersion ([string]$m.version) $script:TkBuiltVersion) -le 0) { return [pscustomobject]@{ state = 'current'; manifest = $m; current = $cur; message = $(if ((Compare-TkVersion ([string]$m.version) $cur) -lt 0) { 'This version (v' + $cur + ') is newer than the published one (v' + $m.version + ') - not changed.' } else { 'Up to date (v' + $cur + ').' }) } }
   return [pscustomobject]@{ state = 'available'; manifest = $m; current = $cur; message = ('New version ' + $m.version + ' available (this is ' + $cur + ').') }
 }
 
@@ -186,6 +197,8 @@ function Install-TkUpdate($m, [string]$toolkitDir, [scriptblock]$Fetch = $null) 
   $ErrorActionPreference = 'Stop'
   $P = Get-TkPaths $toolkitDir
   $bad = Test-TkManifest $m; if ($bad) { throw ('Update refused: ' + $bad) }
+  $cur0 = Get-TkVersion $toolkitDir
+  if ((Compare-TkVersion ([string]$m.version) $cur0) -le 0) { throw ('Update refused: version ' + $m.version + ' is not newer than this one (' + $cur0 + ').') }   # 2.2.2: never a downgrade
   if (Test-Path $P.Staging) { Remove-Item $P.Staging -Recurse -Force }
   New-Item -ItemType Directory -Force -Path $P.Staging | Out-Null
   foreach ($f in $m.files) {
@@ -788,13 +801,20 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
   return [pscustomobject]@{ ok = $page.ok; lines = $L.ToArray(); fixes = @($page.fixes); page = $page }
 }
 
+# 2.2.2 (Codex H2): the same private-IPv4 test in plain PowerShell, for PowerShell 7's per-call certificate skip and curl's -k
+function Test-WireItLanHost([string]$h) {
+  if (-not $h) { return $false }; $a = $null; if (-not [Net.IPAddress]::TryParse($h.Trim('[', ']'), [ref]$a)) { return $false }
+  if ($a.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) { return $false }
+  $b = $a.GetAddressBytes()
+  return ($b[0] -eq 10 -or $b[0] -eq 127 -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 169 -and $b[1] -eq 254))
+}
 # ---------------- Nov 3 2026 (YKW Elm live test) small helpers ----------------
 # the DW server's own name, no login needed (moduleInformation) - used for the days-to-keep target when no site was typed
 function Get-TkDwName([string]$ip, [string]$mockUrl = '') {
   $u = $(if ($mockUrl) { $mockUrl.TrimEnd('/') + '/dev/' + $ip + '/api/moduleInformation' } else { 'https://' + $ip + ':7001/api/moduleInformation' })
   $j = $null
   try { $j = (Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 4).Content | ConvertFrom-Json } catch {}
-  if (-not $j -and -not $mockUrl) { try { $o = & (Join-Path $env:SystemRoot 'System32\curl.exe') -k -s -m 4 $u 2>$null; if ($o) { $j = ($o | Out-String) | ConvertFrom-Json } } catch {} }
+  if (-not $j -and -not $mockUrl) { try { $ka = @('-s', '-m', '4'); if (Test-WireItLanHost $ip) { $ka = @('-k') + $ka }; $o = & (Join-Path $env:SystemRoot 'System32\curl.exe') @ka $u 2>$null; if ($o) { $j = ($o | Out-String) | ConvertFrom-Json } } catch {} }
   if ($j -and $j.PSObject.Properties['reply']) { $j = $j.reply }
   if ($j) { if ($j.PSObject.Properties['systemName'] -and $j.systemName) { return [string]$j.systemName }; return [string]$j.name }
   return ''

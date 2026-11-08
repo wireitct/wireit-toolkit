@@ -70,7 +70,15 @@ public static class WireItLanTls {
   public static void Install() { ServicePointManager.ServerCertificateValidationCallback = Callback; }
 }
 "@
-function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
+# 2.2.2 (Codex): -IgnoreWarnings - PowerShell 7.5 (.NET 9) turned the SYSLIB0014 'ServicePointManager is obsolete' warning into a failed compile
+# 2.2.2 (Codex H2): the same private-IPv4 test in plain PowerShell, for PowerShell 7's per-call certificate skip and curl's -k
+function Test-WireItLanHost([string]$h) {
+  if (-not $h) { return $false }; $a = $null; if (-not [Net.IPAddress]::TryParse($h.Trim('[', ']'), [ref]$a)) { return $false }
+  if ($a.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) { return $false }
+  $b = $a.GetAddressBytes()
+  return ($b[0] -eq 10 -or $b[0] -eq 127 -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 169 -and $b[1] -eq 254))
+}
+function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -IgnoreWarnings -WarningAction SilentlyContinue -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
 $IsPs5 = $PSVersionTable.PSVersion.Major -lt 6
 if ($IsPs5) {
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -319,7 +327,7 @@ function Http([string]$ip, [string]$method, [string]$path, [string]$body = '', [
   $args2 = @{ Uri = ((Base $ip) + $path); Method = $method; UseBasicParsing = $true; TimeoutSec = $timeout }
   if ($cred) { $args2.Credential = $cred }
   if ($body) { $args2.Body = [Text.Encoding]::UTF8.GetBytes($body); $args2.ContentType = $ctype }
-  if (-not $IsPs5) { $args2.SkipCertificateCheck = $true; if ($cred) { $args2.AllowUnencryptedAuthentication = $true } }
+  if (-not $IsPs5) { if (Test-WireItLanHost $ip) { $args2.SkipCertificateCheck = $true }; if ($cred) { $args2.AllowUnencryptedAuthentication = $true } }   # 2.2.2 (Codex H2): the skip only for a device on the LAN
   Log ($method + ' ' + $ip + $path + $(if ($body) { ' BODY ' + $body } else { '' }))
   for ($try = 0; $try -lt 2; $try++) {
     try {

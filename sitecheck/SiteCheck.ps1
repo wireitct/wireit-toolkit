@@ -49,7 +49,15 @@ public static class WireItLanTls {
   public static void Install() { ServicePointManager.ServerCertificateValidationCallback = Callback; }
 }
 "@
-function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
+# 2.2.2 (Codex): -IgnoreWarnings - PowerShell 7.5 (.NET 9) turned the SYSLIB0014 'ServicePointManager is obsolete' warning into a failed compile
+# 2.2.2 (Codex H2): the same private-IPv4 test in plain PowerShell, for PowerShell 7's per-call certificate skip and curl's -k
+function Test-WireItLanHost([string]$h) {
+  if (-not $h) { return $false }; $a = $null; if (-not [Net.IPAddress]::TryParse($h.Trim('[', ']'), [ref]$a)) { return $false }
+  if ($a.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) { return $false }
+  $b = $a.GetAddressBytes()
+  return ($b[0] -eq 10 -or $b[0] -eq 127 -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 169 -and $b[1] -eq 254))
+}
+function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -IgnoreWarnings -WarningAction SilentlyContinue -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
 
 $script:OUI = @{
  'DC-07-F8'='Hikvision';'28-57-BE'='Hikvision';'44-19-B6'='Hikvision';'4C-BD-8F'='Hikvision';'54-C4-15'='Hikvision';'58-03-FB'='Hikvision';'BC-AD-28'='Hikvision';'C0-56-E3'='Hikvision';'C4-2F-90'='Hikvision';'18-68-CB'='Hikvision';'24-48-45'='Hikvision';'80-BE-AF'='Hikvision';'A4-14-37'='Hikvision';'8C-E7-48'='Hikvision';'94-E1-AC'='Hikvision';'BC-BA-C2'='Hikvision';'64-DB-8B'='Hikvision';'98-DF-82'='Hikvision';'E0-CA-3C'='Hikvision';'08-A1-89'='Hikvision';'24-0F-9B'='Hikvision';'2C-A5-9C'='Hikvision';'40-AC-BF'='Hikvision';'44-47-CC'='Hikvision';'4C-F5-DC'='Hikvision';'68-6D-BC'='Hikvision';'84-94-37'='Hikvision';'AC-B9-2F'='Hikvision';'B4-A3-82'='Hikvision';'C8-A7-02'='Hikvision';'10-12-FB'='Hikvision';'AC-CB-51'='Hikvision';'E8-A0-ED'='Hikvision';'F8-4D-FC'='Hikvision';'0C-75-D2'='Hikvision';

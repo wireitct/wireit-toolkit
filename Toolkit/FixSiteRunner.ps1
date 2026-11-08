@@ -34,6 +34,16 @@ try {
     exit 2
   }
   $req = $t.req
+  # 2.2.2 (Codex H3, upgrades): this runs as SYSTEM, so it refuses to run anything while the Crew login could change the scripts or
+  # config.json it would run (an old install, or permissions an update could not set). Only an admin running the installer fixes that.
+  if (-not $TestPsExe -and $env:OS -eq 'Windows_NT') {
+    $lk = $null; try { . (Join-Path $ToolkitDir 'WireItAcl.ps1'); $lk = Test-WireItLocked (Split-Path -Parent $ToolkitDir) } catch { $lk = [pscustomobject]@{ ok = $false; why = @('the permissions could not be checked: ' + $_.Exception.Message) } }
+    if (-not $lk.ok) {
+      Rn-Log ('refused: not locked: ' + (@($lk.why) -join '; '))
+      Write-FsIpcJson (Join-Path $root 'current.json') ([ordered]@{ id = $req.id; state = 'refused'; why = 'this PC''s Toolkit folder can still be changed by the Crew login, so Fix this site is switched off. Ask the office to run the Toolkit installer as administrator.'; ended = (Get-Date -Format 's') })
+      exit 8
+    }
+  }
   Rn-Log ('request ' + $req.id + ' mode=' + $req.mode + ' site=' + $req.site + ' newSite=' + $req.newSite + ' by=' + $(if ($raw.PSObject.Properties['user']) { ([string]$raw.user -replace '[^A-Za-z0-9._ -]', '') } else { '?' }))
   if ($req.mode -in @('Update', 'UndoUpdate')) {
     . (Join-Path $ToolkitDir 'ToolkitCore.ps1')
@@ -41,7 +51,14 @@ try {
     try {
       if ($req.mode -eq 'Update') {
         $cfg = Get-TkConfig $ToolkitDir; $u = Get-TkUpdateInfo $cfg $ToolkitDir
-        if ($u.state -eq 'available') { $old = Install-TkUpdate $u.manifest $ToolkitDir; $res.ok = $true; $res.message = ('Updated from ' + $old + ' to ' + $u.manifest.version + '.'); $res.from = $old; $res.to = [string]$u.manifest.version }
+        if ($u.state -eq 'available') {
+          $old = Install-TkUpdate $u.manifest $ToolkitDir; $res.from = $old; $res.to = [string]$u.manifest.version
+          # 2.2.2 (release package): the new version's permissions, vault\ and data folders are put in place here (this is SYSTEM);
+          # anything that does not work is said, and the update is NOT reported as a success
+          $cs = $null; try { . (Join-Path $ToolkitDir 'WireItAcl.ps1'); New-Item -ItemType Directory -Force -Path (Join-Path $ToolkitDir 'vault') | Out-Null; $cs = Install-WireItCrewSetup (Split-Path -Parent $ToolkitDir) -KeepTask } catch { $cs = [pscustomobject]@{ ok = $false; why = @($_.Exception.Message) } }
+          $res.ok = [bool]$cs.ok
+          $res.message = ('Updated from ' + $old + ' to ' + $u.manifest.version + '.' + $(if ($cs.ok) { '' } else { ' BUT the set-up is not finished (' + (@($cs.why) -join '; ') + '): run the Toolkit installer as administrator. Fix this site is switched off until then.' }))
+        }
         else { $res.ok = ($u.state -eq 'current'); $res.message = [string]$u.message }
       } else { $v = Undo-TkUpdate $ToolkitDir; $res.ok = $true; $res.message = ('Went back to ' + $v + '.'); $res.to = [string]$v }
     } catch { $res.message = [string]$_.Exception.Message }
@@ -73,8 +90,15 @@ try {
   # 2.2.1 (review H4): whatever happened to the run (stopped, crashed, killed after 4 hours), this PC's network is put back here too
   try {
     $ts = Join-Path (Join-Path $runs '_state') 'fixsite-temp-ips.json'
-    if (Test-Path -LiteralPath $ts) { . (Join-Path $ToolkitDir 'FixSiteDevices.ps1'); $nr = Clear-FsLeftoverTemps $ts; if ($nr) { Rn-Log ('network put back after the run: ' + $(if ($nr.ok) { 'ok' } else { 'NOT ok: ' + (@($nr.problems) -join '; ') })) } }
-  } catch { Rn-Log ('network clean-up error: ' + $_.Exception.Message) }
+    if (Test-Path -LiteralPath $ts) {
+      . (Join-Path $ToolkitDir 'FixSiteDevices.ps1'); $nr = Clear-FsLeftoverTemps $ts
+      if ($nr) {
+        Rn-Log ('network put back after the run: ' + $(if ($nr.ok) { 'ok' } else { 'NOT ok: ' + (@($nr.problems) -join '; ') }))
+        # 2.2.2 (re-review H4): a clean-up that did not work makes the run's result a failure the window shows
+        if (-not $nr.ok) { if ($code -in @(0, 4)) { $code = 6 }; try { $c1 = Read-FsIpcJson (Join-Path $root 'current.json'); if ($c1) { $c1 | Add-Member -NotePropertyName code -NotePropertyValue $code -Force; $c1 | Add-Member -NotePropertyName network -NotePropertyValue ('NOT back to normal: ' + (@($nr.problems) -join '; ')) -Force; Write-FsIpcJson (Join-Path $root 'current.json') $c1 } } catch {} }
+      }
+    }
+  } catch { Rn-Log ('network clean-up error: ' + $_.Exception.Message); if ($code -in @(0, 4)) { $code = 6 } }
   if ($sess) { Clear-FsIpcSession $sess }
   if ($lock) { $lock.Close() }
 }

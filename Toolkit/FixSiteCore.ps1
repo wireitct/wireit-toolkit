@@ -10,7 +10,7 @@
      cameras:[{name, brand, model, serial, mac, ip, channel, nvr, switch, port, settings:{codec,fps,resolution,bitrate}}] }
  No passwords are ever in it.
 #>
-$script:FsVersion = '2.2.0'
+$script:FsVersion = '2.2.2'
 $script:FsPoeNets = @('192.168.254')
 
 function Get-FsDefaults {
@@ -112,7 +112,7 @@ function Get-FsScheme($observed, $expected) {
   $pc = Get-FsProp $observed 'pc' $null
   $gw = [string](Get-FsProp $pc 'gw' ''); if ($gw) { return (Get-FsP3 $gw) }
   $s = [string](Get-FsProp $expected 'scheme' ''); if ($s) { return $s }
-  $ip = [string](Get-FsProp $pc 'ip' ''); if ($ip) { return (Get-FsP3 $ip) }
+  $ip = [string](Get-FsProp $pc 'ip' ''); if ($ip -and $ip -notlike '169.254.*') { return (Get-FsP3 $ip) }   # 2.2.2 (H9): a 169.254 address is no site scheme
   return ''
 }
 
@@ -637,11 +637,22 @@ function ConvertFrom-FsLog([string[]]$lines) {
   }
   return [pscustomobject]@{ lines = @($show); waiting = $waiting }
 }
+# 2.2.2 (re-review H8): where an NVR is NOW during an Undo. A run that moved the NVR recorded its new address (target); once an earlier
+# Undo moved it back ('nvrmove|<ip>' done) it answers on its OLD address again, so a channel or password step retried by a second
+# Undo goes there, not to the address it no longer has.
+function Resolve-FsUndoNvrIp($RbNvrs, [string]$Addr, [scriptblock]$IsDone) {
+  foreach ($n in @($RbNvrs)) {
+    if (-not $n) { continue }
+    if ([string]$n.target -eq $Addr -and (& $IsDone ('nvrmove|' + [string]$n.ip))) { return [string]$n.old.ip }
+  }
+  return $Addr
+}
 function Get-FsExitWords([int]$code) {
   switch ($code) {
     0 { return 'Done. Everything is fixed.' }
     4 { return 'Done, but some things still need you: see the lines marked with a red X.' }
     2 { return 'Stopped. Nothing was changed.' }
+    6 { return 'Finished, but THIS PC''s network could not be put back the way it was (see the red line). Restart the PC, or press Fix this site again: it tries again first.' }   # 2.2.2 (H4)
     default { return ('It stopped unexpectedly (code ' + $code + '). Nothing is half-done: the run folder has the log and the undo file.') }
   }
 }

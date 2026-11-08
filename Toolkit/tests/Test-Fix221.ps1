@@ -232,6 +232,7 @@ Remove-Item Function:\Start-Sleep
 # =====================================================================================
 Write-Host 'H10. update / go back stop on a file that cannot be written'
 . (Join-Path $tk 'ToolkitCore.ps1')
+$script:TkBuiltVersion = '0.0.0'   # 2.2.2: these tests use their own version numbers (1.0.0 -> 1.1.0); Test-Fix222 tests the real floor
 $w = Join-Path $tmp 'WireIt'; $tku = Join-Path $w 'Toolkit'; New-Item -ItemType Directory -Force -Path $tku, (Join-Path $w 'FixNVR') | Out-Null
 Set-Content (Join-Path $tku 'a.ps1') 'old a'; Set-Content (Join-Path $w 'FixNVR\FixNVR.ps1') 'old fix'
 Save-TkJson ([ordered]@{ version = '1.0.0' }) (Join-Path $tku 'version.json')
@@ -284,7 +285,8 @@ if (-not $isWin) {
   $env:FAKEBW_MODE = 'noedit'
   Eq (Save-FsBitwarden $bw 'Lieber' 'Thirdpw9012') 'failed' 'the server did not take the change: reported as NOT saved'
   $env:FAKEBW_MODE = ''
-  Check ($fs -match 'it is NOT in Bitwarden yet \(only on this PC\)' -and $fs -match 'Bitwarden had an OLDER password') 'FixSite says plainly whether the office has it'
+  $fsbw = $fs + (Read-Src 'Toolkit/FixSiteBw.ps1')   # 2.2.2: the words moved to FixSiteBw.ps1 (the window uses them too)
+  Check ($fsbw -match 'it is NOT confirmed in Bitwarden \(only on this PC\)' -and $fsbw -match 'Bitwarden had an OLDER password') 'FixSite says plainly whether the office has it'
 } else { Write-Host '  (fake Bitwarden runs on Linux/macOS only; covered there)' }
 
 # =====================================================================================

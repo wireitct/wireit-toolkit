@@ -134,7 +134,13 @@ function Find-HikReplyMatches($Devices, $Messages) {
   foreach ($m in @($Messages)) {
     if ($null -eq $m) { continue }
     $cands = @()
-    foreach ($a in @($m.attachments)) { if ($null -eq $a -or $null -eq $a.bytes) { continue }; $cands += [pscustomobject]@{ name = $a.name; bytes = $a.bytes; fromFile = $false } }
+    foreach ($a in @($m.attachments)) {
+      if ($null -eq $a -or $null -eq $a.bytes) { continue }
+      # 2.2.2 (Codex M5): a picture or a PDF is never the unlock file - also when its name or text carries our serial (2.2.1 only
+      # filtered them on the mail-text path, so "SN123.pdf" could be imported as the unlock file)
+      if (([string]$a.name) -match '(?i)\.(png|jpe?g|gif|bmp|tiff?|webp|pdf|html?|docx?|xlsx?)$' -or [string]$a.type -match '(?i)^(image/|application/pdf|text/html)') { continue }
+      $cands += [pscustomobject]@{ name = $a.name; bytes = $a.bytes; fromFile = $false }
+    }
     foreach ($c in $cands) {
       $txt = $l1.GetString($c.bytes); $hit = $null; $how = ''
       foreach ($d in @($Devices)) {
@@ -155,10 +161,13 @@ function Find-HikReplyMatches($Devices, $Messages) {
   return [pscustomobject]@{ matched = $matches2; unmatched = $un }
 }
 # a Hikvision code written in a mail's text (no attachment). Returns '' when there is none. UNVERIFIED: shape of Hik's code mail not seen yet.
+# 2.2.2 (re-review M5): only a LABELLED code: "code" / "key" (optionally "verification", "security", "reset", "unlock" before it),
+# then ":" or "is", then the code itself: 4-64 characters (the same as the relay accepts) with at least one digit. "the code provided"
+# or "this code is valid" is no code (2.2.1 took any 8-letter word after "code").
 function Get-HikCodeFromText([string]$Text) {
   if (-not $Text) { return '' }
-  $m = [regex]::Match($Text, '(?i)(?:verification|security|reset|unlock)?\s*(?:code|key)\s*(?:is)?\s*[:\uFF1A]?\s*([A-Za-z0-9]{8})(?![A-Za-z0-9])')
-  if ($m.Success) { return $m.Groups[1].Value }
+  $rx = '(?i)(?<![A-Za-z])(?:(?:verification|security|reset|unlock)\s+)?(?:code|key)\s*(?:(?:is)\s*[:\uFF1A]?|[:\uFF1A])\s*([A-Za-z0-9+/=_-]{4,64})(?![A-Za-z0-9+/=_-])'
+  foreach ($m in [regex]::Matches($Text, $rx)) { $c = $m.Groups[1].Value; if ($c -match '\d') { return $c } }
   return ''
 }
 # folder mode: every regular file in $Dir newer than $Since becomes a pseudo-message with one attachment (.zip = its files, .eml = its attachments or code)

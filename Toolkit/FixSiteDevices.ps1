@@ -35,9 +35,18 @@ public static class WireItLanTls {
   public static void Install() { ServicePointManager.ServerCertificateValidationCallback = Callback; }
 }
 "@
-function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
+# 2.2.2 (Codex): -IgnoreWarnings - PowerShell 7.5 (.NET 9) turned the SYSLIB0014 'ServicePointManager is obsolete' warning into a failed compile
+# 2.2.2 (Codex H2): the same private-IPv4 test in plain PowerShell, for PowerShell 7's per-call certificate skip and curl's -k
+function Test-WireItLanHost([string]$h) {
+  if (-not $h) { return $false }; $a = $null; if (-not [Net.IPAddress]::TryParse($h.Trim('[', ']'), [ref]$a)) { return $false }
+  if ($a.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) { return $false }
+  $b = $a.GetAddressBytes()
+  return ($b[0] -eq 10 -or $b[0] -eq 127 -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 169 -and $b[1] -eq 254))
+}
+function Enable-WireItLanTls { try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $script:WireItLanTlsCode -IgnoreWarnings -WarningAction SilentlyContinue -ErrorAction Stop }; [WireItLanTls]::Install(); return $true } catch { return $false } }
 if ($script:FsIsPs5) {
-  try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; [Net.ServicePointManager]::Expect100Continue = $false } catch {}
+  # 2.2.2 (re-review H1): TLS 1.2 first, but also 1.1/1.0 - older camera firmware speaks only those, and it must stay HTTPS (2.2.1 sent it plain HTTP)
+  try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls; [Net.ServicePointManager]::Expect100Continue = $false } catch {}
   [void](Enable-WireItLanTls)   # devices answer HTTPS with their own (self-made) certificate
 }
 function Fs-LogLine([string]$s) { if (Get-Command Fs-Log -ErrorAction SilentlyContinue) { Fs-Log $s } }
@@ -50,7 +59,7 @@ function Fs-Http {
   param([string]$Ip, [string]$Path, [string]$Method = 'GET', [string]$Body = '', [string]$ContentType = 'application/xml', $Cred = $null, [int]$Timeout = 8, [string]$OutFile = '', [switch]$Secret, [switch]$Tls)
   $base = $(if ($script:FsMockUrl) { $script:FsMockUrl.TrimEnd('/') + $(if ($Tls) { '/tls/' } else { '/dev/' }) + $Ip } elseif ($Tls) { 'https://' + $Ip } else { 'http://' + $Ip })
   $a = @{ Uri = ($base + $Path); Method = $Method; UseBasicParsing = $true; TimeoutSec = $Timeout; ErrorAction = 'Stop' }
-  if ($Tls -and -not $script:FsIsPs5 -and -not $script:FsMockUrl) { $a.SkipCertificateCheck = $true }   # this one device call only (PS 5.1: Enable-WireItLanTls)
+  if ($Tls -and -not $script:FsIsPs5 -and -not $script:FsMockUrl -and (Test-WireItLanHost $Ip)) { $a.SkipCertificateCheck = $true }   # this one device call only (PS 5.1: Enable-WireItLanTls)
   if ($Cred) { $a.Credential = $Cred; if (-not $script:FsIsPs5) { $a.AllowUnencryptedAuthentication = $true } }
   if ($Body) { $a.Body = [Text.Encoding]::UTF8.GetBytes($Body); $a.ContentType = $ContentType }
   if ($OutFile) { $a.OutFile = $OutFile }
@@ -65,23 +74,66 @@ function Fs-Http {
   } catch {
     $code = 0; try { $code = [int]$_.Exception.Response.StatusCode } catch {}
     $eb = ''; try { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $eb = [string]$_.ErrorDetails.Message } } catch {}
-    Fs-LogLine ('  -> ' + $code + ' ' + $_.Exception.Message)
-    return [pscustomobject]@{ code = $code; body = $eb }
+    $err = $(if ($code -eq 0) { Get-FsNetErrorKind $_.Exception } else { '' })
+    # test harness: the mock answers 599 "MOCKNET:<kind>" for what a real device does on the wire (port closed, no answer, bad TLS)
+    if ($script:FsMockUrl -and $code -eq 599 -and $eb -match '^MOCKNET:(\w+)') { $code = 0; $err = $Matches[1]; $eb = '' }
+    Fs-LogLine ('  -> ' + $code + ' ' + $_.Exception.Message + $(if ($err) { ' [' + $err + ']' } else { '' }))
+    return [pscustomobject]@{ code = $code; body = $eb; err = $err }
   }
+}
+# 2.2.2 (review H1): WHY a call got no HTTP answer. 'refused' = nothing listens on that port (the device has no HTTPS);
+# 'timeout' = no answer in time; 'tls' = the TLS handshake or the certificate failed; 'unreachable' = no route; 'other'.
+# Works for Windows PowerShell 5.1 (WebException + SocketException 10061) and PowerShell 7 (HttpRequestException + SocketException).
+function Get-FsNetErrorKind($ex) {
+  $kind = ''
+  for ($e = $ex; $e; $e = $e.InnerException) {
+    if ($e -is [Net.Sockets.SocketException]) {
+      $sc = [string]$e.SocketErrorCode
+      if ($sc -eq 'ConnectionRefused' -or [int]$e.NativeErrorCode -eq 10061) { return 'refused' }
+      if ($sc -eq 'TimedOut') { $kind = 'timeout' } elseif ($sc -in @('HostUnreachable', 'NetworkUnreachable', 'HostNotFound', 'HostDown')) { if (-not $kind) { $kind = 'unreachable' } }
+    }
+    elseif ($e -is [Net.WebException]) {
+      $st = [string]$e.Status
+      if ($st -eq 'Timeout') { $kind = 'timeout' } elseif ($st -in @('TrustFailure', 'SecureChannelFailure')) { if (-not $kind) { $kind = 'tls' } }
+    }
+    elseif ($e -is [Security.Authentication.AuthenticationException]) { if (-not $kind) { $kind = 'tls' } }
+    elseif ($e -is [TimeoutException] -or $e -is [OperationCanceledException]) { $kind = 'timeout' }
+  }
+  if ($kind) { return $kind }
+  return 'other'
 }
 # 2.2.1 (review H1): a call that carries a password (a new password, the NVR's copy of a camera password) goes over HTTPS first.
 # Plain HTTP only when the device has no HTTPS at all (nothing answers on 443), and then with a warning the tech sees.
 # A device that answered HTTPS once is never asked over plain HTTP again in this run.
+# 2.2.2 (re-review H1): "no HTTPS" now means exactly that: the connection to 443 was REFUSED, or the model is on the known no-HTTPS
+# list ($script:FsNoTlsModels, regexes; config.json "noHttpsModels" adds to it). A timeout, a TLS handshake failure or a certificate
+# problem is NOT a reason to send the password in clear: the password is not sent, and the run says so in red.
 $script:FsTlsState = @{}                                     # ip -> 'yes' | 'no'
 $script:FsPlainSecret = New-Object System.Collections.ArrayList   # devices that got a password over plain HTTP in this run
+$script:FsTlsFailed = @{}                                    # ip -> why HTTPS failed (timeout / tls / other): password NOT sent
 $script:FsNoPlainSecrets = $false                            # $true = never fall back (refuse instead)
+$script:FsNoTlsModels = @()                                  # model regexes known to have no HTTPS at all (none confirmed yet)
+$script:FsModels = @{}                                       # ip -> model, filled from the scan
+function Test-FsNoTlsModel([string]$ip) {
+  $m = [string]$script:FsModels[$ip]; if (-not $m) { return $false }
+  foreach ($rx in @($script:FsNoTlsModels)) { if ($rx -and $m -match $rx) { return $true } }
+  return $false
+}
 function Fs-HttpSecret {
   param([string]$Ip, [string]$Path, [string]$Method = 'GET', [string]$Body = '', [string]$ContentType = 'application/xml', $Cred = $null, [int]$Timeout = 8)
   $st = [string]$script:FsTlsState[$Ip]
+  if ($st -ne 'no' -and (Test-FsNoTlsModel $Ip)) { $st = 'no'; $script:FsTlsState[$Ip] = 'no'; Fs-LogLine ('  ' + $Ip + ': model ' + $script:FsModels[$Ip] + ' is on the no-HTTPS list') }
   if ($st -ne 'no') {
     $r = Fs-Http -Ip $Ip -Path $Path -Method $Method -Body $Body -ContentType $ContentType -Cred $Cred -Timeout $Timeout -Secret -Tls
     if ($r.code -ne 0) { $script:FsTlsState[$Ip] = 'yes'; return $r }
     if ($st -eq 'yes') { return $r }   # it has HTTPS: a failed answer is a failure, never a reason to send the password in clear
+    $why = [string]$r.err
+    if ($why -ne 'refused') {
+      # 2.2.2 (re-review H1): HTTPS is there (or may be) but did not work: fail loudly, never plain HTTP
+      $script:FsTlsFailed[$Ip] = $(if ($why) { $why } else { 'other' })
+      Fs-LogLine ('  ERROR ' + $Ip + ': HTTPS did not work (' + $script:FsTlsFailed[$Ip] + ') - the password was NOT sent (plain HTTP is only used when the device has no HTTPS at all)')
+      return [pscustomobject]@{ code = 0; body = ''; err = $why; tlsFailed = $true }
+    }
     $script:FsTlsState[$Ip] = 'no'
   }
   if ($script:FsNoPlainSecrets) { Fs-LogLine ('  ' + $Ip + ': no HTTPS - password NOT sent (plain HTTP is switched off)'); return [pscustomobject]@{ code = 0; body = '' } }
@@ -90,6 +142,7 @@ function Fs-HttpSecret {
   return (Fs-Http -Ip $Ip -Path $Path -Method $Method -Body $Body -ContentType $ContentType -Cred $Cred -Timeout $Timeout -Secret)
 }
 function Test-FsSentPlain([string]$ip) { return $script:FsPlainSecret.Contains($ip) }
+function Get-FsTlsFailure([string]$ip) { return [string]$script:FsTlsFailed[$ip] }
 function Fs-XmlDoc([string]$s) { if (-not $s) { return $null }; try { [xml]$x = $s; return $x } catch { return $null } }
 function Fs-XFind($node, [string]$name) { if (-not $node) { return @() }; return @($node.SelectNodes(".//*[local-name()='" + $name + "']")) }
 function Fs-XText($node, [string]$name) { $n = @(Fs-XFind $node $name); if ($n.Count -and $n[0]) { return ([string]$n[0].InnerText).Trim() }; return '' }
@@ -373,6 +426,7 @@ function Invoke-FsNetOp([string]$op, [hashtable]$a) {
       New-NetIPAddress @p | Out-Null; return $true
     }
     'addroute' { New-NetRoute -InterfaceIndex $ix -DestinationPrefix '0.0.0.0/0' -NextHop $a.gw -ErrorAction Stop | Out-Null; return $true }
+    'renew' { if ($a.name) { $null = & ipconfig.exe /renew ([string]$a.name) 2>&1 }; return $true }   # 2.2.2 (H4): ask DHCP for the address now
   }
   return $null
 }
@@ -385,7 +439,9 @@ function Get-FsPcNets {
   } else {
     $l = @()
     foreach ($ad in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch 'Tailscale|WireGuard|TAP|VPN|Cellular|Mobile Broadband|Hyper-V|Loopback' })) {
-      $a = Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.SkipAsSource -ne $true -and $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1
+      # 2.2.2 (re-review H9): an adapter with ONLY a 169.254 address (an isolated camera switch with no DHCP) is listed too
+      $aa = @(Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.SkipAsSource -ne $true })
+      $a = @($aa | Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1)[0]; if (-not $a) { $a = @($aa | Select-Object -First 1)[0] }
       if (-not $a) { continue }
       $rt = Get-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1
       $ipi = Get-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
@@ -398,10 +454,21 @@ function Get-FsPcNet([int]$IfIndex = -1) {
   $all = @(Get-FsPcNets)
   if ($IfIndex -ge 0) { $m = @($all | Where-Object { [int]$_.ifIndex -eq $IfIndex })[0]; if ($m) { return $m } }
   $g = @($all | Where-Object { $_.gw })[0]; if ($g) { return $g }
+  # 2.2.2 (re-review H9): no adapter has a router (an isolated camera switch): the one adapter there is
+  $o = @($all)[0]; if ($o) { return $o }
   return $null
 }
+function Test-FsLinkLocal([string]$ip) { return ([string]$ip -like '169.254.*') }
+# 2.2.2 (re-review H9): the mask and router written to a device that is moved. The PC's own when it is on the site network with a
+# router; on an isolated camera switch (no router, or only a 169.254 address) the WireIt standard: /24 and router .1 on the scheme.
+function Get-FsDeviceNet($pc, [string]$scheme) {
+  $mask = '255.255.255.0'; $gw = $(if ($scheme) { $scheme + '.1' } else { '' })
+  if ($pc -and -not (Test-FsLinkLocal ([string]$pc.ip)) -and $pc.mask -and (Get-FsP3 ([string]$pc.ip)) -eq $scheme) { $mask = [string]$pc.mask }
+  if ($pc -and $pc.gw) { $gw = [string]$pc.gw }
+  return [pscustomobject]@{ mask = $mask; gw = $gw }
+}
 # the words for the "which network are the cameras on?" question (one line per adapter)
-function Format-FsPcNetChoice($nets) { $i = 0; return @($nets | ForEach-Object { $i++; '' + $i + ' = ' + $_.name + ' (this PC ' + $_.ip + '/' + $_.prefix + $(if ($_.gw) { ', router ' + $_.gw } else { ', no router' }) + ')' }) }
+function Format-FsPcNetChoice($nets) { $i = 0; return @($nets | ForEach-Object { $i++; '' + $i + ' = ' + $_.name + ' (this PC ' + $_.ip + '/' + $_.prefix + $(if ($_.gw) { ', router ' + $_.gw } elseif (Test-FsLinkLocal ([string]$_.ip)) { ', no router, no DHCP address' } else { ', no router' }) + ')' }) }
 function Select-FsPcNet($nets, [string]$answer) {
   # Enter = the first one (the internet one); a number picks that line; anything else = $null (asked again)
   $nets = @($nets); if (-not $nets.Count) { return $null }
@@ -472,11 +539,16 @@ function Restore-FsPcNet([string]$stateFile) {
         }
         if ($script:FsCoexistChanged) { $okc = $false; try { $okc = [bool](Invoke-FsNetOp 'coexist' @{ ifIndex = $ix; on = $false }) } catch {}; if ($okc) { $script:FsCoexistChanged = $false } else { $problems += 'the DHCP+static coexistence setting could not be put back' } }
         # check it again: DHCP on (when it was), own addresses back (when fixed)
-        $chk = $null; try { $chk = Invoke-FsNetOp 'state' @{ ifIndex = $ix } } catch {}
-        if ($chk) {
-          if ($b.dhcp -and -not $chk.dhcp) { $problems += 'DHCP is still off on this PC' }
-          if (-not $b.dhcp) { foreach ($ad in @($b.addrs)) { if (-not @($chk.addrs | Where-Object { $_.ip -eq $ad.ip }).Count) { $problems += ('this PC''s address ' + $ad.ip + ' is still missing') } } }
+        # 2.2.2 (re-review H4): a read that fails is a problem (not a pass); a DHCP adapter must have a real address again and every
+        # router it had (default route) must be back - for DHCP too. DHCP can take a few seconds to hand the address back: asked again.
+        $chk = $null; $vp = @()
+        for ($try = 0; $try -lt [math]::Max(1, [int]$script:FsRestoreChecks); $try++) {
+          if ($try -gt 0) { if ($b.dhcp -and $try -eq 1) { try { [void](Invoke-FsNetOp 'renew' @{ ifIndex = $ix; name = [string]$b.name }) } catch {} }; Fs-NetWait }
+          $chk = $null; try { $chk = Invoke-FsNetOp 'state' @{ ifIndex = $ix } } catch { $chk = $null }
+          $vp = @(Get-FsNetVerifyProblems $b $chk @($left))
+          if (-not $vp.Count) { break }
         }
+        $problems += $vp
       }
     }
   } else { $script:FsTemps.Clear() }
@@ -490,6 +562,24 @@ function Restore-FsPcNet([string]$stateFile) {
   }
   $script:FsLastRestore = [pscustomobject]@{ ok = (-not $problems.Count); problems = @($problems) }
   return $script:FsLastRestore
+}
+# 2.2.2 (re-review H4): what is still not as it was ($b = saved before, $chk = read now, $temps = temporary addresses still on).
+$script:FsRestoreChecks = 5     # reads of the adapter before it counts as "not back" (about 2 s apart)
+function Fs-NetWait { if ($script:FsNetOps -and $script:FsNetOps.ContainsKey('wait')) { [void](& $script:FsNetOps['wait'] @{}); return }; Start-Sleep -Seconds 2 }
+function Get-FsNetVerifyProblems($b, $chk, $temps = @()) {
+  if (-not $chk) { return @('this PC''s network settings could not be read back, so it is not known whether they are back') }
+  $p = @()
+  $tempIps = @(@($temps) + @($script:FsTemps) | Where-Object { $_ } | ForEach-Object { [string]$_.ip })
+  $own = @(@($chk.addrs) | Where-Object { $_ -and $_.ip -and -not $_.skip -and [string]$_.ip -notlike '169.254.*' -and $tempIps -notcontains [string]$_.ip })
+  if ($b.dhcp) {
+    if (-not $chk.dhcp) { $p += 'DHCP is still off on this PC' }
+    $hadAddr = @(@($b.addrs) | Where-Object { $_ -and [string]$_.ip -notlike '169.254.*' }).Count -gt 0
+    if ($hadAddr -and -not $own.Count) { $p += 'this PC has no address from DHCP yet' }
+  } else {
+    foreach ($ad in @($b.addrs)) { if ($ad -and -not @($chk.addrs | Where-Object { $_.ip -eq $ad.ip }).Count) { $p += ('this PC''s address ' + $ad.ip + ' is still missing') } }
+  }
+  foreach ($g in @($b.gw)) { if ($g -and @($chk.gw) -notcontains $g) { $p += ('this PC''s router ' + $g + ' (default route) is not back') } }
+  return $p
 }
 function Remove-FsTempIps([string]$stateFile) {
   if ($script:FsMockUrl -and -not $script:FsNetOps) {
@@ -670,71 +760,8 @@ function Get-FsOtherSitePasswords([string]$dir, [string]$site) {
   }
   return @($out)
 }
-# ---------------- Bitwarden (2.0.3): save the site password as "<site> - site password" when the bw command is on this PC ----------------
-function Find-FsBitwarden($cfg) {
-  if ($cfg -and $cfg.PSObject.Properties['bitwardenCli'] -and $cfg.bitwardenCli -and (Test-Path ([string]$cfg.bitwardenCli))) { return [string]$cfg.bitwardenCli }
-  foreach ($n in @('bw.exe', 'bw.cmd', 'bw')) { $c = Get-Command $n -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c -and $c.Source) { return $c.Source } }
-  foreach ($p in @((Join-Path $env:APPDATA 'npm\bw.cmd'), (Join-Path $env:LOCALAPPDATA 'Programs\Bitwarden CLI\bw.exe'))) { if ($p -and (Test-Path $p)) { return $p } }
-  return ''
-}
-function Invoke-FsBw([string]$bw, [string[]]$a, [string]$stdin = $null) {
-  try {
-    if ($null -ne $stdin) { $o = $stdin | & $bw @a 2>$null } else { $o = & $bw @a 2>$null }
-    return [pscustomobject]@{ code = $LASTEXITCODE; out = (@($o) -join "`n").Trim() }
-  } catch { return [pscustomobject]@{ code = 1; out = '' } }
-}
-function Get-FsBwStatus([string]$bw) {
-  # 'unlocked' | 'locked' | 'unauthenticated' | '' (no bw / no answer)
-  if (-not $bw) { return '' }
-  $r = Invoke-FsBw $bw @('status')
-  try { return [string](($r.out | ConvertFrom-Json).status) } catch { return '' }
-}
-function Get-FsBwItemName([string]$site) { return ($site + ' ' + [char]0x2013 + ' site password') }
-function Get-FsBwItem([string]$bw, [string]$id) { $g = Invoke-FsBw $bw @('get', 'item', $id); if ($g.code -ne 0 -or -not $g.out) { return $null }; try { return ($g.out | ConvertFrom-Json) } catch { return $null } }
-function Save-FsBitwarden([string]$bw, [string]$site, [string]$pw, [string]$session = '') {
-  # returns 'saved' (new item) | 'updated' (the item had an older password) | 'exists' (it already had exactly this one) | 'failed'.
-  # 2.2.1 (review H11): an item with the same name is no longer taken as "saved": its password is compared, changed when different,
-  # and every answer except 'failed' is checked by reading the item back after a sync with the Bitwarden server (= the office sees it).
-  # The password only goes to bw on its stdin (base64 item JSON), never on a command line or in a file.
-  if (-not $bw -or -not $pw) { return 'failed' }
-  $hadEnv = $env:BW_SESSION; if ($session) { $env:BW_SESSION = $session }
-  try {
-    $name = Get-FsBwItemName $site
-    [void](Invoke-FsBw $bw @('sync'))   # the newest copy from the server first: a stale local copy must not decide
-    $l = Invoke-FsBw $bw @('list', 'items', '--search', $name)
-    $plainName = $name -replace '[^\x20-\x7E]', ''   # Windows PowerShell may read bw's UTF-8 dash wrongly: compare without it
-    $found = @(); try { $found = @(($l.out | ConvertFrom-Json) | Where-Object { ([string]$_.name -replace '[^\x20-\x7E]', '') -eq $plainName -and [int]$_.type -eq 1 }) } catch {}
-    $verify = { param($id) [void](Invoke-FsBw $bw @('sync')); $it = Get-FsBwItem $bw $id; return ($it -and $it.login -and ([string]$it.login.password) -ceq $pw) }
-    if ($found.Count) {
-      $it0 = $found[0]
-      if ($it0.login -and ([string]$it0.login.password) -ceq $pw) { if (& $verify ([string]$it0.id)) { return 'exists' }; return 'failed' }
-      $full = Get-FsBwItem $bw ([string]$it0.id); if (-not $full) { $full = $it0 }
-      if (-not $full.login) { return 'failed' }
-      $full.login.password = $pw
-      $n0 = [string]$full.notes; $full.notes = (($n0.TrimEnd() + "`n" + 'Password changed by the WireIt Toolkit ' + $script:FsVersion + ' on ' + (Get-Date -Format 'yyyy-MM-dd') + ' (the old one is in this item''s password history).').Trim())
-      $enc = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($full | ConvertTo-Json -Depth 8 -Compress)))
-      $r = Invoke-FsBw $bw @('edit', 'item', ([string]$it0.id)) $enc
-      if ($r.code -ne 0) { return 'failed' }
-      if (& $verify ([string]$it0.id)) { return 'updated' }; return 'failed'
-    }
-    $item = [ordered]@{ organizationId = $null; collectionIds = $null; folderId = $null; type = 1; name = $name
-      notes = ('Made by the WireIt Toolkit ' + $script:FsVersion + ' on ' + (Get-Date -Format 'yyyy-MM-dd') + '. Every camera and NVR at this site uses it. User: admin.')
-      favorite = $false; fields = @(); login = [ordered]@{ uris = @(); username = 'admin'; password = $pw; totp = $null }; secureNote = $null; card = $null; identity = $null; reprompt = 0 }
-    $enc = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($item | ConvertTo-Json -Depth 5 -Compress)))
-    $r = Invoke-FsBw $bw @('create', 'item') $enc
-    if ($r.code -ne 0 -or $r.out -notmatch '"id"') { return 'failed' }
-    $nid = ''; try { $nid = [string](($r.out | ConvertFrom-Json).id) } catch {}
-    if ($nid -and (& $verify $nid)) { return 'saved' }
-    return 'failed'
-  } finally { if ($session) { $env:BW_SESSION = $hadEnv } }
-}
-function Unlock-FsBitwarden([string]$bw, [string]$master) {
-  # bw unlock with the master password in a process-only variable (not on the command line); returns the session key or ''
-  if (-not $bw -or -not $master) { return '' }
-  $env:WIREIT_BWPW = $master
-  try { $r = Invoke-FsBw $bw @('unlock', '--passwordenv', 'WIREIT_BWPW', '--raw'); if ($r.code -eq 0 -and $r.out -and $r.out -notmatch '\s') { return $r.out }; return '' }
-  finally { Remove-Item Env:\WIREIT_BWPW -ErrorAction SilentlyContinue }
-}
+# ---------------- Bitwarden: FixSiteBw.ps1 (2.2.2: also used by the Toolkit window, on the tech's own login) ----------------
+. (Join-Path $PSScriptRoot 'FixSiteBw.ps1')
 function Get-FsRandom($rng, [int]$n) { $b = New-Object byte[] 4; do { $rng.GetBytes($b); $v = [BitConverter]::ToUInt32($b, 0) } while ($v -ge ([uint32]::MaxValue - ([uint32]::MaxValue % [uint32]$n))); return [int]($v % [uint32]$n) }
 
 # ---------------- Dahua search (read-only, the same packet ConfigTool sends; answers even from the wrong IP scheme) ----------------

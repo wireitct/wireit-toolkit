@@ -14,7 +14,7 @@ param([string]$Root = 'C:\WireIt', [switch]$NoShortcut, [switch]$PlanOnly)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $tk = Join-Path $Root 'Toolkit'
-$files = 'WireItToolkit.ps1', 'ToolkitCore.ps1', 'WireIt Toolkit.cmd', 'Install-Toolkit.ps1', 'README.txt', 'wireit.ico', 'wireit-logo.png', 'version.json', 'CamViews.ps1', 'Set upload key.cmd', 'NvrCheck.ps1', 'ScanUpload.ps1', 'FixIt.ps1', 'FixSite.ps1', 'FixSiteCore.ps1', 'FixSiteDevices.ps1', 'FixSiteWindow.ps1', 'HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'FixSiteIpc.ps1', 'FixSiteRunner.ps1', 'FixSiteAsk.ps1', 'HikEmailDrop.ps1', 'HikPortalStep.ps1', 'WireItAcl.ps1'
+$files = 'WireItToolkit.ps1', 'ToolkitCore.ps1', 'WireIt Toolkit.cmd', 'Install-Toolkit.ps1', 'README.txt', 'wireit.ico', 'wireit-logo.png', 'version.json', 'CamViews.ps1', 'Set upload key.cmd', 'NvrCheck.ps1', 'ScanUpload.ps1', 'FixIt.ps1', 'FixSite.ps1', 'FixSiteCore.ps1', 'FixSiteDevices.ps1', 'FixSiteWindow.ps1', 'HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'FixSiteIpc.ps1', 'FixSiteRunner.ps1', 'FixSiteAsk.ps1', 'HikEmailDrop.ps1', 'HikPortalStep.ps1', 'WireItAcl.ps1', 'FixSiteBw.ps1'
 # 2.2.1 (review M3): the companion tools come from .\bundle\<tool> (a release zip) OR from beside the Toolkit folder (a copy of the
 # repository: Toolkit\, FixNVR\, CamReset\, NetCheck\ side by side). Every file the Toolkit needs is checked BEFORE anything is
 # installed; a missing one stops the install with its name (it used to be skipped and the install still said "installed").
@@ -36,11 +36,20 @@ if ((Resolve-Path $here).Path.TrimEnd('\') -ne (Resolve-Path $tk).Path.TrimEnd('
   foreach ($d in 'tests', 'modules') { if (Test-Path (Join-Path $here $d)) { Copy-Item (Join-Path $here $d) $tk -Recurse -Force } }
   if (-not (Test-Path (Join-Path $tk 'config.json')) -and (Test-Path (Join-Path $here 'config.json'))) { Copy-Item (Join-Path $here 'config.json') (Join-Path $tk 'config.json') }
 }
+# 2.2.2 (re-review M3 / NEW-2): a copy of the repository has the version file one folder up (the release manifest): it is installed
+# too, so the Toolkit knows its own version (2.2.1 read 0.0.0 and the first start "updated" it back to 2.0.4)
+$rootVj = Join-Path (Split-Path -Parent $here) 'version.json'
+if (-not (Test-Path -LiteralPath (Join-Path $here 'version.json')) -and (Test-Path -LiteralPath $rootVj)) {
+  try { $mv = Get-Content -LiteralPath $rootVj -Raw | ConvertFrom-Json; ([ordered]@{ version = [string]$mv.version; released = [string]$mv.released; commit = [string]$mv.commit; installed = (Get-Date -Format 's'); from = 'repository copy' } | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $tk 'version.json') -Encoding UTF8; 'Version ' + $mv.version + ' (from the repository''s version.json)' } catch { 'Could not read ' + $rootVj + ': ' + $_.Exception.Message }
+}
 # bundled tool folders (only when they came along); config.json of an existing tool is never replaced
 foreach ($t in 'NetCheck', 'FixNVR', 'CamReset') {
   $from = $src[$t]
+  $dst = Join-Path $Root $t
+  # 2.2.2 (Codex M3): run again from C:\WireIt\Toolkit, the "companion" folder IS the installed one: never copy a folder onto itself
+  if ($from -and (Test-Path -LiteralPath $dst) -and ((Resolve-Path -LiteralPath $from).Path.TrimEnd('\', '/') -eq (Resolve-Path -LiteralPath $dst).Path.TrimEnd('\', '/'))) { "$t is already in place ($dst)"; $from = '' }
   if ($from) {
-    $dst = Join-Path $Root $t; New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
     Get-ChildItem $from -Recurse -File | ForEach-Object {
       $rel = $_.FullName.Substring($from.Length).TrimStart('\', '/'); $to = Join-Path $dst $rel
       if ($_.Name -ieq 'config.json' -and (Test-Path $to)) { return }
@@ -104,18 +113,22 @@ if (Test-Path $acl) {
       } catch { 'Could not move the saved site passwords: ' + $_.Exception.Message }
     }
     # 1b) 2.2.1 (review M2): remembered NVR logins (CamViews) leave the Crew-readable secrets\ for vault\ (Administrators + SYSTEM only)
+    # 2.2.2 (Codex M2): icacls' answer is checked; a file it could not lock stops the install like any other permission failure
+    $aclBad = @()
     foreach ($nf in @(Get-ChildItem -LiteralPath (Join-Path $tk 'secrets') -Filter 'nvr-*.bin' -File -ErrorAction SilentlyContinue)) {
-      try { New-Item -ItemType Directory -Force -Path (Join-Path $tk 'vault') | Out-Null; $to = Join-Path (Join-Path $tk 'vault') $nf.Name; Move-Item -LiteralPath $nf.FullName -Destination $to -Force; $null = & icacls.exe $to /inheritance:r /grant:r '*S-1-5-32-544:F' '*S-1-5-18:F' 2>&1; 'Moved the remembered NVR login ' + $nf.Name + ' into the vault.' } catch { 'Could not move ' + $nf.Name + ': ' + $_.Exception.Message }
+      try { New-Item -ItemType Directory -Force -Path (Join-Path $tk 'vault') | Out-Null; $to = Join-Path (Join-Path $tk 'vault') $nf.Name; Move-Item -LiteralPath $nf.FullName -Destination $to -Force; $null = & icacls.exe $to /inheritance:r /grant:r '*S-1-5-32-544:F' '*S-1-5-18:F' 2>&1; if ($LASTEXITCODE -ne 0) { $aclBad += ('vault\' + $nf.Name + ': icacls answered ' + $LASTEXITCODE) } else { 'Moved the remembered NVR login ' + $nf.Name + ' into the vault.' } } catch { $aclBad += ('could not move ' + $nf.Name + ': ' + $_.Exception.Message) }
     }
     # 2) the site-password word that 2.1 wrote in clear text to the run logs
     $wn = Clear-WordAnswerFromLogs @((Join-Path $tk 'runs'), (Join-Path $tk 'fixsite-runs'), (Join-Path $Root 'FixNVR\runs'))
     if ($wn) { 'Blanked the site-password word in ' + $wn + ' old log file(s).' }
-    # 3) lock the folders
-    $ar = Invoke-WireItAclPlan $Root
-    if ($ar.ok) { 'Locked ' + $Root + ': Administrators + SYSTEM full control, the Crew login read + execute only (plus its own logs, state and inbox folders).' } else { 'PERMISSIONS NOT FULLY SET: ' + (@($ar.failed) -join '; ') }
-    # 4) the admin-owned task the Crew login starts
-    $rt = Register-WireItRunnerTask $tk
-    if ($rt.ok) { 'Made the "Fix this site" task (runs as SYSTEM; the Crew login can start it, nobody but an admin can change it).' } else { 'FIX THIS SITE TASK NOT SET UP: ' + $rt.why }
+    # 3) + 4) 2.2.2 (Codex H3/installer): lock the folders, read the locks back, and ONLY THEN make (or keep) the "Fix this site" task.
+    # Any failure stops here with the task switched OFF - also a task an earlier install made - so nothing runs as SYSTEM while the
+    # Crew login could still change what it runs.
+    if ($aclBad.Count) { [void](Disable-WireItRunnerTask); 'INSTALL STOPPED - PERMISSIONS NOT SET: ' + ($aclBad -join '; ') + '. The "Fix this site" task is switched off. Fix this and run the installer again as administrator.'; exit 5 }
+    $cs = Install-WireItCrewSetup $Root
+    if (-not $cs.ok) { 'INSTALL STOPPED - ' + (@($cs.why) -join '; ') + '. The "Fix this site" task is switched off until this installer finishes as administrator.'; exit 5 }
+    'Locked ' + $Root + ': Administrators + SYSTEM full control, the Crew login read + execute only (plus its own logs, state and inbox folders).'
+    'Made the "Fix this site" task (runs as SYSTEM; the Crew login can start it, nobody but an admin can change it).'
   }
 }
 'WireIt Toolkit installed in ' + $tk
