@@ -368,12 +368,19 @@ if ($Mode -eq 'Rollback') {
     if (-not $c) { continue }
     $ck = 'cam|' + [string]$c.mac + '|' + [string]$c.ip_before
     $netDone = & $isDone ($ck + '|net')
-    $ip = $(if ($c.ip_after -and -not $netDone) { [string]$c.ip_after } else { [string]$c.ip_before }); $res = @()
+    # 2.2.6: a run stopped mid-move has only the planned new address (ip_target): the camera is looked for there first, then on its old one
+    $ipNew = $(if ($c.ip_after) { [string]$c.ip_after } elseif ($c.PSObject.Properties['ip_target'] -and $c.ip_target) { [string]$c.ip_target } else { '' })
+    $ip = $(if ($ipNew -and -not $netDone) { $ipNew } else { [string]$c.ip_before }); $res = @()
     if (-not (Test-FsOnScheme $ip $pcScheme)) { [void](Add-FsTempIp (Get-FsP3 $ip) $pc $tempState) }
     $oldPw = $(if ($old.ContainsKey([string]$c.mac + '|' + [string]$c.ip_before)) { [string]$old[[string]$c.mac + '|' + [string]$c.ip_before] } else { '' })
     $mkR = ConvertTo-FsMac ([string]$c.mac); $lastPw = $(if ($mkR -and $sec.cams -and $sec.cams.ContainsKey($mkR)) { [string]$sec.cams[$mkR] } else { '' })
     $candsR = @(@($lastPw, $sec.password, $oldPw) + @($sec.known) | Where-Object { $_ } | Select-Object -Unique | Select-Object -First ([int]$opts.maxPasswordTries))   # 2.0.1: a working camera kept its own password
     $pw = ''; foreach ($cand in $candsR) { if ($cand -and (Test-FsLogin $ip $c.brand $cand) -eq 'ok') { $pw = $cand; break } }
+    if (-not $pw -and -not $c.ip_after -and $ipNew -and $ip -ne [string]$c.ip_before) {
+      # the interrupted move may never have taken: the camera is still on its old address
+      $ip = [string]$c.ip_before; if (-not (Test-FsOnScheme $ip $pcScheme)) { [void](Add-FsTempIp (Get-FsP3 $ip) $pc $tempState) }
+      foreach ($cand in $candsR) { if ($cand -and (Test-FsLogin $ip $c.brand $cand) -eq 'ok') { $pw = $cand; $ipNew = ''; break } }
+    }
     if (-not $pw) { Say ('  ' + $c.name + ': cannot log in at ' + $ip + ' - not undone ' + $script:FsBad) 'Red'; $bad++; continue }
     $cr = Fs-Cred $pw
     if ($c.stream_before -and -not (& $isDone ($ck + '|settings')) -and -not ($cur = Get-FsStream $ip $c.brand $cr)) { $res += [pscustomobject]@{ text = 'settings could not be read - not put back'; ok = $false } }   # 2.2.3 (Codex #20)
@@ -393,7 +400,7 @@ if ($Mode -eq 'Rollback') {
     }
     # 2.2.1 (review H8): the address goes back as it was - a camera that had DHCP gets DHCP again (also when only "set fixed" on the same address)
     $nb = $c.net_before
-    if ($nb -and $c.ip_after -and -not $netDone -and ($c.ip_after -ne $c.ip_before -or [bool]$nb.dhcp)) {
+    if ($nb -and $ipNew -and -not $netDone -and ($ipNew -ne $c.ip_before -or [bool]$nb.dhcp)) {
       $net = Get-FsNet $ip $c.brand $cr
       if ((Get-FsP3 ([string]$nb.ip)) -ne $pcScheme) { [void](Add-FsTempIp (Get-FsP3 ([string]$nb.ip)) $pc $tempState) }
       if (-not $net) { $res += [pscustomobject]@{ text = 'address could not be read - not put back'; ok = $false } }
@@ -934,6 +941,8 @@ foreach ($c in $ordered) {
       if ($t -ne $ip -and -not (Test-FsIpFree $t)) { $t = ''; for ($n = [int]$opts.camFirst; $n -le [int]$opts.camLast; $n++) { $x = $plan.scheme + '.' + $n; if (-not @($plan.cams | Where-Object { $_.target -eq $x -or $_.ip -eq $x }).Count -and (Test-FsIpFree $x)) { $t = $x; break } } }
       if (-not $t) { & $step 'no free address - not moved' $false }
       else {
+        # 2.2.6 (Codex file-by-file E): the new address goes into the undo file BEFORE the move, so a run stopped mid-move still lets Undo find it
+        $rbc.ip_target = $t; Save-Rb
         $w = Set-FsNet $ip $c.brand $cr $net $t $devNet.mask $devNet.gw
         if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $ip $c.brand $cr) }
         $back = $w.ok -and (Wait-FsDevice $t $c.brand $pw ([int]$opts.moveWaitSec))
