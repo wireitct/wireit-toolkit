@@ -180,6 +180,7 @@ if ($NewSite) {
   if (-not $Site) { $Site = (Ask 'Which site? Type the Site ID from the QR sticker (e.g. WI-061) or the address (e.g. 3 Hewlett St):').Trim() }
   if (-not $Site) { Say 'No site typed - nothing was done.' 'Yellow'; Done 2 }
   $siteFolder = Find-FsSiteFolder $Site $driveRoots
+  if (-not $siteFolder -and @($script:FsSiteFolderAmbiguous).Count) { Say ('"' + $Site + '" matches more than one Drive site folder (' + (@($script:FsSiteFolderAmbiguous) -join ', ') + '), so none is used. Type the full folder name.') 'Yellow' }   # 2.2.3 (Codex #40)
   $siteName = $(if ($siteFolder) { Split-Path -Leaf $siteFolder } else { $Site })
   $siteId = $(if ($Site -match '^(?i)WI-\d+$') { $Site.ToUpper() } else { '' })
   $listPath = $(if ($siteFolder) { Join-Path (Join-Path $siteFolder 'Docs') 'WireIt site list.json' } else { '' })

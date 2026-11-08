@@ -682,16 +682,25 @@ function Get-FsPortsFromPortMap($portmapSite) {
 
 function Find-FsSiteFolder([string]$site, [string[]]$roots) {
   # the site's Drive folder: exact name, then the Site ID (WI-###) or words inside a folder name, then a folder that holds a site list with that Site ID
+  # 2.2.3 (Codex #40): a partial match counts only when it is the ONLY one (all Drive roots together), and a Site ID matches as a
+  # whole word (WI-12 is not WI-123). Two or more = $null, and $script:FsSiteFolderAmbiguous names them, so nobody gets another site's list.
+  $script:FsSiteFolderAmbiguous = @()
   if (-not $site) { return $null }; $s = $site.Trim()
+  $all = @()
   foreach ($root in @($roots)) {
     $r = [Environment]::ExpandEnvironmentVariables([string]$root); if (-not $r -or -not (Test-Path -LiteralPath $r)) { continue }
-    $dirs = @(Get-ChildItem -LiteralPath $r -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '_*' })
-    $f = $dirs | Where-Object { $_.Name -eq $s } | Select-Object -First 1
-    if (-not $f) { $f = $dirs | Where-Object { $_.Name -like ('*' + $s + '*') } | Select-Object -First 1 }
-    if (-not $f -and $s -match '^(?i)WI-\d+$') {
-      foreach ($d in $dirs) { $lp = Join-Path (Join-Path $d.FullName 'Docs') 'WireIt site list.json'; if (Test-Path -LiteralPath $lp) { try { $j = Get-Content -LiteralPath $lp -Raw | ConvertFrom-Json; if ([string]$j.siteId -eq $s) { $f = $d; break } } catch {} } }
-    }
-    if ($f) { return $f.FullName }
+    $all += @(Get-ChildItem -LiteralPath $r -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '_*' })
+  }
+  $f = @($all | Where-Object { $_.Name -eq $s }); if ($f.Count -ge 1) { return $f[0].FullName }
+  $esc = [regex]::Escape($s)
+  $pat = $(if ($s -match '^(?i)WI-\d+$') { '(?i)(^|[^A-Za-z0-9])' + $esc + '($|[^0-9])' } else { '(?i)' + $esc })
+  $part = @($all | Where-Object { $_.Name -match $pat })
+  if ($part.Count -eq 1) { return $part[0].FullName }
+  if ($part.Count -gt 1) { $script:FsSiteFolderAmbiguous = @($part | ForEach-Object { $_.Name }); return $null }
+  if ($s -match '^(?i)WI-\d+$') {
+    $hit = @(); foreach ($d in $all) { $lp = Join-Path (Join-Path $d.FullName 'Docs') 'WireIt site list.json'; if (Test-Path -LiteralPath $lp) { try { $j = Get-Content -LiteralPath $lp -Raw | ConvertFrom-Json; if ([string]$j.siteId -eq $s) { $hit += $d } } catch {} } }
+    if ($hit.Count -eq 1) { return $hit[0].FullName }
+    if ($hit.Count -gt 1) { $script:FsSiteFolderAmbiguous = @($hit | ForEach-Object { $_.Name }) }
   }
   return $null
 }

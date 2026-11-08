@@ -280,6 +280,13 @@ Check ($iRead -gt 0 -and $iRead -lt $iAsk) 'the "had a site password" fact is ta
 Check ($fs -match '\$opts\.factoryToSite = \[bool\]\(\$NewSite -or -not \$sitePwAtStart -or \$sitePwPending\)') 'reproduction: factoryToSite uses it (2.2.2 tested after the new password existed -> always false)'
 $o36 = Merge-FsOptions @{ factoryToSite = $true }
 Check ([bool]$o36.factoryToSite) 'the option reaches the planner'
+Write-Host '#40 a partial site name picks a Drive folder only when it is the only match'
+$dr = Join-Path $tmp 'drive40'; foreach ($n in @('12 Main St (WI-123)', '112 Main St (WI-12)', 'Strand 177 Main')) { New-Item -ItemType Directory -Force -Path (Join-Path $dr $n) | Out-Null }
+Check ($null -eq (Find-FsSiteFolder '12 Main' @($dr))) 'reproduction: "12 Main" matches two sites -> none (2.2.2 took the first)'
+Check (@($script:FsSiteFolderAmbiguous).Count -eq 2) '...and the two are named for the tech'
+Eq (Split-Path -Leaf (Find-FsSiteFolder 'WI-12' @($dr))) '112 Main St (WI-12)' 'a Site ID matches as a whole word (WI-12 is not WI-123)'
+Eq (Split-Path -Leaf (Find-FsSiteFolder 'Strand' @($dr))) 'Strand 177 Main' 'one partial match is used'
+Eq (Split-Path -Leaf (Find-FsSiteFolder '12 Main St (WI-123)' @($dr))) '12 Main St (WI-123)' 'the exact name always wins'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
