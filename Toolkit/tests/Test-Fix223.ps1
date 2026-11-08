@@ -167,7 +167,8 @@ Check ($fs -match 'foreach \(\$l in @\(Get-FsManualLines \$plan\)\) \{ \$results
 Write-Host '#24 distinct site names never share a password store or list file'
 Check ((Get-FsSecretPath $tmp 'A/B') -ne (Get-FsSecretPath $tmp 'A.B')) 'reproduction: "A/B" and "A.B" get different password stores (2.2.2: both site-A_B.dat)'
 Check ((Get-FsListFileName 'A/B') -ne (Get-FsListFileName 'A.B')) '...and different list files'
-Eq (Get-FsListFileName '12 Elm St') '12_Elm_St.json' 'plain names keep their 2.2.2 file name'
+$l24 = Join-Path $tmp 'lists24'; New-Item -ItemType Directory -Force -Path $l24 | Out-Null; ([ordered]@{ site = '12 Elm St' } | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $l24 '12_Elm_St.json')
+Eq (Split-Path -Leaf (Resolve-FsLocalList $l24 '12 Elm St')) '12_Elm_St.json' 'a 2.2.2 list file of a plain name is still found (2.2.4: new files get a fingerprint)'
 Eq (Get-FsListFileName '12 Elm St.') (Get-FsListFileName '12 elm st.') 'the same site typed in another case is the same site'
 $script:FsTestSecrets = $true
 $sd = Join-Path $tmp 'sec24'; $sA = Read-FsSecrets $sd 'A/B'; $sA.password = 'PwOfAB1'; Save-FsSecrets $sd $sA

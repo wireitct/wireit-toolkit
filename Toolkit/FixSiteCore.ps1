@@ -633,22 +633,35 @@ function New-FsNewSiteName([string]$gw, [datetime]$when = (Get-Date)) {
   $p3 = Get-FsP3 $gw
   return ('New site ' + $(if ($p3) { $p3 + '.x ' } else { '' }) + $when.ToString('yyyy-MM-dd'))
 }
-# 2.2.3 (Codex #24): "A/B" and "A.B" are two sites: a name with punctuation gets a short fingerprint of its exact (case-folded) text,
-# so two sites never share a password store or a list file. Names of letters, digits, spaces, _ and - keep the 2.2.2 file name.
+# 2.2.4 (Codex re-review of 2.2.3): EVERY site name gets a short fingerprint of its exact (trimmed, case-folded) text, so names that
+# differ only in punctuation or spacing ("A B", "A_B", "A  B", "A/B") never share a password store, list file or hikreset state.
+# Files written under the 2.2.2 name (no fingerprint) or the 2.2.3 name (6-hex fingerprint on punctuated names) are still read, but
+# only when the file itself says it belongs to exactly this site name (Resolve-FsLocalList, Read-FsSecrets).
+function Get-FsNameHash([string]$text, [int]$bytes = 4) {
+  $sha = [Security.Cryptography.SHA256]::Create(); try { $h = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$text).Trim().ToLowerInvariant())) } finally { $sha.Dispose() }
+  return (-join ($h[0..($bytes - 1)] | ForEach-Object { $_.ToString('x2') }))
+}
 function Get-FsLegacySlug([string]$site) { return (($site -replace '[^A-Za-z0-9_-]+', '_').Trim('_')) }
 function Get-FsSiteSlug([string]$site) {
-  $b = Get-FsLegacySlug $site; $t = ([string]$site).Trim()
-  if ($t -notmatch '[^A-Za-z0-9_\- ]') { return $b }
-  $sha = [Security.Cryptography.SHA256]::Create(); try { $h = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($t.ToLowerInvariant())) } finally { $sha.Dispose() }
-  return ($b + '-' + (-join ($h[0..2] | ForEach-Object { $_.ToString('x2') })))
+  $b = (Get-FsLegacySlug $site).ToLowerInvariant(); if (-not $b) { $b = 'site' }; if ($b.Length -gt 60) { $b = $b.Substring(0, 60) }   # lower case: one file on any filesystem
+  return ($b + '-' + (Get-FsNameHash $site 4))
 }
-function Test-FsSameSite([string]$a, [string]$b) { return ((([string]$a).Trim() -replace '\s+', ' ') -eq (([string]$b).Trim() -replace '\s+', ' ')) }
+function Get-FsOldSlugs([string]$site) {
+  # the names 2.2.3 and 2.2.2 used for this site (read-only fallbacks, newest first)
+  $out = @(); $b = Get-FsLegacySlug $site; $t = ([string]$site).Trim()
+  if ($t -match '[^A-Za-z0-9_\- ]') { $out += ($b + '-' + (Get-FsNameHash $site 3)) }
+  if ($b) { $out += $b }
+  return @($out | Where-Object { $_ -and $_ -ne (Get-FsSiteSlug $site) })
+}
+function Test-FsSameSite([string]$a, [string]$b) { return (([string]$a).Trim() -eq ([string]$b).Trim()) }   # 2.2.4: spacing counts ("A  B" is not "A B"); case does not
 function Get-FsListFileName([string]$site) { return ((Get-FsSiteSlug $site) + '.json') }
 function Resolve-FsLocalList([string]$dir, [string]$site) {
-  # the list file for exactly this site; a 2.2.2 file under the old name is used only when it says it is this site
+  # the list file for exactly this site; a 2.2.2/2.2.3 file under an old name is used only when it says it is this site
   $p = Join-Path $dir (Get-FsListFileName $site); if (Test-Path -LiteralPath $p) { return $p }
-  $lp = Join-Path $dir ((Get-FsLegacySlug $site) + '.json')
-  if ($lp -ne $p -and (Test-Path -LiteralPath $lp)) { try { $l = Get-Content -LiteralPath $lp -Raw | ConvertFrom-Json; if (Test-FsSameSite ([string](Get-FsProp $l 'site' '')) $site) { return $lp } } catch {} }
+  foreach ($old in @(Get-FsOldSlugs $site)) {
+    $lp = Join-Path $dir ($old + '.json')
+    if (Test-Path -LiteralPath $lp) { try { $l = Get-Content -LiteralPath $lp -Raw | ConvertFrom-Json; if (Test-FsSameSite ([string](Get-FsProp $l 'site' '')) $site) { return $lp } } catch {} }
+  }
   return $p
 }
 function Get-FsKnownSiteFiles([string]$sitesDir, [string[]]$driveRoots = @()) {

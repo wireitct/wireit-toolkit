@@ -435,11 +435,11 @@ if (-not $NoEndToEnd -and $py) {
     Check ($chs.'3'.ip -eq '10.0.5.23' -and $chs.'3'.password -eq $sp -and $chs.'4'.password -eq $sp) 'new site e2e: NVR channels of the 2 fixed cameras hold the new password'
     Eq $st.devices.'10.0.5.64'.net.ip '10.0.5.64' 'new site e2e: the NVR (working, off the standard) was not moved'
     Eq @($st.temps).Count 0 'new site e2e: temporary PC addresses all removed'
-    $lf = Join-Path "$tmp\n\sites" '12_Elm_St.json'
+    $lf = Join-Path "$tmp\n\sites" (Get-FsListFileName '12 Elm St')
     Check (Test-Path $lf) 'new site e2e: site list saved under the typed address'
     $sl3 = Get-Content $lf -Raw | ConvertFrom-Json
     Check ($sl3.site -eq '12 Elm St' -and @($sl3.cameras).Count -eq 5 -and @($sl3.cameras | Where-Object { $_.ip -eq '10.0.5.23' -and $_.channel -eq 3 }).Count -eq 1) 'new site e2e: list = 5 cameras with their NEW addresses'
-    Check ((Test-Path "$tmp\n\sec\site-12_Elm_St.dat") -and -not @(Get-ChildItem "$tmp\n\sec" -Filter 'site-New_site*').Count) 'new site e2e: secrets file saved under the same name (no leftover auto-named file)'
+    Check ((Test-Path (Get-FsSecretPath "$tmp\n\sec" '12 Elm St')) -and -not @(Get-ChildItem "$tmp\n\sec" | Where-Object { $_.Name -like 'site-New_site*' }).Count) 'new site e2e: secrets file saved under the same name (no leftover auto-named file)'
     $hits = @(Get-ChildItem "$tmp\n" -Recurse -File | Where-Object { $_.Extension -ne '.dat' } | Select-String -SimpleMatch -Pattern ([string[]]@($sp, 'Old#Site1')) -List)
     Eq $hits.Count 0 'new site e2e: no password in any log, plan, scan, list or rollback file'
     # next visit: New site again -> the NVR is recognised, its list + site password are used, nothing to do

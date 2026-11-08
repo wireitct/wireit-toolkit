@@ -725,14 +725,23 @@ function Get-FsUnreadableText([string]$why) {
   if ($why -match 'FS_OTHER_PC') { return 'This site''s saved password file was made on another PC, so this PC cannot read it.' }
   return 'This site''s saved password was saved by another Windows account, so this PC cannot read it here.'
 }
-function Get-FsSecretPath([string]$dir, [string]$site, [switch]$Legacy) { return (Join-Path $dir ('site-' + $(if ($Legacy) { Get-FsLegacySlug $site } else { Get-FsSiteSlug $site }) + '.dat')) }   # 2.2.3 (Codex #24)
+function Get-FsSecretPath([string]$dir, [string]$site, [switch]$Legacy) { return (Join-Path $dir ('site-' + $(if ($Legacy) { Get-FsLegacySlug $site } else { Get-FsSiteSlug $site }) + '.dat')) }   # 2.2.3 (Codex #24); 2.2.4: every name fingerprinted
 function Read-FsSecrets([string]$dir, [string]$site) {
   $o = [ordered]@{ site = $site; password = ''; known = @(); nvr = @{}; cams = @{}; rollback = @{}; bitwardenSaved = $false; shownOnce = $false; unreadable = $false; unreadableWhy = '' }
   $p = Get-FsSecretPath $dir $site
   $fromLegacy = $false
   $oldName = $false
-  if (-not (Test-Path -LiteralPath $p)) { $lp = Get-FsSecretPath $dir $site -Legacy; if ($lp -ne $p -and (Test-Path -LiteralPath $lp)) { $p = $lp; $oldName = $true } }
-  if (-not (Test-Path -LiteralPath $p) -and $script:FsLegacySecretsDir) { $lp = Get-FsSecretPath $script:FsLegacySecretsDir $site; if (-not (Test-Path -LiteralPath $lp)) { $lp = Get-FsSecretPath $script:FsLegacySecretsDir $site -Legacy }; if (Test-Path -LiteralPath $lp) { $p = $lp; $fromLegacy = $true } }
+  if (-not (Test-Path -LiteralPath $p)) {
+    # 2.2.4: old names (2.2.3 / 2.2.2) and the old secrets\ folder: the first store that says it is exactly this site (or names no site)
+    $cands = @(); foreach ($s in @(Get-FsOldSlugs $site)) { $cands += ,@((Join-Path $dir ('site-' + $s + '.dat')), $true, $false) }
+    if ($script:FsLegacySecretsDir) { $cands += ,@((Get-FsSecretPath $script:FsLegacySecretsDir $site), $false, $true); foreach ($s in @(Get-FsOldSlugs $site)) { $cands += ,@((Join-Path $script:FsLegacySecretsDir ('site-' + $s + '.dat')), $false, $true) } }
+    foreach ($c in $cands) {
+      if (-not (Test-Path -LiteralPath $c[0])) { continue }
+      $owner = $null; try { $pj = (Unprotect-FsText ((Get-Content -LiteralPath $c[0] -Raw).Trim())) | ConvertFrom-Json; if ($pj -and $pj.PSObject.Properties['site']) { $owner = [string]$pj.site } } catch { $owner = $null }   # unreadable: taken, so it is reported as unreadable (not as "no password")
+      if ($owner -and -not (Test-FsSameSite $owner $site)) { Fs-LogLine 'secret store belongs to another site name: not used'; continue }
+      $p = $c[0]; $oldName = $c[1]; $fromLegacy = $c[2]; break
+    }
+  }
   $script:FsLastWasLegacy = $false
   if (Test-Path -LiteralPath $p) {
     try { $j = (Unprotect-FsText ((Get-Content -LiteralPath $p -Raw).Trim())) | ConvertFrom-Json

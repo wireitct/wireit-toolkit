@@ -206,10 +206,16 @@ function Send-CvOutbox {
   if ($sent) { CvSay ('Sent ' + $sent + ' waiting batch(es) of camera pictures.') 'Green' }
   return $sent
 }
+# 2.2.4: "A B", "A_B", "A/B" each get their own pictures folder: readable name + short fingerprint of the exact (case-folded) site name
+function Get-CvSiteFolderName([string]$site) {
+  $t = ([string]$site).Trim(); if (-not $t) { return 'no-site' }
+  $safe = (($t -replace '[^A-Za-z0-9_-]+', '_').Trim('_')); if (-not $safe) { $safe = 'site' }; if ($safe.Length -gt 60) { $safe = $safe.Substring(0, 60) }
+  $sha = [Security.Cryptography.SHA256]::Create(); try { $h = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($t.ToLowerInvariant())) } finally { $sha.Dispose() }
+  return ($safe + '-' + (-join ($h[0..3] | ForEach-Object { $_.ToString('x2') })))
+}
 function Save-CvLocal([string]$site, [string]$key, [string]$ip, [string]$stamp, $bytes) {
   try {
-    $safe = ($site -replace '[^A-Za-z0-9 ._-]', '_').Trim(); if (-not $safe) { $safe = 'no-site' }
-    $dir = Join-Path $script:CvPics $safe; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $dir = Join-Path $script:CvPics (Get-CvSiteFolderName $site); New-Item -ItemType Directory -Force -Path $dir | Out-Null
     [IO.File]::WriteAllBytes((Join-Path $dir ($key + '_' + $(if ($ip) { $ip } else { '-' }) + '_' + $stamp + '.jpg')), $bytes)
     Get-ChildItem $dir -Filter ($key + '_*.jpg') | Sort-Object Name -Descending | Select-Object -Skip 2 | Remove-Item -Force
   } catch { CvLog ('local copy: ' + $_.Exception.Message) }

@@ -41,7 +41,7 @@ $script:FsLegacySecretsDir = $legacy
 $s1 = Read-FsSecrets $vault 'Lieber'; Check ($s1.unreadable -and (Get-FsUnreadableText $s1.unreadableWhy) -match 'another Windows account') 'another admin than the one who saved it: reported as "saved by another Windows account"'
 $env:FAKE_SAME_USER = '1'
 $s2 = Read-FsSecrets $vault 'Lieber'; Check (-not $s2.unreadable -and $s2.password -eq 'Lieber#7788') 'the account that saved it reads it'
-Check ((Test-Path (Join-Path $vault 'site-Lieber.dat')) -and (Get-Content (Join-Path $vault 'site-Lieber.dat') -Raw).StartsWith('LM1:') -and -not (Test-Path (Join-Path $legacy 'site-Lieber.dat'))) 'and it is moved into vault\ as machine-wide'
+Check ((Test-Path (Get-FsSecretPath $vault 'Lieber')) -and (Get-Content (Get-FsSecretPath $vault 'Lieber') -Raw).StartsWith('LM1:') -and -not (Test-Path (Join-Path $legacy 'site-Lieber.dat'))) 'and it is moved into vault\ as machine-wide'
 $env:FAKE_SAME_USER = ''
 $s3 = Read-FsSecrets $vault 'Lieber'; Check ($s3.password -eq 'Lieber#7788') 'after the move ANY admin account (or SYSTEM) reads it'
 $script:FsLegacySecretsDir = ''
