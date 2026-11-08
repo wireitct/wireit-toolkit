@@ -304,7 +304,22 @@ function Invoke-CvDpapi([string]$op, [byte[]]$data) {
   if ($op -eq 'protect') { return [Security.Cryptography.ProtectedData]::Protect($data, $ent, [Security.Cryptography.DataProtectionScope]::LocalMachine) }
   return [Security.Cryptography.ProtectedData]::Unprotect($data, $ent, [Security.Cryptography.DataProtectionScope]::LocalMachine)
 }
-function Get-CvPrivateAclArgs([string]$path) { return @($path, '/inheritance:r', '/grant:r', '*S-1-5-32-544:F', '*S-1-5-18:F') }
+# 2.2.5: + the Windows login that saves it (when it is not SYSTEM). A non-elevated admin's token has Administrators as deny-only, so
+# with Admins + SYSTEM alone the file it had just written and locked could no longer be moved or read by it ("Access to the path is
+# denied" at the Move-Item, seen on the Office PC Nov 8 2026). Other logins (a non-admin) still cannot read it.
+function Get-CvSaverSid { if ($env:OS -ne 'Windows_NT') { return '' }; try { $v = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; if ($v -and $v -notin @('S-1-5-18', 'S-1-5-32-544')) { return $v } } catch {}; return '' }
+function Get-CvPrivateAclArgs([string]$path) { $a = @($path, '/inheritance:r', '/grant:r', '*S-1-5-32-544:F', '*S-1-5-18:F'); $me = Get-CvSaverSid; if ($me) { $a += ('*' + $me + ':F') }; return $a }
+# 2.2.5: the locked temp file goes into place with retries (an antivirus or the indexer can hold a new file for a moment), then
+# copy + delete as the last way; the temp file is never left behind.
+function Move-CvIntoPlace([string]$src, [string]$dst) {
+  $last = $null
+  for ($i = 0; $i -lt 4; $i++) {
+    try { Move-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop; return } catch { $last = $_.Exception.Message; Start-Sleep -Milliseconds (150 * ($i + 1)) }
+  }
+  try { Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop; Remove-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue; return } catch { $last = $_.Exception.Message }
+  Remove-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue
+  throw ('the NVR login was NOT remembered: its file could not be put in place (' + $last + '). Run the Toolkit as an admin and try again.')
+}
 function Set-CvPrivateFile([string]$path) {
   $a = Get-CvPrivateAclArgs $path
   if ($script:CvAclRun) { return ([int](& $script:CvAclRun $a) -eq 0) }
@@ -316,10 +331,10 @@ function Save-CvSite([string]$nvr, [string]$site, [string]$user, [string]$vendor
   $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($pw))
   $b = Invoke-CvDpapi 'protect' ([Text.Encoding]::UTF8.GetBytes((@{ user = $user; pw = $plain } | ConvertTo-Json -Compress)))
   $plain = $null
-  $tmp = $f + '.tmp'
+  $tmp = $f + '.' + [guid]::NewGuid().ToString('N').Substring(0, 12) + '.tmp'   # 2.2.5: a unique temp name (a stale locked .tmp from another run never blocks this one)
   [IO.File]::WriteAllBytes($tmp, $b)
   if (-not (Set-CvPrivateFile $tmp)) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw 'the NVR login was NOT remembered: its file could not be locked to Administrators (run it as an admin)' }
-  Move-Item -LiteralPath $tmp -Destination $f -Force
+  Move-CvIntoPlace $tmp $f
   $lf = Get-CvCredFile $nvr -Legacy; if (Test-Path -LiteralPath $lf) { Remove-Item -LiteralPath $lf -Force -ErrorAction SilentlyContinue }   # the 2.2.0 copy in secrets\ (Crew could read that folder)
   $list = @(Get-CvSites | Where-Object { $_.nvr -ne $nvr }) + @([pscustomobject]@{ nvr = $nvr; site = $site; vendor = $vendor; recorder = $rec })
   ConvertTo-Json @($list) -Depth 3 | Set-Content -Path (Join-Path $script:CvHere 'camviews-sites.json') -Encoding UTF8

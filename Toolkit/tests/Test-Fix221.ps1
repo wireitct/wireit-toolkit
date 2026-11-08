@@ -260,6 +260,7 @@ if ($canLock) {
   Eq (Get-TkVersion $tku) '1.0.0' 'the version number is not moved'
   Eq ((Get-Content (Join-Path $tku 'a.ps1') -Raw).Trim()) 'old a' 'the file already swapped in is put back'
   Check ($msg -match 'put back') 'the message says the old version was put back'
+  Check (-not (Test-Path (Join-Path $tku 'previous\1.0.0\FixNVR\FixNVR.ps1.partial'))) 'no half-made backup is left'
   $old = Install-TkUpdate $m $tku $fetch
   Check ((Get-TkVersion $tku) -eq '1.1.0') 'unlocked: the update installs'
   Lock-It $lockedFile
@@ -324,8 +325,19 @@ $spw = ConvertTo-SecureString 'Nvrpass2468' -AsPlainText -Force
 Save-CvSite '192.168.1.20' 'Lieber' 'admin' 'hik' 1 $spw
 $vf = Join-Path (Join-Path $cvDir 'vault') 'nvr-192.168.1.20.bin'
 Check (Test-Path -LiteralPath $vf) 'the login is stored in vault\ (2.2.0: secrets\, which Crew can read)'
-Check ($script:aclCalls.Count -eq 1 -and $script:aclCalls[0] -match '/inheritance:r /grant:r \*S-1-5-32-544:F \*S-1-5-18:F$') 'the file gets its own Administrators + SYSTEM only permissions'
+Check ($script:aclCalls.Count -eq 1 -and $script:aclCalls[0] -match '/inheritance:r /grant:r \*S-1-5-32-544:F \*S-1-5-18:F( \*S-1-5-21-[0-9-]+:F)?$') 'the file gets its own Administrators + SYSTEM only permissions (2.2.5: + the login saving it, so a non-elevated admin can still use it)'
 Check (-not ([IO.File]::ReadAllText($vf) -match 'Nvrpass2468')) 'it is encrypted'
+Check (-not @(Get-ChildItem (Join-Path $cvDir 'vault') -Filter '*.tmp').Count) '2.2.5: no temp file left behind after a save'
+$stale = (Join-Path (Join-Path $cvDir 'vault') 'nvr-192.168.1.20.bin.tmp'); [IO.File]::WriteAllText($stale, 'old stale temp from 2.2.4')
+$sErr = ''; try { Save-CvSite '192.168.1.20' 'Lieber' 'admin' 'hik' 1 $spw } catch { $sErr = $_.Exception.Message }
+Check (-not $sErr -and (Test-Path -LiteralPath $stale)) '2.2.5: a stale .tmp from an older run does not block the save (unique temp name)'
+Remove-Item -LiteralPath $stale -Force
+$script:aclCalls.Clear()
+$mv = (Get-Command Move-Item); function Move-Item { throw 'Access to the path is denied.' }
+$sErr = ''; try { Save-CvSite '192.168.1.21' 'Lieber' 'admin' 'hik' 1 $spw } catch { $sErr = $_.Exception.Message }
+Remove-Item Function:\Move-Item
+Check (-not $sErr -and (Test-Path -LiteralPath (Join-Path (Join-Path $cvDir 'vault') 'nvr-192.168.1.21.bin')) -and -not @(Get-ChildItem (Join-Path $cvDir 'vault') -Filter '*.tmp').Count) '2.2.5: Move-Item denied (Office PC, non-elevated): copy + delete puts it in place, no temp left'
+Eq (Get-CvSiteCred '192.168.1.21').GetNetworkCredential().Password 'Nvrpass2468' '2.2.5: ...and it reads back'
 Eq (Get-CvSiteCred '192.168.1.20').GetNetworkCredential().Password 'Nvrpass2468' 'and reads back'
 $script:CvAclRun = { param($a) return 5 }
 $threw = $false; try { Save-CvSite '192.168.1.30' 'X' 'admin' 'hik' 1 $spw } catch { $threw = $true }
