@@ -20,7 +20,7 @@ def load(path):
     S.setdefault('pc', {'ip': '192.168.1.105', 'gw': '192.168.1.1', 'mask': '255.255.255.0', 'dhcp': True})
     for ip, d in S['devices'].items():
         d.setdefault('answers', True); d.setdefault('fails', 0); d.setdefault('activated', True)
-        d.setdefault('net', {'ip': ip, 'mask': '255.255.255.0', 'gw': S['pc']['gw'] if p3(ip) == p3(S['pc']['gw']) else '192.168.0.1', 'dhcp': bool(d.get('dhcp')), 'dns1': '', 'dns2': ''})
+        d.setdefault('net', {'ip': ip, 'mask': '255.255.255.0', 'gw': S['pc']['gw'] if p3(ip) == p3(S['pc']['gw']) else '192.168.0.1', 'dhcp': bool(d.get('dhcp')), 'dns1': d.get('dns1', '8.8.8.8'), 'dns2': ''})
         d.setdefault('stream', {'codec': 'H.265', 'fps': 15, 'width': 2688, 'height': 1520, 'bitrate': 4096, 'gop': 30, 'smart': 'off', 'maxw': 2688, 'maxh': 1520})
         d.setdefault('backups', 0)
 
@@ -138,6 +138,8 @@ class H(BaseHTTPRequestHandler):
             gw = re.search(r'<DefaultGateway><ipAddress>([^<]*)', body)
             new = top.group(1); old = d['net']['ip']
             d['net'].update(ip=new, mask=top.group(2), gw=gw.group(1) if gw else n['gw'], dhcp=('dynamic' in body))
+            dn = re.search(r'<PrimaryDNS><ipAddress>([^<]*)', body)
+            if dn: d['net']['dns1'] = dn.group(1)
             if new != old: S['devices'][new] = S['devices'].pop(old)
             return self.send(200, '<ResponseStatus><statusCode>1</statusCode></ResponseStatus>', X)
         if path == '/ISAPI/Security/users/1' and method == 'PUT':
