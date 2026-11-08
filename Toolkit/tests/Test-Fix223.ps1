@@ -201,6 +201,22 @@ Check ($src7 -match "err = 'basic-over-http'" -and $src7 -match 'if \(\$Cred -an
 Check ($src7 -match 'Pins\.TryGetValue\(host, out seen\)\) return seen == tp') 'Windows PowerShell 5.1: a device''s certificate is pinned for the run; a different one on the same address is refused'
 $cs = $script:WireItLanTlsCode
 try { if (-not ('WireItLanTls' -as [type])) { Add-Type -TypeDefinition $cs -IgnoreWarnings -WarningAction SilentlyContinue -ErrorAction Stop }; Check ([bool]('WireItLanTls' -as [type])) 'the pinning helper compiles' } catch { Check $false ('the pinning helper compiles: ' + $_.Exception.Message) }
+Write-Host '#29 one wrong-password budget per device for the whole run'
+$script:FsLoginFails = @{}
+$script:Fake = @{ 'GET 10.0.0.29/ISAPI/System/deviceInfo' = @{ code = 401; body = '' } }
+$st = @(); for ($i = 0; $i -lt 7; $i++) { $st += (Test-FsLogin '10.0.0.29' 'Hikvision' ('Wrong' + $i)) }
+$sent = @($script:Calls | Where-Object { $_.key -eq 'GET 10.0.0.29/ISAPI/System/deviceInfo' }).Count
+Eq $sent 4 'reproduction: 7 password checks across steps -> only 4 reach the device (2.2.2 sent all 7: a lockout)'
+Eq $st[-1] 'locked' 'after the budget the device counts as locked for this run'
+Check ((Read-Src 'Toolkit/HikResetFlow.ps1') -match '\$logins -lt \$script:HkVerifyMaxLogins' -and $script:HkVerifyMaxLogins -le 2) 'Hikvision import check: at most 2 logins (was 6)'
+. (Join-Path $tk 'HikResetFlow.ps1') 2>$null
+Eq $script:HkVerifyMaxLogins 2 'HikResetFlow sets the 2-login limit'
+Write-Host '#37 passwords are compared case-sensitively'
+$cands = @(Get-FsPasswordCandidates ([pscustomobject]@{ password = 'SitePass9'; known = @('sitepass9') }) 3)
+Eq $cands.Count 2 'reproduction: SitePass9 and sitepass9 are two candidates (2.2.2 merged them)'
+$fs = Read-Src 'Toolkit/FixSite.ps1'
+Check ($fs -match '\$pw -cne \$sitePw -and \(\$c\.steps -contains ''password''') 'a case-only password rotation is not skipped (-cne)'
+Check (-not ([regex]::Matches($fs, '\$pw -ne \$sitePw')).Count) 'no case-insensitive password comparison left in FixSite'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

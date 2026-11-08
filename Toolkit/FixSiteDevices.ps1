@@ -181,7 +181,17 @@ function Fs-DhSet([string]$ip, $cred, [hashtable]$kv) {
 }
 
 # ---------------- login (one try per known password; stops at "locked") ----------------
+# 2.2.3 (Codex #29): ONE wrong-password budget per device for the whole run (all steps, recovery and undo together), below the
+# lockout of Hikvision/Dahua (5-6 wrong tries). Spent = the device is not tried again with a password this run ('locked').
+$script:FsLoginFails = @{}; $script:FsMaxLoginFails = 4
 function Test-FsLogin([string]$ip, [string]$brand, [string]$pw) {
+  $k = ($ip -replace ':\d+$', '')
+  if ($pw -and $script:FsLoginFails.ContainsKey($k) -and [int]$script:FsLoginFails[$k] -ge $script:FsMaxLoginFails) { Fs-LogLine ('login to ' + $k + ' not tried: ' + $script:FsMaxLoginFails + ' wrong passwords this run already'); return 'locked' }
+  $s = Test-FsLoginOnce $ip $brand $pw
+  if ($pw -and $s -eq 'refused') { $script:FsLoginFails[$k] = 1 + [int]$script:FsLoginFails[$k] }
+  return $s
+}
+function Test-FsLoginOnce([string]$ip, [string]$brand, [string]$pw) {
   # 'ok' | 'refused' | 'locked' | 'noanswer' | 'notfound'
   $cred = Fs-Cred $pw
   if ($brand -eq 'Dahua') {
@@ -191,7 +201,7 @@ function Test-FsLogin([string]$ip, [string]$brand, [string]$pw) {
   $r = Fs-Http -Ip $ip -Path '/ISAPI/System/deviceInfo' -Cred $cred -Timeout 6
   if ($r.code -eq 200) { return 'ok' }
   if ($r.code -eq 401 -or $r.code -eq 403) { if ($r.body -match '(?i)lock|unlockTime') { return 'locked' }; return 'refused' }
-  if ($r.code -eq 404 -and $brand -ne 'Hikvision') { return (Test-FsLogin $ip 'Dahua' $pw) }
+  if ($r.code -eq 404 -and $brand -ne 'Hikvision') { return (Test-FsLoginOnce $ip 'Dahua' $pw) }
   return 'noanswer'
 }
 function Find-FsPassword([string]$ip, [string]$brand, $candidates, [int]$maxTries = 3) {

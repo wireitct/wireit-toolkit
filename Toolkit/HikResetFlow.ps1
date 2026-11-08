@@ -222,7 +222,9 @@ function Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [sc
       Set-HikStateField $d 'status' 'imported'; Set-HikStateField $d 'importedAt' (Get-Date -Format 's'); Save-HikState $StatePath $State
       Start-Sleep -Seconds 3
       $ip = $live.ip; $chk = $false
-      for ($i = 0; $i -lt 6 -and -not $chk; $i++) { $now = @(Find-HikSadp 2 | Where-Object { $_.mac -eq $d.mac })[0]; if ($now) { $ip = $now.ip }; try { $chk = [bool](& $VerifyLogin $ip $NewPassword) } catch {}; if (-not $chk) { Start-Sleep -Seconds 4 } }
+      # 2.2.3 (Codex #29): wait for the device to be back (SADP, no login), then at most 2 login tries - a wrong password 6 times
+      # in a row is how Hikvision locks a device
+      $logins = 0; for ($i = 0; $i -lt 8 -and -not $chk -and $logins -lt $script:HkVerifyMaxLogins; $i++) { $now = @(Find-HikSadp 2 | Where-Object { $_.mac -eq $d.mac })[0]; if ($now) { $ip = $now.ip; $logins++; try { $chk = [bool](& $VerifyLogin $ip $NewPassword) } catch {} }; if (-not $chk) { Start-Sleep -Seconds 4 } }
       if ($chk) { Set-HikStateField $d 'status' 'verified'; Set-HikStateField $d 'verifiedAt' (Get-Date -Format 's'); Hk-Say ('  Reset done. The site password logs in on ' + $ip + '.') 'Green'; $done += $d }
       else { Hk-Say ('  The device accepted the file, but the site password does not log in yet on ' + $ip + '. Check it in a minute.') 'Yellow' }
     } else {
@@ -256,6 +258,7 @@ function Get-HikReadiness($Cfg, [string]$ToolkitDir = '') {
   try { if (-not (Find-HikBrowser)) { $w += 'Chrome or Edge is not on this PC: Hikvision''s page cannot open here.' } } catch {}
   return @($w)
 }
+$script:HkVerifyMaxLogins = 2   # 2.2.3 (Codex #29)
 function Get-HikConfig($CfgAll, [string]$ToolkitDir = '') {
   $relay = [pscustomobject]@{ url = ''; address = 'hikreset@wireitct.com'; everySec = 60 }
   $wait = 15; $replyDir = ''

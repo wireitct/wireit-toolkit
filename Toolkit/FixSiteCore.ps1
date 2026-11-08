@@ -140,15 +140,16 @@ function Get-FsPasswordCandidates($store, [int]$max = 3, [string]$mac = '', [str
   # store: { password (the site's own password), known:[...] (typed on earlier runs at THIS site, worked),
   #          cams:{ mac: the password that last worked on that camera } (2.0.1: working cameras keep their own password now, so it is tried first) }
   # returns @(@{ label; value }) in the order to try, no duplicates, never more than $max. Values are only handed to the login call.
-  $out = New-Object System.Collections.ArrayList; $seen = @{}
-  $add = { param($label, $v) if ($v -and -not $seen.ContainsKey([string]$v) -and $out.Count -lt $max) { $seen[[string]$v] = 1; [void]$out.Add([pscustomobject]@{ label = $label; value = [string]$v }) } }
+  # 2.2.3 (Codex #37): passwords are case-sensitive: SitePass9 and sitepass9 are two candidates (a PowerShell @{} is not)
+  $out = New-Object System.Collections.ArrayList; $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+  $add = { param($label, $v) if ($v -and -not $seen.Contains([string]$v) -and $out.Count -lt $max) { [void]$seen.Add([string]$v); [void]$out.Add([pscustomobject]@{ label = $label; value = [string]$v }) } }
   $sitePw = [string](Get-FsProp $store 'password' ''); $known = @(Get-FsProp $store 'known' @())
   $m = ConvertTo-FsMac $mac; $cams = Get-FsProp $store 'cams' $null
   if ($m -and $cams) {
     $last = [string]$(if ($cams -is [Collections.IDictionary]) { $cams[$m] } else { Get-FsProp $cams $m '' })
     if ($last) {
       $lbl = 'saved camera password'
-      if ($last -eq $sitePw) { $lbl = 'site password' } else { $ix = [array]::IndexOf([string[]]@($known), $last); if ($ix -ge 0) { $lbl = 'site password ' + ($ix + 1) } }
+      if ($last -ceq $sitePw) { $lbl = 'site password' } else { $ix = [array]::IndexOf([string[]]@($known), $last); if ($ix -ge 0) { $lbl = 'site password ' + ($ix + 1) } }
       & $add $lbl $last
     }
   }
