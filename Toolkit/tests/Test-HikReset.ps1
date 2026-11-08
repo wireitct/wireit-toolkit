@@ -253,8 +253,18 @@ if (-not $NoPortal) {
     $aout = Join-Path $tmp 'argv.json'
     $asp = @{ FilePath = $py; ArgumentList = (Join-HikArgs (@((Join-Path $fx 'argv_dump.py'), $aout) + $ba)); PassThru = $true }; if ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows) { $asp.WindowStyle = 'Hidden' }
     $ap = Start-Process @asp; if (-not $ap.WaitForExit(15000)) { try { $ap.Kill() } catch {} }
-    $got = @(); if (Test-Path $aout) { $got = @(Get-Content $aout -Raw | ConvertFrom-Json) }
+    # 2.2.5 fix 9: Windows PowerShell 5.1's ConvertFrom-Json writes a JSON array as ONE object, so @(text | ConvertFrom-Json) read argv_dump's
+    # 9 arguments back as 1 item and the check failed on Windows although the program got all 9. Parsed into a variable first, then unrolled.
+    $script:ArgvParse = { param($t) ConvertFrom-Json -InputObject $t }
+    function Read-ArgvList([string]$t) { if (-not $t) { return }; $v = & $script:ArgvParse $t; foreach ($i in $v) { $i } }
+    $araw = ''; if (Test-Path $aout) { $araw = Get-Content $aout -Raw }
+    $got = @(Read-ArgvList $araw)
+    Eq $got.Count $ba.Count 'portal args: the started program got one argument per list element'
     Eq (($got | ForEach-Object { '[' + $_ + ']' }) -join ' ') (($ba | ForEach-Object { '[' + $_ + ']' }) -join ' ') 'portal args: a started program receives exactly those arguments (spaces, quotes and the trailing \ survive)'
+    $script:ArgvParse = { param($t) Write-Output -NoEnumerate @(ConvertFrom-Json -InputObject $t) }   # what 5.1's ConvertFrom-Json does with an array
+    Eq @(& $script:ArgvParse $araw).Count 1 'portal args: the 5.1 read-back behaviour reproduced (@(json-array | ConvertFrom-Json) is ONE item)'
+    Eq @(Read-ArgvList $araw).Count $ba.Count '...and the read-back still sees every argument under it'
+    $script:ArgvParse = { param($t) ConvertFrom-Json -InputObject $t }
   } else { Check $false 'portal args: no Python to start the argument check' }
   $script:PortalExtraArgs = $oldExtra
   $br = ''; foreach ($c in @('/usr/bin/chromium', '/usr/bin/google-chrome', "$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe")) { if ($c -and (Test-Path -LiteralPath $c)) { $br = $c; break } }
