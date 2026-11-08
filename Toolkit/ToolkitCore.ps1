@@ -214,9 +214,19 @@ function Install-TkUpdate($m, [string]$toolkitDir, [scriptblock]$Fetch = $null) 
   if (Test-Path $prev) { Remove-Item $prev -Recurse -Force }
   New-Item -ItemType Directory -Force -Path $prev | Out-Null
   $added = New-Object System.Collections.Generic.List[string]
+  # 2.2.5: a file that cannot even be READ for the backup (Windows: a running tool holds it open with no sharing) stops the update here,
+  # before anything was swapped. 2.2.4 let the raw copy error out ("being used by another process") with no word that nothing changed.
   foreach ($f in $m.files) {
     $live = Join-Path $P.Root $f.path
-    if (Test-Path -LiteralPath $live) { $b = Join-Path $prev $f.path; New-Item -ItemType Directory -Force -Path (Split-Path -Parent $b) -ErrorAction Stop | Out-Null; Copy-Item -LiteralPath $live $b -Force -ErrorAction Stop }
+    if (Test-Path -LiteralPath $live) {
+      $b = Join-Path $prev $f.path
+      try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $b) -ErrorAction Stop | Out-Null; Copy-Item -LiteralPath $live $b -Force -ErrorAction Stop }
+      catch {
+        $why0 = $_.Exception.Message
+        Remove-Item -LiteralPath $prev -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item $P.Staging -Recurse -Force -ErrorAction SilentlyContinue
+        throw ('Update could not be installed: ' + $f.path + ' is in use or not allowed (' + $why0 + '). Nothing was changed - the old version ' + $old + ' is still in place (put back as it was). Close the WireIt tools and try again.')
+      }
+    }
     else { $added.Add([string]$f.path) }
   }
   $vj = Join-Path $toolkitDir 'version.json'

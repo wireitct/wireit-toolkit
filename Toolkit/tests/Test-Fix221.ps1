@@ -259,7 +259,16 @@ if ($canLock) {
   Check $threw 'a file that cannot be replaced stops the update (2.2.0 reported it installed)'
   Eq (Get-TkVersion $tku) '1.0.0' 'the version number is not moved'
   Eq ((Get-Content (Join-Path $tku 'a.ps1') -Raw).Trim()) 'old a' 'the file already swapped in is put back'
-  Check ($msg -match 'put back') 'the message says the old version was put back'
+  Check ($msg -match 'put back') ('the message says the old version was put back (got: ' + $msg + ')')
+  if (-not $isWin) {
+    # 2.2.5: what Windows does (the 2.2.4 Office PC failure): an EXISTING file that cannot be read for the backup (Windows: open with no sharing; here chmod 000)
+    $rf = Join-Path $w 'FixNVR\FixNVR.ps1'; & chmod 000 $rf
+    $ErrorActionPreference = 'Continue'; $t2 = $false; $msg2 = ''; try { Install-TkUpdate $m $tku $fetch | Out-Null } catch { $t2 = $true; $msg2 = $_.Exception.Message }; $ErrorActionPreference = 'Stop'
+    & chmod 644 $rf
+    Check ($t2 -and $msg2 -match 'Nothing was changed' -and $msg2 -match 'put back' -and $msg2 -match 'FixNVR/FixNVR.ps1') '2.2.5: a file that cannot be read for the backup: stops before any swap, says nothing changed and names the file'
+    Eq ((Get-Content (Join-Path $tku 'a.ps1') -Raw).Trim()) 'old a' '2.2.5: ...and no file was swapped'
+    Eq (Get-TkVersion $tku) '1.0.0' '2.2.5: ...and the version number is not moved'
+  }
   Check (-not (Test-Path (Join-Path $tku 'previous\1.0.0\FixNVR\FixNVR.ps1.partial'))) 'no half-made backup is left'
   $old = Install-TkUpdate $m $tku $fetch
   Check ((Get-TkVersion $tku) -eq '1.1.0') 'unlocked: the update installs'
