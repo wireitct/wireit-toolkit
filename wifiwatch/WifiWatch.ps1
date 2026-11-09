@@ -7,11 +7,17 @@
 #   - a marker file is written BEFORE the adapter goes off and removed only when it is checked on again; if this run is killed in
 #     between (the task's 2-minute limit, a restart), the next run switches the adapter back on first, before anything else
 #   - Restore Network (Toolkit) pauses this task while it works and switches it back on at the end
-param([string]$Dir = 'C:\WireIt\WifiWatch')
+# 2.2.12 (Nov 9 2026, Codex P1-7): switching the task off does not stop a copy that is ALREADY running. Restore Network now also writes
+#   a pause file (%ProgramData%\WireIt\wifiwatch.pause, line 1 "until=<UTC time>"). While it is fresh this script does nothing
+#   (it checks it at the start and again right before every reconnect / adapter off / connect step); switching an adapter back ON
+#   that an earlier run left off still happens (that is recovery). An expired pause file (or one more than 30 min ahead) is ignored,
+#   so a Restore Network that crashed never stops the watcher for good.
+param([string]$Dir = 'C:\WireIt\WifiWatch', [string]$PauseFile = '')
 $ErrorActionPreference = 'SilentlyContinue'
 $log    = Join-Path $Dir 'wifiwatch.log'
 $state  = Join-Path $Dir 'state.txt'
 $marker = Join-Path $Dir 'adapter-off.txt'
+if (-not $PauseFile) { $pd = $env:ProgramData; if (-not $pd) { $pd = 'C:\ProgramData' }; $PauseFile = Join-Path (Join-Path $pd 'WireIt') 'wifiwatch.pause' }
 if ($null -eq $script:WwOps) { $script:WwOps = $null }   # tests put a simulated Windows here
 function L($t) {
   if ((Test-Path $log) -and (Get-Item $log).Length -gt 200KB) { Move-Item $log ($log + '.old') -Force }
@@ -24,8 +30,23 @@ function Ww-Op([string]$op, $a = @{}) {
     'enable'  { Enable-NetAdapter -Name $a.name -Confirm:$false -ErrorAction Stop; return $true }
     'isup'    { $n = Get-NetAdapter -Name $a.name -ErrorAction SilentlyContinue; return ($n -and [string]$n.Status -ne 'Disabled') }
     'connect' { netsh wlan connect name="$($a.prof)" interface="$($a.name)" | Out-Null; return $true }
+    'disconnect' { netsh wlan disconnect interface="$($a.name)" | Out-Null; return $true }
     'sleep'   { Start-Sleep -Seconds ([int]$a.s); return $true }
   }
+}
+# 2.2.12 (Codex P1-7): $true while Restore Network's pause file is fresh (until= in the future, at most 30 min ahead)
+function Test-WwPaused {
+  if (-not (Test-Path -LiteralPath $PauseFile)) { return $false }
+  $t = ''; try { $t = [string](Get-Content -LiteralPath $PauseFile -Raw -ErrorAction Stop) } catch { return $false }
+  $m = [regex]::Match($t, '(?m)^until=(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\s*$')
+  if (-not $m.Success) { L 'pause file unreadable - ignored'; return $false }
+  $u = [datetime]::MinValue
+  if (-not [datetime]::TryParseExact($m.Groups[1].Value, 'yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture, ([Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal), [ref]$u)) { L 'pause file unreadable - ignored'; return $false }
+  $now = (Get-Date).ToUniversalTime()
+  if ($u -le $now) { L ('pause file expired (' + $m.Groups[1].Value + ') - ignored'); return $false }
+  if ($u -gt $now.AddMinutes(30)) { L ('pause file too far ahead (' + $m.Groups[1].Value + ') - ignored'); return $false }
+  $script:WwPausedUntil = $m.Groups[1].Value
+  return $true
 }
 # switches the adapter back on and checks it; returns $true when it is on
 function Enable-WwAdapter([string]$name) {
@@ -45,6 +66,7 @@ function Repair-WwAdapter {
   if (Enable-WwAdapter $name) { Remove-Item -LiteralPath $marker -Force; L ('adapter "' + $name + '" is on again') } else { L ('adapter "' + $name + '" is STILL OFF - will try again next minute') }
 }
 function Invoke-WwAdapterCycle([string]$iface, [string]$prof) {
+  if (Test-WwPaused) { L ('paused by Restore Network until ' + $script:WwPausedUntil + ' - adapter "' + $iface + '" NOT switched off'); return }
   L ('still no internet: disabling + enabling adapter "' + $iface + '"')
   Set-Content -LiteralPath $marker -Value $iface   # written BEFORE the adapter goes off
   try {
@@ -56,7 +78,25 @@ function Invoke-WwAdapterCycle([string]$iface, [string]$prof) {
     else { L ('adapter "' + $iface + '" did NOT come back on - next run tries again') }
   }
   [void](Ww-Op 'sleep' @{ s = 12 })
+  if (Test-WwPaused) { L ('paused by Restore Network until ' + $script:WwPausedUntil + ' - no connect'); return }
   try { [void](Ww-Op 'connect' @{ name = $iface; prof = $prof }) } catch {}
+}
+# what one failed check does (2 = reconnect, 3 and every 10 after = adapter off/on); nothing while Restore Network's pause is fresh
+function Invoke-WwStep([int]$fails, [string]$iface, [string]$prof) {
+  if ($fails -eq 2) {
+    if (Test-WwPaused) { L ('paused by Restore Network until ' + $script:WwPausedUntil + ' - no reconnect'); return 'paused' }
+    L ('reconnecting: netsh wlan disconnect + connect "' + $prof + '"')
+    try { [void](Ww-Op 'disconnect' @{ name = $iface }) } catch {}
+    [void](Ww-Op 'sleep' @{ s = 4 })
+    if (Test-WwPaused) { L ('paused by Restore Network until ' + $script:WwPausedUntil + ' - no connect'); return 'paused' }
+    try { [void](Ww-Op 'connect' @{ name = $iface; prof = $prof }) } catch {}
+    return 'reconnect'
+  } elseif ($fails -eq 3 -or ($fails -gt 3 -and ($fails % 10) -eq 3)) {
+    if (Test-WwPaused) { L ('paused by Restore Network until ' + $script:WwPausedUntil + ' - adapter "' + $iface + '" NOT switched off'); return 'paused' }
+    Invoke-WwAdapterCycle $iface $prof
+    return 'cycle'
+  }
+  return 'count'
 }
 function Online {
   $p = New-Object System.Net.NetworkInformation.Ping
@@ -70,6 +110,8 @@ function Online {
 if ($MyInvocation.InvocationName -eq '.') { return }
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 Repair-WwAdapter
+# 2.2.12 (Codex P1-7): Restore Network is working on the network - do nothing, count nothing
+if (Test-WwPaused) { L ('paused by Restore Network until ' + $script:WwPausedUntil + ' - doing nothing'); exit 0 }
 $fails = 0; if (Test-Path $state) { $fails = [int](Get-Content $state -Raw) }
 # wired Ethernet up with a gateway -> not our business
 $eth = Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' -and $_.MediaType -eq '802.3' -and $_.InterfaceDescription -notmatch 'Bluetooth' }
@@ -89,12 +131,5 @@ if ($how) {
 }
 $fails++; Set-Content $state $fails
 L ('NO INTERNET on Wi-Fi "' + $prof + '" (check ' + $fails + ')')
-if ($fails -eq 2) {
-  L ('reconnecting: netsh wlan disconnect + connect "' + $prof + '"')
-  netsh wlan disconnect interface="$iface" | Out-Null
-  Start-Sleep -Seconds 4
-  netsh wlan connect name="$prof" interface="$iface" | Out-Null
-} elseif ($fails -eq 3 -or ($fails -gt 3 -and ($fails % 10) -eq 3)) {
-  Invoke-WwAdapterCycle $iface $prof
-}
+[void](Invoke-WwStep $fails $iface $prof)
 exit 0
