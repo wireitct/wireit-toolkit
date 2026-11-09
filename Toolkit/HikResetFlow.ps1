@@ -190,6 +190,7 @@ function Move-HikDropNotUsed([string]$InboxDir, [string]$Src) {
   if (-not $InboxDir -or -not $Src -or -not $Src.StartsWith($InboxDir) -or -not (Test-Path -LiteralPath $Src)) { return }
   try { $nu = Join-Path $InboxDir 'not-used'; New-Item -ItemType Directory -Force -Path $nu | Out-Null; Move-Item -LiteralPath $Src -Destination (Join-Path $nu (Split-Path -Leaf $Src)) -Force } catch {}
 }
+$script:HkReplySkewSec = 60   # 2.2.8: see Receive-HikReplies
 function Receive-HikReplies($State, [string]$StatePath, $Cfg, [string]$ToolkitDir, [string]$ReplyDir, [string]$InboxDir = '', [switch]$ForceRelay) {
   $pend = @($State.devices | Where-Object { $_.status -in @('submitted', 'replied') })
   if (-not $pend.Count) { return [pscustomobject]@{ got = @(); unmatched = @(); stale = @(); skipped = @() } }
@@ -210,7 +211,10 @@ function Receive-HikReplies($State, [string]$StatePath, $Cfg, [string]$ToolkitDi
     if ($x.src -and $x.src -eq $dest) { continue }   # the file saved by an earlier look
     # 2.2.8: only a reply that arrived after the LATEST export of this device
     $at = ConvertTo-HikLocalTime ([string]$x.date); $exp = ConvertTo-HikLocalTime ([string]$d.exportedAt)
-    if ($at -and $exp -and $at -lt $exp) {
+    # a file time is this PC's own clock (no slack); a mail's time (relay / .eml Date) is the mail server's, so $script:HkReplySkewSec
+    # of clock difference is allowed. A true reply comes at least a minute after the export (form, picture code, Hikvision's mail).
+    $slack = $(if ([string]$x.src -like 'relay:*' -or [string]$x.src -match '(?i)\.eml$') { $script:HkReplySkewSec } else { 0 })
+    if ($at -and $exp -and $at -lt $exp.AddSeconds(-$slack)) {
       $why = ('it arrived ' + $at.ToString('MMM d h:mm tt') + ', before the latest request file for this device (made ' + $exp.ToString('MMM d h:mm tt') + '). It answers an older request, so the device would refuse it.')
       $stale += [pscustomobject]@{ serial = [string]$d.serial; shortSerial = [string]$d.shortSerial; model = [string]$d.model; ip = [string]$d.ip; name = [string]$x.name; mail = [string]$x.mail; src = [string]$x.src; at = $at.ToString('s'); why = $why }
       if (& $isDrop $x.src) { Move-HikDropNotUsed $InboxDir ([string]$x.src) }
@@ -227,7 +231,9 @@ function Receive-HikReplies($State, [string]$StatePath, $Cfg, [string]$ToolkitDi
   }
   foreach ($s in @($m.skipped)) { if (-not $s.quiet -and (& $isDrop $s.src)) { Move-HikDropNotUsed $InboxDir ([string]$s.src) } }
   Save-HikState $StatePath $State
-  return [pscustomobject]@{ got = $got; unmatched = @($m.unmatched); stale = @($stale); skipped = @($m.skipped) }
+  # the replies this Toolkit saved itself (replies\reply-<serial>.xml, from earlier runs) are not news about other devices
+  $ownSaved = { param($s) [bool]([string]$s -and (Split-Path -Leaf ([string]$s)) -like 'reply-*.xml' -and (Split-Path -Parent ([string]$s)) -eq $ReplyDir) }
+  return [pscustomobject]@{ got = $got; unmatched = @($m.unmatched | Where-Object { -not (& $ownSaved $_.src) }); stale = @($stale); skipped = @($m.skipped | Where-Object { -not (& $ownSaved $_.src) }) }
 }
 # 2.2.8: the plain lines about replies that are NOT used - each said once per run, not on every look (the wait loop looks every few seconds)
 $script:HkSaidOnce = @{}

@@ -154,8 +154,20 @@ try {
   $cfgR = Get-HikConfig ([pscustomobject]@{ hikReset = [pscustomobject]@{ relay = [pscustomobject]@{ url = 'https://script.google.com/macros/s/x/exec' } } })
   $rr = Receive-HikReplies $st $sp $cfgR $tmp (Join-Path $tmp 'hf2/rep-relay') -ForceRelay
   Check (@($rr.got).Count -eq 0 -and (Cnt $rr 'stale') -eq 1) 'HF2 a relay answer received before the latest export is not used'
+  $script:relayAt = $latest.AddSeconds(-30)
+  function Get-HikRelayReply($Relay, $Key, $Device, $TimeoutSec = 20) { return [pscustomobject]@{ state = 'found'; msg = ''; message = [pscustomobject]@{ from = 'relay'; subject = 'Reset Password'; date = $script:relayAt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); text = ''; attachments = @([pscustomobject]@{ name = ('relay-' + $SN + '-x.xml'); bytes = [Text.Encoding]::ASCII.GetBytes($unlockXml); type = 'file' }); id = ('relay:' + $Device.serial) } } }
+  $rr = Receive-HikReplies $st $sp $cfgR $tmp (Join-Path $tmp 'hf2/rep-relay') -ForceRelay
+  Check (@($rr.got).Count -eq 1 -and (Cnt $rr 'stale') -eq 0) 'HF2 ...but a mail stamped 30 s before the export (the mail server''s clock vs this PC''s) is still used'
+  $d.status = 'submitted'; Save-HikState $sp $st
+  $script:relayAt = $latest.AddMinutes(-3)
+  $rr = Receive-HikReplies $st $sp $cfgR $tmp (Join-Path $tmp 'hf2/rep-relay2') -ForceRelay
+  Check (@($rr.got).Count -eq 0 -and (Cnt $rr 'stale') -eq 1) 'HF2 ...and one 3 minutes before the export (a reply to the voided request) is not'
   . (Join-Path $tk 'HikMail.ps1')
 
+  $repOwn = Join-Path $tmp 'hf2/rep-own'; New-Item -ItemType Directory -Force -Path $repOwn | Out-Null
+  [IO.File]::WriteAllText((Join-Path $repOwn ('reply-' + $SN2 + '.xml')), ('<x><SerialNumber>' + $SN2 + '</SerialNumber></x>'))
+  $rr = Receive-HikReplies $st $sp $cfgF $tmp $repOwn
+  Check (-not @($rr.unmatched).Count) 'HF3 a reply this Toolkit saved itself earlier (replies\reply-<serial>.xml of another camera) is not reported as "matches no device"'
   # a drop ("I got Hik's email") of an old Downloads file keeps that file's time, so it is named stale and moved out of the way
   $inb = Join-Path $tmp 'hf2/inbox'; $dl = Join-Path $tmp 'hf2/Downloads'; New-Item -ItemType Directory -Force -Path $dl | Out-Null
   $dlf = Join-Path $dl ($SN + ' (2).xml'); [IO.File]::WriteAllText($dlf, $unlockXml); (Get-Item $dlf).LastWriteTime = $latest.AddHours(-3)
