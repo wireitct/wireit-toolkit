@@ -1,9 +1,9 @@
 {
-  "version": "2.2.5",
-  "released": "2026-11-08",
-  "commit": "69656aceeb12f92c21b75689d10b47915f6b0723",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/69656aceeb12f92c21b75689d10b47915f6b0723/",
-  "notes": "Independent review fixes: private password stores, HTTPS authentication, interrupted Undo, verified recording and recorder addresses, reset replies, atomic recovery, release inventory and scan queues.",
+  "version": "2.2.7",
+  "released": "2026-11-09",
+  "commit": "087c679bad6583fbff0f14a9865694e143d66011",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/087c679bad6583fbff0f14a9865694e143d66011/",
+  "notes": "2.2.7: fixes from the file-by-file review of 2.2.6 (undo safety in Fix this site and Fix NVR, no Basic passwords over plain HTTP, Find cameras never uploads an old list, CamViews secrets locked first, NvrHealth verdicts, HikReset site password, version 2.2.7).",
   "files": [
     {
       "path": "CamReset/Find Cameras.cmd",
@@ -42,8 +42,8 @@
     },
     {
       "path": "FixNVR/FixNVR.ps1",
-      "sha256": "45a00e002c3633c05a31af84d54efff5362fee161e1684cc5c682922612eaa7b",
-      "size": 92233
+      "sha256": "aeaf5621898e0330ac38b60c43cfda11469f366f4df799dffde0ab4bd27a6272",
+      "size": 96669
     },
     {
       "path": "FixNVR/NVR Snapshot.cmd",
@@ -57,8 +57,8 @@
     },
     {
       "path": "NetCheck/NetCheck.ps1",
-      "sha256": "5533eec10e7d6ea925ba4a12eceb836fdb998660d2713f66a2a53c64cd570759",
-      "size": 18491
+      "sha256": "64910d5de12987cde259191760bfe4ea6e8b3fbfee9d761390e940aa49ab786b",
+      "size": 20522
     },
     {
       "path": "NetCheck/Network Check.cmd",
@@ -72,8 +72,8 @@
     },
     {
       "path": "Toolkit/CamViews.ps1",
-      "sha256": "1dea9a6aeeb1f95d9cc68e006a3b846fd82b62057594156d4bf427694b2f6f2b",
-      "size": 35067
+      "sha256": "f26bcd3b78fd569262ed9a864654af0e18f912706365564775d107402ec26b85",
+      "size": 38351
     },
     {
       "path": "Toolkit/FixIt.ps1",
@@ -82,23 +82,23 @@
     },
     {
       "path": "Toolkit/FixSite.ps1",
-      "sha256": "485a33196b33f29edf1534d2dca38e064faa75541a490465c4f211bea0437114",
-      "size": 104889
+      "sha256": "9480b317caeb295a2af1f2a5369ec3487f5c0a6dad054cc524cb5ede338e63c7",
+      "size": 108653
     },
     {
       "path": "Toolkit/FixSiteBw.ps1",
-      "sha256": "b772fc9485282868cba6e5f6f2dd1d422727bc9747c5ddc194f9f32fa90b1570",
+      "sha256": "7027e89c0eade8eef0798561795d8483894894f0e9440e6bc5ed32f7f3780d2b",
       "size": 12081
     },
     {
       "path": "Toolkit/FixSiteCore.ps1",
-      "sha256": "06e38e6ef4baf2326ca3195198214c7419fb88c7319c185c65e9310d1a1de1b4",
+      "sha256": "c1aad1d18d6dc4685b9fa74b1a014d505d0a0803ac0f150267f0947aa9fa82a1",
       "size": 69629
     },
     {
       "path": "Toolkit/FixSiteDevices.ps1",
-      "sha256": "bd75d6e482e04d018259b1028dddb22802a64801b9684de454ac5484a06529d3",
-      "size": 84953
+      "sha256": "e5c61816ea31931a7dba8672e04d139011ca3cf834810166c20c9555e417a996",
+      "size": 85867
     },
     {
       "path": "Toolkit/FixSiteWindow.ps1",
@@ -122,8 +122,8 @@
     },
     {
       "path": "Toolkit/HikReset.ps1",
-      "sha256": "31cfbdfa69a52a48cffb2d4beb8a497e0920b9f4971fc3934aebe4e199db6c9b",
-      "size": 6980
+      "sha256": "351aa201fa89e31b08c7bca3aa2792285b93a6257da7688e9117b7924ce08bc6",
+      "size": 7376
     },
     {
       "path": "Toolkit/HikResetFlow.ps1",
@@ -152,8 +152,8 @@
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrHealth.psm1",
-      "sha256": "7a9bbc4bbb047420be055d7d1e54e9f7d9dcad50a2633dd002e8038ed6ad2f3f",
-      "size": 112196
+      "sha256": "e84b5f26d5ad64c32c98c2cc25a56ec62eab607c2a2c722c5279443e0dcb6efb",
+      "size": 113504
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/mock_devices.py",
@@ -194,6 +194,21 @@
       "path": "Toolkit/tests/fix226/scenarios.py",
       "sha256": "558f19ea91b85eda31c10fbe16cfaa78adf86b11781d976390c4613f43a122c7",
       "size": 9784
+    },
+    {
+      "path": "Toolkit/tests/fix227/auth_server.py",
+      "sha256": "91d90a092274e6983efa9361378449e8ddc819c64fa4d65eecfacc9c1b2424ca",
+      "size": 2068
+    },
+    {
+      "path": "Toolkit/tests/fix227/limit_run.py",
+      "sha256": "f62c2b3ea3c869c294e6c8e60b71c2878e61b33540e9f2afc3ffe5dbb8fe16af",
+      "size": 421
+    },
+    {
+      "path": "Toolkit/tests/fix227/scenarios.py",
+      "sha256": "647c4104fda7b68e536806676c6e7734e9e13bbbced49f021bb5184b941b280a",
+      "size": 13039
     },
     {
       "path": "Toolkit/tests/fixsite/byw-scan.json",
@@ -307,13 +322,13 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "de3d22da3ddef77dc1448ec7d34c208e39fe9e7dbd335048312a069be183d4ed",
+      "sha256": "09dbed5a4a22ccc08f1396fab0939398aa9b6b8506d47886e8b5f622eea01dab",
       "size": 43258
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
-      "sha256": "56cd3131c10c7dada4053181591a25e9455a951206a86411ab0743475dfe0365",
-      "size": 56900
+      "sha256": "b0ffc617fd60f9dc39942c26193e61cf33d78e4bf99af65b7670cc5e893d97f0",
+      "size": 56894
     },
     {
       "path": "Toolkit/tests/Test-Fix224.ps1",
@@ -329,6 +344,11 @@
       "path": "Toolkit/tests/Test-Fix226.ps1",
       "sha256": "7289e6ecbea1785ec3a21b3a68ee8f779986fc83215511c5da98a439ca582ed7",
       "size": 7092
+    },
+    {
+      "path": "Toolkit/tests/Test-Fix227.ps1",
+      "sha256": "91f45308d46bedc680c72b479ce90d91abc14b05901d4e27a97b8956f1422def",
+      "size": 39361
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
@@ -362,8 +382,8 @@
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
-      "sha256": "4fa31137fc1b806a74463acacd4ebd72a08610ab6fdd0b7aa52d67f83f0a3490",
-      "size": 64977
+      "sha256": "8b7cc43e92ef226e4b6da7a42c8854ffedd61e22c778a084aff34e04eba7bc3a",
+      "size": 66228
     },
     {
       "path": "Toolkit/ToolkitMigrate.ps1",
@@ -392,8 +412,8 @@
     },
     {
       "path": "Toolkit/WireItToolkit.ps1",
-      "sha256": "3e15ed0b2c4eb2cbbd081f9160ccb8dd9b831d2faae07538c31fe4675239ae9e",
-      "size": 118754
+      "sha256": "8698097d82de530518f1f5361db3e6d360ed174413e56fce67ff33b24c6b2161",
+      "size": 119299
     }
   ]
 }
