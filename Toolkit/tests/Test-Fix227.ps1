@@ -12,7 +12,8 @@ New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $script:pass = 0; $script:fail = 0
 # Findings Moshe left for a later round (Nov 8 2026, 7:41 PM: "finish only the serious ones now"): their checks still RUN and are
 # printed, a failing one as DEFERRED (not fixed in 2.2.7) instead of FAIL, so the suite says exactly what 2.2.7 does not fix yet.
-$script:deferred = @('F15', 'F16', 'F18', 'F19', 'F20'); $script:defer = 0
+# 2.2.11: F16 (= Codex R14) is fixed, so its checks are real again: a failing F16 is a FAIL, never DEFERRED.
+$script:deferred = @('F15', 'F18', 'F19', 'F20'); $script:defer = 0
 function Check([bool]$ok, [string]$name, [string]$more = '') {
   $id = [regex]::Match($name, '^F\d\d').Value
   if ($ok) { $script:pass++; Write-Host ('PASS ' + $name) }

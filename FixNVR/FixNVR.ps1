@@ -42,7 +42,27 @@ $ProgressPreference = 'SilentlyContinue'
 $Version = '1.2 (2026-11-02)'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $ConfigPath) { $ConfigPath = Join-Path $here 'config.json' }
-$cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+# 2.2.11 (Codex R14 / F16): no config.json, an empty one or one that is not valid JSON: ONE plain message and stop (after the run
+# folder exists, so the Toolkit window shows the message too), before anything is looked at or changed. 2.2.10 printed a red
+# Get-Content error and carried on with no settings. -Mode Cleanup still runs on built-in defaults: it only takes this tool's own
+# temporary addresses off this PC, and a missing settings file must never keep the PC's network from being put back.
+$cfgNeed = @('nvr_hosts', 'router_dhcp_start', 'camera_block_start', 'camera_block_end', 'temp_ip_hosts')
+$cfg = $null; $cfgWhy = ''
+if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { $cfgWhy = 'is missing' }
+else {
+  $cfgText = ''; try { $cfgText = [IO.File]::ReadAllText($ConfigPath) } catch { $cfgWhy = 'could not be read' }
+  if (-not $cfgWhy) {
+    if (-not $cfgText.Trim()) { $cfgWhy = 'is empty' }
+    else {
+      try { $cfg = $cfgText | ConvertFrom-Json -ErrorAction Stop } catch { $cfg = $null; $cfgWhy = 'is damaged (not valid JSON)' }
+      if (-not $cfgWhy) {
+        $cfgMiss = @($cfgNeed | Where-Object { -not $cfg -or $null -eq $cfg.$_ })
+        if ($cfgMiss.Count) { $cfgWhy = 'is missing settings (' + ($cfgMiss -join ', ') + ')' }
+      }
+    }
+  }
+}
+if ($cfgWhy -and $Mode -eq 'Cleanup') { $cfg = [pscustomobject]@{ temp_ip_hosts = @(253, 252, 247); safety_cleanup_minutes = 30; nvr_hosts = @(20, 19, 18); router_dhcp_start = 100; camera_block_start = 21; camera_block_end = 99 } }
 # 2.2.1 (review H2): certificate checks are skipped ONLY for devices on the local network (a private IPv4 address: cameras, NVRs).
 # Anything with a name (the service log, Google, the download service) keeps Windows' normal certificate check. Same code in
 # FixSiteDevices.ps1, NvrHealth.psm1, SiteCheck.ps1, FixNVR.ps1 and NetCheck.ps1 (it is compiled once per PowerShell).
@@ -102,6 +122,12 @@ function Redact([string]$s) {
 }
 function Log([string]$s) { Add-Content -Path $logFile -Value ((Get-Date -Format 'HH:mm:ss') + ' ' + (Redact $s)) }
 function Say([string]$s, [string]$color = '') { if ($color) { Write-Host $s -ForegroundColor $color } else { Write-Host $s }; $sum.Add($s); Log ('SAY ' + $s) }
+if ($cfgWhy -and $Mode -ne 'Cleanup') {   # 2.2.11 (Codex R14 / F16)
+  Say ('Fix NVR cannot start: its settings file config.json ' + $cfgWhy + ' (' + $ConfigPath + ').') 'Yellow'
+  Say 'Nothing was checked or changed. Run the Toolkit installer again (it puts config.json back), then run this again.'
+  try { Set-Content -LiteralPath (Join-Path $runDir 'summary.txt') -Value ($sum -join "`r`n") } catch {}
+  exit 2
+}
 # 2.2.7 (Codex file-by-file F04): written to a temporary file and swapped in whole; a write that fails THROWS (2.2.6 wrote with
 # Set-Content under 'Continue': a failed rollback save was only a warning and the run went on changing devices)
 function Save-Json($obj, [string]$path) {
