@@ -22,6 +22,7 @@ param(
 $ErrorActionPreference = 'Continue'; $ProgressPreference = 'SilentlyContinue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'HikResetFlow.ps1')
+. (Join-Path $here 'FixSiteCore.ps1')   # 2.2.7 (Codex file-by-file F14): Read-FsSecrets needs Get-FsSiteSlug and the rest of the core
 . (Join-Path $here 'FixSiteDevices.ps1')
 if ($SadpTest) { $script:SadpTest = $SadpTest }
 if ($PortalUrlOverride) { $script:PortalUrl = $PortalUrlOverride }
@@ -71,7 +72,8 @@ if ($Mode -in @('Run', 'Watch')) {
 if ($Mode -in @('Run', 'Import')) {
   $pw = ''; if ($PasswordFile -and (Test-Path $PasswordFile)) { $pw = (Get-Content -LiteralPath $PasswordFile -Raw).Trim() }
   # 2.1.0: the site's own password from Fix this site's encrypted store on this PC (never typed, never shown)
-  if (-not $pw -and $Site) { if (-not $SiteSecretsDir) { $SiteSecretsDir = $secDir }; try { $pw = [string](Read-FsSecrets $SiteSecretsDir $Site).password } catch {}; if (-not $pw) { Hk-Say ('No site password saved on this PC for "' + $Site + '". Make it in Fix this site (Site password... > M) first.') 'Red'; exit 3 } }
+  # 2.2.7 (Codex file-by-file F14): a store that cannot be read is said as that error (exit 3), not hidden as "no site password saved"
+  if (-not $pw -and $Site) { if (-not $SiteSecretsDir) { $SiteSecretsDir = $secDir }; try { $pw = [string](Read-FsSecrets $SiteSecretsDir $Site).password } catch { Hk-Say ('Could not read this PC''s saved site passwords (' + $_.Exception.Message + '). Nothing was changed.') 'Red'; exit 3 }; if (-not $pw) { Hk-Say ('No site password saved on this PC for "' + $Site + '". Make it in Fix this site (Site password... > M) first.') 'Red'; exit 3 } }
   if (@($state.devices | Where-Object { $_.status -eq 'replied' }).Count) {
     if (-not $pw) { $sec = Read-Host 'Type the new password for these devices (hidden)' -AsSecureString; $pw = (New-Object PSCredential('x', $sec)).GetNetworkCredential().Password }
     $verify = { param($ip, $p) return ((Test-FsLogin $ip 'Hikvision' $p) -eq 'ok') }
