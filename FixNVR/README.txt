@@ -63,6 +63,12 @@ SAFETY
     runs\<mode>-<time>\.
   - Undo:  powershell -ExecutionPolicy Bypass -File FixNVR.ps1 -Mode Rollback -RollbackFile "runs\Fix-...\rollback.json"
   - Official interfaces only: Hikvision ISAPI + SADP search (read), ONVIF (open standard), Uniview LiteAPI.
+  - "Done." only when the check after the fix read every NVR and found platform access online and every camera
+    online. Anything it could not read (wrong NVR password, NVR not answering, camera status) is a red NOT CHECKED
+    line and the run ends NOT DONE - never "looks right". Fix the login or what is listed and run again.
+  - At the end the PC's own connection is checked (an address from the router and a default route, waiting up to
+    about 30 s for the lease). If it is not back, the run says FAILED - Run again and keeps its record, so the
+    next run (or the safety task) puts it back.
 
 UNIVIEW STATUS (read this)
   - Uniview cameras on a switch are moved with ONVIF (standard, on by default on Uniview).
