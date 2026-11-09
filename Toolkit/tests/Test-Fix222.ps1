@@ -337,8 +337,8 @@ $ui = Get-TkUpdateInfo ([pscustomobject]@{ updateUrl = ('http://127.0.0.1:' + $w
 Check ($ui.state -eq 'current' -and $ui.message -match 'newer than the published') 'a repository install with no version.json: still no "update" to 2.0.4, and it says why'
 $threw = $false; try { Install-TkUpdate ([pscustomobject]$m204) $vt { param($u) [byte[]]@() } | Out-Null } catch { $threw = $_.Exception.Message -match 'not newer' }
 Check $threw 'Install-TkUpdate itself refuses a version that is not newer'
-$m9 = [ordered]@{ version = '2.2.12'; base = $m204.base; files = $m204.files }; ($m9 | ConvertTo-Json -Depth 4) | Set-Content (Join-Path $web 'version.json')
-Eq (Get-TkUpdateInfo ([pscustomobject]@{ updateUrl = ('http://127.0.0.1:' + $wp + '/version.json'); updateTimeoutMs = 4000 }) $vt).state 'available' 'a NEWER published version (2.2.12) is offered'
+$m9 = [ordered]@{ version = '2.2.13'; base = $m204.base; files = $m204.files }; ($m9 | ConvertTo-Json -Depth 4) | Set-Content (Join-Path $web 'version.json')
+Eq (Get-TkUpdateInfo ([pscustomobject]@{ updateUrl = ('http://127.0.0.1:' + $wp + '/version.json'); updateTimeoutMs = 4000 }) $vt).state 'available' 'a NEWER published version (2.2.13) is offered'
 $fcv = ''; if ((Read-Src 'Toolkit/FixSiteCore.ps1') -match "\`$script:FsVersion = '([^']+)'") { $fcv = $Matches[1] }
 $tcv = ''; if ((Read-Src 'Toolkit/ToolkitCore.ps1') -match "\`$script:TkBuiltVersion = '([^']+)'") { $tcv = $Matches[1] }
 $bwv = ''; if ((Read-Src 'Toolkit/FixSiteBw.ps1') -match "\`$script:FsVersion = '([^']+)'") { $bwv = $Matches[1] }
