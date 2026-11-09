@@ -387,12 +387,14 @@ if ($Mode -eq 'Rollback') {
     $cr = Fs-Cred $pw
     if ($c.stream_before -and -not (& $isDone ($ck + '|settings')) -and -not ($cur = Get-FsStream $ip $c.brand $cr)) { $res += [pscustomobject]@{ text = 'settings could not be read - not put back'; ok = $false } }   # 2.2.3 (Codex #20)
     elseif ($c.stream_before -and -not (& $isDone ($ck + '|settings'))) { $want = [pscustomobject]@{ codec = [string]$c.stream_before.codec; fps = [int]$c.stream_before.fps; resolution = $(if ($c.stream_before.width) { '' + $c.stream_before.width + 'x' + $c.stream_before.height } else { 'keep' }); bitrate = [int]$c.stream_before.bitrate; gop = 0; smartCodec = 'keep' }
-      $diff = @(Get-FsSettingsDiff $cur $want); if ([int]$c.stream_before.gop -and $cur -and [int]$cur.gop -ne [int]$c.stream_before.gop) { $diff += [pscustomobject]@{ field = 'gop'; from = $cur.gop; to = [int]$c.stream_before.gop } }
-      if ([string]$c.stream_before.smartCodec -eq 'on' -and $cur.smartCodec -eq 'off') { $diff += [pscustomobject]@{ field = 'smartCodecOn'; from = 'off'; to = 'on' } }
-      $diff = @($diff | Where-Object { $_.field -ne 'smartCodecOn' })   # Smart Codec back on: by hand (it was the cause on BYW)
+      # 2.2.7 (Codex file-by-file F09): EVERY setting the run found goes back - the I-frame interval (GOP) and Smart Codec too - and
+      # counts as back only when the camera reads all of them back as they were (2.2.6 skipped Smart Codec and never checked GOP)
+      $extra = { param($now) $x = @(); if ([int]$c.stream_before.gop -and $now -and [int]$now.gop -ne [int]$c.stream_before.gop) { $x += [pscustomobject]@{ field = 'gop'; from = $now.gop; to = [int]$c.stream_before.gop } }
+        if ([string]$c.stream_before.smartCodec -eq 'on' -and $now -and [string]$now.smartCodec -eq 'off') { $x += [pscustomobject]@{ field = 'smartCodecOn'; from = 'off'; to = 'on' } }; return $x }
+      $diff = @(Get-FsSettingsDiff $cur $want) + @(& $extra $cur)
       if ($diff.Count) { $w = Set-FsStream $ip $c.brand $cr $cur $diff; $okS = [bool]$w.ok
         # 2.2.3 (Codex #20): settings count as back only when the camera reads them back as they were
-        if ($okS) { $rd = Get-FsStream $ip $c.brand $cr; $okS = [bool]($rd -and -not @(Get-FsSettingsDiff $rd $want).Count) }
+        if ($okS) { $rd = Get-FsStream $ip $c.brand $cr; $okS = [bool]($rd -and -not @(Get-FsSettingsDiff $rd $want).Count -and -not @(& $extra $rd).Count) }
         $res += [pscustomobject]@{ text = 'settings back'; ok = $okS }; if ($okS) { & $markDone ($ck + '|settings') } } else { & $markDone ($ck + '|settings') } }
     # An interrupted write may have taken effect before password_changed was saved. Reconcile every attempted write.
     if (($c.password_changed -or $c.password_attempted) -and $oldPw -and -not (& $isDone ($ck + '|password'))) {

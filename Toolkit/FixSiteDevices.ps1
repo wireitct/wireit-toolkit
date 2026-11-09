@@ -423,7 +423,7 @@ function Set-FsStream([string]$ip, [string]$brand, $cred, $current, $diff) {
         'codec' { $kv[$p + 'Compression'] = [string]$d.to; if ([string]$d.to -eq 'H.264') { $kv[$p + 'Profile'] = 'Main' } }
         'fps' { $kv[$p + 'FPS'] = [string]$d.to } 'bitrate' { $kv[$p + 'BitRate'] = [string]$d.to } 'gop' { $kv[$p + 'GOP'] = [string]$d.to }
         'resolution' { $wh = ([string]$d.to) -split 'x'; $kv[$p + 'Width'] = $wh[0]; $kv[$p + 'Height'] = $wh[1] }
-        'smartCodec' { $smart = 'false' }
+        'smartCodec' { $smart = 'false' } 'smartCodecOn' { $smart = 'true' }   # 2.2.7 (F09): Undo turns it back on
       }
     }
     $ok = $true
@@ -440,6 +440,7 @@ function Set-FsStream([string]$ip, [string]$brand, $cred, $current, $diff) {
       'bitrate' { if ((Fs-XText $x 'videoQualityControlType') -eq 'VBR') { [void](Fs-XSet $x 'vbrUpperCap' ([string]$d.to)) } else { [void](Fs-XSet $x 'constantBitRate' ([string]$d.to)) } }
       'resolution' { $wh = ([string]$d.to) -split 'x'; [void](Fs-XSet $x 'videoResolutionWidth' $wh[0]); [void](Fs-XSet $x 'videoResolutionHeight' $wh[1]) }
       'smartCodec' { $n = @(Fs-XFind $x 'SmartCodec'); if ($n.Count) { [void](Fs-XSet $n[0] 'enabled' 'false') } }
+      'smartCodecOn' { $n = @(Fs-XFind $x 'SmartCodec'); if ($n.Count) { [void](Fs-XSet $n[0] 'enabled' 'true') } }   # 2.2.7 (F09)
     }
   }
   $r = Fs-Http -Ip $ip -Method 'PUT' -Path '/ISAPI/Streaming/channels/101' -Body $x.OuterXml -Cred $cred
