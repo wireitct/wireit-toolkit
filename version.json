@@ -1,8 +1,8 @@
 {
   "version": "2.2.7",
   "released": "2026-11-09",
-  "commit": "087c679bad6583fbff0f14a9865694e143d66011",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/087c679bad6583fbff0f14a9865694e143d66011/",
+  "commit": "0fb1f135c378c6b4b84b4ebcc2e4898ea323200c",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/0fb1f135c378c6b4b84b4ebcc2e4898ea323200c/",
   "notes": "2.2.7: fixes from the file-by-file review of 2.2.6 (undo safety in Fix this site and Fix NVR, no Basic passwords over plain HTTP, Find cameras never uploads an old list, CamViews secrets locked first, NvrHealth verdicts, HikReset site password, version 2.2.7).",
   "files": [
     {
@@ -42,8 +42,8 @@
     },
     {
       "path": "FixNVR/FixNVR.ps1",
-      "sha256": "aeaf5621898e0330ac38b60c43cfda11469f366f4df799dffde0ab4bd27a6272",
-      "size": 96669
+      "sha256": "bde1e1b33cd8050184a5142ac7ea5b01df72887084b3d3aafa702d93008ab053",
+      "size": 96734
     },
     {
       "path": "FixNVR/NVR Snapshot.cmd",
@@ -57,8 +57,8 @@
     },
     {
       "path": "NetCheck/NetCheck.ps1",
-      "sha256": "64910d5de12987cde259191760bfe4ea6e8b3fbfee9d761390e940aa49ab786b",
-      "size": 20522
+      "sha256": "27b999995e0a2448af70a5176d4742f91495630d2ebbed70e8806ed7230724eb",
+      "size": 20587
     },
     {
       "path": "NetCheck/Network Check.cmd",
@@ -72,8 +72,8 @@
     },
     {
       "path": "Toolkit/CamViews.ps1",
-      "sha256": "f26bcd3b78fd569262ed9a864654af0e18f912706365564775d107402ec26b85",
-      "size": 38351
+      "sha256": "e526b739d7e3adc39f332571bfacaf2ec2ce19efef08adea242e44be0efea8b6",
+      "size": 38416
     },
     {
       "path": "Toolkit/FixIt.ps1",
@@ -322,8 +322,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "09dbed5a4a22ccc08f1396fab0939398aa9b6b8506d47886e8b5f622eea01dab",
-      "size": 43258
+      "sha256": "2c69cb501276e11e600bce5f1cae4d33df3ea02b7199fdb616ad87b37209fbae",
+      "size": 43287
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
