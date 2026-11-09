@@ -1,8 +1,8 @@
 {
   "version": "2.2.11",
   "released": "2026-11-09",
-  "commit": "bc370f0bec1942b8dbb7ee314f3a69b9070d46d6",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/bc370f0bec1942b8dbb7ee314f3a69b9070d46d6/",
+  "commit": "c80e1dd7667b82e6e83245b54b24712c97e42ea6",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/c80e1dd7667b82e6e83245b54b24712c97e42ea6/",
   "notes": "2.2.11: Restore Network button, job receipts, HikReset test headless, Fix NVR stops cleanly without config.json, deferred never counts as pass",
   "files": [
     {
@@ -337,8 +337,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2211.ps1",
-      "sha256": "0c3c338963877149fd92e1e6bbde79b0aa372855d14c41751ecd6e6d92e1b9aa",
-      "size": 29476
+      "sha256": "c66a668077a9a9700c55659996bc7ffc948af9d1f897a246f23ec895856b4926",
+      "size": 30500
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
@@ -442,8 +442,8 @@
     },
     {
       "path": "Toolkit/WireItToolkit.ps1",
-      "sha256": "17da1950da9852f94cf8ab243a067d13c537b152064963b81880058a7d1e2228",
-      "size": 122093
+      "sha256": "c9359dc3048454bae090be0022381c50f15be8cf543b47ccab9be18d40a02a32",
+      "size": 122304
     }
   ]
 }
