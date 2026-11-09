@@ -148,9 +148,13 @@ function Get-PcNet {
 # ---------------- temporary PC address on an old scheme (always removed) ----------------
 $tempFile = Join-Path $stateDir 'temp-ips.json'
 $script:temps = New-Object System.Collections.Generic.List[object]
-$script:pcChanges = [ordered]@{ coexistence_before = $null; firewall_rule = $false; cleanup_task = $false }
+$script:pcChanges = [ordered]@{ coexistence_before = $null; firewall_rule = $false; cleanup_task = $false; ifIndex = $null; alias = $null; dhcp = $null }
 $taskName = 'WireIt FixNVR cleanup'
-function Write-TempState { try { Save-Json ([ordered]@{ temps = $script:temps.ToArray(); pc = $script:pcChanges; written = (Get-Date -Format 's') }) $tempFile } catch { Log ('temp state not saved: ' + $_.Exception.Message) } }
+# 2.2.10 (Codex R04): the journal is a precondition. Write-TempState returns $false when it could not be saved, and no adapter
+# change happens without it. Each entry stays until a fresh read shows the address gone; DHCP + coexistence go back from the
+# saved before-state on the SAVED adapter; the journal and the safety task are deleted only when all of that checked back.
+# A clean-up that is not verified says "FAILED - Run again" (screen + log). NEEDS WINDOWS CHECK (New/Remove-NetIPAddress, netsh).
+function Write-TempState { try { Save-Json ([ordered]@{ version = 2; temps = $script:temps.ToArray(); pc = $script:pcChanges; written = (Get-Date -Format 's') }) $tempFile; return $true } catch { Log ('temp state not saved: ' + $_.Exception.Message); return $false } }
 function Set-SafetyTask {
   if ($Mock -or $script:pcChanges.cleanup_task) { return }
   try {
@@ -158,59 +162,110 @@ function Set-SafetyTask {
     $trg = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes([int]$cfg.safety_cleanup_minutes)
     $pr = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest -LogonType ServiceAccount
     Register-ScheduledTask -TaskName $taskName -Action $act -Trigger $trg -Principal $pr -Force | Out-Null
-    $script:pcChanges.cleanup_task = $true; Log ('safety cleanup task set for +' + $cfg.safety_cleanup_minutes + ' min')
+    $script:pcChanges.cleanup_task = $true; Log ('safety cleanup task set for +' + $cfg.safety_cleanup_minutes + ' min'); [void](Write-TempState)
   } catch { Log ('safety task not set: ' + $_.Exception.Message) }
+}
+function Test-TempGone([string]$ip, $ifIndex) {
+  try { return (-not @(Get-NetIPAddress -IPAddress $ip -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_ }).Count) } catch { return $false }
 }
 function Add-TempIp([string]$p3, $pc, $avoid) {
   foreach ($h in $cfg.temp_ip_hosts) {
     $ip = $p3 + '.' + $h
     if ($avoid -contains $ip) { continue }
     if ($Mock) { $script:temps.Add([pscustomobject]@{ ip = $ip; ifIndex = $pc.ifIndex }); Log ('MOCK temp ip ' + $ip); return $ip }
+    if ($null -eq $script:pcChanges.ifIndex) { $script:pcChanges.ifIndex = [int]$pc.ifIndex; $script:pcChanges.alias = [string]$pc.alias; $script:pcChanges.dhcp = [bool]$pc.dhcp }
     if ($script:pcChanges.coexistence_before -eq $null -and $pc.dhcp) {
       $t = (netsh interface ipv4 show interface ([string]$pc.ifIndex)) -join "`n"
       $m = [regex]::Match($t, '(?i)DHCP/Static IP coexistence\s*:\s*(\w+)')
       $script:pcChanges.coexistence_before = $(if ($m.Success) { $m.Groups[1].Value } else { 'unknown' })
+      # the before-state is on disk BEFORE coexistence is switched on (2.2.9 switched first)
+      if (-not (Write-TempState)) { $script:pcChanges.coexistence_before = $null; Say 'FAILED - Run again. The record of this PC''s network could not be saved, so no temporary address was added (nothing on this PC was changed).' 'Red'; return $null }
       if ($script:pcChanges.coexistence_before -notmatch 'enabled') { netsh interface ipv4 set interface ([string]$pc.ifIndex) dhcpstaticipcoexistence=enabled | Out-Null }
     }
-    $script:temps.Add([pscustomobject]@{ ip = $ip; ifIndex = $pc.ifIndex }); Write-TempState; Set-SafetyTask
+    $script:temps.Add([pscustomobject]@{ ip = $ip; ifIndex = $pc.ifIndex })
+    if (-not (Write-TempState)) { [void]$script:temps.RemoveAt($script:temps.Count - 1); Say 'FAILED - Run again. The record of this PC''s network could not be saved, so no temporary address was added.' 'Red'; return $null }
+    Set-SafetyTask
     try {
       New-NetIPAddress -InterfaceIndex $pc.ifIndex -IPAddress $ip -PrefixLength 24 -SkipAsSource $true -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
-    } catch { Log ('add ' + $ip + ' failed: ' + $_.Exception.Message); Remove-OneTemp $ip $pc.ifIndex; continue }
+    } catch { Log ('add ' + $ip + ' failed: ' + $_.Exception.Message); if (-not (Remove-OneTemp $ip $pc.ifIndex)) { return $null }; continue }
     $st = 'Tentative'
     for ($w = 0; $w -lt 8 -and $st -eq 'Tentative'; $w++) { Start-Sleep -Seconds 1; $st = (Get-NetIPAddress -InterfaceIndex $pc.ifIndex -IPAddress $ip -ErrorAction SilentlyContinue).AddressState }
-    if ($st -eq 'Duplicate') { Log ($ip + ' is used by another device, trying the next'); Remove-OneTemp $ip $pc.ifIndex; continue }
+    if ($st -eq 'Duplicate') { Log ($ip + ' is used by another device, trying the next'); if (-not (Remove-OneTemp $ip $pc.ifIndex)) { return $null }; continue }
     Log ('temp ip ' + $ip + ' added (' + $st + ')'); return $ip
   }
   return $null
 }
+# returns $true only when the address is checked gone; otherwise it stays tracked and journaled
 function Remove-OneTemp([string]$ip, $ifIndex) {
-  if (-not $Mock) { Remove-NetIPAddress -IPAddress $ip -InterfaceIndex $ifIndex -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue; Remove-NetIPAddress -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue }
+  if (-not $Mock) {
+    Remove-NetIPAddress -IPAddress $ip -InterfaceIndex $ifIndex -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+    if (-not (Test-TempGone $ip $ifIndex)) { Log ('temp ip ' + $ip + ' is still on the adapter (kept in the journal)'); [void](Write-TempState); return $false }
+  }
   $x = @($script:temps | Where-Object { $_.ip -eq $ip }); foreach ($e in $x) { [void]$script:temps.Remove($e) }
-  if (-not $Mock) { Write-TempState }
+  if (-not $Mock) { [void](Write-TempState) }
+  return $true
+}
+function Restore-PcSettings($pcc, $ifIndex, [ref]$problems) {
+  if ($null -eq $ifIndex) { return }
+  if ($pcc.coexistence_before -ne $null -and [string]$pcc.coexistence_before -notmatch 'enabled') {
+    netsh interface ipv4 set interface ([string]$ifIndex) dhcpstaticipcoexistence=disabled | Out-Null
+    $co = ((netsh interface ipv4 show interface ([string]$ifIndex)) -join "`n"); $m = [regex]::Match($co, '(?i)DHCP/Static IP coexistence\s*:\s*(\w+)')
+    if ($m.Success -and $m.Groups[1].Value -match 'enabled') { $problems.Value += 'the DHCP+static coexistence setting could not be put back' } else { Log 'coexistence restored' }
+  }
+  if ($pcc.dhcp) {
+    $ipi = Get-NetIPInterface -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+    if ($ipi -and $ipi.Dhcp -ne 'Enabled') { try { Set-NetIPInterface -InterfaceIndex $ifIndex -AddressFamily IPv4 -Dhcp Enabled -ErrorAction Stop; Log 'DHCP re-enabled on PC NIC' } catch {} }
+    $ipi = Get-NetIPInterface -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+    if (-not $ipi -or $ipi.Dhcp -ne 'Enabled') { $problems.Value += 'DHCP is not back on' }
+  }
+}
+function Say-CleanupFailed([string[]]$problems) {
+  $m = 'FAILED - Run again. THIS PC''S NETWORK IS NOT BACK TO NORMAL: ' + ($problems -join '; ') + '. The record is kept: run "Fix NVR.cmd" again (it cleans up first) or restart the PC (the temporary address is memory-only).'
+  Write-Host $m -ForegroundColor Red; Log ('SAY ' + $m)
 }
 function Remove-AllTemp {
-  foreach ($t in $script:temps.ToArray()) { Remove-OneTemp $t.ip $t.ifIndex; Log ('temp ip ' + $t.ip + ' removed') }
-  if ($Mock) { return }
-  $pcn = $script:pcNet
-  if ($script:pcChanges.coexistence_before -ne $null -and $script:pcChanges.coexistence_before -notmatch 'enabled' -and $pcn) { netsh interface ipv4 set interface ([string]$pcn.ifIndex) dhcpstaticipcoexistence=disabled | Out-Null; Log 'coexistence restored' }
-  if ($pcn -and $pcn.dhcp) { $ipi = Get-NetIPInterface -InterfaceIndex $pcn.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue; if ($ipi -and $ipi.Dhcp -ne 'Enabled') { Set-NetIPInterface -InterfaceIndex $pcn.ifIndex -Dhcp Enabled; Log 'DHCP re-enabled on PC NIC' } }
+  if ($Mock) { foreach ($t in $script:temps.ToArray()) { [void](Remove-OneTemp $t.ip $t.ifIndex); Log ('temp ip ' + $t.ip + ' removed') }; return $true }
+  $problems = @()
+  foreach ($t in $script:temps.ToArray()) { if (Remove-OneTemp $t.ip $t.ifIndex) { Log ('temp ip ' + $t.ip + ' removed') } else { $problems += ('the temporary address ' + $t.ip + ' is still on the adapter') } }
+  $ix = $script:pcChanges.ifIndex; if ($null -eq $ix -and $script:pcNet) { $ix = $script:pcNet.ifIndex }
+  $pcc = [pscustomobject]@{ coexistence_before = $script:pcChanges.coexistence_before; dhcp = $(if ($null -ne $script:pcChanges.dhcp) { $script:pcChanges.dhcp } elseif ($script:pcNet) { $script:pcNet.dhcp } else { $false }) }
+  if (-not $problems.Count) { Restore-PcSettings $pcc $ix ([ref]$problems) }
   if ($script:pcChanges.firewall_rule) { Remove-NetFirewallRule -DisplayName 'WireIt FixNVR discovery (temp)' -ErrorAction SilentlyContinue; Log 'temp firewall rule removed' }
+  if ($problems.Count) { [void](Write-TempState); Say-CleanupFailed $problems; return $false }
   if ($script:pcChanges.cleanup_task) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue }
   $script:pcChanges.coexistence_before = $null; $script:pcChanges.firewall_rule = $false; $script:pcChanges.cleanup_task = $false
   Remove-Item $tempFile -ErrorAction SilentlyContinue
   $left = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.SkipAsSource -and $_.PolicyStore -eq 'ActiveStore' -and ($cfg.temp_ip_hosts -contains (Last $_.IPAddress)) })
   if ($left.Count) { Log ('WARNING possible leftover temp addresses: ' + (($left | ForEach-Object { $_.IPAddress }) -join ', ')) }
+  return $true
 }
 function Invoke-LeftoverCleanup {
-  if ($Mock -or -not (Test-Path $tempFile)) { return }
-  try { $o = Get-Content $tempFile -Raw | ConvertFrom-Json } catch { $o = $null }
-  if ($o) {
-    foreach ($t in @($o.temps)) { if ($t) { Remove-NetIPAddress -IPAddress $t.ip -Confirm:$false -ErrorAction SilentlyContinue; Write-Host ('Removed a temporary address a previous run left behind: ' + $t.ip) } }
-    if ($o.pc.coexistence_before -and $o.pc.coexistence_before -notmatch 'enabled' -and @($o.temps).Count) { netsh interface ipv4 set interface ([string]$o.temps[0].ifIndex) dhcpstaticipcoexistence=disabled | Out-Null }
-    if ($o.pc.firewall_rule) { Remove-NetFirewallRule -DisplayName 'WireIt FixNVR discovery (temp)' -ErrorAction SilentlyContinue }
+  if ($Mock -or -not (Test-Path $tempFile)) { return $true }
+  $o = $null; try { $o = Get-Content $tempFile -Raw | ConvertFrom-Json } catch { $o = $null }
+  if (-not $o) {
+    # unreadable: kept (renamed) as evidence, the safety task stays, and this run says FAILED
+    $keep = $tempFile -replace '\.json$', ('.unreadable-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json'); try { Move-Item -LiteralPath $tempFile -Destination $keep -Force } catch {}
+    Say-CleanupFailed @('the record of an earlier run''s temporary address could not be read (kept as ' + (Split-Path -Leaf $keep) + '); restart this PC to clear it')
+    return $false
+  }
+  $problems = @(); $still = New-Object System.Collections.Generic.List[object]
+  $sx = $o.pc.ifIndex
+  foreach ($t in @($o.temps)) {
+    if (-not $t) { continue }
+    $ix = $(if ($null -ne $t.ifIndex) { $t.ifIndex } else { $sx })
+    Remove-NetIPAddress -IPAddress $t.ip -InterfaceIndex $ix -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+    if (Test-TempGone $t.ip $ix) { Write-Host ('Removed a temporary address a previous run left behind: ' + $t.ip); Log ('leftover temp ip ' + $t.ip + ' removed') } else { $still.Add($t); $problems += ('the temporary address ' + $t.ip + ' a previous run left is still on the adapter') }
+    if ($null -eq $sx) { $sx = $ix }
+  }
+  if (-not $problems.Count) { Restore-PcSettings $o.pc $sx ([ref]$problems) }
+  if ($o.pc.firewall_rule) { Remove-NetFirewallRule -DisplayName 'WireIt FixNVR discovery (temp)' -ErrorAction SilentlyContinue }
+  if ($problems.Count) {
+    try { Save-Json ([ordered]@{ version = 2; temps = $still.ToArray(); pc = $o.pc; written = (Get-Date -Format 's') }) $tempFile } catch { Log ('temp state not re-saved: ' + $_.Exception.Message) }
+    Say-CleanupFailed $problems; return $false
   }
   Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
   Remove-Item $tempFile -ErrorAction SilentlyContinue
+  return $true
 }
 
 # ---------------- discovery ----------------
@@ -682,8 +737,10 @@ function Load-Snapshot {
 Write-Host ''
 Write-Host ('=== WireIt Fix NVR ' + $Version + ' | mode ' + $Mode + ' | ' + (Get-Date -Format 'yyyy-MM-dd HH:mm') + ' on ' + $env:COMPUTERNAME + ' ===') -ForegroundColor Cyan
 Log ('start mode=' + $Mode + ' site=' + $Site + ' ps=' + $PSVersionTable.PSVersion)
-Invoke-LeftoverCleanup
-if ($Mode -eq 'Cleanup') { Write-Host 'Cleanup done.'; exit 0 }
+$script:leftoverOk = Invoke-LeftoverCleanup
+if ($Mode -eq 'Cleanup') { if ($script:leftoverOk) { Write-Host 'Cleanup done.'; exit 0 } else { exit 6 } }
+# 2.2.10 (Codex R04): an earlier run's change that could not be put back stops this run before anything else changes
+if (-not $script:leftoverOk) { exit 6 }
 if (-not $Mock) {
   $adm = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
   if (-not $adm) { Say 'Please run as administrator (right-click "Fix NVR.cmd" > Run as administrator). The tool needs it to reach devices on the old IP scheme.' 'Red'; exit 2 }
@@ -1062,8 +1119,9 @@ function Invoke-Main {
 try { Invoke-Main }
 catch { Say ('ERROR: ' + $_.Exception.Message + ' (line ' + $_.InvocationInfo.ScriptLineNumber + ')') 'Red'; Log $_.ScriptStackTrace; $script:exitCode = 5 }
 finally {
-  Remove-AllTemp
-  if ($script:temps.Count) { Write-Host 'WARNING: a temporary address could not be removed. Run "Fix NVR.cmd" again or reboot the PC (it is memory-only).' -ForegroundColor Red }
+  # 2.2.10 (Codex R04): a clean-up that is not verified is FAILED (exit 6), whatever the run's own result
+  $cleanOk = $false; try { $cleanOk = [bool](Remove-AllTemp) } catch { Say-CleanupFailed @('the clean-up stopped: ' + $_.Exception.Message) }
+  if (-not $cleanOk) { $script:exitCode = 6 }
   $after = @($script:devs | ForEach-Object { [ordered]@{ ip = $_.ip; mac = $_.mac; kind = $_.kind; model = $_.model; gw = $_.gw; dns1 = $_.dns1; dns2 = $_.dns2; platform_enabled = $_.platform_enabled; platform_online = $_.platform_online; channel = $_.channel_id } })
   try { Save-Json $after (Join-Path $runDir 'after.json') } catch { Log ('after.json not saved: ' + $_.Exception.Message) }
   $sum | Set-Content (Join-Path $runDir 'summary.txt')
