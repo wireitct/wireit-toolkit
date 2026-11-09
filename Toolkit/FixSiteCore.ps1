@@ -280,6 +280,27 @@ function Get-FsSettingsDiff($current, $wanted) {
   $cs = [string](Get-FsProp $current 'smartCodec' ''); if ($wanted.smartCodec -eq 'off' -and $cs -eq 'on') { $out += [pscustomobject]@{ field = 'smartCodec'; from = 'on'; to = 'off' } }
   return $out
 }
+# 2.2.12 (Codex 2.2.11 #4): what the camera REALLY has after a settings write. $after = Get-FsStream read back; returns the plain
+# words for every requested field the camera does not have (empty = all confirmed). No read-back = every field unconfirmed.
+function Get-FsStreamMismatch($after, $diff) {
+  $out = @()
+  foreach ($d in @($diff)) {
+    if (-not $d) { continue }
+    $f = [string]$d.field
+    if (-not $after) { $out += ($f + ' not confirmed (the camera''s settings could not be read back)'); continue }
+    switch ($f) {
+      'codec' { $h = [string](Get-FsProp $after 'codec' ''); if (($h -replace '[^0-9A-Za-z]', '') -ne ([string]$d.to -replace '[^0-9A-Za-z]', '')) { $out += ('asked ' + $d.to + ', camera has ' + $(if ($h) { $h } else { '?' })) } }
+      'fps' { $h = [int](Get-FsProp $after 'fps' 0); if ($h -ne [int]$d.to) { $out += ('asked ' + $d.to + ' fps, camera still has ' + $h) } }
+      'bitrate' { $h = [int](Get-FsProp $after 'bitrate' 0); if ($h -ne [int]$d.to) { $out += ('asked ' + $d.to + ' kbps, camera has ' + $h) } }
+      'gop' { $h = [int](Get-FsProp $after 'gop' 0); if ($h -ne [int]$d.to) { $out += ('asked I-frame ' + $d.to + ', camera has ' + $h) } }
+      'resolution' { $h = ('' + [int](Get-FsProp $after 'width' 0) + 'x' + [int](Get-FsProp $after 'height' 0)); if ($h -ne [string]$d.to) { $out += ('asked ' + $d.to + ', camera has ' + $h) } }
+      'smartCodec' { $h = [string](Get-FsProp $after 'smartCodec' ''); if ($h -ne 'off') { $out += ('asked Smart Codec off, camera has ' + $(if ($h) { $h } else { '?' })) } }
+      'smartCodecOn' { $h = [string](Get-FsProp $after 'smartCodec' ''); if ($h -ne 'on') { $out += ('asked Smart Codec on, camera has ' + $(if ($h) { $h } else { '?' })) } }
+      default { $out += ($f + ' not confirmed') }
+    }
+  }
+  return $out
+}
 function Format-FsSettingsDiff($diff) {
   $p = @(); foreach ($d in @($diff)) {
     switch ($d.field) {
@@ -372,7 +393,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
     $c = [ordered]@{ key = $(if ($d) { $d.key } else { 'list:' + $mac + ':' + (Get-FsProp $e 'ip' '') }); name = (Get-FsCamName $e $d)
       brand = $(if ($d) { $d.brand } else { Get-FsBrand ([string](Get-FsProp $e 'brand' '')) ([string](Get-FsProp $e 'model' '')) }); model = $(if ($d) { $d.model } else { [string](Get-FsProp $e 'model' '') })
       mac = $mac; serial = $(if ($d) { $d.serial } else { [string](Get-FsProp $e 'serial' '') }); firmware = $(if ($d) { $d.firmware } else { '' })
-      ip = $(if ($d) { $d.ip } else { '' }); listIp = [string](Get-FsProp $e 'ip' ''); target = ''; channel = $ch; nvr = $(if ($d -and $d.nvr) { $d.nvr } else { [string](Get-FsProp $e 'nvr' '') })
+      ip = $(if ($d) { $d.ip } else { '' }); listIp = [string](Get-FsProp $e 'ip' ''); target = ''; channel = $ch; nvr = $(if ($d -and $d.nvr) { $d.nvr } else { [string](Get-FsProp $e 'nvr' '') }); listNvr = [string](Get-FsProp $e 'nvr' '')   # 2.2.12: the NVR the site list names (it may be offline today)
       switch = $sw; port = $port; state = 'ok'; why = @(); steps = @(); login = $(if ($d) { $d.login } else { '' }); problem = $false; broken = $true; pwOnly = $false; settings = $null; onList = [bool]$e; online = $(if ($d) { $d.online } else { $null }); links = $(if ($d) { @($d.links) } else { @() }) }
     $ownIp = ''; $chLooksAt = $null
     if ($d -and $guess.ContainsKey($d.key)) { $g = $guess[$d.key]; $c.channel = $g.ch.channel; $ch = $g.ch.channel; $c.nvr = $g.ch.nvr; $ownIp = $g.ch.ip; if ($g.ch.name -and $c.name -like 'Camera *') { $c.name = $g.ch.name }; $chLooksAt = $g.ch.ip; if (-not $g.sure) { $c.why += ('matched to NVR ch ' + $g.ch.channel + ' by order (no site list): check the picture name after') } }
@@ -621,18 +642,46 @@ function Get-FsNvrNetProblems($net, $pc) {
   if (-not [string](Get-FsProp $net 'dns1' '') -or [string](Get-FsProp $net 'dns1' '') -eq '0.0.0.0') { $p += 'no DNS server (no app / cloud access)' }
   return $p
 }
+# 2.2.12 (Codex 2.2.11 #1): every recorder known to record this camera: its main NVR (site list or scan) plus every NVR channel the
+# scan found pointing at it. More than one = the camera's address is not changed by the tool (only one NVR would follow it).
+function Get-FsCamRecorders($c) {
+  $out = @(); $mn = [string](Get-FsProp $c 'nvr' ''); if ($mn) { $out += $mn }
+  $ln = [string](Get-FsProp $c 'listNvr' ''); if ($ln -and $out -notcontains $ln) { $out += $ln }
+  foreach ($l in @(Get-FsProp $c 'links' @())) { if (-not $l) { continue }; $v = [string](Get-FsProp $l 'nvr' ''); if ($v -and $out -notcontains $v) { $out += $v } }
+  return $out
+}
+function Get-FsCamMatchKey($c) {
+  # 2.2.12 (Codex 2.2.11 #12, F19): the same camera without a MAC: same serial on the same NVR channel; no serial either: the same NVR
+  # channel at the same address. Nothing to go on = '' (never merged).
+  $sr = ([string](Get-FsProp $c 'serial' '')).Trim().ToUpperInvariant(); $nv = ([string](Get-FsProp $c 'nvr' '')).Trim(); $ch = [int](Get-FsProp $c 'channel' 0); $ip = ([string](Get-FsProp $c 'ip' '')).Trim()
+  if ($sr) { return ('s|' + $sr + '|' + $nv + '|' + $ch) }
+  if ($nv -and $ch -gt 0 -and $ip) { return ('a|' + $nv + '|' + $ch + '|' + $ip) }
+  return ''
+}
 function Merge-FsSiteListCams($oldCams, $newCams) {
   # 2.2.3 (Codex #38): adding cameras to a saved list also brings the ones already on it up to date (same MAC = same camera:
   # its address, channel, NVR as found now); cameras not seen this time keep their saved entry
-  $keep = @(); $byMac = @{}; foreach ($c in @($newCams)) { $m = ConvertTo-FsMac ([string](Get-FsProp $c 'mac' '')); if ($m) { $byMac[$m] = $c } }
-  $usedM = @{}
+  # 2.2.12 (F19): a camera with no MAC is matched by serial + NVR + channel (or NVR + channel + address with no serial), so running
+  # it twice never adds it again. Two different MACs are never the same camera.
+  $keep = @(); $new = @(@($newCams) | Where-Object { $_ }); $used = @{}
   foreach ($o in @($oldCams)) {
-    $m = ConvertTo-FsMac ([string](Get-FsProp $o 'mac' ''))
-    if ($m -and $byMac.ContainsKey($m)) { $n = $byMac[$m]; $e = [ordered]@{}; foreach ($p in $o.PSObject.Properties) { $e[$p.Name] = $p.Value }; if ($o -is [Collections.IDictionary]) { $e = [ordered]@{}; foreach ($k in $o.Keys) { $e[$k] = $o[$k] } }
-      foreach ($k in @('ip', 'channel', 'nvr')) { $v = Get-FsProp $n $k $null; if ($v) { $e[$k] = $v } }; $keep += $e; $usedM[$m] = 1 }
-    else { $keep += $o }
+    if (-not $o) { continue }
+    $om = ConvertTo-FsMac ([string](Get-FsProp $o 'mac' '')); $ok = Get-FsCamMatchKey $o; $hit = -1
+    for ($i = 0; $i -lt $new.Count; $i++) {
+      if ($used.ContainsKey($i)) { continue }
+      $nm = ConvertTo-FsMac ([string](Get-FsProp $new[$i] 'mac' ''))
+      if ($om -and $nm) { if ($om -eq $nm) { $hit = $i; break } else { continue } }
+      if ($ok -and $ok -eq (Get-FsCamMatchKey $new[$i])) { $hit = $i; break }
+    }
+    if ($hit -ge 0) {
+      $n = $new[$hit]; $used[$hit] = 1
+      $e = [ordered]@{}; if ($o -is [Collections.IDictionary]) { foreach ($k in $o.Keys) { $e[$k] = $o[$k] } } else { foreach ($p in $o.PSObject.Properties) { $e[$p.Name] = $p.Value } }
+      foreach ($k in @('ip', 'channel', 'nvr')) { $v = Get-FsProp $n $k $null; if ($v) { $e[$k] = $v } }
+      if (-not $om) { $nm = ConvertTo-FsMac ([string](Get-FsProp $n 'mac' '')); if ($nm) { $e['mac'] = [string](Get-FsProp $n 'mac' '') } }
+      $keep += $e
+    } else { $keep += $o }
   }
-  foreach ($c in @($newCams)) { $m = ConvertTo-FsMac ([string](Get-FsProp $c 'mac' '')); if (-not $m -or -not $usedM.ContainsKey($m)) { $keep += $c } }
+  for ($i = 0; $i -lt $new.Count; $i++) { if (-not $used.ContainsKey($i)) { $keep += $new[$i] } }
   return $keep
 }
 
@@ -775,14 +824,27 @@ function Resolve-FsUndoNvrIp($RbNvrs, [string]$Addr, [scriptblock]$IsDone) {
   }
   return $Addr
 }
-function Get-FsExitWords([int]$code) {
+# 2.2.12 (Codex 2.2.11 #13, F20): what a site name may hold. Letters, digits, spaces and . , # & ( ) / _ - , 1 to 80 characters.
+# No quotes, no $ ` ; | < > \ : the name goes on the command line of the blue (elevated) window, so nothing in it can end the
+# quoted argument or start another one.
+$script:FsSiteRe = '^[A-Za-z0-9][A-Za-z0-9 .,#&()/_-]{0,79}$'   # starts with a letter or digit (never a - that could look like a switch)
+function Test-FsSiteName([string]$s) { return ([string]$s -cmatch $script:FsSiteRe -and ([string]$s).Length -le 80) }
+function ConvertTo-FsCmdArg([string]$s) {
+  # one double-quoted command-line argument; refuses (returns $null) anything the site-name rule does not allow
+  if (-not (Test-FsSiteName $s)) { return $null }
+  return ('"' + $s + '"')
+}
+function Get-FsExitWords([int]$code, [string]$mode = '') {
+  if ($code -notin @(0, 2, 4, 6, 7) -and $mode -in @('Plan', 'DryRun')) { return ('It stopped unexpectedly (code ' + $code + '). Just look changes nothing on the cameras or NVRs. Run it again, or call the office.') }
   switch ($code) {
     0 { return 'Done. Everything is fixed.' }
     4 { return 'Done, but some things still need you: see the lines marked with a red X.' }
     2 { return 'Stopped. Nothing was changed.' }
     7 { return 'Stopped: the undo file could not be saved, so nothing more was changed (see the red line). What was already done is in the undo file.' }   # 2.2.6
     6 { return 'FAILED - Run again. THIS PC''s network could not be put back the way it was (see the red line). Press Fix this site again (it puts the network back first), or restart the PC.' }   # 2.2.2 (H4); 2.2.10 (Moshe Nov 9: an unverified restore says FAILED - Run again, never success)
-    default { return ('It stopped unexpectedly (code ' + $code + '). Nothing is half-done: the run folder has the log and the undo file.') }
+    # 2.2.12 (Codex 2.2.11 #14): an unexpected stop can come after cameras or NVRs were already changed - never say nothing is half-done
+    9 { return ('STOPPED HALF-WAY (code 9). Some cameras or NVRs may already have been changed. This PC''s network was put back. Press "Undo the last fix" to put this site back, or press Fix this site again, or call the office. The run folder has the log and the undo file.') }
+    default { return ('STOPPED HALF-WAY (code ' + $code + '). Some cameras or NVRs may already have been changed. Press "Undo the last fix" to put this site back, or press Fix this site again (it puts this PC''s network back first), or call the office. The run folder has the log and the undo file.') }
   }
 }
 function Get-FsLastRun([string]$runsDir, [switch]$Undoable) {
