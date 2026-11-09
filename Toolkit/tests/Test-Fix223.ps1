@@ -39,7 +39,7 @@ $n = Get-FsNet '192.168.1.20' 'Hikvision' $null
 Eq $n.iface '2' 'reproduction: dual-interface NVR -> the LAN interface (2), not the PoE camera interface (1)'
 Eq $n.ip '192.168.1.20' '...and its address'
 $script:Fake['GET 192.168.1.30/ISAPI/System/Network/interfaces'] = '<NetworkInterfaceList><NetworkInterface><id>1</id><IPAddress><ipAddress>192.168.1.30</ipAddress></IPAddress></NetworkInterface></NetworkInterfaceList>'
-$script:Fake['GET 192.168.1.30/ISAPI/System/Network/interfaces/1/ipAddress'] = '<IPAddress><ipAddress>192.168.1.30</ipAddress></IPAddress>'
+$script:Fake['GET 192.168.1.30/ISAPI/System/Network/interfaces/1/ipAddress'] = '<IPAddress><addressingType>static</addressingType><ipAddress>192.168.1.30</ipAddress><subnetMask>255.255.255.0</subnetMask></IPAddress>'   # 2.2.12 (Codex 2.2.11 #2): a complete answer (a half answer is now rejected)
 Eq (Get-FsNet '192.168.1.30' 'Hikvision' $null).iface '1' 'single interface still works'
 $script:Fake['GET 192.168.1.31/ISAPI/System/Network/interfaces'] = '<NetworkInterfaceList><NetworkInterface><id>1</id><IPAddress><ipAddress>10.1.1.1</ipAddress></IPAddress></NetworkInterface><NetworkInterface><id>2</id><IPAddress><ipAddress>10.2.2.2</ipAddress></IPAddress></NetworkInterface></NetworkInterfaceList>'
 Check ($null -eq (Get-FsNet '192.168.1.31' 'Hikvision' $null)) 'several interfaces and none carries the contacted address -> no answer (nothing is changed), not a guess'
