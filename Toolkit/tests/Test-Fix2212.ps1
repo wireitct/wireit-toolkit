@@ -10,7 +10,7 @@ $tk = Split-Path -Parent $PSScriptRoot; $repo = Split-Path -Parent $tk
 $exe = $(if ($PSVersionTable.PSEdition -eq 'Core') { (Get-Process -Id $PID).Path } else { Join-Path $PSHOME 'powershell.exe' })
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('fix2212-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-$script:pass = 0; $script:fail = 0
+$script:pass = 0; $script:fail = 0; $script:deferred = 0
 function Check([bool]$ok, [string]$name, [string]$more = '') {
   if ($ok) { $script:pass++; Write-Host ('PASS ' + $name) } else { $script:fail++; Write-Host ('FAIL ' + $name); if ($more) { Write-Host ('     ' + ($more -replace "`n", "`n     ")) } }
 }
@@ -196,10 +196,10 @@ Check ($c1 -ne 0 -and $o1 -match 'DEFERRED' -and $o1 -notmatch 'ALL .*PASSED') (
 if ($nodeCmd) {
   Check ($c2 -eq 0 -and $o2 -match 'hikrelay total: \d+ ok' -and $o2 -match 'ALL .*PASSED' -and $o2 -match 'Checks: [1-9]\d* passed') ('node present -> the relay suite runs and its checks are counted (exit ' + $c2 + ')') $o2
   Check ($c3 -ne 0 -and $o3 -match 'FAILED') ('a broken relay test -> the pack FAILS (exit ' + $c3 + ')') $o3
-} else { Check $false 'node is needed on the test PC to run the relay suite (none found)' }
+} else { $script:deferred += 2; Write-Host 'DEFERRED P2-15 the relay suite run + the broken-relay case need node on the test PC (none found) - NOT a pass' }
 Check ($c4 -ne 0 -and $o4 -match 'relay suite missing') ('the relay test file missing -> FAIL, not silently skipped (exit ' + $c4 + ')') $o4
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
-Write-Host ('Test-Fix2212: ' + $script:pass + ' passed, ' + $script:fail + ' failed')
+Write-Host ('Test-Fix2212: ' + $script:pass + ' passed, ' + $script:fail + ' failed' + $(if ($script:deferred) { ', ' + $script:deferred + ' deferred' } else { '' }))
 exit $script:fail

@@ -118,7 +118,7 @@ def main():
                 results['%s%d' % (mode, run)] = {'exit': code, 'cams': camnow, 'chans': chans, 'online19': online19, 'nets': nets, 'fps': stream.get('fps'), 'pw': pwnow,
                                                  'problems': int(m.group(1)) if m else -1, 'failed500': ctl['failed'],
                                                  'said_multi': bool(re.search(r'NVRs record this camera', out)), 'said_netread': bool(re.search(r'network settings could not be read', out)),
-                                                 'said_unconfirmed': bool(re.search(r'NOT confirmed', out)), 'said_20fps_green': bool(re.search(r'(?<!asked )20 fps(, I-frame 20)? \u2705', out)), 'out': out[-2500:]}
+                                                 'said_unconfirmed': bool(re.search(r'NOT confirmed', out)), 'said_20fps_green': bool(re.search(r'(?<!asked )20 fps(, I-frame 20)? (\u2705|\[OK\])', out)), 'out': out[-2500:]}
             server.shutdown()
     print(json.dumps(results))
 
