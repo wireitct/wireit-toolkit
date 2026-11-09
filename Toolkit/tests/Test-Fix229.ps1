@@ -55,7 +55,8 @@ try {
   Check ($a -match 'Control Panel' -and $a -match 'Network Connections' -and $a -match '(?i)Ethernet' -and $a -match 'IPv4' -and $a -match 'Properties' -and $a -match 'Advanced' -and $a -match '\bAdd\b') 'HS1 ...the path: Control Panel > Network Connections > Ethernet > IPv4 > Properties > Advanced > Add' $a
   Check ($a -match '(?i)keep.{0,40}Obtain an IP address automatically|Obtain an IP address automatically.{0,40}(stays|keep|leave)') 'HS1 ...while keeping "Obtain an IP address automatically"' $a
   Check ($a -match '(?i)after the reset.{0,80}remove|remove.{0,80}after the reset') 'HS1 ...and to remove it after the reset' $a
-  $staticBad = @($script:said | Where-Object { $_ -match '(?i)static|Use the following IP address' -and $_ -notmatch '(?i)\b(not|never|don''t)\b' })
+  # 2.2.10 (R02): the netsh coexistence setting's own name (dhcpstaticipcoexistence / "DHCP/Static IP Coexistence") is not a static-IP step
+  $staticBad = @($script:said | Where-Object { ($_ -replace '(?i)dhcpstaticipcoexistence|DHCP/Static IP Coexistence', '') -match '(?i)static|Use the following IP address' -and $_ -notmatch '(?i)\b(not|never|don''t)\b' })
   Check (-not $staticBad.Count) 'HS1 it never tells the tech to switch to a static IP ("Use the following IP address") - that took the laptop offline' ($staticBad -join ' | ')
   Check ($script:pinged -contains '10.243.1.50') 'HS1 the suggested address is checked with ping before it is offered' (($script:pinged) -join ',')
   Check (@(Said '(?i)wired|Ethernet').Count -and -not @(Said '(?i)on .{0,10}Wi-?Fi.{0,30}(add|second)').Count) 'HS1 the second IP goes on the wired adapter (named), not on Wi-Fi' (All)

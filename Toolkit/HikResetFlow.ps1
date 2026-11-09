@@ -152,16 +152,24 @@ function Get-HikSubnetSteps($Dev, $Nets, $Sg) {
     ('  The camera: ' + [string]$Dev.ip + ' / ' + $camMask + '. This PC: ' + $(if (@($Nets).Count) { Format-HikNets $Nets } else { 'no address' }) + '.')
   )
   if ($Sg) {
+    # 2.2.10 (Codex R02): the command route is the main route (Control Panel's Add is greyed out while "Obtain an IP address
+    # automatically" is on). Write the adapter down first, turn on DHCP/static coexistence BEFORE the add (without it Windows can
+    # switch DHCP off), check DHCP afterwards, and the way back is given. NEEDS WINDOWS CHECK on a real DHCP adapter.
+    $q = '"' + $eth + '"'
     $L += @(
-      ('  Fix: give this PC a SECOND address on the camera''s network, on the wired adapter "' + $eth + '" (the one cabled to the camera''s switch):'),
-      '    1. Control Panel > Network and Internet > Network Connections (or Win+R: ncpa.cpl).',
-      ('    2. Right-click "' + $eth + '" > Properties > Internet Protocol Version 4 (TCP/IPv4) > Properties.'),
-      '    3. Keep "Obtain an IP address automatically" selected. Press Advanced... > IP Settings > IP addresses: Add...',
-      ('    4. IP address ' + $Sg.ip + ', Subnet mask ' + $Sg.mask + '. No gateway: leave the gateway empty. Add > OK > OK > Close.'),
-      ('       If Add is greyed out: open Command Prompt as administrator and type  netsh interface ipv4 add address "' + $eth + '" ' + $Sg.ip + ' ' + $Sg.mask + '  (DHCP stays on).'),
-      ('       ' + $Sg.ip + ' did not answer ping from here. If Windows says the address is already in use, remove it and pick another one.'),
+      ('  Fix: give this PC a SECOND address on the camera''s network, on the wired adapter "' + $eth + '" (the one cabled to the camera''s switch).'),
+      '  Open Command Prompt as administrator (Start > type cmd > right-click > Run as administrator) and type, one line at a time:',
+      ('    1. Write down how the adapter is now:  netsh interface ipv4 show config name=' + $q + '   (note "DHCP enabled: Yes")  and  netsh interface ipv4 show interface ' + $q + '   (note "DHCP/Static IP Coexistence")'),
+      ('    2. Let DHCP and the extra address live side by side:  netsh interface ipv4 set interface ' + $q + ' dhcpstaticipcoexistence=enabled'),
+      ('    3. Add the address (no gateway):  netsh interface ipv4 add address ' + $q + ' ' + $Sg.ip + ' ' + $Sg.mask),
+      ('    4. Check:  netsh interface ipv4 show config name=' + $q + '   must still say "DHCP enabled: Yes" and list ' + $Sg.ip + '.'),
+      ('       If it says "DHCP enabled: No": put it back now with  netsh interface ipv4 set address name=' + $q + ' source=dhcp   (that also takes ' + $Sg.ip + ' off) and stop.'),
+      ('       ' + $Sg.ip + ' did not answer ping from here. If Windows says the address is already in use, remove it (step A below) and pick another one.'),
       '    5. Run the reset again (Fix this site again).',
-      ('  After the reset: remove ' + $Sg.ip + ' again (same window: select it > Remove, or  netsh interface ipv4 delete address "' + $eth + '" ' + $Sg.ip + ' ), keeping "Obtain an IP address automatically".')
+      ('  After the reset, remove it again in the same window:  A. netsh interface ipv4 delete address ' + $q + ' ' + $Sg.ip),
+      ('    B. if step 1 said Coexistence "Disabled":  netsh interface ipv4 set interface ' + $q + ' dhcpstaticipcoexistence=disabled'),
+      ('    C. netsh interface ipv4 show config name=' + $q + '   must say "DHCP enabled: Yes" again; if not:  netsh interface ipv4 set address name=' + $q + ' source=dhcp'),
+      ('  In Control Panel > Network Connections > ' + $eth + ' > IPv4 > Properties, keep "Obtain an IP address automatically" selected (Advanced > Add is greyed out there while it is; use the commands above).')
     )
   } else {
     $L += @(
@@ -199,7 +207,13 @@ function Test-HikOnLocalSubnet($Dev, $Others = @()) {
 function Show-HikExtraIpReminder($Dev) {
   if ($script:HkSubnetCheckOff -or ($null -eq $script:HkLocalNets -and $script:SadpTest)) { return }
   $x = @(@(Get-HikLocalNets) | Where-Object { [int]$_.count -gt 1 -and (Test-HikSameSubnet ([string]$Dev.ip) ([string]$_.ip) ([int]$_.prefix)) })
-  foreach ($n in $x) { Hk-Say ('  Now remove the extra address ' + [string]$n.ip + ' from "' + [string]$n.name + '" (IPv4 > Properties > Advanced > select it > Remove, or  netsh interface ipv4 delete address "' + [string]$n.name + '" ' + [string]$n.ip + ' ), keeping "Obtain an IP address automatically".') 'Cyan' }
+  foreach ($n in $x) {
+    $q = '"' + [string]$n.name + '"'
+    Hk-Say ('  Now remove the extra address ' + [string]$n.ip + ' from ' + $q + ', keeping "Obtain an IP address automatically" (Command Prompt as administrator):') 'Cyan'
+    Hk-Say ('    A. netsh interface ipv4 delete address ' + $q + ' ' + [string]$n.ip) 'Cyan'
+    Hk-Say ('    B. if Coexistence was "Disabled" before you started:  netsh interface ipv4 set interface ' + $q + ' dhcpstaticipcoexistence=disabled') 'Cyan'
+    Hk-Say ('    C. netsh interface ipv4 show config name=' + $q + '   must say "DHCP enabled: Yes"; if not:  netsh interface ipv4 set address name=' + $q + ' source=dhcp') 'Cyan'
+  }
 }
 # 2.2.9: one SADP session from export to import
 function Show-HikSessionGuard { Hk-Say ('  ' + $script:HkGuardText) 'Cyan' }
