@@ -61,7 +61,7 @@ if ($Mode -in @('Run', 'Watch')) {
   $end = (Get-Date).AddMinutes($WaitMinutes)
   do {
     $r = Receive-HikReplies $state $statePath $cfg $here $repDir $inboxDir
-    foreach ($u in $r.unmatched) { Hk-Say ('  A file from Hikvision does not match any device here: ' + $u.name + ' (' + $u.why + '). It is not used.') 'Yellow' }
+    Show-HikReplyNotes $r   # 2.2.8: skipped / stale / unmatched files, each with its reason, said once
     $left = @($state.devices | Where-Object { $_.status -eq 'submitted' })
     if (-not $left.Count -or (Get-Date) -ge $end) { break }
     $wl = Format-HikWaitLine $cfg $left.Count ([math]::Max(0, [int][math]::Ceiling(($end - (Get-Date)).TotalMinutes)))

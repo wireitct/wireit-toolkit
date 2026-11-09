@@ -59,7 +59,8 @@ class H(BaseHTTPRequestHandler):
             if k and k in rep:
                 r = rep.pop(k)
                 json.dump(rep, open(p, 'w'))
-                out = {'ok': True, 'found': True, 'subject': 'Hikvision reset', 'receivedAt': '2026-11-08T15:00:00Z'}
+                # 2.2.8: like the real relay (HikRelay.gs), it only answers with a mail received after the request's exportedAt: now
+                out = {'ok': True, 'found': True, 'subject': 'Hikvision reset', 'receivedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
                 out.update(r)
                 return self.send(200, json.dumps(out))
         return self.send(200, json.dumps({'ok': True, 'found': False}))

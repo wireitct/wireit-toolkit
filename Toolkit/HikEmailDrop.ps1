@@ -34,6 +34,8 @@ function Save-HikEmailDrop([string]$InboxDir, [string]$Serial, [string]$File = '
     $ext = $(if ($fi.Extension -match '^\.[A-Za-z0-9]{1,5}$') { $fi.Extension.ToLower() } else { '.xml' })
     $dst = Join-Path $InboxDir ('drop-' + $fileSerial + '-' + $stamp + $ext)
     [IO.File]::WriteAllBytes($dst + '.tmp', [IO.File]::ReadAllBytes($fi.FullName)); Move-Item -LiteralPath ($dst + '.tmp') -Destination $dst -Force
+    # 2.2.8: the drop keeps the time the file was downloaded, so a reply older than the latest request is seen as stale (not as new)
+    try { if ($fi.LastWriteTime -lt (Get-Date)) { (Get-Item -LiteralPath $dst).LastWriteTime = $fi.LastWriteTime } } catch {}
     return [pscustomobject]@{ ok = $true; why = ''; path = $dst }
   }
   $c = ConvertTo-HikCode $Code

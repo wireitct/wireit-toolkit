@@ -141,7 +141,7 @@ try {
   Check (@($rr.got).Count -eq 0 -and (Cnt $rr 'stale') -eq 1) 'HF2 an email saved now whose Date is before the latest export is stale too (its own date counts, not the file''s)'
   Remove-Item (Join-Path $rep2 'old.eml') -Force
   # the reply to the latest export
-  $new = Join-Path $rep2 'fresh.eml'; [IO.File]::WriteAllText($new, (New-Eml 'Reset Password' (RfcDate (Get-Date).AddSeconds(-5)) ($SN + '.xml') $unlockXml))
+  $new = Join-Path $rep2 'fresh.eml'; [IO.File]::WriteAllText($new, (New-Eml 'Reset Password' (RfcDate $latest.AddSeconds(2)) ($SN + '.xml') $unlockXml))
   $rr = Receive-HikReplies $st $sp $cfgF $tmp $rep2
   $d = Get-HikStateDevice $st $SN
   Check (@($rr.got).Count -eq 1 -and $d.status -eq 'replied') 'HF2 the reply that came after the latest export is used'

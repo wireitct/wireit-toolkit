@@ -21,8 +21,8 @@ $script:HkValidHours = 48
 
 # ---------------- state ----------------
 function Read-HikState([string]$Path) {
-  if (Test-Path -LiteralPath $Path) { try { $o = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json; if ($o -and $o.PSObject.Properties['devices']) { $o.devices = @($o.devices); return $o } } catch {} }
-  return [pscustomobject]@{ version = 1; site = ''; created = (Get-Date -Format 's'); devices = @() }
+  if (Test-Path -LiteralPath $Path) { try { $o = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json; if ($o -and $o.PSObject.Properties['devices']) { $o.devices = @($o.devices | Where-Object { $null -ne $_ }); if ($o.PSObject.Properties['exports']) { $o.exports = @($o.exports | Where-Object { $null -ne $_ }) } else { $o | Add-Member -NotePropertyName exports -NotePropertyValue @() -Force }; return $o } } catch {} }
+  return [pscustomobject]@{ version = 1; site = ''; created = (Get-Date -Format 's'); devices = @(); exports = @() }
 }
 function Save-HikState([string]$Path, $State) {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
@@ -30,13 +30,37 @@ function Save-HikState([string]$Path, $State) {
 }
 function Get-HikStateDevice($State, [string]$Serial) { foreach ($d in @($State.devices)) { if ($d.serial -eq $Serial) { return $d } }; return $null }
 function Set-HikStateField($d, [string]$Name, $Value) { if ($d.PSObject.Properties[$Name]) { $d.$Name = $Value } else { $d | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force } }
-function Add-HikStateDevice($State, $Dev, [string]$File, [string]$BootTime) {
+# 2.2.8: every request file made (or registered) is recorded: serial, when, an export id (the first 12 hex of the file's SHA-256),
+# the file and the boot time. Hikvision's reply only fits the LATEST export of a device: each new export voids the one before
+# (3 Hewlett, Nov 8 2026: re-exports between replies, every import "Device refused to process").
+function Get-HikExportId([string]$File) {
+  try { $sha = [Security.Cryptography.SHA256]::Create(); try { $h = $sha.ComputeHash([IO.File]::ReadAllBytes($File)) } finally { $sha.Dispose() }; return (-join ($h[0..5] | ForEach-Object { $_.ToString('x2') })) } catch { return '' }
+}
+function Add-HikExportRecord($State, $Dev, [string]$File, [string]$BootTime, [datetime]$At) {
+  if (-not $State.PSObject.Properties['exports']) { $State | Add-Member -NotePropertyName exports -NotePropertyValue @() -Force }
+  $rec = [pscustomobject]@{ serial = [string]$Dev.serial; at = $At.ToString('s'); id = (Get-HikExportId $File); file = $File; bootTime = $BootTime }
+  $State.exports = @(@($State.exports | Where-Object { $null -ne $_ }) + @($rec) | Select-Object -Last 100)
+  return $rec
+}
+function Get-HikExports($State, [string]$Serial) { if (-not $State.PSObject.Properties['exports']) { return @() }; return @($State.exports | Where-Object { $_ -and [string]$_.serial -eq $Serial }) }
+function Add-HikStateDevice($State, $Dev, [string]$File, [string]$BootTime, $At = $null) {
   $d = Get-HikStateDevice $State $Dev.serial
-  $now = Get-Date
+  $now = $(if ($At) { [datetime]$At } else { Get-Date })
+  $rec = Add-HikExportRecord $State $Dev $File $BootTime $now
   $row = [ordered]@{ serial = $Dev.serial; shortSerial = $Dev.shortSerial; model = $Dev.model; mac = $Dev.mac; ip = $Dev.ip; kind = $Dev.kind; salt = $Dev.salt; encrypt = [bool]$Dev.encrypt; requestFile = $File; bootTime = $BootTime
-    exportedAt = $now.ToString('s'); validUntil = $now.AddHours($script:HkValidHours).ToString('s'); status = 'exported'; submittedAt = ''; replyFile = ''; replyFrom = ''; importedAt = ''; verifiedAt = ''; note = '' }
+    exportedAt = $now.ToString('s'); validUntil = $now.AddHours($script:HkValidHours).ToString('s'); exportId = $rec.id; status = 'exported'; submittedAt = ''; replyFile = ''; replyFrom = ''; replyAt = ''; replyForExport = ''; importedAt = ''; verifiedAt = ''; note = '' }
   if ($d) { foreach ($k in $row.Keys) { Set-HikStateField $d $k $row[$k] }; return $d }
   $State.devices = @($State.devices) + @([pscustomobject]$row); return (Get-HikStateDevice $State $Dev.serial)
+}
+# 2.2.8: the plain warning when a NEW export would void a request that is still waiting at Hikvision ('' = nothing to warn about)
+function Get-HikVoidWarning($Cur, $Dev = $null) {
+  if (-not $Cur -or [string]$Cur.status -notin @('submitted', 'replied')) { return '' }
+  $when = ''; try { $when = ([datetime]$Cur.exportedAt).ToString('h:mm tt') } catch {}
+  $who = ([string]$Cur.model + ' ' + [string]$Cur.ip + ' (serial ' + [string]$Cur.serial + ')').Trim()
+  if ($Dev -and $Cur.bootTime -and $Dev.bootTime -and [string]$Dev.bootTime -ne [string]$Cur.bootTime) { return ('  ' + $who + ' restarted since its request from ' + $when + ', so that request (and any reply to it) no longer works. Making one new request file.') }
+  try { if (([datetime]$Cur.validUntil) -lt (Get-Date)) { return ('  ' + $who + ': the request from ' + $when + ' is older than 48 hours and no longer works. Making one new request file.') } } catch {}
+  $sent = $(if ([string]$Cur.status -eq 'replied') { 'sent to Hikvision and answered' } else { 'sent to Hikvision' })
+  return ('  WARNING ' + $who + ': a new request file VOIDS the one from ' + $when + ' that was ' + $sent + '. Hikvision''s reply to that one will then be refused by the device. Use only the reply to the NEW file, and do not export again after it.')
 }
 
 # ---------------- 1. find + export ----------------
@@ -48,6 +72,7 @@ function Export-HikRequests($Devices, [string]$OutDir, $State, [string]$StatePat
     if ($cur -and -not $Redo -and $cur.status -in @('exported', 'submitted', 'replied') -and (Test-Path -LiteralPath $cur.requestFile) -and ([datetime]$cur.validUntil) -gt (Get-Date) -and $cur.bootTime -eq $dev.bootTime) {
       Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': request file from ' + ([datetime]$cur.exportedAt).ToString('h:mm tt') + ' is still good - not asking the device again (a new one would cancel it).'); $made += $cur; continue
     }
+    $vw = Get-HikVoidWarning $cur $dev; if ($vw) { Hk-Say $vw $(if ($vw -match 'WARNING') { 'Red' } else { 'Yellow' }) }
     $e = Request-HikResetExport $dev
     if (-not $e.ok) { Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': could not read its request code - ' + $e.error) 'Yellow'; if ($cur) { Set-HikStateField $cur 'note' $e.error }; continue }
     $f = Save-HikResetFile $dev $e $OutDir
@@ -107,15 +132,24 @@ function Submit-HikRequests($State, [string]$StatePath, $Form, [int]$PerDeviceTi
 # ---------------- registering request files that already exist (made by SADP / HiTools / an earlier run) ----------------
 # SADP's own export is one line: <code><DeviceSN>. The serial at the end names the device; $Devices (Find-HikSadp) gives the rest.
 function Register-HikRequestFiles($State, [string]$Dir, $Devices, [string]$StatePath) {
-  $added = @()
-  foreach ($f in @(Get-ChildItem -LiteralPath $Dir -File -Filter *.xml -ErrorAction SilentlyContinue)) {
-    $t = ''; try { $t = [IO.File]::ReadAllText($f.FullName).Trim() } catch { continue }
+  # 2.2.8: several exports of one device in a folder (Downloads, Nov 8 2026): only the NEWEST is in force (each export voids the one
+  # before), so files are taken oldest first and the newest per serial wins; each older one is named as not used.
+  $added = @(); $bySerial = @{}
+  foreach ($f in @(Get-ChildItem -LiteralPath $Dir -File -Filter *.xml -ErrorAction SilentlyContinue | Sort-Object LastWriteTime, Name)) {
+    $t = ''; try { $t = [IO.File]::ReadAllText($f.FullName).Trim() } catch { Hk-Say ('  ' + $f.Name + ': could not be read - skipped.') 'Yellow'; continue }
+    if (-not $t) { Hk-Say ('  ' + $f.Name + ': the file is empty - skipped.') 'Yellow'; continue }
     $dev = $null; foreach ($d in @($Devices)) { if ($d.serial -and $t.EndsWith([string]$d.serial)) { $dev = $d; break } }
     if (-not $dev) { Hk-Say ('  ' + $f.Name + ': no device here has the serial this file ends with - skipped.') 'Yellow'; continue }
+    $k = [string]$dev.serial; if (-not $bySerial.ContainsKey($k)) { $bySerial[$k] = @() }; $bySerial[$k] += $f
+  }
+  foreach ($k in $bySerial.Keys) {
+    $files = @($bySerial[$k]); $f = $files[-1]
+    $dev = $null; foreach ($d in @($Devices)) { if ([string]$d.serial -eq $k) { $dev = $d; break } }
+    foreach ($o in @($files | Select-Object -First ($files.Count - 1))) { Hk-Say ('  ' + $o.Name + ' (made ' + $o.LastWriteTime.ToString('h:mm tt') + ') is not used: a newer request file for serial ' + $k + ' (' + $f.Name + ', ' + $f.LastWriteTime.ToString('h:mm tt') + ') replaces it. Hikvision''s reply to the older one will not work.') 'Yellow' }
     $cur = Get-HikStateDevice $State $dev.serial
     if ($cur -and $cur.requestFile -eq $f.FullName) { $added += $cur; continue }
-    $d2 = Add-HikStateDevice $State $dev $f.FullName $dev.bootTime
-    Set-HikStateField $d2 'exportedAt' $f.LastWriteTime.ToString('s'); Set-HikStateField $d2 'validUntil' $f.LastWriteTime.AddHours($script:HkValidHours).ToString('s')
+    $vw = Get-HikVoidWarning $cur $dev; if ($vw) { Hk-Say $vw $(if ($vw -match 'WARNING') { 'Red' } else { 'Yellow' }) }
+    $d2 = Add-HikStateDevice $State $dev $f.FullName $dev.bootTime $f.LastWriteTime
     $added += $d2
   }
   Save-HikState $StatePath $State
@@ -147,14 +181,26 @@ function Get-HikReplyMessages($Cfg, [string]$ToolkitDir, [string]$ReplyDir, [dat
 }
 # looks for replies for every 'submitted' device, saves each matched file under replies\reply-<serial>.xml, marks the device 'replied'.
 # A file taken from inbox\hik is removed from there once it is saved (it is never used twice).
+# 2.2.8: a reply is used only when it arrived AFTER the device's latest export (relay: the mail's receivedAt; .eml: its Date; any other
+# file: its file time, which a drop keeps from the downloaded file). An older one answers a request that a later export voided, so the
+# device would refuse it: it is listed in "stale" with the reason and never saved or imported. Returns
+#   { got; unmatched; stale = [{ serial; name; mail; why }]; skipped = [{ mail; name; why; quiet }] }
+# A drop from inbox\hik that is stale, unusable (no / empty / non-xml file) is moved to inbox\hik\not-used\, so it is said once.
+function Move-HikDropNotUsed([string]$InboxDir, [string]$Src) {
+  if (-not $InboxDir -or -not $Src -or -not $Src.StartsWith($InboxDir) -or -not (Test-Path -LiteralPath $Src)) { return }
+  try { $nu = Join-Path $InboxDir 'not-used'; New-Item -ItemType Directory -Force -Path $nu | Out-Null; Move-Item -LiteralPath $Src -Destination (Join-Path $nu (Split-Path -Leaf $Src)) -Force } catch {}
+}
 function Receive-HikReplies($State, [string]$StatePath, $Cfg, [string]$ToolkitDir, [string]$ReplyDir, [string]$InboxDir = '', [switch]$ForceRelay) {
   $pend = @($State.devices | Where-Object { $_.status -in @('submitted', 'replied') })
-  if (-not $pend.Count) { return [pscustomobject]@{ got = @(); unmatched = @() } }
-  $since = (Get-Date).AddDays(-4); try { $since = ([datetime](@($pend | ForEach-Object { $_.exportedAt } | Sort-Object)[0])).AddHours(-1) } catch {}
+  if (-not $pend.Count) { return [pscustomobject]@{ got = @(); unmatched = @(); stale = @(); skipped = @() } }
+  # 2.2.8: look back 2 days before the oldest waiting export (a request lives 48 hours), so an older reply is SEEN and named stale
+  # instead of being silently out of view (2.2.7 looked back one hour)
+  $since = (Get-Date).AddDays(-4); try { $since = ([datetime](@($pend | ForEach-Object { $_.exportedAt } | Sort-Object)[0])).AddDays(-2) } catch {}
   $msgs = @(Get-HikReplyMessages $Cfg $ToolkitDir $ReplyDir $since @($pend | Where-Object { $_.status -eq 'submitted' }) $InboxDir -ForceRelay:$ForceRelay)
-  $m = Find-HikReplyMatches $pend $msgs
-  $got = @()
+  $m = Find-HikReplyMatches $pend $msgs @($State.devices)
+  $got = @(); $stale = @()
   New-Item -ItemType Directory -Force -Path $ReplyDir | Out-Null
+  $isDrop = { param($s) [bool]($InboxDir -and [string]$s -and ([string]$s).StartsWith($InboxDir)) }
   foreach ($x in $m.matched) {
     $d = $x.device
     # our own request file is not a reply (folder mode could see it); a reply is a different file
@@ -162,15 +208,41 @@ function Receive-HikReplies($State, [string]$StatePath, $Cfg, [string]$ToolkitDi
     if ($own -and (Hm-Latin1).GetString($x.bytes).Trim() -eq $own) { continue }
     $dest = Join-Path $ReplyDir ('reply-' + ($d.serial -replace '[^A-Za-z0-9\-]', '_') + '.xml')
     if ($x.src -and $x.src -eq $dest) { continue }   # the file saved by an earlier look
-    if ($d.status -eq 'replied' -and (Test-Path -LiteralPath $dest)) { try { if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($dest)) -eq [Convert]::ToBase64String([byte[]]$x.bytes)) { if ($InboxDir -and [string]$x.src -and ([string]$x.src).StartsWith($InboxDir)) { Remove-Item -LiteralPath $x.src -Force -ErrorAction SilentlyContinue }; continue } } catch {} }
+    # 2.2.8: only a reply that arrived after the LATEST export of this device
+    $at = ConvertTo-HikLocalTime ([string]$x.date); $exp = ConvertTo-HikLocalTime ([string]$d.exportedAt)
+    if ($at -and $exp -and $at -lt $exp) {
+      $why = ('it arrived ' + $at.ToString('MMM d h:mm tt') + ', before the latest request file for this device (made ' + $exp.ToString('MMM d h:mm tt') + '). It answers an older request, so the device would refuse it.')
+      $stale += [pscustomobject]@{ serial = [string]$d.serial; shortSerial = [string]$d.shortSerial; model = [string]$d.model; ip = [string]$d.ip; name = [string]$x.name; mail = [string]$x.mail; src = [string]$x.src; at = $at.ToString('s'); why = $why }
+      if (& $isDrop $x.src) { Move-HikDropNotUsed $InboxDir ([string]$x.src) }
+      continue
+    }
+    if ($d.status -eq 'replied' -and (Test-Path -LiteralPath $dest)) { try { if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($dest)) -eq [Convert]::ToBase64String([byte[]]$x.bytes)) { if (& $isDrop $x.src) { Remove-Item -LiteralPath $x.src -Force -ErrorAction SilentlyContinue }; continue } } catch {} }
     [IO.File]::WriteAllBytes($dest, $x.bytes)
-    Set-HikStateField $d 'status' 'replied'; Set-HikStateField $d 'replyFile' $dest; Set-HikStateField $d 'replyFrom' ([string]$x.mail); $got += $d
-    $how = $(if ([string]$x.src -like 'relay:*') { 'the reply mailbox' } elseif ($InboxDir -and [string]$x.src -and ([string]$x.src).StartsWith($InboxDir)) { 'the "I got Hik''s email" button' } else { 'the replies folder' })
-    Hk-Say ('  Reply for ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ') found in ' + $how + ', matched by ' + $x.how + '.') 'Green'
-    if ($InboxDir -and [string]$x.src -and ([string]$x.src).StartsWith($InboxDir)) { Remove-Item -LiteralPath $x.src -Force -ErrorAction SilentlyContinue }
+    Set-HikStateField $d 'status' 'replied'; Set-HikStateField $d 'replyFile' $dest; Set-HikStateField $d 'replyFrom' ([string]$x.mail)
+    Set-HikStateField $d 'replyAt' $(if ($at) { $at.ToString('s') } else { '' }); Set-HikStateField $d 'replyForExport' $(if ($d.PSObject.Properties['exportId']) { [string]$d.exportId } else { '' })
+    $got += $d
+    $how = $(if ([string]$x.src -like 'relay:*') { 'the reply mailbox' } elseif (& $isDrop $x.src) { 'the "I got Hik''s email" button' } else { 'the replies folder' })
+    Hk-Say ('  Reply for ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ') found in ' + $how + ', matched by ' + $x.how + $(if ($at -and $exp) { '; it came ' + $at.ToString('h:mm tt') + ', after the request file made ' + $exp.ToString('h:mm tt') } else { '' }) + '.') 'Green'
+    if (& $isDrop $x.src) { Remove-Item -LiteralPath $x.src -Force -ErrorAction SilentlyContinue }
   }
+  foreach ($s in @($m.skipped)) { if (-not $s.quiet -and (& $isDrop $s.src)) { Move-HikDropNotUsed $InboxDir ([string]$s.src) } }
   Save-HikState $StatePath $State
-  return [pscustomobject]@{ got = $got; unmatched = @($m.unmatched) }
+  return [pscustomobject]@{ got = $got; unmatched = @($m.unmatched); stale = @($stale); skipped = @($m.skipped) }
+}
+# 2.2.8: the plain lines about replies that are NOT used - each said once per run, not on every look (the wait loop looks every few seconds)
+$script:HkSaidOnce = @{}
+function Show-HikReplyNotes($R) {
+  if (-not $R) { return }
+  $lines = @()
+  foreach ($s in @($R.skipped | Where-Object { $_ -and -not $_.quiet })) {
+    $when = ''; $t = ConvertTo-HikLocalTime ([string]$s.date); if ($t) { $when = ', ' + $t.ToString('h:mm tt') }
+    $what = $(if ([string]$s.mail) { 'An email from Hikvision ("' + [string]$s.mail + '"' + $when + ')' } else { 'A file from Hikvision' })
+    if ([string]$s.why -eq 'it has no attachment') { $lines += , @(($what + ' has no attachment - skipped. If Hikvision sent two emails, the other one has the file.'), 'Yellow') }
+    else { $lines += , @(($what + ' skipped: ' + $(if ([string]$s.name) { [string]$s.name + ' - ' } else { '' }) + [string]$s.why + '.'), 'Yellow') }
+  }
+  foreach ($u in @($R.unmatched | Where-Object { $_ })) { $lines += , @(('A file from Hikvision matches no device here: ' + [string]$u.name + ' - ' + [string]$u.why + '. It is not used.'), 'Yellow') }
+  foreach ($s in @($R.stale | Where-Object { $_ })) { $lines += , @(('Not used: the reply ' + [string]$s.name + ' for ' + ([string]$s.model + ' ' + [string]$s.ip).Trim() + ' (serial ' + [string]$s.shortSerial + ') - ' + [string]$s.why + ' Waiting for the reply to the latest request.'), 'Yellow') }
+  foreach ($l in $lines) { if ($script:HkSaidOnce.ContainsKey($l[0])) { continue }; $script:HkSaidOnce[$l[0]] = 1; Hk-Say ('  ' + $l[0]) $l[1] }
 }
 # the devices still waiting for Hikvision, for the "I got Hik's email" button (inbox\hik\waiting.json; no passwords, no codes)
 function Save-HikWaitingList([string]$InboxDir, $State, [string]$Site, [string]$ReplyTo = '') {
@@ -196,6 +268,18 @@ function Format-HikWaitLine($Cfg, [int]$Count, [int]$MinutesLeft) {
 }
 
 # ---------------- 4. import + check ----------------
+# 2.2.8: what to do after "device refused", in order, with no re-export in between (each export voids the one before)
+function Get-HikRefusedSteps($d) {
+  $who = ([string]$d.model + ' ' + [string]$d.ip).Trim()
+  return @(
+    ('  Next, for ' + $who + ' (serial ' + [string]$d.shortSerial + '), in this order and nothing else in between:'),
+    '    1. Power-cycle the camera: unplug its power (or its PoE cable) for 10 seconds, plug it back, wait until SADP shows it again.',
+    '    2. Export ONE new request file (press Fix this site again, or in SADP: Forgot password > Export). Export only once.',
+    '    3. Submit THAT file on Hikvision''s reset page.',
+    '    4. Import Hikvision''s reply to that request (the first email after you submitted) - without exporting again first.',
+    '    Do not import older files from Downloads: each export voids every earlier reply.'
+  )
+}
 # $VerifyLogin = scriptblock { param($ip, $password) -> $true when the password logs in } (the caller supplies Test-FsLogin).
 # $FindIp = scriptblock { param($dev) -> the device's current IP (it may have moved) }.
 function Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [scriptblock]$VerifyLogin, [string]$Only = '', $OnlySerials = $null) {
@@ -217,6 +301,13 @@ function Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [sc
       $logins = 0; for ($i = 0; $i -lt 8 -and -not $chk -and $logins -lt $script:HkVerifyMaxLogins; $i++) { $now = @(Find-HikSadp 2 | Where-Object { $_.mac -eq $d.mac })[0]; if ($now) { $ip = $now.ip; $logins++; try { $chk = [bool](& $VerifyLogin $ip $NewPassword) } catch {} }; if (-not $chk) { Start-Sleep -Seconds 4 } }
       if ($chk) { Set-HikStateField $d 'status' 'verified'; Set-HikStateField $d 'verifiedAt' (Get-Date -Format 's'); Hk-Say ('  Reset done. The site password logs in on ' + $ip + '.') 'Green'; $done += $d }
       else { Hk-Say ('  The device accepted the file, but the site password does not log in yet on ' + $ip + '. Check it in a minute.') 'Yellow' }
+    } elseif ([string]$r.result -and [string]$r.result -notmatch '^(?i)success') {
+      # 2.2.8: the device ANSWERED and said no (SADP shows it as "Resetting the password failed. Device refused to process").
+      # Almost always: the file does not belong to the device's latest request (an older reply, or a new export made after it was
+      # sent). Importing it again, or other files from Downloads, cannot work; a new export now would void the next reply too.
+      Set-HikStateField $d 'status' 'refused'; Set-HikStateField $d 'note' ('the device refused the unlock file (it answered "' + [string]$r.result + '")'); Save-HikState $StatePath $State
+      Hk-Say ('  The device REFUSED Hikvision''s file (it answered "' + [string]$r.result + '"). This file will not be tried again.') 'Red'
+      foreach ($l in @(Get-HikRefusedSteps $d)) { Hk-Say $l 'Yellow' }
     } else {
       Hk-Say ('  The import did not work (' + $r.error + ').') 'Yellow'
       Set-HikStateField $d 'note' ('import: ' + $r.error)
@@ -322,7 +413,7 @@ function Invoke-HikResetStage {
   do {
     $r = Receive-HikReplies $state $statePath $Config $ToolkitDir $repDir $InboxDir -ForceRelay:$first
     $first = $false
-    foreach ($u in @($r.unmatched)) { Hk-Say ('  A file from Hikvision matches no device here: ' + $u.name + ' (' + $u.why + '). It is not used.') 'Yellow' }
+    Show-HikReplyNotes $r   # 2.2.8: skipped / stale / unmatched files, each with its reason, said once
     $waiting = @(& $forMine $state | Where-Object { $_.status -eq 'submitted' })
     if ($r.got.Count) { Save-HikWaitingList $InboxDir $state $Site ([string]$Config.replyTo) }
     $left = [math]::Max(0, [int][math]::Ceiling(($end - (Get-Date)).TotalMinutes))
@@ -340,7 +431,7 @@ function Invoke-HikResetStage {
   if ($script:HkStatus) { try { & $script:HkStatus ([pscustomobject]@{ waiting = @(); relay = $script:HkRelayStatus; replyTo = [string]$Config.replyTo; minutesLeft = 0; line = ''; done = $true }) } catch {} }
   foreach ($d in @(& $forMine $state)) {
     if ($fixed -contains (ConvertTo-SadpMac ([string]$d.mac))) { continue }
-    $why = switch ($d.status) { 'submitted' { 'sent to Hikvision, waiting for the unlock email (it can take a few hours). When it comes: press "I got Hik''s email" (or, with the reply mailbox set up, just press Fix this site again). The device must NOT restart meanwhile.' } 'exported' { 'request file made, not sent to Hikvision yet' } 'replied' { 'unlock file arrived but the import did not work' + $(if ($d.note) { ' (' + $d.note + ')' } else { '' }) } 'expired' { 'the request is no longer valid (' + $d.note + '): it needs a new one' } default { [string]$d.status } }
+    $why = switch ($d.status) { 'submitted' { 'sent to Hikvision, waiting for the unlock email (it can take a few hours). When it comes: press "I got Hik''s email" (or, with the reply mailbox set up, just press Fix this site again). The device must NOT restart meanwhile.' } 'exported' { 'request file made, not sent to Hikvision yet' } 'replied' { 'unlock file arrived but the import did not work' + $(if ($d.note) { ' (' + $d.note + ')' } else { '' }) } 'expired' { 'the request is no longer valid (' + $d.note + '): it needs a new one' } 'refused' { 'the device refused Hikvision''s file. Power-cycle it, then press Fix this site again: it makes ONE new request; submit it and import only the reply to it (no export in between)' } default { [string]$d.status } }
     $pending += [pscustomobject]@{ mac = $d.mac; reason = $why }
   }
   return [pscustomobject]@{ fixed = @($fixed); pending = @($pending) }
