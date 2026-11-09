@@ -101,7 +101,7 @@ function Get-TkNvrPlainEnd([string]$tool, [int]$code) {
   switch ($code) {
     0 { return ($tool + ': finished. All good, or see the CHECK lines above.') }
     2 { return ($tool + ': could not read the recorder (wrong password, wrong address, or not on its network). Nothing was changed.') }
-    4 { return ($tool + ': finished - PROBLEM lines above need a look.') }
+    4 { return ('NOT DONE - ' + $tool + ': something is still wrong or could NOT be checked (see the red PROBLEM / NOT CHECKED lines above). Fix those, then run it again, or call the office.') }   # 2.2.12 (Codex P1-5): never reads as finished-OK
     6 { return ('FAILED - Run again. ' + $tool + ': THIS PC''s network could not be put back the way it was (see the red line). Run it again (it cleans up first) or restart the PC.') }   # 2.2.10 (Codex R04)
     default { return ($tool + ': stopped with a problem (code ' + $code + '). The full log is in the runs folder.') }
   }
