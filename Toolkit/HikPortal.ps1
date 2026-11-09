@@ -206,19 +206,43 @@ function Test-PortalAccepted($st, $clickedAt) {
   if ($fp.Count -and -not $st.modal -and -not $st.formShown) { $script:PortalLastPost = ($fp | ForEach-Object { $_.u }) -join ' '; return $true }
   return $false
 }
+# 2.2.9 (3 Hewlett, Nov 8 2026): Hik's page wanted a person for its slider and the Toolkit waited without a word. Now: a clear line
+# the moment the slider shows, the window to the front, a reminder while it waits, and the caller says what next on a timeout.
+$script:PortalSay = { param($t, $c) Write-Host $t -ForegroundColor $(if ($c) { $c } else { 'Gray' }) }
+$script:PortalPollMs = 1500
+$script:PortalRemindSec = 60
+function Portal-Say([string]$t, [string]$c = '') { try { & $script:PortalSay $t $c } catch { Write-Host $t } }
+function Show-PortalWindow($s) {
+  try { [void](Send-Cdp $s.cdp 'Page.bringToFront') } catch {}
+  # on Windows, also raise the browser's own window (bringToFront only picks the tab)
+  if ($env:OS -ne 'Windows_NT') { return }
+  try {
+    if (-not ('WireIt.HikWin' -as [type])) { Add-Type -Namespace 'WireIt' -Name 'HikWin' -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int n);' -ErrorAction Stop }
+    try { $s.proc.Refresh() } catch {}
+    $h = [IntPtr]$s.proc.MainWindowHandle
+    if ($h -ne [IntPtr]::Zero) { [void][WireIt.HikWin]::ShowWindow($h, 9); [void][WireIt.HikWin]::SetForegroundWindow($h) }
+  } catch {}
+}
 function Wait-PortalSubmitted($s, [int]$TimeoutSec = 900, [scriptblock]$Tick = $null, [scriptblock]$Refill = $null) {
   $lastRefill = Get-Date
   $c = $s.cdp
   try { [void](Invoke-CdpJs $c '(function(){var i=document.querySelector("form#enquiry-form input[name=Verification]")||document.querySelector("form#enquiry-form input[maxlength=\"6\"]"); if(i){i.scrollIntoView({block:"center"}); i.focus();} window.__hikPosts=[]; (function(){ var ox=XMLHttpRequest.prototype.open, os=XMLHttpRequest.prototype.send; XMLHttpRequest.prototype.open=function(m,u){this.__m=m;this.__u=u;return ox.apply(this,arguments)}; XMLHttpRequest.prototype.send=function(){var x=this; x.addEventListener("loadend",function(){ if(String(x.__m).toUpperCase()==="POST") window.__hikPosts.push({u:String(x.__u).slice(0,160),s:x.status}); }); return os.apply(this,arguments)}; var of=window.fetch; window.fetch=function(i,o){ var p=of.apply(this,arguments); var m=(o&&o.method)||"GET"; if(String(m).toUpperCase()==="POST"){ var u=(typeof i==="string")?i:(i&&i.url); p.then(function(r){window.__hikPosts.push({u:String(u).slice(0,160),s:r.status})}).catch(function(){}); } return p; } })(); window.__hikClicked=0; window.__hikBase=(document.body&&document.body.innerText||"").slice(0,4000); var b=document.querySelector("#formSubmit"); if(b) b.addEventListener("click",function(){window.__hikClicked=(window.__hikClicked||0)+1},true); return 1})()') } catch {}
-  try { [void](Send-Cdp $c 'Page.bringToFront') } catch {}
-  $end = (Get-Date).AddSeconds($TimeoutSec); $clickedAt = $null; $lastTick = Get-Date
+  Show-PortalWindow $s
+  $end = (Get-Date).AddSeconds($TimeoutSec); $clickedAt = $null; $lastTick = Get-Date; $lastRemind = Get-Date; $sliderWas = $false; $sliderNow = $false
   while ((Get-Date) -lt $end) {
-    Start-Sleep -Milliseconds 1500
+    Start-Sleep -Milliseconds ([math]::Max(10, [int]$script:PortalPollMs))
+    if (((Get-Date) - $lastRemind).TotalSeconds -ge [math]::Max(1, [int]$script:PortalRemindSec)) {
+      $lastRemind = Get-Date; $left = [int][math]::Ceiling(($end - (Get-Date)).TotalMinutes)
+      Portal-Say ('  Still waiting for you in the browser window: ' + $(if ($sliderNow) { 'solve the slider, then ' } else { 'the picture code (and the slider, if one shows), then ' }) + 'Submit. ' + $left + ' min left.') 'Cyan'
+    }
     if ($Refill -and ((Get-Date) - $lastRefill).TotalSeconds -ge 8) { $lastRefill = Get-Date; try { & $Refill } catch {} }
     if ($Tick -and ((Get-Date) - $lastTick).TotalSeconds -ge 20) { $lastTick = Get-Date; try { & $Tick } catch {} }
     try {
-      $st = Invoke-CdpJs $c '(function(){var f=document.querySelector("form#enquiry-form"); return {url:location.href, formShown: !!(f && f.offsetHeight>0), clicks: window.__hikClicked||0, posts: window.__hikPosts||[], modal: !!(document.querySelector("[class*=verify],[class*=captcha],[class*=slider]") && document.querySelector("[class*=verify],[class*=captcha],[class*=slider]").offsetHeight>0), text: (document.body&&document.body.innerText||"").slice(0,4000), base: window.__hikBase||""}})()' 8
+      $st = Invoke-CdpJs $c '(function(){var f=document.querySelector("form#enquiry-form"); return {url:location.href, formShown: !!(f && f.offsetHeight>0), clicks: window.__hikClicked||0, posts: window.__hikPosts||[], modal: !!(document.querySelector("[class*=verify],[class*=captcha],[class*=slider]") && document.querySelector("[class*=verify],[class*=captcha],[class*=slider]").offsetHeight>0), slider: (function(){ var e=document.querySelector("[class*=slider],[class*=slide-verify],[class*=geetest],[class*=tcaptcha],[id*=slider],iframe[src*=captcha],iframe[src*=slide]"); return !!(e && e.offsetHeight>0); })(), text: (document.body&&document.body.innerText||"").slice(0,4000), base: window.__hikBase||""}})()' 8
     } catch { if ($s.proc.HasExited) { return 'closed' }; continue }
+    $sliderNow = $(if ($st.PSObject.Properties['slider']) { [bool]$st.slider } else { [bool]$st.modal })
+    if ($sliderNow -and -not $sliderWas) { Portal-Say 'Solve the slider in the browser window now' 'Cyan'; Show-PortalWindow $s }
+    $sliderWas = $sliderNow
     if ($st.clicks -gt 0 -and -not $clickedAt) { $clickedAt = Get-Date }
     if (Test-PortalAccepted $st $clickedAt) { return 'submitted' }
   }

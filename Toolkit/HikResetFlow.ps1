@@ -10,6 +10,7 @@
 $here0 = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here0 'HikSadp.ps1')
 . (Join-Path $here0 'HikPortal.ps1')
+$script:PortalSay = { param($t, $c) Hk-Say $t $c }   # 2.2.9: the page's prompts (slider) on the same screen as the rest
 . (Join-Path $here0 'HikMail.ps1')
 
 $script:HkSay = { param($t, $c) Write-Host $t }
@@ -63,14 +64,199 @@ function Get-HikVoidWarning($Cur, $Dev = $null) {
   return ('  WARNING ' + $who + ': a new request file VOIDS the one from ' + $when + ' that was ' + $sent + '. Hikvision''s reply to that one will then be refused by the device. Use only the reply to the NEW file, and do not export again after it.')
 }
 
+# ---------------- 2.2.9 (3 Hewlett, Nov 8 2026): the camera must be on a network of this PC ----------------
+# Camera .7 was on 10.243.1.7/24 while the laptop was on 192.168.1.x: the first tries could not work. Setting the laptop to a static
+# IP took it fully offline. So: before an export or a reset, check; when the camera is on no subnet of this PC's active adapters,
+# STOP and tell the tech how to add a SECOND address on the camera's subnet (DHCP kept). This code never changes an adapter.
+$script:HkLocalNets = $null        # TEST ONLY: @({ name; ip; prefix; wired; count }) instead of this PC's own adapters
+$script:HkSubnetCheckOff = $false  # TEST ONLY: suites whose devices are stand-ins with made-up addresses
+$script:HkPing = $null             # TEST ONLY: { param($ip) -> $true when something answers }
+$script:HkSubnetBlocked = @{}      # serial -> the reason, for this run's end-of-run list
+$script:HkLogPath = ''             # the SADP log (HikReset.ps1 sets it), named in "call Hik support"
+$script:HkGuardText = 'Keep SADP open from export until import. Export once. Submit that file. Import only Hik''s reply to it.'
+$script:HkMaxRebootRetries = 2
+function ConvertTo-HikIpNum([string]$Ip) {
+  $a = $null; if (-not [Net.IPAddress]::TryParse(([string]$Ip).Trim(), [ref]$a) -or $a.AddressFamily -ne 'InterNetwork') { return $null }
+  $b = $a.GetAddressBytes(); return ([int64]$b[0] * 16777216 + [int64]$b[1] * 65536 + [int64]$b[2] * 256 + [int64]$b[3])
+}
+function ConvertFrom-HikIpNum([int64]$n) { return ('{0}.{1}.{2}.{3}' -f [int][math]::Floor($n / 16777216), [int]([math]::Floor($n / 65536) % 256), [int]([math]::Floor($n / 256) % 256), [int]($n % 256)) }
+function Get-HikPrefixFromMask([string]$Mask) {
+  $n = ConvertTo-HikIpNum $Mask; if ($null -eq $n) { return $null }
+  $p = 0; $seenZero = $false
+  for ($i = 31; $i -ge 0; $i--) { $bit = [math]::Floor($n / [math]::Pow(2, $i)) % 2; if ($bit -eq 1) { if ($seenZero) { return $null }; $p++ } else { $seenZero = $true } }
+  return $p
+}
+function Get-HikMaskFromPrefix([int]$Prefix) { return (ConvertFrom-HikIpNum ([int64]([math]::Pow(2, 32) - [math]::Pow(2, 32 - $Prefix)))) }
+function Test-HikSameSubnet([string]$Ip, [string]$LocalIp, [int]$Prefix) {
+  $a = ConvertTo-HikIpNum $Ip; $b = ConvertTo-HikIpNum $LocalIp
+  if ($null -eq $a -or $null -eq $b -or $Prefix -lt 0 -or $Prefix -gt 32) { return $false }
+  $size = [int64][math]::Pow(2, 32 - $Prefix)
+  return ([math]::Floor($a / $size) -eq [math]::Floor($b / $size))
+}
+# this PC's active IPv4 addresses: adapter name, address, prefix, wired?, how many IPv4 addresses that adapter has
+function Get-HikLocalNets {
+  if ($null -ne $script:HkLocalNets) { return @($script:HkLocalNets) }
+  $L = @()
+  try {
+    foreach ($ni in [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+      if ([string]$ni.OperationalStatus -ne 'Up' -or [string]$ni.NetworkInterfaceType -in @('Loopback', 'Tunnel')) { continue }
+      $v4 = @($ni.GetIPProperties().UnicastAddresses | Where-Object { $_.Address.AddressFamily -eq 'InterNetwork' })
+      foreach ($ua in $v4) {
+        $p = $null; try { $p = [int]$ua.PrefixLength } catch {}
+        if (-not $p) { try { $p = Get-HikPrefixFromMask ([string]$ua.IPv4Mask) } catch {} }
+        if ($null -eq $p -or $p -le 0 -or $p -gt 32) { continue }
+        $L += [pscustomobject]@{ name = [string]$ni.Name; ip = $ua.Address.ToString(); prefix = [int]$p; wired = ([string]$ni.NetworkInterfaceType -match 'Ethernet'); count = $v4.Count }
+      }
+    }
+  } catch {}
+  return $L
+}
+function Test-HikPingAnswers([string]$Ip) {
+  if ($script:HkPing) { try { return [bool](& $script:HkPing $Ip) } catch { return $false } }
+  try { $p = New-Object Net.NetworkInformation.Ping; try { return ([string]$p.Send($Ip, 800).Status -eq 'Success') } finally { $p.Dispose() } } catch { return $false }
+}
+# a free address for the PC on the camera's subnet: never the camera's own, its gateway, another Hik device seen here, or one that
+# answers ping. $null = none found (then the tech picks one).
+function Get-HikSecondIpSuggestion($Dev, $Others = @()) {
+  $cam = ConvertTo-HikIpNum ([string]$Dev.ip); if ($null -eq $cam) { return $null }
+  $p = Get-HikPrefixFromMask ([string]$Dev.mask)
+  if ($null -eq $p -or $p -lt 8 -or $p -gt 30) { $p = 24 }
+  $mask = Get-HikMaskFromPrefix $p
+  $size = [int64][math]::Pow(2, 32 - $p); $net = [int64]([math]::Floor($cam / $size) * $size); $bcast = $net + $size - 1
+  $base = $(if ($p -le 24) { [int64]([math]::Floor($cam / 256) * 256) } else { $net })
+  $taken = @{}; foreach ($x in @([string]$Dev.ip, [string]$Dev.gw) + @(@($Others) | Where-Object { $_ } | ForEach-Object { [string]$_.ip })) { if ($x) { $taken[$x.Trim()] = 1 } }
+  $offs = $(if ($p -le 24) { @(50..69) + @(200..219) } else { @(1..($size - 2)) | Sort-Object -Descending })
+  $tries = 0
+  foreach ($o in $offs) {
+    $n = $base + $o; if ($n -le $net -or $n -ge $bcast) { continue }
+    $ip = ConvertFrom-HikIpNum $n; if ($taken.ContainsKey($ip)) { continue }
+    if ($tries -ge 30) { break }; $tries++
+    if (Test-HikPingAnswers $ip) { continue }
+    return [pscustomobject]@{ ip = $ip; mask = $mask; prefix = $p }
+  }
+  return $null
+}
+function Format-HikNets($Nets) { return ((@($Nets) | ForEach-Object { [string]$_.name + ' ' + [string]$_.ip + '/' + [string]$_.prefix }) -join ', ') }
+function Get-HikWiredName($Nets) {
+  $w = @(@($Nets) | Where-Object { $_.wired -and [string]$_.name })
+  $e = @($w | Where-Object { [string]$_.name -match '^(?i)Ethernet' })
+  if ($e.Count) { return [string]$e[0].name }; if ($w.Count) { return [string]$w[0].name }; return 'Ethernet'
+}
+# the plain steps (no adapter is touched by the Toolkit). Never "switch to a static IP": that took the laptop offline on Nov 8.
+function Get-HikSubnetSteps($Dev, $Nets, $Sg) {
+  $who = ([string]$Dev.model + ' ' + [string]$Dev.ip).Trim()
+  $eth = Get-HikWiredName $Nets
+  $camMask = $(if ([string]$Dev.mask) { [string]$Dev.mask } else { 'mask not given' })
+  $L = @(
+    ('STOP: ' + $who + ' (serial ' + [string]$Dev.shortSerial + ') is not on any network of this PC, so the reset cannot work from here. Nothing was exported or imported.'),
+    ('  The camera: ' + [string]$Dev.ip + ' / ' + $camMask + '. This PC: ' + $(if (@($Nets).Count) { Format-HikNets $Nets } else { 'no address' }) + '.')
+  )
+  if ($Sg) {
+    $L += @(
+      ('  Fix: give this PC a SECOND address on the camera''s network, on the wired adapter "' + $eth + '" (the one cabled to the camera''s switch):'),
+      '    1. Control Panel > Network and Internet > Network Connections (or Win+R: ncpa.cpl).',
+      ('    2. Right-click "' + $eth + '" > Properties > Internet Protocol Version 4 (TCP/IPv4) > Properties.'),
+      '    3. Keep "Obtain an IP address automatically" selected. Press Advanced... > IP Settings > IP addresses: Add...',
+      ('    4. IP address ' + $Sg.ip + ', Subnet mask ' + $Sg.mask + '. No gateway: leave the gateway empty. Add > OK > OK > Close.'),
+      ('       If Add is greyed out: open Command Prompt as administrator and type  netsh interface ipv4 add address "' + $eth + '" ' + $Sg.ip + ' ' + $Sg.mask + '  (DHCP stays on).'),
+      ('       ' + $Sg.ip + ' did not answer ping from here. If Windows says the address is already in use, remove it and pick another one.'),
+      '    5. Run the reset again (Fix this site again).',
+      ('  After the reset: remove ' + $Sg.ip + ' again (same window: select it > Remove, or  netsh interface ipv4 delete address "' + $eth + '" ' + $Sg.ip + ' ), keeping "Obtain an IP address automatically".')
+    )
+  } else {
+    $L += @(
+      ('  Fix: give this PC a SECOND address on the camera''s network, on the wired adapter "' + $eth + '": Control Panel > Network Connections > ' + $eth + ' > IPv4 > Properties > Advanced > Add, keeping "Obtain an IP address automatically".'),
+      '  The Toolkit found no free address to suggest: every one it tried answered ping. Pick one on the camera''s network that nobody uses and check first that ping gets NO answer. Never use an address another device has.',
+      '  After the reset: remove it again, keeping "Obtain an IP address automatically".'
+    )
+  }
+  $L += '  Do not switch the adapter to "Use the following IP address" (a fixed IP): that takes this PC off its own network.'
+  return $L
+}
+# $true = go ahead. $false = the steps were said (once per device per run) and the caller does not export / import.
+function Test-HikOnLocalSubnet($Dev, $Others = @()) {
+  if ($script:HkSubnetCheckOff) { return $true }
+  if ($null -eq $script:HkLocalNets -and $script:SadpTest) { return $true }   # the loopback test harness: no real network to compare
+  $ip = [string]$Dev.ip
+  if (-not $ip -or $ip -eq '0.0.0.0' -or $null -eq (ConvertTo-HikIpNum $ip)) { return $true }
+  $nets = @(Get-HikLocalNets)
+  if (-not $nets.Count) {
+    $k = 'subnet-unknown'; if (-not $script:HkSaidOnce.ContainsKey($k)) { $script:HkSaidOnce[$k] = 1; Hk-Say '  Could not read this PC''s network addresses, so the camera''s network was not checked.' 'Yellow' }
+    return $true
+  }
+  foreach ($n in $nets) { if (Test-HikSameSubnet $ip ([string]$n.ip) ([int]$n.prefix)) { return $true } }
+  $key = 'subnet|' + [string]$Dev.serial
+  $sg = $null
+  if (-not $script:HkSaidOnce.ContainsKey($key)) {
+    $sg = Get-HikSecondIpSuggestion $Dev @(@($Others) | Where-Object { $_ -and [string]$_.ip -ne $ip })
+    $script:HkSaidOnce[$key] = 1
+    $first = $true; foreach ($l in @(Get-HikSubnetSteps $Dev $nets $sg)) { Hk-Say $l $(if ($first) { 'Red' } else { 'Yellow' }); $first = $false }
+  }
+  $script:HkSubnetBlocked[[string]$Dev.serial] = ('on another network than this PC (camera ' + $ip + ', this PC ' + ((@($nets) | ForEach-Object { [string]$_.ip }) -join ', ') + '): add a second IP on the camera''s network (steps on screen), then press Fix this site again')
+  return $false
+}
+# after a reset that worked: the PC's extra address on the camera's subnet (an adapter with more than one IPv4) is to be removed
+function Show-HikExtraIpReminder($Dev) {
+  if ($script:HkSubnetCheckOff -or ($null -eq $script:HkLocalNets -and $script:SadpTest)) { return }
+  $x = @(@(Get-HikLocalNets) | Where-Object { [int]$_.count -gt 1 -and (Test-HikSameSubnet ([string]$Dev.ip) ([string]$_.ip) ([int]$_.prefix)) })
+  foreach ($n in $x) { Hk-Say ('  Now remove the extra address ' + [string]$n.ip + ' from "' + [string]$n.name + '" (IPv4 > Properties > Advanced > select it > Remove, or  netsh interface ipv4 delete address "' + [string]$n.name + '" ' + [string]$n.ip + ' ), keeping "Obtain an IP address automatically".') 'Cyan' }
+}
+# 2.2.9: one SADP session from export to import
+function Show-HikSessionGuard { Hk-Say ('  ' + $script:HkGuardText) 'Cyan' }
+function Get-HikExportLabel($D) {
+  $t = ''; try { $t = ([datetime]$D.exportedAt).ToString('h:mm tt') } catch {}
+  return ('the request file ' + $(if ([string]$D.requestFile) { Split-Path -Leaf ([string]$D.requestFile) } else { '(no file)' }) + $(if ($t) { ' made ' + $t } else { '' }))
+}
+
+# ---------------- 2.2.9 (Moshe, Nov 8 9:55 PM): "device refused" after correct steps = reboot the camera, then Retry ----------------
+# What the Toolkit can check about a refused reply. Empty = every check passed (the steps were right).
+function Get-HikRefusalProblems($State, $D) {
+  $P = @()
+  $eid = $(if ($D.PSObject.Properties['exportId']) { [string]$D.exportId } else { '' })
+  $rfe = $(if ($D.PSObject.Properties['replyForExport']) { [string]$D.replyForExport } else { '' })
+  if (-not $eid) { $P += 'the Toolkit has no record of the export this reply answers (it was made outside the Toolkit or before 2.2.8), so it may answer an older request' }
+  elseif ($rfe -and $rfe -ne $eid) { $P += ('the reply answers an older export (' + $rfe + '), not the latest one (' + $eid + ')') }
+  elseif (-not $rfe) { $P += 'the reply was not tied to the latest export when it came in' }
+  $later = @(@($State.exports) | Where-Object { $_ -and [string]$_.serial -eq [string]$D.serial } | Sort-Object { [string]$_.at })
+  if ($later.Count -and $eid -and [string]$later[-1].id -ne $eid) { $P += ('a newer export was made after this one (' + $(try { ([datetime]$later[-1].at).ToString('h:mm tt') } catch { [string]$later[-1].at }) + '), which voids this reply') }
+  $ra = $null; $ea = $null; try { if ([string]$D.replyAt) { $ra = [datetime]$D.replyAt } } catch {}; try { $ea = [datetime]$D.exportedAt } catch {}
+  if (-not $ra) { $P += 'when the reply arrived is not known, so it may answer an older request' }
+  elseif ($ea -and $ra -lt $ea.AddSeconds(-60)) { $P += ('the reply arrived ' + $ra.ToString('h:mm tt') + ', before the request file was made (' + $ea.ToString('h:mm tt') + ')') }
+  return $P
+}
+function Get-HikSupportLine($D) {
+  return ('  Call Hik support with the serial and the SADP log: serial ' + [string]$D.serial + ' (' + ([string]$D.model).Trim() + '), SADP log ' + $(if ($script:HkLogPath) { $script:HkLogPath } else { 'hikreset.log in the Toolkit''s runs\HikReset folder' }) + '.')
+}
+# may a refused device get a fresh export now? { ok; why }
+function Get-HikRetryReadiness($D, $Live) {
+  $n = 0; try { $n = [int]$D.rebootRetries } catch {}
+  $who = ([string]$D.model + ' ' + [string]$D.ip).Trim()
+  if ($D.PSObject.Properties['refusedChecksOk'] -and $D.refusedChecksOk -and $n -ge $script:HkMaxRebootRetries) { return [pscustomobject]@{ ok = $false; why = ('  ' + $who + ': refused again after ' + $n + ' reboot-retries. No more retries from the Toolkit.' + "`n" + (Get-HikSupportLine $D)) } }
+  if (-not $Live) { return [pscustomobject]@{ ok = $false; why = ('  ' + $who + ' is not seen right now. Wait until SADP shows it Active, then press Retry.') } }
+  if ($Live.PSObject.Properties['activated'] -and -not $Live.activated) { return [pscustomobject]@{ ok = $false; why = ('  ' + $who + ' does not show as Active yet. Wait until SADP shows it Active, then press Retry.') } }
+  if ($D.PSObject.Properties['refusedChecksOk'] -and $D.refusedChecksOk -and [string]$D.bootTime -and [string]$Live.bootTime -and [string]$Live.bootTime -eq [string]$D.bootTime) {
+    return [pscustomobject]@{ ok = $false; why = ('  ' + $who + ' has not restarted since it refused the file. Reboot the camera: unplug it or its PoE port for 10 seconds. Wait until SADP shows it Active, then press Retry.') }
+  }
+  return [pscustomobject]@{ ok = $true; why = '' }
+}
+
 # ---------------- 1. find + export ----------------
 # $Devices = Find-HikSadp result. A device that is not activated has no password to reset: it is only activated (the caller does that).
 function Export-HikRequests($Devices, [string]$OutDir, $State, [string]$StatePath, [switch]$Redo) {
-  $made = @()
+  $made = @(); $newOnes = 0
   foreach ($dev in @($Devices | Where-Object { $_.activated })) {
     $cur = Get-HikStateDevice $State $dev.serial
     if ($cur -and -not $Redo -and $cur.status -in @('exported', 'submitted', 'replied') -and (Test-Path -LiteralPath $cur.requestFile) -and ([datetime]$cur.validUntil) -gt (Get-Date) -and $cur.bootTime -eq $dev.bootTime) {
       Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': request file from ' + ([datetime]$cur.exportedAt).ToString('h:mm tt') + ' is still good - not asking the device again (a new one would cancel it).'); $made += $cur; continue
+    }
+    # 2.2.9: a camera on no network of this PC: stop BEFORE exporting (an export from here cannot be finished; it would only void)
+    if (-not (Test-HikOnLocalSubnet $dev $Devices)) { if ($cur) { Set-HikStateField $cur 'note' 'on another network than this PC' }; continue }
+    # 2.2.9: a camera that refused Hik's file after correct steps gets a fresh export only after a reboot, at most 2 times
+    $retryN = 0
+    if ($cur -and [string]$cur.status -eq 'refused') {
+      $rr = Get-HikRetryReadiness $cur $dev
+      if (-not $rr.ok) { foreach ($l in ([string]$rr.why -split "`n")) { Hk-Say $l 'Yellow' }; continue }
+      if ($cur.PSObject.Properties['refusedChecksOk'] -and $cur.refusedChecksOk) { $retryN = 1; try { $retryN = [int]$cur.rebootRetries + 1 } catch {} }
     }
     $vw = Get-HikVoidWarning $cur $dev; if ($vw) { Hk-Say $vw $(if ($vw -match 'WARNING') { 'Red' } else { 'Yellow' }) }
     $e = Request-HikResetExport $dev
@@ -78,10 +264,14 @@ function Export-HikRequests($Devices, [string]$OutDir, $State, [string]$StatePat
     $f = Save-HikResetFile $dev $e $OutDir
     if (-not $f) { Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': its answer had no request code - no file saved') 'Yellow'; continue }
     $d = Add-HikStateDevice $State $dev $f $dev.bootTime
+    Set-HikStateField $d 'refusedChecksOk' $false
+    if ($retryN) { Set-HikStateField $d 'rebootRetries' $retryN }
     Save-HikState $StatePath $State
-    Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + '  serial ' + $dev.serial + ': request file saved (' + (Split-Path -Leaf $f) + ')') 'Green'
-    $made += $d
+    Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + '  serial ' + $dev.serial + ': request file saved (' + (Split-Path -Leaf $f) + ', ' + ([datetime]$d.exportedAt).ToString('h:mm tt') + ')') 'Green'
+    if ($retryN) { Hk-Say ('  Reboot-retry ' + $retryN + ' of ' + $script:HkMaxRebootRetries + ' after the refusal: this is the ONE new request file. Submit it and import only Hik''s reply to it.') 'Cyan' }
+    $made += $d; $newOnes++
   }
+  if ($newOnes) { Show-HikSessionGuard }   # 2.2.9
   return $made
 }
 
@@ -108,10 +298,10 @@ function Submit-HikRequests($State, [string]$StatePath, $Form, [int]$PerDeviceTi
             $r = Fill-HikPortalForm $s $Form $d $d.requestFile
             $bad = @(Test-PortalFilled $r $d)
             if ($bad.Count) { Hk-Say ('  Form filled, but check: ' + ($bad -join '; ')) 'Yellow' } else { Hk-Say ('  Form filled in: ' + $Form.firstName + ' ' + $Form.lastName + ', ' + $Form.company + ', ' + $Form.email + ', serial ' + $d.shortSerial + ', file attached.') 'Green' }
-            Hk-Say '  YOUR STEP: type the picture code in the browser window and press Submit. (The code is there to tell a person from a program, so the Toolkit leaves it to you.)' 'Cyan'
+            Hk-Say '  YOUR STEP: type the picture code in the browser window and press Submit; if Hikvision shows a slider, slide it. (These are there to tell a person from a program, so the Toolkit leaves them to you.)' 'Cyan'
             $res = Wait-PortalSubmitted $s $PerDeviceTimeoutSec $null ({ $f = @(Restore-PortalFields $s $Form $d); if ($f.Count) { Hk-Say ('  (the page cleared ' + ($f -join ', ') + ' - filled again)') } }.GetNewClosure())
             if ($res -eq 'submitted') { $ok = $true; Set-HikStateField $d 'status' 'submitted'; Set-HikStateField $d 'submittedAt' (Get-Date -Format 's'); Hk-Say ('  Hikvision accepted it. The reply goes to ' + $Form.email) 'Green' }
-            else { Hk-Say ('  Not submitted (' + $res + '). Run it again to retry this one.') 'Yellow' }
+            else { foreach ($l in @(Get-HikSubmitNextSteps $d $res $PerDeviceTimeoutSec)) { Hk-Say $l 'Yellow' } }
           }
         } finally { Stop-HikBrowserSession $s }
       } else { Hk-Say '  Could not open the browser window.' 'Yellow' }
@@ -129,6 +319,16 @@ function Submit-HikRequests($State, [string]$StatePath, $Form, [int]$PerDeviceTi
   return $sent
 }
 
+# 2.2.9: Hik's page was not finished in time (the slider / picture code / Submit is a person's step): say what to do next
+function Get-HikSubmitNextSteps($D, [string]$Res, [int]$TimeoutSec) {
+  $min = [int][math]::Max(1, [math]::Round($TimeoutSec / 60))
+  $what = $(if ($Res -eq 'closed') { 'The browser window was closed before Hikvision took the form' } else { 'Not submitted: nobody finished Hikvision''s page in ' + $min + ' min (the slider or picture code, then Submit)' })
+  return @(
+    ('  ' + $what + '.'),
+    ('  ' + (Get-HikExportLabel $D) + ' is still good - do NOT export again (a new export voids it).'),
+    '  Next: run it again (press Fix this site again, or HikReset -Mode Submit). When the window comes up, solve the slider in it, type the picture code and press Submit.'
+  )
+}
 # ---------------- registering request files that already exist (made by SADP / HiTools / an earlier run) ----------------
 # SADP's own export is one line: <code><DeviceSN>. The serial at the end names the device; $Devices (Find-HikSadp) gives the rest.
 function Register-HikRequestFiles($State, [string]$Dir, $Devices, [string]$StatePath) {
@@ -226,7 +426,7 @@ function Receive-HikReplies($State, [string]$StatePath, $Cfg, [string]$ToolkitDi
     Set-HikStateField $d 'replyAt' $(if ($at) { $at.ToString('s') } else { '' }); Set-HikStateField $d 'replyForExport' $(if ($d.PSObject.Properties['exportId']) { [string]$d.exportId } else { '' })
     $got += $d
     $how = $(if ([string]$x.src -like 'relay:*') { 'the reply mailbox' } elseif (& $isDrop $x.src) { 'the "I got Hik''s email" button' } else { 'the replies folder' })
-    Hk-Say ('  Reply for ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ') found in ' + $how + ', matched by ' + $x.how + $(if ($at -and $exp) { '; it came ' + $at.ToString('h:mm tt') + ', after the request file made ' + $exp.ToString('h:mm tt') } else { '' }) + '.') 'Green'
+    Hk-Say ('  Reply for ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ') found in ' + $how + ', matched by ' + $x.how + $(if ($at) { '; it came ' + $at.ToString('h:mm tt') + ', after ' } else { '; it answers ' }) + (Get-HikExportLabel $d) + '.') 'Green'
     if (& $isDrop $x.src) { Remove-Item -LiteralPath $x.src -Force -ErrorAction SilentlyContinue }
   }
   foreach ($s in @($m.skipped)) { if (-not $s.quiet -and (& $isDrop $s.src)) { Move-HikDropNotUsed $InboxDir ([string]$s.src) } }
@@ -286,14 +486,37 @@ function Get-HikRefusedSteps($d) {
     '    Do not import older files from Downloads: each export voids every earlier reply.'
   )
 }
+# 2.2.9: what to say after a refusal: reboot + Retry when the checks passed (support after 2), else what was wrong + the steps
+function Get-HikRefusedMessage($D, $Problems) {
+  $n = 0; try { $n = [int]$D.rebootRetries } catch {}
+  if (-not @($Problems).Count) {
+    if ($n -ge $script:HkMaxRebootRetries) {
+      return @(('  Steps were correct, and the camera also refused after ' + $n + ' reboot-retries.'), (Get-HikSupportLine $D))
+    }
+    return @(
+      '  Steps were correct. Reboot the camera: unplug it or its PoE port for 10 seconds. Wait until SADP shows it Active, then press Retry.',
+      ('    Checked: the reply answers the latest export (' + (Get-HikExportLabel $D) + '), no export after it, the camera did not restart before the import, and it is on this PC''s network.'),
+      '    Retry = press Fix this site again (or HikReset -Mode Retry). After the power-cycle it makes ONE new request file, you submit it on Hikvision''s page, and only the reply to it is imported, without exporting again in between.',
+      ('    Reboot-retries left: ' + ($script:HkMaxRebootRetries - $n) + ' of ' + $script:HkMaxRebootRetries + '. After that: Hik support.')
+    )
+  }
+  $L = @('  The Toolkit''s checks found what was wrong:')
+  foreach ($p in @($Problems)) { $L += ('    - ' + $p) }
+  return @($L) + @(Get-HikRefusedSteps $D)
+}
 # $VerifyLogin = scriptblock { param($ip, $password) -> $true when the password logs in } (the caller supplies Test-FsLogin).
 # $FindIp = scriptblock { param($dev) -> the device's current IP (it may have moved) }.
 function Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [scriptblock]$VerifyLogin, [string]$Only = '', $OnlySerials = $null) {
   $done = @()
   foreach ($d in @($State.devices | Where-Object { $_.status -eq 'replied' -and ($null -eq $OnlySerials -or @($OnlySerials) -contains [string]$_.serial) -and (-not $Only -or $_.serial -like ('*' + $Only + '*') -or $_.ip -eq $Only -or $_.mac -eq $Only) })) {
-    Hk-Say ''; Hk-Say ('Importing the unlock file into ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ')') 'Cyan'
-    $live = @(Find-HikSadp 3 | Where-Object { $_.mac -eq $d.mac })[0]
+    # 2.2.9: the reply chosen is named with the export it answers (time and file), and the one-session rule is said again
+    Hk-Say ''; Hk-Say ('Importing the unlock file ' + $(if ([string]$d.replyFile) { Split-Path -Leaf ([string]$d.replyFile) } else { '' }) + ' into ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ') - Hikvision''s reply to ' + (Get-HikExportLabel $d)) 'Cyan'
+    Show-HikSessionGuard
+    $seen = @(Find-HikSadp 3)
+    $live = @($seen | Where-Object { $_.mac -eq $d.mac })[0]
     if (-not $live) { Hk-Say '  The device does not answer on the network right now.' 'Yellow'; Set-HikStateField $d 'note' 'not answering'; continue }
+    # 2.2.9: the reset needs the camera on a network of this PC; the reply is kept for when it is (not marked refused)
+    if (-not (Test-HikOnLocalSubnet $live $seen)) { Set-HikStateField $d 'note' 'on another network than this PC'; Save-HikState $StatePath $State; continue }
     if ($d.bootTime -and $live.bootTime -and $live.bootTime -ne $d.bootTime) { Hk-Say '  This device restarted after the request file was made, so Hikvision''s file no longer fits it. It needs a new request.' 'Red'; Set-HikStateField $d 'status' 'expired'; Set-HikStateField $d 'note' 'restarted since the request'; Save-HikState $StatePath $State; continue }
     if (([datetime]$d.validUntil) -lt (Get-Date)) { Hk-Say '  The file is older than 48 hours - Hikvision''s files stop working then. It needs a new request.' 'Red'; Set-HikStateField $d 'status' 'expired'; Save-HikState $StatePath $State; continue }
     $u = Read-HikUnlock $d.replyFile
@@ -305,15 +528,21 @@ function Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [sc
       # 2.2.3 (Codex #29): wait for the device to be back (SADP, no login), then at most 2 login tries - a wrong password 6 times
       # in a row is how Hikvision locks a device
       $logins = 0; for ($i = 0; $i -lt 8 -and -not $chk -and $logins -lt $script:HkVerifyMaxLogins; $i++) { $now = @(Find-HikSadp 2 | Where-Object { $_.mac -eq $d.mac })[0]; if ($now) { $ip = $now.ip; $logins++; try { $chk = [bool](& $VerifyLogin $ip $NewPassword) } catch {} }; if (-not $chk) { Start-Sleep -Seconds 4 } }
-      if ($chk) { Set-HikStateField $d 'status' 'verified'; Set-HikStateField $d 'verifiedAt' (Get-Date -Format 's'); Hk-Say ('  Reset done. The site password logs in on ' + $ip + '.') 'Green'; $done += $d }
+      if ($chk) { Set-HikStateField $d 'status' 'verified'; Set-HikStateField $d 'verifiedAt' (Get-Date -Format 's'); Hk-Say ('  Reset done. The site password logs in on ' + $ip + '.') 'Green'; $done += $d; Show-HikExtraIpReminder $live }
       else { Hk-Say ('  The device accepted the file, but the site password does not log in yet on ' + $ip + '. Check it in a minute.') 'Yellow' }
     } elseif ([string]$r.result -and [string]$r.result -notmatch '^(?i)success') {
       # 2.2.8: the device ANSWERED and said no (SADP shows it as "Resetting the password failed. Device refused to process").
       # Almost always: the file does not belong to the device's latest request (an older reply, or a new export made after it was
       # sent). Importing it again, or other files from Downloads, cannot work; a new export now would void the next reply too.
-      Set-HikStateField $d 'status' 'refused'; Set-HikStateField $d 'note' ('the device refused the unlock file (it answered "' + [string]$r.result + '")'); Save-HikState $StatePath $State
+      Set-HikStateField $d 'status' 'refused'; Set-HikStateField $d 'note' ('the device refused the unlock file (it answered "' + [string]$r.result + '")')
       Hk-Say ('  The device REFUSED Hikvision''s file (it answered "' + [string]$r.result + '"). This file will not be tried again.') 'Red'
-      foreach ($l in @(Get-HikRefusedSteps $d)) { Hk-Say $l 'Yellow' }
+      # 2.2.9 (Moshe, Nov 8 9:55 PM): when the Toolkit's own checks passed, the steps were right: reboot the camera, then Retry
+      # (at most 2 reboot-retries, then Hik support). When a check did not pass, say what was wrong instead.
+      $probs = @(Get-HikRefusalProblems $State $d)
+      Set-HikStateField $d 'refusedChecksOk' (-not $probs.Count)
+      if (-not $d.PSObject.Properties['rebootRetries']) { Set-HikStateField $d 'rebootRetries' 0 }
+      Save-HikState $StatePath $State
+      foreach ($l in @(Get-HikRefusedMessage $d $probs)) { Hk-Say $l $(if ($l -match '^\s*(Steps were correct|Call Hik support)') { 'Cyan' } else { 'Yellow' }) }
     } else {
       Hk-Say ('  The import did not work (' + $r.error + ').') 'Yellow'
       Set-HikStateField $d 'note' ('import: ' + $r.error)
@@ -407,6 +636,8 @@ function Invoke-HikResetStage {
   }
   # a device that is already done is never asked for a new request file
   $todo = @($devs | Where-Object { $_.activated -and $fixed -notcontains (ConvertTo-SadpMac ([string]$_.mac)) })
+  # 2.2.9: a camera on no network of this PC is not exported (the steps are said once); it is pending with the reason
+  $todo = @(foreach ($t in $todo) { if (Test-HikOnLocalSubnet $t $devs) { $t } else { $pending += [pscustomobject]@{ mac = $t.mac; reason = [string]$script:HkSubnetBlocked[[string]$t.serial] } } })
   # an old state (reply still waiting from an earlier run) is picked up as it is
   Hk-Say ('Asking each of the ' + $todo.Count + ' device(s) for its reset request file (same as SADP "Forgot password > Export file")...')
   [void](Export-HikRequests $todo $reqDir $state $statePath)
@@ -437,7 +668,8 @@ function Invoke-HikResetStage {
   if ($script:HkStatus) { try { & $script:HkStatus ([pscustomobject]@{ waiting = @(); relay = $script:HkRelayStatus; replyTo = [string]$Config.replyTo; minutesLeft = 0; line = ''; done = $true }) } catch {} }
   foreach ($d in @(& $forMine $state)) {
     if ($fixed -contains (ConvertTo-SadpMac ([string]$d.mac))) { continue }
-    $why = switch ($d.status) { 'submitted' { 'sent to Hikvision, waiting for the unlock email (it can take a few hours). When it comes: press "I got Hik''s email" (or, with the reply mailbox set up, just press Fix this site again). The device must NOT restart meanwhile.' } 'exported' { 'request file made, not sent to Hikvision yet' } 'replied' { 'unlock file arrived but the import did not work' + $(if ($d.note) { ' (' + $d.note + ')' } else { '' }) } 'expired' { 'the request is no longer valid (' + $d.note + '): it needs a new one' } 'refused' { 'the device refused Hikvision''s file. Power-cycle it, then press Fix this site again: it makes ONE new request; submit it and import only the reply to it (no export in between)' } default { [string]$d.status } }
+    if ($script:HkSubnetBlocked.ContainsKey([string]$d.serial) -and @($pending | Where-Object { (ConvertTo-SadpMac ([string]$_.mac)) -eq (ConvertTo-SadpMac ([string]$d.mac)) }).Count) { continue }   # 2.2.9: said once
+    $why = switch ($d.status) { 'submitted' { 'sent to Hikvision, waiting for the unlock email (it can take a few hours). When it comes: press "I got Hik''s email" (or, with the reply mailbox set up, just press Fix this site again). The device must NOT restart meanwhile.' } 'exported' { 'request file made, not sent to Hikvision yet' } 'replied' { 'unlock file arrived but the import did not work' + $(if ($d.note) { ' (' + $d.note + ')' } else { '' }) } 'expired' { 'the request is no longer valid (' + $d.note + '): it needs a new one' } 'refused' { $(if (-not ($d.PSObject.Properties['refusedChecksOk'] -and $d.refusedChecksOk -and [int]$d.rebootRetries -ge $script:HkMaxRebootRetries)) { 'the device refused Hikvision''s file. Power-cycle it (unplug it or its PoE port for 10 seconds), wait until SADP shows it Active, then press Fix this site again: it makes ONE new request; submit it and import only the reply to it (no export in between)' } else { 'the device refused Hikvision''s file after correct steps and ' + [int]$d.rebootRetries + ' reboot-retries: call Hik support with the serial (' + [string]$d.serial + ') and the SADP log' }) } default { [string]$d.status } }
     $pending += [pscustomobject]@{ mac = $d.mac; reason = $why }
   }
   return [pscustomobject]@{ fixed = @($fixed); pending = @($pending) }

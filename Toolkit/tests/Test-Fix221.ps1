@@ -212,6 +212,7 @@ Eq $work.Count 1 'a plan with only an NVR reset is not "Nothing to change"'
 # =====================================================================================
 Write-Host 'H7. the official reset only touches this run''s approved devices'
 . (Join-Path $tk 'HikMail.ps1'); . (Join-Path $tk 'HikPortal.ps1'); . (Join-Path $tk 'HikResetFlow.ps1')
+$script:HkSubnetCheckOff = $true   # 2.2.9: these devices are stand-ins with made-up addresses (the subnet check is Test-Fix229 HS1)
 $script:HkSay = { param($t, $c) }; $script:HkAsk = { param($t) '' }
 $script:imported = New-Object System.Collections.ArrayList
 function Find-HikSadp([int]$s) { return @([pscustomobject]@{ mac = 'aa-aa-aa-00-00-01'; ip = '192.168.1.31'; bootTime = '' }, [pscustomobject]@{ mac = 'aa-aa-aa-00-00-02'; ip = '192.168.1.32'; bootTime = '' }) }

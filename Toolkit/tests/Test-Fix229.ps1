@@ -7,6 +7,9 @@
        Never a switch to static IP; never a suggested address that answers ping (or that a Hik device here already has).
    HS2 one-session guard: "Keep SADP open from export until import. Export once. Submit that file. Import only Hik's reply to it."
        and the export's time and file name next to the reply chosen.
+   HS4 (Moshe 9:55 PM) "device refused" when the Toolkit's checks passed: "Steps were correct. Reboot the camera ..." then Retry =
+       one fresh cycle; at most 2 reboot-retries, then "Call Hik support with the serial and the SADP log."; checks not passed = what
+       was wrong instead.
    HS3 slider: a clear "Solve the slider in the browser window now" line when Hik's page shows its slider, the window brought to the
        front, a reminder while waiting (never silent), and a timeout that says what to do next.
    Real functions (HikResetFlow, HikPortal). Only the device's SADP answers, this PC's adapter list, ping and the browser's page
@@ -116,8 +119,8 @@ try {
   $real = $null; $rthrew = ''; try { $real = @(Get-HikLocalNets) } catch { $rthrew = $_.Exception.Message }
   Check (-not $rthrew -and @($real | Where-Object { -not $_.ip -or $null -eq $_.prefix }).Count -eq 0) ('HS1 this PC''s own adapters are read without an error (' + @($real).Count + ' address(es): ' + (($real | ForEach-Object { $_.name + ' ' + $_.ip + '/' + $_.prefix }) -join ', ') + ')') $rthrew
   # no adapter is changed by code
-  $flowSrc = [IO.File]::ReadAllText((Join-Path $tk 'HikResetFlow.ps1'))
-  Check ($flowSrc -notmatch '(?i)New-NetIPAddress|Set-NetIPInterface|Set-NetIPAddress|Remove-NetIPAddress|Start-Process[^\r\n]*netsh|&\s*netsh|netsh(\.exe)?\s+interface[^\r\n]*\)\s*\|' ) 'HS1 no code changes an adapter (no New-NetIPAddress / Set-NetIPInterface / netsh run): it only checks and tells'
+  $flowSrc = [IO.File]::ReadAllText((Join-Path $tk 'HikResetFlow.ps1')); $hrSrc0 = [IO.File]::ReadAllText((Join-Path $tk 'HikReset.ps1'))
+  Check (($flowSrc + $hrSrc0) -notmatch '(?i)New-NetIPAddress|Set-NetIPInterface|Set-NetIPAddress|Remove-NetIPAddress|Start-Process[^\r\n]*netsh|&\s*''?netsh|Invoke-Expression[^\r\n]*netsh|cmd(\.exe)?\s*/c[^\r\n]*netsh') 'HS1 no code changes an adapter (no New-NetIPAddress / Set-NetIPInterface / netsh run): it only checks and tells'
 
   # =====================================================================================
   Write-Host 'HS2. one session: the guard text, and the export''s time + file next to the reply chosen'
@@ -156,7 +159,7 @@ try {
     if ($Js -notmatch 'formShown') { return 1 }
     $script:pollN++
     $modal = ($script:pollN -ge 3 -and $script:pollN -le 12) -or ($script:pollN -ge 20)
-    return [pscustomobject]@{ url = 'https://www.hikvision.com/en/support/tools/password-reset/'; formShown = $true; clicks = 0; posts = @(); modal = $modal; text = 'Reset form'; base = 'Reset form' }
+    return [pscustomobject]@{ url = 'https://www.hikvision.com/en/support/tools/password-reset/'; formShown = $true; clicks = 0; posts = @(); modal = $modal; slider = $modal; text = 'Reset form'; base = 'Reset form' }
   }
   $script:PortalPollMs = 40; $script:PortalRemindSec = 1
   $sess = [pscustomobject]@{ cdp = 'x'; proc = [pscustomobject]@{ HasExited = $false; MainWindowHandle = [IntPtr]::Zero }; profile = ''; port = 1; exe = 'x' }
@@ -187,6 +190,64 @@ try {
   $portalSrc = [IO.File]::ReadAllText((Join-Path $tk 'HikPortal.ps1'))
   Check ($portalSrc -match 'SetForegroundWindow') 'HS3 on Windows the browser window itself is also raised (SetForegroundWindow), beyond the page''s bringToFront'
 
+  # =====================================================================================
+  Write-Host 'HS4. "device refused" after correct steps: reboot the camera, then Retry (at most 2), then Hik support'
+  $REBOOT = 'Steps were correct. Reboot the camera: unplug it or its PoE port for 10 seconds. Wait until SADP shows it Active, then press Retry.'
+  $script:HkLocalNets = @((Net 'Ethernet' '10.243.1.50' 24 $true 1)); $script:HkSaidOnce = @{}
+  $sp7 = Join-Path $tmp 'hs4/state.json'; $st7 = Read-HikState $sp7; $rq7 = Join-Path $tmp 'hs4/requests'
+  $script:boot = '2026-11-08 21:08:00'
+  function Live7 { return [pscustomobject]@{ serial = $SN; shortSerial = $SH; mac = $MAC; model = 'ECI-T44F2'; ip = '10.243.1.7'; mask = '255.255.255.0'; gw = ''; kind = 'camera'; activated = $true; bootTime = $script:boot; salt = ''; encrypt = $false } }
+  function Find-HikSadp($s) { return @(Live7) }
+  function Import-HikUnlock($l, $u, $pw) { $script:importN++; return [pscustomobject]@{ ok = $false; result = 'failed'; form = ''; tries = 2; error = 'the device answered "failed"' } }
+  function Replied7 {
+    $d = Get-HikStateDevice $st7 $SN; $rf = Join-Path $tmp 'hs4/reply.xml'; [IO.File]::WriteAllText($rf, $unlockXml)
+    Set-HikStateField $d 'status' 'replied'; Set-HikStateField $d 'replyFile' $rf; Set-HikStateField $d 'replyAt' ([datetime]$d.exportedAt).AddMinutes(2).ToString('s'); Set-HikStateField $d 'replyForExport' ([string]$d.exportId); Save-HikState $sp7 $st7
+  }
+  $script:exportN = 0; $null = Export-HikRequests @(Live7) $rq7 $st7 $sp7; Replied7
+  $script:said.Clear(); $script:importN = 0
+  $null = @(Import-HikReplies $st7 $sp7 'Site-Pass-1234' { param($ip, $p) $false })
+  $d7 = Get-HikStateDevice $st7 $SN
+  Check ($d7.status -eq 'refused' -and @($script:said | Where-Object { $_.Contains($REBOOT) }).Count -eq 1) 'HS4 refused although every check passed: "Steps were correct. Reboot the camera: unplug it or its PoE port for 10 seconds. Wait until SADP shows it Active, then press Retry."' (All)
+  Check (@(Said '(?i)Retry.{0,60}(Fix this site again|-Mode Retry)').Count -and @(Said '(?i)ONE new request').Count) 'HS4 ...it says where Retry is and that Retry is one fresh cycle (ONE new request, submit, its reply only)' (All)
+  # Retry before the reboot: no export
+  $script:said.Clear(); $script:exportN = 0
+  $null = Export-HikRequests @(Live7) $rq7 $st7 $sp7
+  Check ($script:exportN -eq 0 -and @(Said '(?i)has not restarted').Count -and @(Said '(?i)unplug it or its PoE port for 10 seconds').Count) 'HS4 Retry before the camera rebooted: no export (it would void nothing and fail the same way); it says to reboot first' (All)
+  # after the reboot: one fresh export, reboot-retry 1 of 2
+  $script:boot = '2026-11-08 21:40:00'; $script:said.Clear(); $script:exportN = 0
+  $null = Export-HikRequests @(Live7) $rq7 $st7 $sp7
+  $d7 = Get-HikStateDevice $st7 $SN
+  Check ($script:exportN -eq 1 -and $d7.status -eq 'exported' -and [int]$d7.rebootRetries -eq 1 -and @(Said 'Reboot-retry 1 of 2').Count) 'HS4 after the reboot, Retry makes ONE fresh export (reboot-retry 1 of 2)' (All)
+  # refused again -> reboot again (1 left) -> reboot-retry 2 -> refused again -> Hik support
+  Replied7; $script:said.Clear()
+  $null = @(Import-HikReplies $st7 $sp7 'Site-Pass-1234' { param($ip, $p) $false })
+  Check (@($script:said | Where-Object { $_.Contains($REBOOT) }).Count -eq 1 -and @(Said 'left: 1 of 2').Count) 'HS4 refused again after reboot-retry 1: the reboot message again, 1 retry left' (All)
+  $script:boot = '2026-11-08 21:55:00'; $script:exportN = 0; $script:said.Clear()
+  $null = Export-HikRequests @(Live7) $rq7 $st7 $sp7
+  Check ($script:exportN -eq 1 -and [int](Get-HikStateDevice $st7 $SN).rebootRetries -eq 2) 'HS4 reboot-retry 2 of 2 makes one more fresh export'
+  Replied7; $script:said.Clear()
+  $null = @(Import-HikReplies $st7 $sp7 'Site-Pass-1234' { param($ip, $p) $false })
+  Check (-not @($script:said | Where-Object { $_.Contains($REBOOT) }).Count -and @(Said 'Call Hik support with the serial and the SADP log').Count -and @(Said ([regex]::Escape($SN))).Count) 'HS4 refused after 2 reboot-retries: no third reboot; "Call Hik support with the serial and the SADP log." with the serial' (All)
+  $script:boot = '2026-11-08 22:10:00'; $script:exportN = 0; $script:said.Clear()
+  $null = Export-HikRequests @(Live7) $rq7 $st7 $sp7
+  Check ($script:exportN -eq 0 -and @(Said 'Call Hik support').Count) 'HS4 ...and no further export, even after another reboot (at most 2 reboot-retries)' (All)
+  $hs = Invoke-HikResetStage -Targets @([pscustomobject]@{ mac = $MAC }) -SitePassword 'x' -StateDir (Join-Path $tmp 'hs4') -Config (Get-HikConfig $null) -VerifyLogin { param($ip, $p) $false } -WaitMinutes 0 -InboxEverySec 1
+  Check (@($hs.pending | Where-Object { [string]$_.reason -match '(?i)Hik support' }).Count -eq 1) 'HS4 Fix this site''s end-of-run list says "call Hik support" for it' ((@($hs.pending) | ForEach-Object { $_.reason }) -join ' | ')
+  # checks NOT passed: say what was wrong instead of the reboot message
+  $sp8 = Join-Path $tmp 'hs4b/state.json'; $st8 = Read-HikState $sp8; $script:boot = '2026-11-08 21:08:00'
+  $null = Export-HikRequests @(Live7) (Join-Path $tmp 'hs4b/req') $st8 $sp8
+  $d8 = Get-HikStateDevice $st8 $SN; $rf8 = Join-Path $tmp 'hs4b/reply.xml'; [IO.File]::WriteAllText($rf8, $unlockXml)
+  Set-HikStateField $d8 'status' 'replied'; Set-HikStateField $d8 'replyFile' $rf8; Set-HikStateField $d8 'replyAt' ([datetime]$d8.exportedAt).AddMinutes(2).ToString('s'); Set-HikStateField $d8 'replyForExport' 'aaaaaaaaaaaa'; Save-HikState $sp8 $st8
+  $script:said.Clear()
+  $null = @(Import-HikReplies $st8 $sp8 'Site-Pass-1234' { param($ip, $p) $false })
+  Check (-not @($script:said | Where-Object { $_.Contains($REBOOT) }).Count -and @(Said '(?i)checks found what was wrong').Count -and @(Said '(?i)older export').Count -and @(Said '(?i)power.?cycle').Count) 'HS4 when a check did NOT pass (the reply answers an older export): it says what was wrong, not "Steps were correct"' (All)
+  # the entry point: HikReset.ps1 -Mode Retry
+  $exe = $(if ($PSVersionTable.PSEdition -eq 'Core') { (Get-Process -Id $PID).Path } else { Join-Path $PSHOME 'powershell.exe' })
+  $sd9 = Join-Path $tmp 'hs4c'; New-Item -ItemType Directory -Force -Path $sd9 | Out-Null
+  $cfg9 = Join-Path $sd9 'config.json'; '{ "form": { "firstName": "Moshe", "lastName": "Reichman", "email": "moshe@wireitct.com", "company": "WireIt CT LLC" } }' | Set-Content $cfg9
+  $d9 = (Get-HikStateDevice $st7 $SN); ($st7 | ConvertTo-Json -Depth 6) | Set-Content (Join-Path $sd9 'state.json') -Encoding UTF8
+  $o9 = & $exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $tk 'HikReset.ps1') -Mode Retry -StateDir $sd9 -ConfigPath $cfg9 2>&1 | Out-String
+  Check ($LASTEXITCODE -eq 0 -and $o9 -match 'Call Hik support with the serial and the SADP log' -and $o9 -match 'hikreset\.log' -and $o9 -notmatch '(?i)request file saved') 'HikReset.ps1 -Mode Retry after 2 reboot-retries: exit 0, no export, "Call Hik support" naming the SADP log file' $o9
   # =====================================================================================
   Write-Host 'version'
   $v = @(([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'ToolkitCore.ps1')), "TkBuiltVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'FixSiteCore.ps1')), "FsVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'FixSiteBw.ps1')), "FsVersion = '([0-9.]+)'")).Groups[1].Value, [string](Get-Content (Join-Path $repo 'version.json') -Raw | ConvertFrom-Json).version)

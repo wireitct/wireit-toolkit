@@ -37,6 +37,7 @@ $unlockXml = '<?xml version="1.0" encoding="UTF-8"?><ResetPassword><SerialNumber
 
 try {
   . (Join-Path $tk 'HikResetFlow.ps1'); . (Join-Path $tk 'HikEmailDrop.ps1')
+  $script:HkSubnetCheckOff = $true   # 2.2.9: these devices are stand-ins with made-up addresses (the subnet check is Test-Fix229 HS1)
   $script:said = New-Object System.Collections.ArrayList
   $script:HkSay = { param($t, $c) [void]$script:said.Add([string]$t) }; $script:HkAsk = { param($t) '' }
   $dev = [pscustomobject]@{ serial = $SN; shortSerial = $SH; mac = $MAC; model = 'ECI-T44F2'; ip = '10.243.1.7'; status = 'submitted' }
@@ -214,7 +215,7 @@ try {
   # =====================================================================================
   Write-Host 'version'
   $v = @(([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'ToolkitCore.ps1')), "TkBuiltVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'FixSiteCore.ps1')), "FsVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'FixSiteBw.ps1')), "FsVersion = '([0-9.]+)'")).Groups[1].Value, [string](Get-Content (Join-Path $repo 'version.json') -Raw | ConvertFrom-Json).version)
-  Check ((($v | Select-Object -Unique) -join ',') -eq '2.2.8') ('version 2.2.8 in ToolkitCore, FixSiteCore, FixSiteBw and version.json (' + ($v -join ',') + ')')
+  Check ((($v | Select-Object -Unique) -join ',') -eq '2.2.9') ('version 2.2.9 (2.2.9: bumped from 2.2.8) in ToolkitCore, FixSiteCore, FixSiteBw and version.json (' + ($v -join ',') + ')')
 } catch {
   $script:fail++; Write-Host ('FAIL the suite stopped: ' + $_.Exception.Message + ' at ' + $_.InvocationInfo.PositionMessage)
 } finally {

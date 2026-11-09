@@ -10,11 +10,13 @@
    Watch    look for Hikvision's reply now (reply relay + replies folder + inbox\hik); -WaitMinutes N keeps looking
    Import   apply the replies that have arrived (needs -PasswordFile or a typed password)
    Status   where every device stands
+   Retry    2.2.9: after "device refused" with correct steps and a reboot: ONE fresh cycle (export, submit, reply, import) for each
+            refused camera that has restarted (at most 2 reboot-retries, then: call Hik support with the serial and the SADP log)
  -RegisterDir <folder>   use request files that already exist (SADP/HiTools exports) instead of asking the devices again.
  State: <StateDir>\state.json - stop any time, run again, it carries on.
 #>
 param(
-  [ValidateSet('Run', 'Find', 'Export', 'Submit', 'Watch', 'Import', 'Status')][string]$Mode = 'Run',
+  [ValidateSet('Run', 'Find', 'Export', 'Submit', 'Watch', 'Import', 'Status', 'Retry')][string]$Mode = 'Run',
   [string]$StateDir = '', [string]$ConfigPath = '', [string]$RegisterDir = '', [string]$PasswordFile = '',
   [int]$WaitMinutes = 0, [string]$Only = '', [switch]$Redo, [string]$Site = '', [string]$SiteSecretsDir = '',
   [string]$SadpTest = '', [string]$PortalUrlOverride = ''
@@ -36,6 +38,7 @@ New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 $statePath = Join-Path $StateDir 'state.json'; $reqDir = Join-Path $StateDir 'requests'; $repDir = Join-Path $StateDir 'replies'; $secDir = Join-Path $here 'vault'
 $script:FsLegacySecretsDir = Join-Path $here 'secrets'   # 2.2.3 (Codex #47): the installer moved site passwords to vault\ (secrets\ = old PCs)
 $logFile = Join-Path $StateDir 'hikreset.log'
+$script:HkLogPath = $logFile   # 2.2.9: named in "call Hik support with the serial and the SADP log"
 $script:SadpLog = { param($l) try { Add-Content -LiteralPath $logFile -Value ((Get-Date -Format 's') + ' ' + $l) } catch {} }
 $script:HkSay = { param($t, $c) $col = switch ($c) { 'Green' { 'Green' } 'Yellow' { 'Yellow' } 'Red' { 'Red' } 'Cyan' { 'Cyan' } default { 'Gray' } }; Write-Host $t -ForegroundColor $col; try { Add-Content -LiteralPath $logFile -Value ((Get-Date -Format 's') + ' ' + $t) } catch {} }
 $state = Read-HikState $statePath
@@ -43,19 +46,41 @@ function Show-Devices($devs) {
   foreach ($d in $devs) { Hk-Say ('{0,-6} {1,-14} {2,-18} {3,-17} {4,-16} {5}  {6}' -f $d.kind, $d.model, $d.serial, $d.mac, $d.ip, $d.firmware.Split(' ')[0], $(if ($d.activated) { 'activated (password set)' } else { 'NOT activated' })) }
 }
 if ($Mode -eq 'Status') { Format-HikStatus $state | ForEach-Object { Write-Host $_ }; exit 0 }
+# 2.2.9 (Moshe, Nov 8 9:55 PM): Retry = one fresh cycle for each camera that refused Hik's file, once it has rebooted
+$retryDevs = $null
+if ($Mode -eq 'Retry') {
+  Hk-Say 'Retry after "device refused": one fresh cycle (export once, submit, import only the reply to it)' 'Cyan'
+  $seenR = @(Find-HikSadp 4); $retryDevs = @()
+  $refused = @(@($state.devices) | Where-Object { [string]$_.status -eq 'refused' -and (-not $Only -or [string]$_.serial -like ('*' + $Only + '*') -or [string]$_.ip -eq $Only -or [string]$_.mac -eq $Only) })
+  if (-not $refused.Count) { Hk-Say 'No camera here has refused Hikvision''s file - nothing to retry.'; Format-HikStatus $state | ForEach-Object { Hk-Say ('  ' + $_) }; exit 0 }
+  foreach ($d in $refused) {
+    $live = @($seenR | Where-Object { $_.mac -eq $d.mac })[0]
+    $rr = Get-HikRetryReadiness $d $live
+    if ($rr.ok) { $retryDevs += $live } else { foreach ($l in ([string]$rr.why -split "`n")) { Hk-Say $l 'Yellow' } }
+  }
+  if (-not $retryDevs.Count) { Format-HikStatus $state | ForEach-Object { Hk-Say ('  ' + $_) }; exit 0 }
+  $Mode = 'Run'
+}
 if ($Mode -in @('Run', 'Find', 'Export')) {
-  Hk-Say 'Looking for Hikvision devices on every network this PC is plugged into (any IP range)...' 'Cyan'
-  $devs = @(Find-HikSadp 4)
-  if ($Only) { $devs = @($devs | Where-Object { $_.serial -like ('*' + $Only + '*') -or $_.ip -eq $Only -or $_.mac -eq $Only }) }
+  if ($null -ne $retryDevs) { $devs = @($retryDevs) }
+  else {
+    Hk-Say 'Looking for Hikvision devices on every network this PC is plugged into (any IP range)...' 'Cyan'
+    $devs = @(Find-HikSadp 4)
+    if ($Only) { $devs = @($devs | Where-Object { $_.serial -like ('*' + $Only + '*') -or $_.ip -eq $Only -or $_.mac -eq $Only }) }
+  }
   Hk-Say ('Found ' + $devs.Count + ' Hikvision device(s):')
   Show-Devices $devs
   if ($Mode -eq 'Find') { exit 0 }
-  if ($RegisterDir) { Hk-Say ('Using the request files already in ' + $RegisterDir); [void](Register-HikRequestFiles $state $RegisterDir $devs $statePath) }
+  if ($RegisterDir) {
+    Hk-Say ('Using the request files already in ' + $RegisterDir); [void](Register-HikRequestFiles $state $RegisterDir $devs $statePath)
+    Show-HikSessionGuard   # 2.2.9: the SADP path - one session from that export to its import
+    foreach ($dv in $devs) { [void](Test-HikOnLocalSubnet $dv $devs) }   # 2.2.9: said now; the import stops if it is still so
+  }
   else { Hk-Say 'Asking each device for its password-reset request file (the same step as SADP "Forgot password > Export file")...' 'Cyan'; [void](Export-HikRequests $devs $reqDir $state $statePath -Redo:$Redo) }
   if ($Mode -eq 'Export') { Format-HikStatus $state | ForEach-Object { Write-Host $_ }; exit 0 }
 }
 # 2.2.3 (Codex #58): -Only limits EVERY stage: the submission sees only the matching saved devices (old pending ones stay out)
-$onlySerials = $null; if ($Only) { $onlySerials = @(@($state.devices) | Where-Object { [string]$_.serial -like ('*' + $Only + '*') -or [string]$_.ip -eq $Only -or [string]$_.mac -eq $Only } | ForEach-Object { [string]$_.serial }) }
+$onlySerials = $null; if ($null -ne $retryDevs) { $onlySerials = @($retryDevs | ForEach-Object { [string]$_.serial }) } elseif ($Only) { $onlySerials = @(@($state.devices) | Where-Object { [string]$_.serial -like ('*' + $Only + '*') -or [string]$_.ip -eq $Only -or [string]$_.mac -eq $Only } | ForEach-Object { [string]$_.serial }) }
 if ($Mode -in @('Run', 'Submit')) { Hk-Say 'Hikvision''s reset page' 'Cyan'; [void](Submit-HikRequests $state $statePath (Get-HikFormFor $cfg) 900 $onlySerials) }
 if ($Mode -in @('Run', 'Watch')) {
   $end = (Get-Date).AddMinutes($WaitMinutes)
