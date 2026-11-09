@@ -415,20 +415,45 @@ function Hik-Search($t, [int]$trackId, [DateTime]$fromLocal, [DateTime]$toLocal,
   return @{ status = (XText $x 'responseStatusStrg'); segs = $segs }
 }
 function Get-HikContinuousDays($t, [int]$trackId, [DateTime]$anchor, [DateTime]$nowLocal, [int]$daysHeld) {
-  # how many days back from now the footage is continuous: one 36 h window at each checkpoint (1, 2, 3, 7, 14, ... the target);
-  # an empty window = a gap, retention stops at the checkpoint before it. A search that fails = $null (unknown, never a pass).
-  $tg = [int]$script:NhTargetDays; $pts = @(1, 2, 3, 5, 7, 10, 14, 21, 28, 35, 42, 49, 60, 75, 90, 120, 180, 270, 365)
-  if ($tg -gt 1) { $pts += @(($tg - 1), $tg) }
+  # how many days back from now the footage is continuous. An empty 36 h window = a gap: retention stops at the day before it.
+  # A search that fails = $null (unknown, never a pass).
+  # 2.2.12 (Codex P1-8): 2.2.11 looked at a few sample days (1, 2, 3, 5, 7, 10, 14, 21, 28 ...) and never at the days in between,
+  # so footage missing from 19 to 15 days ago still gave "30 days". Now EVERY day is checked up to the target (+1) or 60 days,
+  # whichever is more: one search per 7-day block (up to 200 clips); a block with that many clips is checked day by day.
+  # Days older than that are only sampled; $script:NhContinuousSampledFrom then says from which day (0 = every day checked).
+  $script:NhContinuousSampledFrom = 0
+  $tg = [int]$script:NhTargetDays
   $off = [int][math]::Floor(($nowLocal - $anchor).TotalDays)
-  $pts = @($pts | Where-Object { $_ -gt $off -and $_ -le $daysHeld } | Sort-Object -Unique)
   $ok = [math]::Min($off, $daysHeld)
+  $daily = [math]::Min($daysHeld, [math]::Max($tg + 1, 60))
+  $hasDay = { param($segs, [int]$k) $w0 = $nowLocal.AddDays(-$k); $w1 = $w0.AddHours(36); return [bool](@($segs | Where-Object { $_.end -ge $w0 -and $_.start -le $w1 }).Count) }
+  $k = $off + 1
+  while ($k -le $daily) {
+    $kEnd = [math]::Min($k + 6, $daily)
+    $from = $nowLocal.AddDays(-$kEnd); $r = Hik-Search $t $trackId $from $nowLocal.AddDays(-$k).AddHours(36) 200
+    if ($null -eq $r) { return $null }
+    $segs = @($r.segs)
+    $truncated = ($segs.Count -ge 200 -or [string]$r.status -match '(?i)more')
+    for ($d = $k; $d -le $kEnd; $d++) {
+      if ($truncated) { $one = Hik-Search $t $trackId $nowLocal.AddDays(-$d) $nowLocal.AddDays(-$d).AddHours(36) 1; if ($null -eq $one) { return $null }; $have = [bool]@($one.segs).Count }
+      else { $have = & $hasDay $segs $d }
+      if (-not $have) { return $ok }
+      $ok = $d
+    }
+    $k = $kEnd + 1
+  }
+  if ($daysHeld -le $daily) { return $daysHeld }
+  # older than the day-by-day part: sampled only (said so on the report, never counted as checked)
+  $pts = @(75, 90, 120, 180, 270, 365) + @($daysHeld)
+  $pts = @($pts | Where-Object { $_ -gt $daily -and $_ -le $daysHeld } | Sort-Object -Unique)
   foreach ($d in $pts) {
     $from = $nowLocal.AddDays(-$d); $r = Hik-Search $t $trackId $from $from.AddHours(36) 1
     if ($null -eq $r) { return $null }
-    if (-not @($r.segs).Count) { return $ok }
+    if (-not @($r.segs).Count) { break }
     $ok = $d
   }
-  return $daysHeld
+  if ($ok -gt $daily) { $script:NhContinuousSampledFrom = $daily + 1 }
+  return $ok
 }
 function Hik-Tracks($t) {
   $r = Http -Ip $t.ip -Path '/ISAPI/ContentMgmt/record/tracks' -Credential $t.cred -Port $t.port
@@ -490,6 +515,7 @@ function Hik-Recording($t) {
       $cd = Get-HikContinuousDays $t $tid $(if ($o.newest) { $o.newest } else { $nowLocal }) $nowLocal ([int]$o.days_held)
       if ($null -eq $cd) { Log ('ch ' + $c.ch + ': footage check between ' + $o.oldest + ' and now failed - days held unknown'); $o.days_held = $null; $o | Add-Member -NotePropertyName days_note -NotePropertyValue 'unknown (search failed)' -Force }
       elseif ($cd -lt $o.days_held) { Log ('ch ' + $c.ch + ': oldest clip ' + $o.oldest + ' but footage is continuous only ' + $cd + ' days back'); $o | Add-Member -NotePropertyName days_note -NotePropertyValue ('older clip ' + (Fmt-Local $o.oldest 'MMM d') + ' is isolated') -Force; $o.days_held = $cd }
+      if ($null -ne $cd -and [int]$script:NhContinuousSampledFrom -gt 0) { Log ('ch ' + $c.ch + ': footage checked every day for ' + ($script:NhContinuousSampledFrom - 1) + ' days; older days only sampled'); $o | Add-Member -NotePropertyName days_note -NotePropertyValue ('every day checked for ' + ($script:NhContinuousSampledFrom - 1) + ' days, older days only sampled') -Force }
     }
     $res += $o
   }

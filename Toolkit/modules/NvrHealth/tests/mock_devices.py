@@ -125,6 +125,10 @@ class H(BaseHTTPRequestHandler):
         if self.path.startswith('/mockctl/logouts/'): return self.send(200, json.dumps({'logouts': STATE.get(self.path.rsplit('/', 1)[1], {}).get('logouts', 0)}), 'application/json')
         if self.path.startswith('/mockctl/preauth/'): return self.send(200, json.dumps({'preauth': STATE.get(self.path.rsplit('/', 1)[1], {}).get('preauth', 0)}), 'application/json')
         if self.path.startswith('/mockctl/tries/'): return self.send(200, json.dumps({'tries': STATE.get(self.path.rsplit('/', 1)[1], {}).get('tries', 0)}), 'application/json')
+        mm0 = re.match(r'^/mockctl/set/([\d.]+)$', self.path)
+        if mm0:   # 2.2.12: tests set device fields (reboot_refuse, reboot_ignore, reboot_down seconds)
+            with LOCK: STATE.get(mm0.group(1), {}).update(json.loads(b or '{}'))
+            return self.send(200, '{}', 'application/json')
         if self.path.startswith('/mockctl/reset'):
             with LOCK: STATE = fresh_state(); WRITES = []
             return self.send(200, '{}', 'application/json')
@@ -135,6 +139,8 @@ class H(BaseHTTPRequestHandler):
         if not d: return self.send(404, 'no device')
         ah = self.headers.get('Authorization') or ''
         if ah and not ah.startswith('Bearer '): d['auth'] = d.get('auth', 0) + 1   # 1.6.1 tests: every password-carrying request counts
+        import time as _t
+        if d.get('down_until', 0) > _t.time(): return self.send(503, 'rebooting')   # 2.2.12: a restarting device does not answer
         if d['kind'] == 'hang':   # Nov 3 2026: a camera whose web service accepts the connection and never answers
             import time; time.sleep(8); return self.send(200, '')
         if d['kind'] == 'unvlock':   # a Uniview that locked its login after too many wrong passwords (shape UNVERIFIED on real gear)
@@ -176,7 +182,13 @@ class H(BaseHTTPRequestHandler):
             if d['mode'] == 'NTP': d['drift'] = 0
             return self.send(200, ok_xml())
         # Nov 3 2026 Release C fix buttons (mock only)
-        if p == '/ISAPI/System/reboot' and method == 'PUT': d['reboots'] = d.get('reboots', 0) + 1; return self.send(200, ok_xml())
+        if p == '/ISAPI/System/reboot' and method == 'PUT':
+            # 2.2.12 (Codex P1-10): a camera can answer HTTP 200 with a refusal inside, or accept and never restart
+            if d.get('reboot_refuse'): return self.send(200, '<?xml version="1.0" encoding="UTF-8"?><ResponseStatus %s><requestURL>/ISAPI/System/reboot</requestURL><statusCode>4</statusCode><statusString>Invalid Operation</statusString><subStatusCode>notSupport</subStatusCode></ResponseStatus>' % NS)
+            d['reboots'] = d.get('reboots', 0) + 1
+            if not d.get('reboot_ignore'):
+                import time as _t; d['down_until'] = _t.time() + float(d.get('reboot_down', 1.5))
+            return self.send(200, ok_xml())
         if p == '/ISAPI/Security/users/1' and method == 'PUT':
             npw = tag(b, 'password')
             if not npw: return self.send(400, ok_xml())
@@ -290,7 +302,12 @@ class H(BaseHTTPRequestHandler):
             if not self.digest_ok(d, method, path): return self.challenge()
             if method != 'GET': WRITES.append({'ip': ip, 'method': method, 'path': p, 'body': b})
             def ok(data): return self.send(200, json.dumps({'Response': {'ResponseURL': p, 'ResponseCode': 0, 'ResponseString': 'Succeed', 'Data': data}}), 'application/json')
-            if p == '/LAPI/V1.0/System/Reboot' and method == 'PUT': return ok({})
+            if p == '/LAPI/V1.0/System/Reboot' and method == 'PUT':
+                if d.get('reboot_refuse'): return self.send(200, json.dumps({'Response': {'ResponseURL': p, 'ResponseCode': 3, 'ResponseString': 'Not Authorized', 'Data': {}}}), 'application/json')
+                d['reboots'] = d.get('reboots', 0) + 1
+                if not d.get('reboot_ignore'):
+                    import time as _t; d['down_until'] = _t.time() + float(d.get('reboot_down', 1.5))
+                return ok({})
             if p == '/LAPI/V1.0/System/DeviceInfo': return ok({'DeviceModel': d['model'], 'SerialNumber': d['serial'], 'FirmwareVersion': d['fw'], 'DeviceName': 'NVR'})
             if p == '/LAPI/V1.0/System/Time/NTP': return ok({'Enabled': 1 if d['mode'] == 'NTP' else 0, 'NTPServerInfos': [{'IPAddress': h, 'Port': 123, 'SynchronizeInterval': 60} for h in d['ntp']]})
             return self.send(404, '{}', 'application/json')

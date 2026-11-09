@@ -13,7 +13,9 @@ $script:pass = 0; $script:fail = 0
 # Findings Moshe left for a later round (Nov 8 2026, 7:41 PM: "finish only the serious ones now"): their checks still RUN and are
 # printed, a failing one as DEFERRED (not fixed in 2.2.7) instead of FAIL, so the suite says exactly what 2.2.7 does not fix yet.
 # 2.2.11: F16 (= Codex R14) is fixed, so its checks are real again: a failing F16 is a FAIL, never DEFERRED.
-$script:deferred = @('F15', 'F18', 'F19', 'F20'); $script:defer = 0
+# 2.2.12: F18 (atomic waiting list), F19 (merge without MAC) and F20 (site-name rule) are fixed, so their checks are real again;
+# F15 (the relay) runs as its own suite in tools\Run-AllTests.ps1 (node). Nothing is deferred here any more.
+$script:deferred = @(); $script:defer = 0
 function Check([bool]$ok, [string]$name, [string]$more = '') {
   $id = [regex]::Match($name, '^F\d\d').Value
   if ($ok) { $script:pass++; Write-Host ('PASS ' + $name) }
@@ -319,7 +321,7 @@ Set-NvrHealthOption MockUrl 'http://127.0.0.1:9'; Set-NvrHealthOption LogDir $(Q
     Check ($c14 -eq 0 -and $o14 -notmatch 'No site password saved') ('F14 Windows: the real HikReset.ps1 -Mode Import -Site finds the site password saved on this PC (exit ' + $c14 + ')') $o14
   } else { Write-Host 'SKIP F14 real HikReset run with a DPAPI password store (Windows only)' }
 
-  # F15: the relay - see appsscript/tests/hikrelay.test.js (node)
+  # F15: the relay - appsscript/tests/hikrelay.test.js (node) runs as its own counted suite in tools/Run-AllTests.ps1 (2.2.12, Codex P2-15)
 
   # =====================================================================================
   # F16: classic Fix NVR with no (or an empty) config stops before it looks at the network

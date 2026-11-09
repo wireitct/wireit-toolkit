@@ -17,8 +17,9 @@ $mp = 18192; $mb = 'http://127.0.0.1:' + $mp
 $mock = Start-Process -FilePath $py -ArgumentList @($mockPy, $mp) -PassThru -WindowStyle Hidden
 $logs = Join-Path $tmp 'logs'; $runs = Join-Path $tmp 'runs'
 function W { $v = ((Invoke-WebRequest ($mb + '/mockctl/writes') -UseBasicParsing).Content | ConvertFrom-Json); foreach ($item in $v) { $item } }
-function Fx([string]$fix, [string]$ip, [string]$ans, [string[]]$more = @()) {
-  $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $fx -Fix $fix -Ip $ip @more -RunsDir $runs -LogsDir $logs -MockUrl $mb -TestAnswer $ans -CloseAfter 0 -WaitSec 0 -Site WI-TEST 2>&1 | Out-String
+function Fx([string]$fix, [string]$ip, [string]$ans, [string[]]$more = @(), [int]$wait = 0) {
+  # 2.2.12: a restart must be SEEN (the mock camera is offline ~1.5 s after a restart), so restart calls wait a few seconds
+  $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $fx -Fix $fix -Ip $ip @more -RunsDir $runs -LogsDir $logs -MockUrl $mb -TestAnswer $ans -CloseAfter 0 -WaitSec $wait -Site WI-TEST 2>&1 | Out-String
   return @{ out = $o; j = (Read-TkJson (Join-Path $logs 'fix-last.json')); code = $LASTEXITCODE }
 }
 function Hist { $h = Join-Path $logs 'fix-history.txt'; if (Test-Path $h) { return @(Get-Content $h) }; return @() }
@@ -39,12 +40,12 @@ try {
   Check 'recording: already on -> no change, no new history' ((@(W).Count -eq 1) -and -not $x.j.ran -and @(Hist).Count -eq 1) $x.out
   # 2 restart (Uniview NVR stands in for a Uniview camera; Hikvision camera)
   Invoke-WebRequest ($mb + '/mockctl/reset') -Method Post -UseBasicParsing | Out-Null
-  $x = Fx 'restart' '10.9.0.50' 'YES' @('-Vendor', 'Uniview')
+  $x = Fx 'restart' '10.9.0.50' 'YES' @('-Vendor', 'Uniview') 8
   $wr = @(W)
   Check 'restart Uniview: one PUT Reboot, back, history' ($wr.Count -eq 1 -and $wr[0].path -eq '/LAPI/V1.0/System/Reboot' -and $x.j.ok -and @(Hist)[-1] -match 'restarted, back online') ($x.out + ($wr | ConvertTo-Json))
   $x = Fx 'restart' '10.9.0.50' 'YES' @('-Vendor', 'Uniview')
   Check 'restart: second one in the same hour refused, nothing sent' ((@(W).Count -eq 1) -and -not $x.j.ran -and $x.j.msg -match 'already restarted in the last hour') $x.out
-  $x = Fx 'restart' '10.9.0.21' 'YES' @('-Vendor', 'Hikvision')
+  $x = Fx 'restart' '10.9.0.21' 'YES' @('-Vendor', 'Hikvision') 8
   $wr = @(W)
   Check 'restart Hikvision camera: PUT /ISAPI/System/reboot' ($wr.Count -eq 2 -and $wr[1].path -eq '/ISAPI/System/reboot' -and $x.j.ok) $x.out
   # 3 put a camera back on the NVR

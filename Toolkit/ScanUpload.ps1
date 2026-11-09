@@ -29,6 +29,15 @@ function Remove-OlderPendingSite([string]$site, [string]$keep = '') {
     try { $v = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json; if ([string]$v.site -eq $site) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop } } catch {}
   }
 }
+# 2.2.12 (Codex P2-11 / F18): the waiting list is written to a temporary file beside it first and only then put in its place
+# in one step (the same pattern as the Undo file). A write that stops half-way (disk full, power cut) leaves the old list whole.
+function Write-SuFileAtomic([string]$path, [string]$text) {
+  $tmp = $path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+  try {
+    [IO.File]::WriteAllText($tmp, $text, (New-Object Text.UTF8Encoding($false, $true)))   # throws on text it can not write: never a garbled list
+    if ([IO.File]::Exists($path)) { [IO.File]::Replace($tmp, $path, [NullString]::Value) } else { [IO.File]::Move($tmp, $path) }
+  } finally { if ([IO.File]::Exists($tmp)) { try { [IO.File]::Delete($tmp) } catch {} } }
+}
 function Say-Lines($lines) {
   foreach ($l in @($lines)) { if (-not $l) { continue }; if ($l.k -eq 'red') { Write-Output ('!! ' + $l.t) } else { Write-Output $l.t } }
 }
@@ -67,8 +76,10 @@ if ($r -and $r.ok) { Remove-OlderPendingSite $Site }
 if ($retry) {
   # keep ONLY the newest list per site (no pile-up); the key is never written
   New-Item -ItemType Directory -Force -Path $box | Out-Null
-  ($body | ConvertTo-Json -Depth 5 -Compress) | Set-Content -Path (Pending-Path $Site) -Encoding UTF8
-  Remove-OlderPendingSite $Site (Pending-Path $Site)
+  $kept = $false
+  try { Write-SuFileAtomic (Pending-Path $Site) ($body | ConvertTo-Json -Depth 5 -Compress); $kept = $true } catch { $kept = $false }
+  if ($kept) { Remove-OlderPendingSite $Site (Pending-Path $Site) }
+  else { Write-Output ('!! This list could NOT be saved to send later (the disk may be full). Any list that was already waiting for ' + $Site + ' is kept. Free some space and run it again.') }
 }
 $lines = Format-TkScanAnswer $r $Site
 Say-Lines $lines

@@ -113,14 +113,33 @@ function Invoke-NvrFix {
       if ($info.code -ne 200) { return (& $done $false ('The camera did not accept the login (answer ' + $info.code + '), so it was not restarted. If it does not answer at all, restart its switch port (PoE) by hand.')) }
       $res.backup = Fix-Save $BackupDir 'device-before.txt' $info.body
       if (-not (& $ask @('Restart (reboot) the camera at ' + $Ip + '. It is offline for about 2 minutes.', 'Allowed: 1 restart per hour, 2 per day for this camera.'))) { return (& $done $true 'Not confirmed - nothing changed.') }
-      $res.ran = $true; Fix-LimitAdd $StateFile $Ip $now
+      $res.ran = $true
       $w = Http -Ip $Ip -Method 'PUT' -Path $path -Body $(if ($v -eq 'Uniview') { '{}' } else { '' }) -ContentType $(if ($v -eq 'Uniview') { 'application/json' } else { 'application/xml' }) -Credential $t.cred -Port $t.port -Timeout 8
-      if ($w.code -ne 200) { $res.history = 'Restart asked of camera ' + $Ip + ' - refused (' + $w.code + ')'; return (& $done $false ('The camera refused the restart (answer ' + $w.code + ').')) }
-      $res.changed += 'restarted'; Say ('Restarting... waiting up to ' + $WaitSec + ' s for it to come back.')
-      $back = $false; $end = (Get-Date).AddSeconds($WaitSec)
-      do { if ($WaitSec -gt 0) { Start-Sleep -Seconds 10 }; $p = Http -Ip $Ip -Path $(if ($v -eq 'Uniview') { '/LAPI/V1.0/System/DeviceInfo' } else { '/ISAPI/System/deviceInfo' }) -Credential $t.cred -Port $t.port -Timeout 5; $back = ($p.code -eq 200) } while (-not $back -and (Get-Date) -lt $end)
-      $res.history = 'Camera ' + $Ip + ' restarted' + $(if ($back) { ', back online' } else { ', NOT back yet' })
-      return (& $done $back $(if ($back) { 'The camera is back. Run the Recording check to confirm it records again.' } else { 'The camera is not back after ' + $WaitSec + ' s. Restart its switch port (PoE) or go look at it.' }))
+      # 2.2.12 (Codex P1-10): an HTTP 200 is not a yes. Hikvision answers <statusCode> (1 = OK, 7 = reboot needed), Uniview
+      # answers Response.ResponseCode (0 = OK). An explicit no is a refusal: nothing restarted, and the restart limit is not used up.
+      $refused = ''
+      if ($w.code -eq 200) {
+        if ($v -eq 'Uniview') {
+          $rc = $null; try { $rj = ([string]$w.body) | ConvertFrom-Json; if ($rj -and $rj.Response -and $null -ne $rj.Response.ResponseCode) { $rc = [string]$rj.Response.ResponseCode } } catch {}
+          if ($null -eq $rc) { $refused = 'the camera''s answer could not be read' } elseif ($rc -ne '0') { $refused = 'camera answer code ' + $rc }
+        } elseif (-not (Hik-Ok $w)) { $refused = 'camera answer ' + (XText (Xml $w.body) 'statusCode') + ' ' + (XText (Xml $w.body) 'statusString') }
+      } elseif ($w.code -gt 0) { $refused = 'answer ' + $w.code }
+      if ($refused) { $res.history = 'Restart asked of camera ' + $Ip + ' - refused (' + $refused.Trim() + ')'; return (& $done $false ('The camera refused the restart (' + $refused.Trim() + '). It was NOT restarted.')) }
+      Fix-LimitAdd $StateFile $Ip $now
+      $res.changed += 'restart asked'; Say ('Restart accepted by the camera... waiting up to ' + $WaitSec + ' s: it must go offline and come back.')
+      # 2.2.12 (Codex P1-10): an accepted request is not proof. "Restarted" needs the camera to go away and answer again.
+      $infoPath = $(if ($v -eq 'Uniview') { '/LAPI/V1.0/System/DeviceInfo' } else { '/ISAPI/System/deviceInfo' })
+      $pollMs = $(if ($WaitSec -ge 30) { 3000 } else { 500 })
+      $wentDown = $false; $back = $false; $end = (Get-Date).AddSeconds([math]::Max($WaitSec, 1))
+      do {
+        Start-Sleep -Milliseconds $pollMs
+        $pr = Http -Ip $Ip -Path $infoPath -Credential $t.cred -Port $t.port -Timeout 5
+        if ($pr.code -ne 200) { $wentDown = $true } elseif ($wentDown) { $back = $true }
+      } while (-not $back -and (Get-Date) -lt $end)
+      if ($back) { $res.changed = @('restarted'); $res.history = 'Camera ' + $Ip + ' restarted, back online'; return (& $done $true 'The camera restarted and is back. Run the Recording check to confirm it records again.') }
+      if ($wentDown) { $res.history = 'Camera ' + $Ip + ' restarted, NOT back yet'; return (& $done $false ('The camera went offline for the restart but is not back after ' + $WaitSec + ' s. Restart its switch port (PoE) or go look at it.')) }
+      $res.history = 'Camera ' + $Ip + ' restart asked - NOT confirmed (it never went offline)'
+      return (& $done $false ('The camera said OK but never went offline in ' + $WaitSec + ' s, so it is NOT confirmed that it restarted. Wait 5 minutes and check it; if it is still stuck, restart its switch port (PoE).'))
     }
     'readd' {
       if ($v -ne 'Hikvision') { return (& $done $false 'Putting a camera back on a channel is built for Hikvision NVRs only. Nothing changed.') }
