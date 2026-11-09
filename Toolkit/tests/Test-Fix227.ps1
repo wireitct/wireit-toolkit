@@ -10,7 +10,15 @@ $isWin = ($env:OS -eq 'Windows_NT')
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('fix227-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $script:pass = 0; $script:fail = 0
-function Check([bool]$ok, [string]$name, [string]$more = '') { if ($ok) { $script:pass++; Write-Host ('PASS ' + $name) } else { $script:fail++; Write-Host ('FAIL ' + $name); if ($more) { Write-Host $more } } }
+# Findings Moshe left for a later round (Nov 8 2026, 7:41 PM: "finish only the serious ones now"): their checks still RUN and are
+# printed, a failing one as DEFERRED (not fixed in 2.2.7) instead of FAIL, so the suite says exactly what 2.2.7 does not fix yet.
+$script:deferred = @('F15', 'F16', 'F18', 'F19', 'F20'); $script:defer = 0
+function Check([bool]$ok, [string]$name, [string]$more = '') {
+  $id = [regex]::Match($name, '^F\d\d').Value
+  if ($ok) { $script:pass++; Write-Host ('PASS ' + $name) }
+  elseif ($id -and $script:deferred -contains $id) { $script:defer++; Write-Host ('DEFERRED ' + $name + '  [not fixed in 2.2.7 - left for a later round]') }
+  else { $script:fail++; Write-Host ('FAIL ' + $name); if ($more) { Write-Host $more } }
+}
 # every top-level function definition of a script, without running the script itself (the real code, nothing copied by hand)
 function Get-FnText([string]$file, [string[]]$only = @()) {
   $ast = [Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$null)
@@ -402,5 +410,5 @@ finally {
   foreach ($p in $servers) { try { $p.Kill() } catch {} }
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
-Write-Host ('Test-Fix227: ' + $script:pass + ' passed, ' + $script:fail + ' failed')
+Write-Host ('Test-Fix227: ' + $script:pass + ' passed, ' + $script:fail + ' failed, ' + $script:defer + ' deferred (' + ($script:deferred -join ', ') + ')')
 exit $script:fail
