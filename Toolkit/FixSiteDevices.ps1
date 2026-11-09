@@ -57,6 +57,15 @@ if ($script:FsIsPs5) {
 }
 function Fs-LogLine([string]$s) { if (Get-Command Fs-Log -ErrorAction SilentlyContinue) { Fs-Log $s } }
 
+# 2.2.7 (Codex file-by-file F03): a file that must never be half-written (the undo file, Undo's progress file) is written to a
+# temporary file beside it first and only then put in its place in one step. A write that fails half-way leaves the old file whole.
+function Write-FsFileAtomic([string]$path, [string]$text) {
+  $tmp = $path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+  try {
+    [IO.File]::WriteAllText($tmp, $text, (New-Object Text.UTF8Encoding($true)))
+    if ([IO.File]::Exists($path)) { [IO.File]::Replace($tmp, $path, [NullString]::Value) } else { [IO.File]::Move($tmp, $path) }
+  } finally { if ([IO.File]::Exists($tmp)) { try { [IO.File]::Delete($tmp) } catch {} } }
+}
 # ---------------- HTTP (digest/basic handled by .NET; passwords never logged) ----------------
 function Fs-Cred([string]$pw, [string]$user = 'admin') { if (-not $pw) { return $null }; return New-Object PSCredential($user, (ConvertTo-SecureString $pw -AsPlainText -Force)) }
 function Fs-Plain($cred) { if (-not $cred) { return '' }; return $cred.GetNetworkCredential().Password }

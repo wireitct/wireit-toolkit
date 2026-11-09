@@ -354,7 +354,7 @@ if ($Mode -eq 'Rollback') {
   $progF = Join-Path $RollbackDir 'undo-progress.json'; $prog = @{}
   if (Test-Path -LiteralPath $progF) { try { foreach ($q in (Get-Content -LiteralPath $progF -Raw | ConvertFrom-Json).PSObject.Properties) { $prog[$q.Name] = $q.Value } } catch {} }
   $isDone = { param($k) return $prog.ContainsKey($k) }
-  $markDone = { param($k) $prog[$k] = (Get-Date -Format 's'); try { ($prog | ConvertTo-Json -Depth 3) | Set-Content -LiteralPath $progF -Encoding UTF8 } catch {} }
+  $markDone = { param($k) $prog[$k] = (Get-Date -Format 's'); try { Write-FsFileAtomic $progF ($prog | ConvertTo-Json -Depth 3) } catch {} }   # 2.2.7 (F03): written whole or not at all
   Say ('Undo of the run from ' + $run + ' on ' + [string]$r0.taken_on + ': ' + @($r0.cameras).Count + ' camera(s), ' + @($r0.nvrs).Count + ' NVR move(s).' + $(if ($prog.Count) { ' (' + $prog.Count + ' step(s) were already put back by an earlier undo; they are skipped.)' } else { '' }))
   if ((Ask 'Type YES to put them back the way that run found them.').Trim() -notmatch '^(?i)yes$') { Say 'Stopped - nothing changed.'; Done 2 }
   $pcIx = -1; if ($r0.PSObject.Properties['pc'] -and $r0.pc -and $r0.pc.PSObject.Properties['ifIndex']) { $pcIx = [int]$r0.pc.ifIndex }
@@ -731,7 +731,7 @@ $rbPath = Join-Path $runDir 'rollback.json'
 # 2.2.6 (Codex file-by-file D): the undo file is written BEFORE each change it describes. A write that fails is never ignored: the run
 # stops right there (exit 7), so nothing is changed that Undo would not know about (2.2.5 wrote it with Set-Content and went on).
 function Save-Rb {
-  try { [IO.File]::WriteAllText($rbPath, ($rb | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($true))) }
+  try { Write-FsFileAtomic $rbPath ($rb | ConvertTo-Json -Depth 8) }   # 2.2.7 (F03): never truncates the undo file already on disk
   catch {
     $ex = $_.Exception; if ($ex.InnerException) { $ex = $ex.InnerException }
     Say ('The undo file could not be saved (' + $ex.Message + '), so the run stopped here: nothing more was changed.') 'Red'
