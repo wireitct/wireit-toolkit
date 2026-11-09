@@ -40,7 +40,7 @@ $script:sim = @{ ads = @(); admin = $true; task = 'on'; taskSets = (New-Object S
 function Sim-Ad($ix) { foreach ($x in $script:sim.ads) { if ($x.ifIndex -eq [int]$ix) { return $x } }; return $null }
 $script:RnOps = {
   param($op, $a)
-  if ($op -notin @('list', 'state', 'isadmin', 'sleep', 'task', 'wlan', 'online')) { [void]$script:sim.calls.Add($op + ' ' + (($a.Keys | Sort-Object | Where-Object { $_ -in @('ip', 'store', 'gw', 'on', 'name') } | ForEach-Object { $_ + '=' + $a[$_] }) -join ' ')) }
+  if ($op -notin @('list', 'state', 'isadmin', 'sleep', 'task', 'wlan', 'online', 'pause', 'taskrunning')) { [void]$script:sim.calls.Add($op + ' ' + (($a.Keys | Sort-Object | Where-Object { $_ -in @('ip', 'store', 'gw', 'on', 'name') } | ForEach-Object { $_ + '=' + $a[$_] }) -join ' ')) }
   $key = $op + $(if ($a.store) { ':' + $a.store } else { '' })
   if ($script:sim.fail[$key]) { throw ('simulated: ' + $key + ' failed') }
   switch ($op) {
@@ -75,6 +75,9 @@ $script:RnOps = {
       return [pscustomobject]@{ link = $link; ip = $ip; gw = $gw; gwPing = [bool]($gw -and $x.gwAnswers -and $up); dns = [bool]($gw -and $x.internet -and $up); http = [bool]($gw -and $x.internet -and $up); ssid = $(if ($x.wifi -and $link) { $x.joinSsid } else { '' }); assoc = [bool]($x.wifi -and $link) }
     }
     'task' { if ($script:sim.task -eq 'none') { return 'none' }; if ($a.set) { [void]$script:sim.taskSets.Add($a.set); $script:sim.task = $a.set }; return $script:sim.task }
+    'taskrunning' { return $false }   # 2.2.12 (P1-7): no WifiWatch copy running (Test-Fix2212Net.ps1 simulates a running one)
+    'taskstop' { return $true }
+    'pause' { return $true }
     'sleep' { return $true }
     'elevate' {
       $script:sim.elevated++
@@ -130,6 +133,7 @@ Out-Result @{ c1 = $r1.code; s1 = $r1.said; ch1 = $r1.changed; calls1 = $calls1;
   $o = Rn-Driver 'rn2' @'
 $script:sim.ads = @((New-SimAdapter 'Ethernet' 12 $false))
 $e = $script:sim.ads[0]; $e.dhcp = $false; Sim-Ext '10.1.10.2' 'both'; [void]$e.proutes.Add('10.1.10.1'); $e.dnsStatic = $true
+$script:RnAnswer = 'Y'   # 2.2.12 (Codex P1-3): an adapter's OWN fixed address is switched to DHCP only when the crew says yes (Test-Fix2212Net.ps1 covers "no")
 $r1 = Run-Rn
 $w = New-SimAdapter 'Wi-Fi 2' 7 $true; $w.disabled = $true; $script:sim.ads = @($w)
 $script:sim.calls.Clear(); $r2 = Run-Rn
@@ -210,7 +214,7 @@ Out-Result @{ c0 = $r0.code; s0 = $r0.said; el0 = $el0; c1 = $r1.code; s1 = $r1.
   }
   $rnSrc = [IO.File]::ReadAllText($rnFile)
   Check ($rnSrc -match "PolicyStore PersistentStore" -and $rnSrc -match "netsh interface ipv4 delete address") 'RN (Windows side) the saved copy is removed with Remove-NetIPAddress -PolicyStore PersistentStore and netsh delete'
-  Check ($rnSrc -match '(?s)try \{.*WifiWatch paused.*\} finally \{\s*if \(\$wwOff\)') 'RN (Windows side) WifiWatch is paused inside try and switched back on in finally'
+  Check ($rnSrc -match '(?s)try \{\s*\$pz = Start-RnPause \$true.*Get-RnVerdict.*\} finally \{\s*\$e1 = Stop-RnPause') 'RN (Windows side) WifiWatch is paused inside try, kept paused through the final check (2.2.12), and switched back on in finally'
   Check ($rnSrc -notmatch '(?i)\b(openai|anthropic|claude|gpt|tab\.bot)\b') 'RN no Tab and no AI inside the tool'
   $cmdTxt = [IO.File]::ReadAllText((Join-Path $tk 'Restore Network.cmd'))
   Check ($cmdTxt -match 'RestoreNetwork\.ps1') 'RN "Restore Network.cmd" starts it on its own (standalone)'
@@ -269,7 +273,7 @@ Out-Result @{ cA = $rA.code; sA = $rA.said; rcA = $rcA; oA = $oA; reA = $reA; cB
     Check ($j.rcA -match 'Result: NOT FIXED - run again or call' -and $j.rcA -notmatch 'Result: DONE') 'RN bug 2: the receipt says NOT FIXED too' $j.rcA
     Check ($j.oA -ge 5 -and $j.reA -ge 2) 'RN bug 2: it keeps checking (about 40 s) and asks the Wi-Fi to join once more before giving up' ('checks ' + $j.oA + ', join requests ' + $j.reA)
     Check ($j.cB -eq 8 -and $j.sB -match 'internet does not' -and $j.rcB -match 'NOT FIXED') 'RN on the Wi-Fi, router answers but no internet: NOT FIXED with the plain reason' $j.sB
-    Check ($j.cC -eq 8 -and $j.sC -match 'router 192\.168\.4\.1 does not answer') 'RN the router does not answer a ping: NOT FIXED with the plain reason' $j.sC
+    Check ($j.cC -eq 0 -and $j.sC -match 'router 192\.168\.4\.1 does not answer ping' -and $j.sC -match '(?m)^DONE') 'RN the router does not answer a ping but the web answers through this adapter: DONE, the ping only noted (2.2.12, Codex P1-6; was NOT FIXED in 2.2.11)' $j.sC
     Check ($j.cD -eq 0 -and $j.oD -eq 4 -and $j.sD -match 'DONE - network is back to normal and online') 'RN slow network: it retries and says DONE once the 4th check is online' ('checks ' + $j.oD + "`n" + $j.sD)
     Check ($j.cE -eq 8 -and $j.sE -match 'NOT FIXED' -and $j.taskE -eq 'on' -and $j.rcE -match 'NOT FIXED' -and $j.sE -match 'DHCP on') 'RN failing half-way (the online check breaks): DHCP still fixed, NOT FIXED, receipt written, WifiWatch back on' $j.sE
     Check ($j.cF -eq 0 -and $j.sF -match 'DONE') 'RN run again after NOT FIXED: DONE once the network is really back' $j.sF
