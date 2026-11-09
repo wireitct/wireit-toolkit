@@ -327,6 +327,14 @@ function Get-TkShortSerial([string]$serial) {
   if ($s.Length -gt 9) { return $s.Substring($s.Length - 9) } ; return $s
 }
 
+# 2.2.7 (Codex file-by-file F07): the camera list Find cameras wrote IN THIS RUN - only when it finished (exit 0) and out\latest.json
+# is newer than the moment it started. Anything else is the previous scan (maybe another site's) and is not used.
+function Test-TkFreshScan([string]$camResetDir, $code, [datetime]$startedUtc) {
+  if ($null -eq $code -or [int]$code -ne 0) { return $false }
+  $f = Join-Path $camResetDir 'out\latest.json'; if (-not (Test-Path -LiteralPath $f)) { $f = Join-Path (Join-Path $camResetDir 'out') 'latest.json' }
+  if (-not (Test-Path -LiteralPath $f)) { return $false }
+  return ((Get-Item -LiteralPath $f).LastWriteTimeUtc -ge $startedUtc.AddSeconds(-1))
+}
 function Get-TkDevices([string]$camResetDir) {
   $l = Read-TkJson (Join-Path $camResetDir 'out\latest.json')
   if (-not $l) { return @() }

@@ -614,8 +614,14 @@ function Q([string]$s) { return '"' + ($s -replace '"', '') + '"' }
 
 # ---------------- the 12 jobs ----------------
 function Do-Find {
+  $TK.findStarted = [DateTime]::UtcNow   # 2.2.7 (F07): what counts as THIS scan's list
   [void](Start-Hidden 'Find cameras' (Join-Path $TK.P.CamReset 'Find-Cameras.ps1') '' {
     param($code)
+    if (-not (Test-TkFreshScan $TK.P.CamReset $code $TK.findStarted)) {
+      # 2.2.7 (Codex file-by-file F07): a failed or stopped Find cameras never shows, saves or uploads the PREVIOUS list
+      Add-Out ('Find cameras did not finish' + $(if ($null -ne $code -and [int]$code -ne 0) { ' (code ' + $code + ')' } else { ' with a new camera list' }) + '. The previous camera list was not used, saved or uploaded.') $cRed
+      Invoke-AfterScan; return
+    }
     $d = @(Get-TkDevices $TK.P.CamReset)
     if ($d.Count) {
       $hik = @($d | Where-Object { $_.Brand -like 'Hikvision*' }).Count; $unv = @($d | Where-Object { $_.Brand -eq 'Uniview' }).Count
