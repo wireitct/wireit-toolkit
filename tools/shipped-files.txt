@@ -48,6 +48,7 @@ Toolkit/tests/Test-Fix224.ps1
 Toolkit/tests/Test-Fix225.ps1
 Toolkit/tests/Test-Fix226.ps1
 Toolkit/tests/Test-Fix227.ps1
+Toolkit/tests/Test-Fix228.ps1
 Toolkit/tests/Test-FixIt.ps1
 Toolkit/tests/Test-FixSite.ps1
 Toolkit/tests/Test-HikReset.ps1
