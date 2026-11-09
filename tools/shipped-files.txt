@@ -46,6 +46,10 @@ Toolkit/tests/Test-Fix22.ps1
 Toolkit/tests/Test-Fix221.ps1
 Toolkit/tests/Test-Fix2210.ps1
 Toolkit/tests/Test-Fix2211.ps1
+Toolkit/tests/Test-Fix2212.ps1
+Toolkit/tests/Test-Fix2212Net.ps1
+Toolkit/tests/Test-Fix2212Nvr.ps1
+Toolkit/tests/Test-Fix2212Site.ps1
 Toolkit/tests/Test-Fix222.ps1
 Toolkit/tests/Test-Fix223.ps1
 Toolkit/tests/Test-Fix224.ps1
@@ -60,6 +64,7 @@ Toolkit/tests/Test-HikReset.ps1
 Toolkit/tests/Test-Review225.ps1
 Toolkit/tests/Test-Toolkit.ps1
 Toolkit/tests/TestPython.ps1
+Toolkit/tests/fix2212site/scenarios.py
 Toolkit/tests/fix226/ok_server.py
 Toolkit/tests/fix226/scenarios.py
 Toolkit/tests/fix227/auth_server.py

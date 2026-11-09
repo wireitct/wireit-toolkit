@@ -421,7 +421,7 @@ $d = Get-SuiteCounts @('PASS R17 the suite''s own "41 passed, 0 failed, 7 deferr
   Check ($rtl[0] -match '^WireIt Toolkit [0-9.]+ - Fix this site receipt' -and $rtl[1] -match '^Site: ' -and $rtl[2] -match '^PC: ' -and $rtl[3] -match '^Result: ') 'receipt: one fact per line (title, site, PC, result)' ($rtl[0..3] -join ' | ')
   Write-Host 'version + the Toolkit button'
   $v11 = @(([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'ToolkitCore.ps1')), "TkBuiltVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'FixSiteCore.ps1')), "FsVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'FixSiteBw.ps1')), "FsVersion = '([0-9.]+)'")).Groups[1].Value, [string]([IO.File]::ReadAllText((Join-Path $repo 'version.json')) | ConvertFrom-Json).version)
-  Check ((($v11 | Select-Object -Unique) -join ',') -eq '2.2.11') ('version 2.2.11 in ToolkitCore, FixSiteCore, FixSiteBw and version.json (' + ($v11 -join ',') + ')')
+  Check ((($v11 | Select-Object -Unique) -join ',') -eq '2.2.12') ('version 2.2.12 (2.2.12: bumped from 2.2.11) in ToolkitCore, FixSiteCore, FixSiteBw and version.json (' + ($v11 -join ',') + ')')
   $ui = [IO.File]::ReadAllText((Join-Path $tk 'WireItToolkit.ps1'))
   Check ($ui -match "New-Btn 'Restore network' \{ Do-RestoreNet \}" -and $ui -match "Start-Hidden 'Restore Network' \`$rn") 'the Toolkit window has a "Restore network" button that runs RestoreNetwork.ps1'
   # 2.2.11 Office GUI click (Nov 9): on Windows PowerShell 5.1 ConvertFrom-Json hands back a JSON list as ONE item, so with
