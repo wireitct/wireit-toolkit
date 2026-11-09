@@ -455,10 +455,10 @@ New-Item -ItemType Directory -Force -Path (Join-Path $mr 'camreset.log') | Out-N
 $x46 = Join-Path $tmp 'K12345678b.xml'; [IO.File]::WriteAllText($x46, '<x/>')
 $o46 = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $mr 'Make-Request.ps1') -Serial K12345678 -XmlPath $x46 2>&1 | Out-String
 Check ($o46 -match 'Request ready for') '#46 kept: Make-Request still reports success when CamReset\camreset.log cannot be written'
-Write-Host 'version: 2.2.7 everywhere'
+Write-Host 'version: 2.2.8 everywhere'
 $v223 = @(); foreach ($p in @(@('Toolkit/FixSiteCore.ps1', "\`$script:FsVersion = '([^']+)'"), @('Toolkit/ToolkitCore.ps1', "\`$script:TkBuiltVersion = '([^']+)'"), @('Toolkit/FixSiteBw.ps1', "\`$script:FsVersion = '([^']+)'"))) { if ((Read-Src $p[0]) -match $p[1]) { $v223 += $Matches[1] } }
 $v223 += [string]((Read-Src 'version.json') | ConvertFrom-Json).version
-Eq (($v223 | Select-Object -Unique) -join ',') '2.2.7' 'FixSiteCore, ToolkitCore, FixSiteBw and version.json all say 2.2.7 (2.2.7: bumped; 2.2.5 said 2.2.5)'
+Eq (($v223 | Select-Object -Unique) -join ',') '2.2.8' 'FixSiteCore, ToolkitCore, FixSiteBw and version.json all say 2.2.8 (2.2.8: bumped; 2.2.7 said 2.2.7)'
 Write-Host '#62 classic Fix NVR Undo: DHCP back, and unfinished work is not success'
 $fn62 = Read-Src 'FixNVR/FixNVR.ps1'
 $i62 = $fn62.IndexOf('function Hik-SetNet('); $j62 = $fn62.IndexOf("`nfunction ", $i62 + 10); Invoke-Expression $fn62.Substring($i62, $j62 - $i62)

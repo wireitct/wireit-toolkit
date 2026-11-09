@@ -7,7 +7,7 @@
  The password only goes to bw on its stdin (base64 item JSON), never on a command line or in a file. Dot-sourced by FixSiteDevices.ps1
  (so FixSite.ps1 and the tests have it).
 #>
-if (-not (Get-Variable -Name FsVersion -Scope Script -ErrorAction SilentlyContinue)) { $script:FsVersion = '2.2.7' }
+if (-not (Get-Variable -Name FsVersion -Scope Script -ErrorAction SilentlyContinue)) { $script:FsVersion = '2.2.8' }
 $script:FsBwLast = $null   # { where ('org' | 'personal' | ''); org; collection; why } of the last Save-FsBitwarden
 function Find-FsBitwarden($cfg) {
   if ($cfg -and $cfg.PSObject.Properties['bitwardenCli'] -and $cfg.bitwardenCli -and (Test-Path ([string]$cfg.bitwardenCli))) { return [string]$cfg.bitwardenCli }
