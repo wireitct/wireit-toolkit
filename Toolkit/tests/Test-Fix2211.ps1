@@ -264,7 +264,8 @@ $script:ww.failDisable = $true; Invoke-WwAdapterCycle 'Wi-Fi 2' 'Reichman Mesh';
 $a = Get-SuiteCounts @('PASS x', 'DEFERRED F19 y', 'Test-Fix227: 41 passed, 0 failed, 7 deferred (F15, F16)')
 $b = Get-SuiteCounts @('PASS x', '127 passed, 0 failed')
 $c = Get-SuiteCounts @('PASS x', 'DEFERRED F20 a', 'DEFERRED F20 b', '3 passed, 0 failed')
-'JSON=' + (@{ a = $a; ra = (Get-SuiteResult 0 $a); b = $b; rb = (Get-SuiteResult 0 $b); c = $c; rc = (Get-SuiteResult 0 $c); rf = (Get-SuiteResult 1 $a); rf2 = (Get-SuiteResult 2 $b) } | ConvertTo-Json -Compress -Depth 4)
+$d = Get-SuiteCounts @('PASS R17 the suite''s own "41 passed, 0 failed, 7 deferred" is read', 'Test-Fix2211: 55 passed, 0 failed')
+'JSON=' + (@{ a = $a; ra = (Get-SuiteResult 0 $a); b = $b; rb = (Get-SuiteResult 0 $b); c = $c; rc = (Get-SuiteResult 0 $c); rf = (Get-SuiteResult 1 $a); rf2 = (Get-SuiteResult 2 $b); d = $d; rd = (Get-SuiteResult 0 $d) } | ConvertTo-Json -Compress -Depth 4)
 '@)
   $j = Get-Json $o
   if (-not $j) { Check $false 'R17 driver ran' $o } else {
@@ -273,6 +274,7 @@ $c = Get-SuiteCounts @('PASS x', 'DEFERRED F20 a', 'DEFERRED F20 b', '3 passed, 
     Check ($j.rb -eq 'PASS' -and $j.b.deferred -eq 0) 'R17 a suite with no deferred check that exits 0 is PASS'
     Check ($j.c.deferred -eq 2 -and $j.rc -eq 'DEFERRED') 'R17 DEFERRED lines count even when the summary line does not mention them'
     Check ($j.rf -eq 'FAIL' -and $j.rf2 -eq 'FAIL') 'R17 a failing suite stays FAIL (with or without deferred)'
+    Check ($j.d.passed -eq 55 -and $j.d.deferred -eq 0 -and $j.rd -eq 'PASS') 'R17 a check NAME that quotes "7 deferred" is not read as the suite''s summary (the last real summary line counts)'
   }
   $ratSrc = [IO.File]::ReadAllText($rat)
   Check ($ratSrc -match 'exit \(\$bad \+ \$deferredSuites\)' -and $ratSrc -match "ALL ' \+ \`$scope \+ ' PASSED'" -and $ratSrc -match 'elseif \(\$deferredSuites\)') 'R17 "ALL SUITES PASSED" and exit 0 only with no failed AND no deferred suite'

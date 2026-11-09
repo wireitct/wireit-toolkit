@@ -28,9 +28,11 @@ $bad = 0; $deferredSuites = 0; $rows = @()
 # reads a suite's own counts from what it printed: "N passed, M failed" (+ ", K deferred" where a suite has deferred checks)
 function Get-SuiteCounts([string[]]$lines) {
   $c = [ordered]@{ passed = $null; failed = $null; deferred = 0 }
+  # the LAST summary line counts; a check's own name that quotes such a line (PASS ... / FAIL ... / ok ...) is not a summary
   foreach ($l in $lines) {
+    if ([string]$l -match '^\s*(PASS|FAIL|ok|DEFERRED|SKIP|skip)\b') { continue }
     $m = [regex]::Match([string]$l, '(?i)\b(\d+) passed\b[^\d]{0,40}?(\d+) failed\b(?:[^\d]{0,40}?(\d+) deferred\b)?')
-    if ($m.Success) { $c.passed = [int]$m.Groups[1].Value; $c.failed = [int]$m.Groups[2].Value; if ($m.Groups[3].Success) { $c.deferred = [int]$m.Groups[3].Value } }
+    if ($m.Success) { $c.passed = [int]$m.Groups[1].Value; $c.failed = [int]$m.Groups[2].Value; $c.deferred = $(if ($m.Groups[3].Success) { [int]$m.Groups[3].Value } else { 0 }) }
   }
   # a DEFERRED line printed by the suite counts even if its summary line forgot to say so
   $dl = @($lines | Where-Object { [string]$_ -match '^\s*DEFERRED\b' }).Count
