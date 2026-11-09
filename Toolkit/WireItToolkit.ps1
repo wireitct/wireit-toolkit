@@ -669,7 +669,7 @@ function Do-RestoreNet {
     $lo = Join-Path ([IO.Path]::GetTempPath()) ('wireit-rnlist-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
     $p = [Diagnostics.Process]::Start((New-TkHiddenPsi $TK.psexe $rn '-List' $lo)); [void]$p.WaitForExit(20000)
     $t = [IO.File]::ReadAllText($lo); Remove-Item -LiteralPath $lo -Force -ErrorAction SilentlyContinue
-    $m = [regex]::Match($t, '(?m)^JSON=(.+)$'); if ($m.Success) { $ads = @($m.Groups[1].Value.Trim() | ConvertFrom-Json) }
+    $m = [regex]::Match($t, '(?m)^JSON=(.+)$'); if ($m.Success) { $ads = @($m.Groups[1].Value.Trim() | ConvertFrom-Json | ForEach-Object { $_ }) }   # 2.2.11 Office GUI click: PS 5.1 ConvertFrom-Json gives the whole array as ONE item (the pick list was skipped and the adapter came out as "Ethernet Wi-Fi"); ForEach-Object unrolls it
   } catch {}
   $pick = ''
   if ($ads.Count -gt 1) {

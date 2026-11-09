@@ -301,6 +301,13 @@ $d = Get-SuiteCounts @('PASS R17 the suite''s own "41 passed, 0 failed, 7 deferr
   Check ((($v11 | Select-Object -Unique) -join ',') -eq '2.2.11') ('version 2.2.11 in ToolkitCore, FixSiteCore, FixSiteBw and version.json (' + ($v11 -join ',') + ')')
   $ui = [IO.File]::ReadAllText((Join-Path $tk 'WireItToolkit.ps1'))
   Check ($ui -match "New-Btn 'Restore network' \{ Do-RestoreNet \}" -and $ui -match "Start-Hidden 'Restore Network' \`$rn") 'the Toolkit window has a "Restore network" button that runs RestoreNetwork.ps1'
+  # 2.2.11 Office GUI click (Nov 9): on Windows PowerShell 5.1 ConvertFrom-Json hands back a JSON list as ONE item, so with
+  # Ethernet + Wi-Fi the button skipped its pick list and ran Restore Network on an adapter named "Ethernet Wi-Fi" (FAILED, exit 2)
+  $pl = [regex]::Match($ui, '\$ads = @\(\$m\.Groups\[1\]\.Value\.Trim\(\) \| ConvertFrom-Json[^)]*\)').Value
+  foreach ($case in @(@('[{"name":"Ethernet","desc":"a","needs":false},{"name":"Wi-Fi","desc":"b","needs":false}]', 2), @('[{"name":"Ethernet","desc":"a","needs":false}]', 1))) {
+    $t = 'JSON=' + $case[0]; $m = [regex]::Match($t, '(?m)^JSON=(.+)$'); $ads = @(); if ($pl) { Invoke-Expression $pl }
+    Check ($ads.Count -eq $case[1] -and [string]$ads[0].name -eq 'Ethernet' -and -not ([string]$ads[0].name).Contains(' ')) ('the Restore network button reads ' + $case[1] + ' adapter(s) as ' + $case[1] + ' choice(s), each with its own name (not "Ethernet Wi-Fi")') ('got ' + $ads.Count + ': ' + (@($ads | ForEach-Object { [string]$_.name }) -join ' | '))
+  }
 } finally {
   try { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue } catch {}
 }
