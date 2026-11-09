@@ -177,7 +177,7 @@ function Write-RnReceipt([string]$result, $ad) {
   try {
     $dirs = @($ReceiptDir); if ($env:LOCALAPPDATA) { $dirs += (Join-Path $env:LOCALAPPDATA 'WireIt\receipts') }; $dirs += (Join-Path ([IO.Path]::GetTempPath()) 'WireIt-receipts')
     $f = ''; $name = 'RestoreNetwork-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.txt'
-    $l = @('WireIt Toolkit ' + $script:RnVersion + ' - Restore Network receipt', ('PC: ' + $env:COMPUTERNAME + '   user: ' + $env:USERNAME + '   ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')), ('Adapter: ' + $(if ($ad) { $ad.name } else { '(none)' })), ('Result: ' + $result), '', 'Changed:')
+    $l = @(('WireIt Toolkit ' + $script:RnVersion + ' - Restore Network receipt'), ('PC: ' + $env:COMPUTERNAME + '   user: ' + $env:USERNAME + '   ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')), ('Adapter: ' + $(if ($ad) { $ad.name } else { '(none)' })), ('Result: ' + $result), '', 'Changed:')
     if ($script:RnDone.Count) { $l += @($script:RnDone | ForEach-Object { '  - ' + $_ }) } else { $l += '  - nothing (it was already normal)' }
     $l += @('', 'What it said:') + @($script:RnLines | ForEach-Object { '  ' + $_ })
     # Toolkit\receipts first; a login that may not write there (Crew) keeps it in its own folder

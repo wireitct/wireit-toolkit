@@ -103,6 +103,8 @@ Out-Result @{ c1 = $r1.code; s1 = $r1.said; ch1 = $r1.changed; calls1 = $calls1;
     Check ($j.task -eq 'on') 'RN WifiWatch is switched back on at the end'
     Check (-not @($j.wifiCalls).Count) 'RN the other adapter (Wi-Fi 2) is not touched'
     Check ($j.rcpt -eq 1 -and $j.rtext -match 'Result: DONE' -and $j.rtext -match '192\.168\.250\.250' -and $j.rtext -match 'saved copy') 'RN a plain-text receipt is saved: result + what was changed (job receipt #4)' $j.rtext
+    $rl = @(([string]$j.rtext) -split "`r?`n")
+    Check ($rl.Count -gt 6 -and $rl[0] -match '^WireIt Toolkit [0-9.]+ - Restore Network receipt$' -and $rl[1] -match '^PC: ' -and $rl[2] -match '^Adapter: ' -and $rl[3] -match '^Result: ') 'RN receipt: one fact per line (title, PC, adapter, result) - found on the Office PC, the first four were run together on one line' ($rl[0..3] -join ' | ')
     Check ($j.c2 -eq 0 -and $j.s2 -match 'Nothing needed changing' -and $j.s2 -match 'DONE - network is back to normal') 'RN running it twice: the second run changes nothing and still says DONE' $j.s2
     Check (-not @($j.calls2).Count -and -not @($j.sets2).Count) 'RN ...and the second run makes no change at all (not even WifiWatch is paused)' ($j.calls2 -join "`n")
   }
@@ -292,6 +294,8 @@ $d = Get-SuiteCounts @('PASS R17 the suite''s own "41 passed, 0 failed, 7 deferr
   $rt = $(if ($rcs.Count) { [IO.File]::ReadAllText($rcs[0].FullName) } else { '' })
   Check ($rcs.Count -eq 2) ('receipt: two runs -> two receipts, the first one is not overwritten (' + $rcs.Count + ')')
   Check ($rt -match 'Site: Qq Nosuch Test 2211' -and $rt -match 'Result: (stopped|STOPPED HALF-WAY|DONE)' -and $rt -match 'Changed on the cameras / NVR:\s+- nothing') 'receipt: a run on a site this PC does not know (stopped half-way here: no network) says so and that nothing was changed' $rt
+  $rtl = @(([string]$rt) -split "`r?`n")
+  Check ($rtl[0] -match '^WireIt Toolkit [0-9.]+ - Fix this site receipt' -and $rtl[1] -match '^Site: ' -and $rtl[2] -match '^PC: ' -and $rtl[3] -match '^Result: ') 'receipt: one fact per line (title, site, PC, result)' ($rtl[0..3] -join ' | ')
   Write-Host 'version + the Toolkit button'
   $v11 = @(([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'ToolkitCore.ps1')), "TkBuiltVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'FixSiteCore.ps1')), "FsVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'FixSiteBw.ps1')), "FsVersion = '([0-9.]+)'")).Groups[1].Value, [string]([IO.File]::ReadAllText((Join-Path $repo 'version.json')) | ConvertFrom-Json).version)
   Check ((($v11 | Select-Object -Unique) -join ',') -eq '2.2.11') ('version 2.2.11 in ToolkitCore, FixSiteCore, FixSiteBw and version.json (' + ($v11 -join ',') + ')')
