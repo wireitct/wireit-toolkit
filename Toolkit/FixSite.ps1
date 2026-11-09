@@ -133,12 +133,14 @@ function Clear-Clip { if ($MockUrl -or $Answers) { return }; try { Set-Clipboard
 function Say-NetRestore($r) {
   # 2.2.1 (review H4): the tech hears it when this PC's own network could not be put back
   if (-not $r -or $r.ok) { return }
-  Say ('THIS PC''S NETWORK IS NOT BACK TO NORMAL: ' + (@($r.problems) -join '; ') + '. The Toolkit tries again the next time it runs; restarting the PC also clears the temporary addresses.') 'Red'
+  # 2.2.10 (Moshe Nov 9): a restore that is not verified is FAILED - Run again, on screen and in the log; the journal is kept
+  Say ('FAILED - Run again. THIS PC''S NETWORK IS NOT BACK TO NORMAL: ' + (@($r.problems) -join '; ') + '. The record of the change is kept: the next run puts it back first; restarting the PC also clears the temporary addresses.') 'Red'
 }
 function Done([int]$code) {
   $nr = $null; try { $nr = Remove-FsTempIps $tempState } catch { $nr = [pscustomobject]@{ ok = $false; problems = @('the clean-up stopped: ' + $_.Exception.Message) } }; Say-NetRestore $nr
   # 2.2.2 (re-review H4): this PC's network not back = the run did NOT end well, whatever else worked (exit 6, the window says so)
-  if ($nr -and -not $nr.ok -and $code -in @(0, 4)) { $code = 6 }
+  # 2.2.10: whatever the run's own result was (also "Stopped. Nothing was changed."), an unverified network restore ends as FAILED (6)
+  if ($nr -and -not $nr.ok) { $code = 6 }
   if ($CloseAfter -gt 0) { Write-Host ''; Write-Host ('This window closes in ' + $CloseAfter + ' seconds.'); Start-Sleep -Seconds $CloseAfter }
   elseif (-not $Answers -and -not $MockUrl -and $Mode -ne 'DryRun') { Write-Host ''; [void](Read-Host 'Press Enter to close this window') }
   exit $code
@@ -153,7 +155,7 @@ Write-Host ('=== WireIt Toolkit ' + $script:FsVersion + ' - Fix this site' + $(i
 Fs-Log ('start mode=' + $Mode + ' site=' + $Site + ' newsite=' + [bool]$NewSite + ' ps=' + $PSVersionTable.PSVersion + ' pc=' + $env:COMPUTERNAME)
 $lr = Clear-FsLeftoverTemps $tempState; if ($lr) { if ($lr.ok) { Say 'A temporary address a stopped run left on this PC was taken off, and its network settings are back.' 'Yellow' } else { Say-NetRestore $lr } }
 # 2.2.1 (review H4): whatever stops this run, this PC's network goes back first (the "Fix this site" task also does it after the run)
-trap { try { [void](Remove-FsTempIps $tempState) } catch {}; break }
+trap { $tnr = $null; try { $tnr = Remove-FsTempIps $tempState } catch { $tnr = [pscustomobject]@{ ok = $false; problems = @('the clean-up stopped: ' + $_.Exception.Message) } }; try { Say-NetRestore $tnr } catch {}; break }
 
 # ---------------- the site and its list ----------------
 $pmSite = $null

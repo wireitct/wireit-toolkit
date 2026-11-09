@@ -537,6 +537,7 @@ $script:FsPcBefore = $null        # the adapter as it was before the first tempo
 $script:FsCoexistChanged = $false
 $script:FsNetOps = $null          # TESTS ONLY: a hashtable of scriptblocks standing in for Windows' network commands (see Invoke-FsNetOp)
 $script:FsLastRestore = $null     # { ok; problems } of the last Restore-FsPcNet
+$script:FsNetBlocked = $null      # 2.2.10 (Codex R03): why no adapter change may happen in this run (an unreadable journal)
 function Invoke-FsNetOp([string]$op, [hashtable]$a) {
   if ($script:FsNetOps -and $script:FsNetOps.ContainsKey($op)) { return (& $script:FsNetOps[$op] $a) }
   $ix = [int]$a.ifIndex
@@ -629,6 +630,7 @@ function Add-FsTempIp([string]$p3, $pc, [string]$stateFile) {
   foreach ($t in $script:FsTemps) { if ($t.p3 -eq $p3) { return $t.ip } }
   if ($script:FsMockUrl -and -not $script:FsNetOps) { $r = Fs-Http -Ip '_pc' -Path ('/addtemp?p3=' + $p3); $ip = $p3 + '.253'; [void]$script:FsTemps.Add([pscustomobject]@{ p3 = $p3; ip = $ip; ifIndex = 0 }); return $ip }
   if (-not $pc) { return '' }
+  if ($script:FsNetBlocked) { Fs-LogLine ('no temporary address added: ' + $script:FsNetBlocked); return '' }   # 2.2.10 (Codex R03)
   # 1) the adapter as it is now, saved BEFORE anything changes
   if (-not $script:FsPcBefore) {
     try { $st = Invoke-FsNetOp 'state' @{ ifIndex = $pc.ifIndex } } catch { Fs-LogLine ('could not read this PC''s network settings - no temporary address added: ' + $_.Exception.Message); return '' }
@@ -636,10 +638,11 @@ function Add-FsTempIp([string]$p3, $pc, [string]$stateFile) {
     Save-FsNetState $stateFile
   }
   # 2) a DHCP adapter keeps DHCP while it has an extra fixed address (Windows can switch DHCP off otherwise: review H4)
+  # 2.2.10 (Codex R03): the intent is journaled BEFORE coexistence is switched on, so a run stopped in between still puts it back
   if ($script:FsPcBefore.dhcp -and $script:FsPcBefore.coexist -ne 'enabled' -and -not $script:FsCoexistChanged) {
-    $okc = $false; try { $okc = [bool](Invoke-FsNetOp 'coexist' @{ ifIndex = $pc.ifIndex; on = $true }) } catch {}
-    if (-not $okc) { Fs-LogLine 'could not turn on DHCP+static coexistence on this PC - no temporary address added (DHCP would be lost)'; return '' }
     $script:FsCoexistChanged = $true; Save-FsNetState $stateFile
+    $okc = $false; try { $okc = [bool](Invoke-FsNetOp 'coexist' @{ ifIndex = $pc.ifIndex; on = $true }) } catch {}
+    if (-not $okc) { Fs-LogLine 'could not turn on DHCP+static coexistence on this PC - no temporary address added (DHCP would be lost)'; return '' }   # the journal keeps "changed": the restore puts it back (harmless if it never changed)
   }
   foreach ($h in @(253, 252, 247, 246, 245)) {
     $ip = $p3 + '.' + $h; if (-not (Test-FsIpFree $ip)) { continue }
@@ -647,12 +650,33 @@ function Add-FsTempIp([string]$p3, $pc, [string]$stateFile) {
     [void]$script:FsTemps.Add($t); Save-FsNetState $stateFile   # written BEFORE the address goes on: a crash in between is still cleaned up
     try {
       $st = [string](Invoke-FsNetOp 'addtemp' @{ ifIndex = $pc.ifIndex; ip = $ip; prefix = 24 })
-      if ($st -eq 'Duplicate') { Fs-LogLine ('temp IP ' + $ip + ' is used by another device - trying the next'); [void](Invoke-FsNetOp 'remove' @{ ifIndex = $pc.ifIndex; ip = $ip }); [void]$script:FsTemps.Remove($t); Save-FsNetState $stateFile; continue }
+      if ($st -eq 'Duplicate') {
+        Fs-LogLine ('temp IP ' + $ip + ' is used by another device - trying the next')
+        # 2.2.10 (Codex R03): it leaves the journal only once it is checked off the adapter; otherwise stop adding more
+        if (-not (Remove-FsOneTempChecked $t $stateFile)) { return '' }
+        continue
+      }
       if (-not $script:FsNetOps) { Start-Sleep -Seconds 1 }
       return $ip
-    } catch { Fs-LogLine ('temp IP ' + $ip + ' failed: ' + $_.Exception.Message); try { [void](Invoke-FsNetOp 'remove' @{ ifIndex = $pc.ifIndex; ip = $ip }) } catch {}; [void]$script:FsTemps.Remove($t); Save-FsNetState $stateFile }
+    } catch {
+      # 2.2.10 (Codex R03): 2.2.9 dropped it from the journal whatever happened and tried the next one (five aliases, none tracked).
+      # Now: try to take it off, keep it journaled unless the adapter shows it gone, and add no more addresses this time.
+      Fs-LogLine ('temp IP ' + $ip + ' failed: ' + $_.Exception.Message)
+      [void](Remove-FsOneTempChecked $t $stateFile)
+      return ''
+    }
   }
   return ''
+}
+# 2.2.10 (Codex R03): remove one temporary address and drop it from the journal ONLY when a fresh read shows it gone.
+function Remove-FsOneTempChecked($t, [string]$stateFile) {
+  try { [void](Invoke-FsNetOp 'remove' @{ ifIndex = $t.ifIndex; ip = $t.ip }) } catch { Fs-LogLine ('removing temp IP ' + $t.ip + ' failed: ' + $_.Exception.Message) }
+  $gone = $false
+  try { $now = Invoke-FsNetOp 'state' @{ ifIndex = $t.ifIndex }; if ($now) { $gone = -not @(@($now.addrs) | Where-Object { $_ -and [string]$_.ip -eq [string]$t.ip }).Count } } catch { $gone = $false }
+  if ($gone) { [void]$script:FsTemps.Remove($t); Save-FsNetState $stateFile; return $true }
+  Fs-LogLine ('temp IP ' + $t.ip + ' may still be on this PC - kept in the journal so the clean-up takes it off')
+  try { Save-FsNetState $stateFile } catch {}
+  return $false
 }
 function Restore-FsPcNet([string]$stateFile) {
   # takes every temporary address off, then puts the adapter back the way it was (DHCP, coexistence, its own addresses, its router).
@@ -722,14 +746,26 @@ function Remove-FsTempIps([string]$stateFile) {
     $script:FsTemps.Clear(); if ($stateFile -and (Test-Path $stateFile)) { Remove-Item $stateFile -Force -ErrorAction SilentlyContinue }
     $script:FsLastRestore = [pscustomobject]@{ ok = $true; problems = @() }; return $script:FsLastRestore
   }
-  if (-not $script:FsPcBefore -and -not @($script:FsTemps).Count) { $script:FsLastRestore = [pscustomobject]@{ ok = $true; problems = @() }; return $script:FsLastRestore }
+  if (-not $script:FsPcBefore -and -not @($script:FsTemps).Count) {
+    if ($script:FsNetBlocked) { $script:FsLastRestore = [pscustomobject]@{ ok = $false; problems = @($script:FsNetBlocked) }; return $script:FsLastRestore }   # 2.2.10 (Codex R03)
+    $script:FsLastRestore = [pscustomobject]@{ ok = $true; problems = @() }; return $script:FsLastRestore
+  }
   return (Restore-FsPcNet $stateFile)
 }
 function Clear-FsLeftoverTemps([string]$stateFile) {
   # a run that crashed or was stopped left this PC changed: put it back at the next start (and from the "Fix this site" task's finally)
   if (($script:FsMockUrl -and -not $script:FsNetOps) -or -not $stateFile -or -not (Test-Path -LiteralPath $stateFile)) { return $null }
   $tj = $null; try { $tj = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json } catch {}
-  if (-not $tj) { Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue; return $null }
+  if (-not $tj) {
+    # 2.2.10 (Codex R03): an unreadable journal is an unsolved recovery, not "nothing to do". It is kept (renamed, so the PC can be
+    # put back by hand from it), no adapter change happens in this run, and the run ends FAILED - Run again.
+    $keep = $stateFile -replace '\.json$', ('.unreadable-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')
+    try { Move-Item -LiteralPath $stateFile -Destination $keep -Force } catch { $keep = $stateFile }
+    $script:FsNetBlocked = ('the record of an earlier run''s changes to this PC''s network could not be read (kept as ' + (Split-Path -Leaf $keep) + '); restart this PC to clear any temporary address')
+    Fs-LogLine ('NETWORK NOT BACK TO NORMAL: ' + $script:FsNetBlocked)
+    $script:FsLastRestore = [pscustomobject]@{ ok = $false; problems = @($script:FsNetBlocked) }
+    return $script:FsLastRestore
+  }
   $script:FsTemps.Clear()
   if ($tj.PSObject.Properties['version'] -and [int]$tj.version -ge 2) {
     $script:FsPcBefore = $tj.before; $script:FsCoexistChanged = [bool]$tj.coexistChanged
