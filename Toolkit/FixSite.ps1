@@ -464,8 +464,14 @@ if ($Mode -eq 'Rollback') {
   }
   foreach ($n in @($r0.nvrs)) {
     if (& $isDone ('nvrmove|' + [string]$n.ip)) { continue }
+    # 2.2.7 (F02): a run stopped mid-move (older undo files): the login saved under its old address is the one it has
+    if (-not $nvrPwR.ContainsKey([string]$n.target) -and $nvrPwR.ContainsKey([string]$n.ip)) { $nvrPwR[[string]$n.target] = $nvrPwR[[string]$n.ip] }
     if (-not $nvrPwR.ContainsKey([string]$n.target)) { Say ('  NVR ' + $n.target + ': no saved login - move it back by hand to ' + $n.old.ip) 'Yellow'; $bad++; continue }
     $cr = Fs-Cred $nvrPwR[[string]$n.target]; $net = Get-FsNet ([string]$n.target) 'Hikvision' $cr; [void](Add-FsTempIp (Get-FsP3 ([string]$n.old.ip)) $pc $tempState)
+    if (-not $net -and [string]$n.target -ne [string]$n.old.ip -and (Test-FsLogin ([string]$n.old.ip) 'Hikvision' $nvrPwR[[string]$n.target]) -eq 'ok') {
+      # 2.2.7 (F02): the stopped run's move never took: the NVR still answers on its old address
+      & $markDone ('nvrmove|' + [string]$n.ip); Say ('  NVR: still on ' + $n.old.ip + ' (the move never took) ' + $script:FsOk); continue
+    }
     if (-not $net) { Say ('  NVR ' + $n.target + ': its address settings could not be read - not moved back ' + $script:FsBad) 'Red'; $bad++; continue }
     $w = Set-FsNet ([string]$n.target) 'Hikvision' $cr $net ([string]$n.old.ip) ([string]$n.old.mask) ([string]$n.old.gw) ([string]$n.old.dns1) ([string]$n.old.dns2) -Dhcp:([bool]$n.old.dhcp)
     # 2.2.3 (Codex #20): done only when the NVR answers on its old address (after the restart it may need); DHCP = the router picks it
@@ -823,6 +829,9 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'move' })) {
   if (-not $t) { & $nvrFail ('not moved: ' + $n.target + ' (and the other NVR addresses) already answer on the network'); continue }
   if ($t -ne $n.target) { Say ('NVR ' + $n.ip + ': ' + $n.target + ' is already used by another device - moving it to ' + $t + ' instead') 'Yellow'; $n.target = $t }
   $rb.nvrs += [ordered]@{ ip = $n.ip; target = $n.target; iface = $net.iface; old = [ordered]@{ ip = $net.ip; mask = $net.mask; gw = $net.gw; dhcp = $net.dhcp; dns1 = $net.dns1; dns2 = $net.dns2 } }; Save-Rb
+  # 2.2.7 (Codex file-by-file F02): its login is saved under the NEW address too before it moves, so a run stopped mid-move
+  # still lets Undo log in there (2.2.6 saved it only after the move was verified: Undo said "no saved login")
+  if (-not $sec.nvr.ContainsKey($n.target)) { $sec.nvr[$n.target] = $nvrPw[$n.ip]; Save-FsSecrets $SecretsDir $sec }
   $w = Set-FsNet $n.ip 'Hikvision' $cr $net $n.target $devNet.mask $devNet.gw
   if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $n.ip 'Hikvision' $cr) }
   $back = $w.ok -and (Wait-FsDevice $n.target 'Hikvision' $nvrPw[$n.ip] ([int]$opts.rebootWaitSec))
