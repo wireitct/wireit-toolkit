@@ -1,8 +1,8 @@
 {
   "version": "2.2.11",
   "released": "2026-11-09",
-  "commit": "c80e1dd7667b82e6e83245b54b24712c97e42ea6",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/c80e1dd7667b82e6e83245b54b24712c97e42ea6/",
+  "commit": "5bb111269738579242a0ee1de6e29ef8d771f03c",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/5bb111269738579242a0ee1de6e29ef8d771f03c/",
   "notes": "2.2.11: Restore Network button, job receipts, HikReset test headless, Fix NVR stops cleanly without config.json, deferred never counts as pass",
   "files": [
     {
@@ -182,8 +182,8 @@
     },
     {
       "path": "Toolkit/RestoreNetwork.ps1",
-      "sha256": "e9af54e7b7c6c05c1f1c33f56a3c0c959ff48069a683846adb80d666910c310b",
-      "size": 25954
+      "sha256": "4eda57215aea60f9aa48bca3e1c3510568063297897867a2c5896204ac924ab5",
+      "size": 34313
     },
     {
       "path": "Toolkit/ScanUpload.ps1",
@@ -337,8 +337,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2211.ps1",
-      "sha256": "c66a668077a9a9700c55659996bc7ffc948af9d1f897a246f23ec895856b4926",
-      "size": 30500
+      "sha256": "fbfe5f36ef70f1424c283bfba681ad3ea4bce95b102fd1c3bc80b0a283e35a25",
+      "size": 43970
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
@@ -412,8 +412,8 @@
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
-      "sha256": "13fb46f9d3be253d2078a382cf8ad892d111d85bb6aa6cd771f8a5248fc4f8c1",
-      "size": 66645
+      "sha256": "ef8ad2f657464c714956755d719f7ed842d14a7ceab8015a5b9d0f889b937383",
+      "size": 66844
     },
     {
       "path": "Toolkit/ToolkitMigrate.ps1",
