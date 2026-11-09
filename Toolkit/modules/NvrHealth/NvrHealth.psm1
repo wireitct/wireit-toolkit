@@ -325,6 +325,9 @@ function Get-ReferenceTime {
   }
   return @{ utc = $pc; source = 'this PC clock (no internet to double-check it)'; pcOffsetSec = $null }
 }
+# 2.2.7 (Codex file-by-file F13): "real time" at the moment a clock was READ (this PC's clock corrected by the offset measured once).
+# 2.2.6 kept the one time taken when the check started, so every clock read later (after a slow recorder, 300 cameras) looked behind.
+function Get-RefAt($ref) { $off = $(if ($null -ne $ref.pcOffsetSec) { [double]$ref.pcOffsetSec } else { 0 }); $r = @{}; foreach ($k in $ref.Keys) { $r[$k] = $ref[$k] }; $r.utc = [DateTime]::UtcNow.AddSeconds(-$off); return $r }
 function Fmt-Span([double]$sec) {
   $a = [math]::Abs($sec)
   if ($a -lt 90) { return ([string][math]::Round($a) + ' seconds') }
@@ -811,9 +814,11 @@ function Get-RecordingStatus {
     if ($null -ne $c.days_held) { if ($null -eq $minDays -or $c.days_held -lt $minDays) { $minDays = $c.days_held }; if ($null -eq $maxDays -or $c.days_held -gt $maxDays) { $maxDays = $c.days_held } }
     $note = $(if ($c.PSObject.Properties['days_note'] -and $c.days_note) { ' - ' + $c.days_note } else { '' })
     $held = $(if ($null -ne $c.days_held) { ', footage continuous for ' + $c.days_held + ' days' + $(if ($note) { $note } else { ' (back to ' + (Fmt-Local $c.oldest 'MMM d') + ')' }) } elseif ($note) { ', days held ' + $c.days_note } else { '' })
-    if ($c.recording_now) { $rec++; Ok ($label + ': recording' + $held) }
-    elseif ($c.online -eq $false) { Bad ($label + ': camera OFFLINE, not recording' + $(if ($c.newest) { ' (last footage ' + (Fmt-Local $c.newest) + ')' } else { '' })); $notRec += $tag }
+    # 2.2.7 (Codex file-by-file F10): what the recorder KNOWS about a camera comes first: one it reports OFFLINE, or with recording
+    # turned OFF in its schedule, is not recording - a clip from a few minutes ago (before it dropped) does not make it "recording"
+    if ($c.online -eq $false) { Bad ($label + ': camera OFFLINE, not recording' + $(if ($c.newest) { ' (last footage ' + (Fmt-Local $c.newest) + ')' } else { '' })); $notRec += $tag }
     elseif ($c.scheduled -eq $false) { Bad ($label + ': recording is turned OFF in its schedule' + $held); $notRec += $tag }
+    elseif ($c.recording_now) { $rec++; Ok ($label + ': recording' + $held) }
     elseif ($c.mode -match '(?i)motion|alarm|event|smart|vmd' -and $c.newest -and ($now - $c.newest).TotalHours -lt 24) { $rec++; Ok ($label + ': motion recording, last clip ' + (Fmt-Local $c.newest) + $held) }
     elseif ($c.newest) { Bad ($label + ': NOT recording - last footage ' + (Fmt-Local $c.newest) + $held); $notRec += $tag }
     else { Bad ($label + ': NO footage found at all'); $notRec += $tag }
@@ -921,9 +926,9 @@ function Get-ClockStatus {
   Say ''; Say ('----- Clock check: ' + $Ip + ' (compared with ' + $ref.source + ') -----') 'Cyan'
   if ($null -ne $ref.pcOffsetSec -and [math]::Abs($ref.pcOffsetSec) -ge 30) { Warn ('This PC''s own clock is off by ' + (Fmt-Span $ref.pcOffsetSec) + '; using internet time instead.') }
   $blk = Login-Blocked $t
-  $c = $(if ($blk) { $null } else { Clock-Of $t })
+  $c = $(if ($blk) { $null } else { Clock-Of $t }); $refR = Get-RefAt $ref   # 2.2.7 (F13): compared with the time it was read
   if (-not $blk) { $blk = Login-Blocked $t }   # Clock-Of may have just been refused
-  $probs = @(Judge-Clock 'Recorder' $c $ref $blk)
+  $probs = @(Judge-Clock 'Recorder' $c $refR $blk)
   $cams = @()
   $camNc = 0
   if ($IncludeCameras) {
@@ -931,9 +936,9 @@ function Get-ClockStatus {
     $nl = @($tgs | Where-Object { $_.nologin }); $tgs = @($tgs | Where-Object { -not $_.nologin })
     foreach ($ct in $tgs) {
       if ($ct.vendor -eq 'Auto') { $ct.vendor = Detect-Vendor $ct.ip 0 }
-      $cc = Clock-Of $ct
-      $cp = @(Judge-Clock ('Camera ' + $ct.ip) $cc $ref)
-      $cams += [pscustomobject]@{ ip = $ct.ip; ok = ($cp.Count -eq 0); problems = $cp; drift_sec = $(if ($cc -and $cc.utc) { [math]::Round(($cc.utc - $ref.utc).TotalSeconds) } else { $null }) }
+      $cc = Clock-Of $ct; $refC = Get-RefAt $ref   # 2.2.7 (F13)
+      $cp = @(Judge-Clock ('Camera ' + $ct.ip) $cc $refC)
+      $cams += [pscustomobject]@{ ip = $ct.ip; ok = ($cp.Count -eq 0); problems = $cp; drift_sec = $(if ($cc -and $cc.utc) { [math]::Round(($cc.utc - $refC.utc).TotalSeconds) } else { $null }) }
     }
     if ($nl.Count) {
       # 1.4 (YKW Elm): the cameras Find cameras just found, read WITHOUT a login - one summary line, only the wrong clocks listed
@@ -941,9 +946,9 @@ function Get-ClockStatus {
       Info ('Camera clocks: ' + $nl.Count + ' camera(s) from the Find cameras list, read WITHOUT a login (no password is sent to any camera).')
       $okN = 0; $okMax = 0; $noAns = @()
       foreach ($ct in $nl) {
-        $u = Onvif-TimeNoLogin $ct
+        $u = Onvif-TimeNoLogin $ct; $refN = Get-RefAt $ref   # 2.2.7 (F13)
         if (-not $u -or -not $u.utc) { $noAns += $ct.ip; continue }
-        $drift = ($u.utc - $ref.utc).TotalSeconds; $dir = $(if ($drift -gt 0) { 'ahead' } else { 'behind' }); $cp = @()
+        $drift = ($u.utc - $refN.utc).TotalSeconds; $dir = $(if ($drift -gt 0) { 'ahead' } else { 'behind' }); $cp = @()
         if ([math]::Abs($drift) -ge [double]$script:Opt.DriftBadSec) { Bad ('Camera ' + $ct.ip + ': clock is ' + (Fmt-Span $drift) + ' ' + $dir + '. Its footage times are wrong.'); $cp = @('clock ' + (Fmt-Span $drift) + ' ' + $dir) }
         elseif ([math]::Abs($drift) -ge [double]$script:Opt.DriftWarnSec) { Warn ('Camera ' + $ct.ip + ': clock is ' + (Fmt-Span $drift) + ' ' + $dir + '.'); $cp = @('clock ' + (Fmt-Span $drift) + ' ' + $dir) }
         else { $okN++; $okMax = [math]::Max($okMax, [math]::Abs($drift)) }
@@ -965,7 +970,7 @@ function Get-ClockStatus {
   elseif ($nc.Count) { $ncs = @($nc | Where-Object { $_ -ne 'clock not checked' }); Say ('RESULT: Clock: not checked' + $(if ($ncs.Count) { ' (' + ($ncs -join '; ') + ')' } else { '' }) + '. Nothing to fix from this check.') 'Yellow' }
   else { Say 'RESULT: time is right and stays right (NTP + US Eastern).' 'Green' }
   return [pscustomobject]@{ check = 'clock'; ip = $Ip; vendor = $t.vendor; ok = ($all.Count -eq 0); cameras_not_checked = $camNc; notChecked = ($nc.Count -gt 0 -and $real.Count -eq 0); reference = $ref.source;
-    drift_sec = $(if ($c -and $c.utc) { [math]::Round(($c.utc - $ref.utc).TotalSeconds) } else { $null }); mode = $(if ($c) { $c.mode } else { '' });
+    drift_sec = $(if ($c -and $c.utc) { [math]::Round(($c.utc - $refR.utc).TotalSeconds) } else { $null }); mode = $(if ($c) { $c.mode } else { '' });
     ntp = $(if ($c) { @($c.ntp) } else { @() }); timezone = $(if ($c -and $c.tz) { $c.tz.raw } elseif ($c) { $c.tzId } else { '' }); problems = @($all); cameras = $cams; log = $script:LogFile }
 }
 
@@ -1205,6 +1210,10 @@ function Get-FirmwareStatus {
         $noFw = 0
         foreach ($d in (Dw-Devices $t)) { if ($d.firmware) { $items += Judge-Firmware ('Camera ' + $d.ip) $d.model $d.firmware $ref -Quiet } else { $noFw++; Log ('FW Camera ' + $d.ip + ' ' + $d.model + ': DW does not report its firmware.') } }
         Write-FwUnlisted $items $noFw
+        $fwUnread += $noFw   # 2.2.7 (Codex file-by-file F11): a camera whose firmware is unknown is NOT checked (2.2.6 left it out of the count)
+      } elseif ($IncludeCameras) {
+        # 2.2.7 (F11): camera checks were asked for and could not run (the DW login failed): counted, never "firmware OK"
+        Warn 'Camera firmware NOT CHECKED: the DW login did not work.'; $fwUnread++
       }
     }
     default {
