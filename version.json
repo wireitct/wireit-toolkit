@@ -1,8 +1,8 @@
 {
   "version": "2.2.12",
   "released": "2026-11-09",
-  "commit": "29a0bdca89e49d5d28119cdaf9ede658e17ec39d",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/29a0bdca89e49d5d28119cdaf9ede658e17ec39d/",
+  "commit": "c41c72f076710b55d77e8fefbdba020b867256c3",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/c41c72f076710b55d77e8fefbdba020b867256c3/",
   "notes": "2.2.12: every Codex NO-GO finding of 2.2.11 fixed (Fix this site multi-NVR move refused, network read checked before any change, stream settings read back; Fix NVR finish depends on the check, refused login is not OK, clean-up verifies the PC connection; Restore Network snapshots + asks before resetting a static adapter, online = real web answer through the chosen adapter, WifiWatch really paused; retention checks every day; restart must be seen; atomic scan queue; relay suite in the pack)",
   "files": [
     {
@@ -367,7 +367,7 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "ead3b311cf10cce7f253a7dafb695725fc0ab4173cb48ea00fdc310a926d3b8c",
+      "sha256": "0e6ded0e584e17d58d9ed3ff00dca7b6c7adca67f38df5c2b028081b10d92665",
       "size": 43270
     },
     {
