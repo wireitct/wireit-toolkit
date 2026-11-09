@@ -89,7 +89,7 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::
 # =====================================================================================
 Write-Host 'H1 (classic Fix NVR). a password in the body goes over HTTPS; plain HTTP only when nothing listens on 443 (re-review H1)'
 $nvrAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'FixNVR/FixNVR.ps1'), [ref]$null, [ref]$null)
-foreach ($fn in @('Test-NvrSecretBody', 'Test-NvrTlsPort', 'Http', 'Base', 'Err-Body')) { $fa = $nvrAst.Find({ param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $fn }, $true); . ([scriptblock]::Create($fa.Extent.Text)) }
+foreach ($fn in @('Test-NvrSecretBody', 'Test-NvrTlsPort', 'Http', 'Base', 'Err-Body', 'Test-WireItPlainBasicOnly')) { $fa = $nvrAst.Find({ param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $fn }, $true); . ([scriptblock]::Create($fa.Extent.Text)) }
 $Mock = $null; $IsPs5 = ($PSVersionTable.PSVersion.Major -lt 6); $script:refused = @{}; $script:scheme = @{}; $script:nvrTls = @{}
 $script:NvrLog = New-Object System.Collections.ArrayList; $script:NvrSay = New-Object System.Collections.ArrayList
 function Log([string]$s) { [void]$script:NvrLog.Add($s) }; function Say([string]$s, [string]$c = '') { [void]$script:NvrSay.Add($s) }
@@ -337,8 +337,8 @@ $ui = Get-TkUpdateInfo ([pscustomobject]@{ updateUrl = ('http://127.0.0.1:' + $w
 Check ($ui.state -eq 'current' -and $ui.message -match 'newer than the published') 'a repository install with no version.json: still no "update" to 2.0.4, and it says why'
 $threw = $false; try { Install-TkUpdate ([pscustomobject]$m204) $vt { param($u) [byte[]]@() } | Out-Null } catch { $threw = $_.Exception.Message -match 'not newer' }
 Check $threw 'Install-TkUpdate itself refuses a version that is not newer'
-$m9 = [ordered]@{ version = '2.2.6'; base = $m204.base; files = $m204.files }; ($m9 | ConvertTo-Json -Depth 4) | Set-Content (Join-Path $web 'version.json')
-Eq (Get-TkUpdateInfo ([pscustomobject]@{ updateUrl = ('http://127.0.0.1:' + $wp + '/version.json'); updateTimeoutMs = 4000 }) $vt).state 'available' 'a NEWER published version (2.2.6) is offered'
+$m9 = [ordered]@{ version = '2.2.8'; base = $m204.base; files = $m204.files }; ($m9 | ConvertTo-Json -Depth 4) | Set-Content (Join-Path $web 'version.json')
+Eq (Get-TkUpdateInfo ([pscustomobject]@{ updateUrl = ('http://127.0.0.1:' + $wp + '/version.json'); updateTimeoutMs = 4000 }) $vt).state 'available' 'a NEWER published version (2.2.8) is offered'
 $fcv = ''; if ((Read-Src 'Toolkit/FixSiteCore.ps1') -match "\`$script:FsVersion = '([^']+)'") { $fcv = $Matches[1] }
 $tcv = ''; if ((Read-Src 'Toolkit/ToolkitCore.ps1') -match "\`$script:TkBuiltVersion = '([^']+)'") { $tcv = $Matches[1] }
 $bwv = ''; if ((Read-Src 'Toolkit/FixSiteBw.ps1') -match "\`$script:FsVersion = '([^']+)'") { $bwv = $Matches[1] }

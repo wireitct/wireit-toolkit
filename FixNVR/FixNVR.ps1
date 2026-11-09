@@ -360,6 +360,7 @@ $script:WiAuthSeen = @{}
 function Test-WireItPlainBasicOnly([string]$uri) {
   $u = $null; try { $u = [uri]$uri } catch { return $false }
   if (-not $u -or $u.Scheme -ne 'http') { return $false }
+  if ($null -eq $script:WiAuthSeen) { $script:WiAuthSeen = @{} }
   $k = $u.Authority; if ($script:WiAuthSeen.ContainsKey($k)) { return [bool]$script:WiAuthSeen[$k] }
   $basicOnly = $false
   try { $rq = [Net.HttpWebRequest]::Create($u); $rq.Method = 'GET'; $rq.Timeout = 6000; $rq.AllowAutoRedirect = $false; $rs = $rq.GetResponse(); $rs.Close() }
