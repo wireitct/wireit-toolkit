@@ -14,7 +14,7 @@ param([string]$Root = 'C:\WireIt', [switch]$NoShortcut, [switch]$PlanOnly)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $tk = Join-Path $Root 'Toolkit'
-$files = 'WireItToolkit.ps1', 'ToolkitCore.ps1', 'WireIt Toolkit.cmd', 'Install-Toolkit.ps1', 'README.txt', 'wireit.ico', 'wireit-logo.png', 'version.json', 'CamViews.ps1', 'Set upload key.cmd', 'NvrCheck.ps1', 'ScanUpload.ps1', 'FixIt.ps1', 'FixSite.ps1', 'FixSiteCore.ps1', 'FixSiteDevices.ps1', 'FixSiteWindow.ps1', 'HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'HikEmailDrop.ps1', 'FixSiteBw.ps1', 'ToolkitMigrate.ps1', 'ToolkitRecover.ps1'
+$files = 'WireItToolkit.ps1', 'ToolkitCore.ps1', 'WireIt Toolkit.cmd', 'Install-Toolkit.ps1', 'README.txt', 'wireit.ico', 'wireit-logo.png', 'version.json', 'CamViews.ps1', 'Set upload key.cmd', 'NvrCheck.ps1', 'ScanUpload.ps1', 'FixIt.ps1', 'FixSite.ps1', 'FixSiteCore.ps1', 'FixSiteDevices.ps1', 'FixSiteWindow.ps1', 'HikSadp.ps1', 'HikPortal.ps1', 'HikMail.ps1', 'HikReset.ps1', 'HikResetFlow.ps1', 'HikEmailDrop.ps1', 'FixSiteBw.ps1', 'ToolkitMigrate.ps1', 'ToolkitRecover.ps1', 'RestoreNetwork.ps1', 'Restore Network.cmd'   # 2.2.11: Restore Network
 # 2.2.1 (review M3): the companion tools come from .\bundle\<tool> (a release zip) OR from beside the Toolkit folder (a copy of the
 # repository: Toolkit\, FixNVR\, CamReset\, NetCheck\ side by side). Every file the Toolkit needs is checked BEFORE anything is
 # installed; a missing one stops the install with its name (it used to be skipped and the install still said "installed").
@@ -75,6 +75,11 @@ if (-not $NoShortcut) {
     $lnk.WorkingDirectory = $tk; $lnk.WindowStyle = 7; $lnk.Description = 'WireIt Toolkit - find cameras, fix NVRs, reset passwords'
     $lnk.IconLocation = (Join-Path $tk 'wireit.ico') + ',0'
     $lnk.Save(); 'Shortcut: ' + (Join-Path $d 'WireIt Toolkit.lnk')
+    # 2.2.11: "Restore Network" on its own (this PC's network back to normal), one double-click, works without the Toolkit window
+    $l2 = $sh.CreateShortcut((Join-Path $d 'Restore Network.lnk'))
+    $l2.TargetPath = (Join-Path $tk 'Restore Network.cmd'); $l2.WorkingDirectory = $tk; $l2.Description = 'WireIt: this PC''s network back to normal (DHCP, extra addresses off)'
+    $l2.IconLocation = (Join-Path $env:SystemRoot 'System32\shell32.dll') + ',18'
+    $l2.Save(); 'Shortcut: ' + (Join-Path $d 'Restore Network.lnk')
   }
 }
 $adm = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)

@@ -1,0 +1,303 @@
+<# Test-Fix2211.ps1 - tests for WireIt Toolkit 2.2.11 (Nov 9 2026): Restore Network (add-on #3), the WifiWatch adapter fix,
+   Fix NVR with no usable config.json (Codex R14 / F16), and Run-AllTests never counting a deferred check as a pass (Codex R17).
+   Moshe's rule: every change is tested for failing half-way, the wrong site (here: the wrong adapter / another tool's file) and
+   running twice. Restore Network and WifiWatch run against a simulated Windows (no real adapter is touched here).
+   NEEDS WINDOWS CHECK: the real Windows commands behind Restore Network (run it once on a real adapter). Windows PowerShell 5.1 or pwsh 7. #>
+$ErrorActionPreference = 'Stop'
+$tk = Split-Path -Parent $PSScriptRoot; $repo = Split-Path -Parent $tk
+$exe = $(if ($PSVersionTable.PSEdition -eq 'Core') { (Get-Process -Id $PID).Path } else { Join-Path $PSHOME 'powershell.exe' })
+$tmp = Join-Path ([IO.Path]::GetTempPath()) ('fix2211-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+$script:pass = 0; $script:fail = 0
+function Check([bool]$ok, [string]$name, [string]$more = '') {
+  if ($ok) { $script:pass++; Write-Host ('PASS ' + $name) } else { $script:fail++; Write-Host ('FAIL ' + $name); if ($more) { Write-Host ('     ' + ($more -replace "`n", "`n     ")) } }
+}
+function Q([string]$s) { return "'" + $s.Replace("'", "''") + "'" }
+function Invoke-Driver([string]$name, [string]$code) {
+  $f = Join-Path $tmp ($name + '.ps1'); [IO.File]::WriteAllText($f, $code, (New-Object Text.UTF8Encoding($true)))
+  $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try { $o = & $exe -NoProfile -ExecutionPolicy Bypass -File $f 2>&1 | Out-String } finally { $ErrorActionPreference = $prev }
+  return $o
+}
+function Get-Json([string]$out) { $m = [regex]::Match($out, '(?m)^JSON=(\{.*\})\s*$'); if ($m.Success) { try { return ($m.Groups[1].Value | ConvertFrom-Json) } catch {} }; return $null }
+function Get-FnText([string]$file, [string[]]$only = @()) {
+  $ast = [Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$null)
+  $fns = @($ast.FindAll({ param($a) $a -is [Management.Automation.Language.FunctionDefinitionAst] }, $true))
+  if ($only.Count) { $fns = @($fns | Where-Object { $only -contains $_.Name }) }
+  return (($fns | ForEach-Object { $_.Extent.Text }) -join "`n")
+}
+
+# ---------------- a simulated Windows for Restore Network ----------------
+$rnFile = Join-Path $tk 'RestoreNetwork.ps1'
+$simCode = @'
+function New-SimAdapter([string]$name, [int]$ix, [bool]$wifi) {
+  return @{ name = $name; ifIndex = $ix; desc = ($name + ' card'); wifi = $wifi; guid = ('g' + $ix); disabled = $false; cable = $true; dhcp = $true; coexist = 'disabled';
+            active = (New-Object System.Collections.ArrayList); persistent = (New-Object System.Collections.ArrayList); proutes = (New-Object System.Collections.ArrayList); dnsStatic = $false; lease = ('192.168.4.' + (100 + $ix)); routerAnswers = $true }
+}
+$script:sim = @{ ads = @(); admin = $true; task = 'on'; taskSets = (New-Object System.Collections.ArrayList); calls = (New-Object System.Collections.ArrayList); fail = @{}; elevate = 'deny'; elevated = 0 }
+function Sim-Ad($ix) { foreach ($x in $script:sim.ads) { if ($x.ifIndex -eq [int]$ix) { return $x } }; return $null }
+$script:RnOps = {
+  param($op, $a)
+  if ($op -notin @('list', 'state', 'isadmin', 'sleep', 'task')) { [void]$script:sim.calls.Add($op + ' ' + (($a.Keys | Sort-Object | Where-Object { $_ -in @('ip', 'store', 'gw', 'on', 'name') } | ForEach-Object { $_ + '=' + $a[$_] }) -join ' ')) }
+  $key = $op + $(if ($a.store) { ':' + $a.store } else { '' })
+  if ($script:sim.fail[$key]) { throw ('simulated: ' + $key + ' failed') }
+  switch ($op) {
+    'isadmin' { return $script:sim.admin }
+    'list' { return @($script:sim.ads | ForEach-Object { [pscustomobject]@{ name = $_.name; ifIndex = $_.ifIndex; desc = $_.desc; disabled = $_.disabled; connected = ((-not $_.disabled) -and $_.cable); wifi = $_.wifi; guid = $_.guid } }) }
+    'state' {
+      $x = Sim-Ad $a.ifIndex
+      $act = @($x.active | ForEach-Object { [pscustomobject]@{ ip = $_.ip; prefix = 24; origin = 'Manual' } })
+      if ($x.dhcp -and -not $x.disabled -and $x.cable -and $x.routerAnswers) { $act += [pscustomobject]@{ ip = $x.lease; prefix = 22; origin = 'Dhcp' } }
+      $rt = @($x.proutes | ForEach-Object { [pscustomobject]@{ gw = $_; store = 'PersistentStore'; manual = $true } }) + @($x.proutes | ForEach-Object { [pscustomobject]@{ gw = $_; store = 'ActiveStore'; manual = $true } })
+      return [pscustomobject]@{ dhcp = $x.dhcp; coexist = $x.coexist; active = $act; persistent = @($x.persistent | ForEach-Object { [pscustomobject]@{ ip = $_.ip; prefix = 24; origin = 'Manual' } }); routes = $rt; dnsStatic = $x.dnsStatic }
+    }
+    'enable' { (Sim-Ad $a.ifIndex).disabled = $false; return $true }
+    'dhcp' { (Sim-Ad $a.ifIndex).dhcp = $true; return $true }
+    'removeaddr' { $x = Sim-Ad $a.ifIndex; if ($a.store -eq 'PersistentStore') { $l = $x.persistent } else { $l = $x.active }; foreach ($e in @($l.ToArray() | Where-Object { $_.ip -eq $a.ip })) { $l.Remove($e) }; return $true }
+    'removeroute' { $x = Sim-Ad $a.ifIndex; if ($a.store -eq 'PersistentStore') { $x.proutes.Remove($a.gw) }; return $true }
+    'dnsreset' { (Sim-Ad $a.ifIndex).dnsStatic = $false; return $true }
+    'coexist' { (Sim-Ad $a.ifIndex).coexist = $(if ($a.on) { 'enabled' } else { 'disabled' }); return $true }
+    'reconnect' { return $(if ($a.wifi) { 'Reichman Mesh' } else { 'renew' }) }
+    'task' { if ($script:sim.task -eq 'none') { return 'none' }; if ($a.set) { [void]$script:sim.taskSets.Add($a.set); $script:sim.task = $a.set }; return $script:sim.task }
+    'sleep' { return $true }
+    'elevate' {
+      $script:sim.elevated++
+      if ($script:sim.elevate -eq 'deny') { return $null }
+      # "Windows" runs the admin copy: same simulated PC, with admin rights
+      $script:sim.admin = $true; $script:Elevated = $true; $script:Adapter = $a.name; $script:Auto = $true; $script:OutFile = $a.out
+      $c = @(Invoke-RestoreNetwork)[-1]
+      return [pscustomobject]@{ HasExited = $true; ExitCode = $c }
+    }
+  }
+}
+function Sim-Ext([string]$ip, [string]$store) { $x = $script:sim.ads[0]; if ($store -ne 'persistent') { [void]$x.active.Add(@{ ip = $ip }) }; if ($store -ne 'active') { [void]$x.persistent.Add(@{ ip = $ip }) } }
+function Run-Rn { $script:RnLines.Clear(); $script:RnDone.Clear(); $script:Elevated = $false; $script:OutFile = ''; $c = @(Invoke-RestoreNetwork)[-1]; return [pscustomobject]@{ code = $c; said = (@($script:RnLines) -join "`n"); changed = @($script:RnDone) } }
+function Out-Result($h) { 'JSON=' + ($h | ConvertTo-Json -Compress -Depth 6) }
+'@
+function Rn-Driver([string]$name, [string]$body, [string]$extraParams = '') {
+  $d = Join-Path $tmp $name; New-Item -ItemType Directory -Force -Path (Join-Path $d 'Toolkit\fixsite-runs\_state'), (Join-Path $d 'FixNVR\state') | Out-Null
+  $pre = '$ErrorActionPreference = ''Continue''' + "`n" + '. ' + (Q $rnFile) + ' -ToolkitDir ' + (Q (Join-Path $d 'Toolkit')) + ' -FixNvrState ' + (Q (Join-Path $d 'FixNVR\state\temp-ips.json')) + ' -ReceiptDir ' + (Q (Join-Path $d 'receipts')) + ' -WaitSeconds 4 -Auto ' + $extraParams + "`n" + $simCode + "`n" + '$D = ' + (Q $d) + "`n"
+  return (Invoke-Driver $name ($pre + $body))
+}
+
+try {
+  # =====================================================================================
+  Write-Host 'Restore Network (#3): the chosen adapter back to DHCP, every extra address off (live AND saved copy), WifiWatch always back on'
+  $o = Rn-Driver 'rn1' @'
+$script:sim.ads = @((New-SimAdapter 'Ethernet' 12 $false), (New-SimAdapter 'Wi-Fi 2' 7 $true))
+$e = $script:sim.ads[0]; $e.coexist = 'enabled'; Sim-Ext '192.168.250.250' 'both'
+$r1 = Run-Rn
+$rcpt = @(Get-ChildItem (Join-Path $D 'receipts') -Filter 'RestoreNetwork-*.txt' -ErrorAction SilentlyContinue)
+$rtext = $(if ($rcpt.Count) { [IO.File]::ReadAllText($rcpt[0].FullName) } else { '' })
+$calls1 = @($script:sim.calls); $script:sim.calls.Clear(); $script:sim.taskSets.Clear()
+$r2 = Run-Rn
+Out-Result @{ c1 = $r1.code; s1 = $r1.said; ch1 = $r1.changed; calls1 = $calls1; act = @($e.active | % { $_.ip }); per = @($e.persistent | % { $_.ip }); co = $e.coexist; dhcp = $e.dhcp; task = $script:sim.task; rcpt = $rcpt.Count; rtext = $rtext;
+  c2 = $r2.code; s2 = $r2.said; calls2 = @($script:sim.calls); sets2 = @($script:sim.taskSets); wifiCalls = @($calls1 | ? { $_ -match 'name=Wi-Fi' }) }
+'@
+  $j = Get-Json $o
+  if (-not $j) { Check $false 'RN driver ran' $o } else {
+    Check ($j.c1 -eq 0 -and $j.s1 -match 'DONE - network is back to normal') 'RN the extra address is taken off and it says "DONE - network is back to normal" (exit 0)' $j.s1
+    Check (-not @($j.act).Count -and -not @($j.per).Count) 'RN 192.168.250.250 is gone from BOTH the live and the saved (persistent) copy - netsh adds it persistently' ($j.calls1 -join "`n")
+    Check (@($j.calls1 | ? { $_ -match 'removeaddr .*store=PersistentStore' }).Count -eq 1 -and @($j.calls1 | ? { $_ -match 'removeaddr .*store=ActiveStore' }).Count -eq 1) 'RN ...one removal for each copy' ($j.calls1 -join "`n")
+    Check ($j.co -eq 'disabled' -and $j.dhcp) 'RN DHCP stays on and DHCP+static coexistence goes back to off'
+    Check ($j.task -eq 'on') 'RN WifiWatch is switched back on at the end'
+    Check (-not @($j.wifiCalls).Count) 'RN the other adapter (Wi-Fi 2) is not touched'
+    Check ($j.rcpt -eq 1 -and $j.rtext -match 'Result: DONE' -and $j.rtext -match '192\.168\.250\.250' -and $j.rtext -match 'saved copy') 'RN a plain-text receipt is saved: result + what was changed (job receipt #4)' $j.rtext
+    Check ($j.c2 -eq 0 -and $j.s2 -match 'Nothing needed changing' -and $j.s2 -match 'DONE - network is back to normal') 'RN running it twice: the second run changes nothing and still says DONE' $j.s2
+    Check (-not @($j.calls2).Count -and -not @($j.sets2).Count) 'RN ...and the second run makes no change at all (not even WifiWatch is paused)' ($j.calls2 -join "`n")
+  }
+
+  # =====================================================================================
+  Write-Host 'Restore Network: a static adapter (fixed address + gateway + DNS by hand) goes to DHCP; a disabled Wi-Fi adapter is switched on'
+  $o = Rn-Driver 'rn2' @'
+$script:sim.ads = @((New-SimAdapter 'Ethernet' 12 $false))
+$e = $script:sim.ads[0]; $e.dhcp = $false; Sim-Ext '10.1.10.2' 'both'; [void]$e.proutes.Add('10.1.10.1'); $e.dnsStatic = $true
+$r1 = Run-Rn
+$w = New-SimAdapter 'Wi-Fi 2' 7 $true; $w.disabled = $true; $script:sim.ads = @($w)
+$script:sim.calls.Clear(); $r2 = Run-Rn
+Out-Result @{ c1 = $r1.code; s1 = $r1.said; e = @{ dhcp = $e.dhcp; act = @($e.active).Count; per = @($e.persistent).Count; routes = @($e.proutes).Count; dns = $e.dnsStatic }; c2 = $r2.code; s2 = $r2.said; wdis = $w.disabled; calls2 = @($script:sim.calls) }
+'@
+  $j = Get-Json $o
+  if (-not $j) { Check $false 'RN2 driver ran' $o } else {
+    Check ($j.c1 -eq 0 -and $j.e.dhcp -and -not $j.e.act -and -not $j.e.per -and -not $j.e.routes -and -not $j.e.dns) 'RN static PC: DHCP on, the fixed address, the fixed router and the hand-set DNS are all gone, DONE' $j.s1
+    Check ($j.c2 -eq 0 -and -not $j.wdis -and $j.s2 -match 'turn the adapter on' -and $j.s2 -match 'Reichman Mesh') 'RN a Wi-Fi adapter left switched OFF (Sitebox 2, Nov 8) is switched on and reconnected to its saved Wi-Fi' $j.s2
+    Check (@($j.calls2)[0] -match '^enable') 'RN ...switching it on is the first change' ($j.calls2 -join "`n")
+  }
+
+  # =====================================================================================
+  Write-Host 'Restore Network: failing half-way says FAILED - Run again, still switches WifiWatch back on; the next run finishes it'
+  $o = Rn-Driver 'rn3' @'
+$script:sim.ads = @((New-SimAdapter 'Ethernet' 12 $false))
+$e = $script:sim.ads[0]; $e.coexist = 'enabled'; Sim-Ext '192.168.250.250' 'both'
+'{"version":2,"temps":[{"ip":"192.168.250.250","ifIndex":12}],"pc":{"coexistence_before":"disabled"}}' | Set-Content (Join-Path $D 'FixNVR\state\temp-ips.json')
+$script:sim.fail['removeaddr:PersistentStore'] = $true
+$r1 = Run-Rn
+$t1 = $script:sim.task; $j1 = Test-Path (Join-Path $D 'FixNVR\state\temp-ips.json'); $per1 = @($e.persistent).Count
+$script:sim.fail = @{}
+$r2 = Run-Rn
+$moved = @(Get-ChildItem (Join-Path $D 'FixNVR\state') -Filter 'temp-ips.restored-*.json').Count
+# stopped by an error in the middle of the run (not a single step): the finally still switches WifiWatch back on
+Sim-Ext '192.168.250.251' 'both'; $e.coexist = 'enabled'; $script:sim.fail['coexist'] = $true; $script:sim.fail['reconnect'] = $true
+$r3 = Run-Rn
+Out-Result @{ c1 = $r1.code; s1 = $r1.said; t1 = $t1; j1 = $j1; per1 = $per1; c2 = $r2.code; s2 = $r2.said; per2 = @($e.persistent).Count; j2 = (Test-Path (Join-Path $D 'FixNVR\state\temp-ips.json')); moved = $moved; c3 = $r3.code; s3 = $r3.said; t3 = $script:sim.task }
+'@
+  $j = Get-Json $o
+  if (-not $j) { Check $false 'RN3 driver ran' $o } else {
+    Check ($j.c1 -eq 6 -and $j.s1 -match 'FAILED - Run again' -and $j.s1 -match 'still saved') 'RN the saved copy cannot be removed: "FAILED - Run again" (exit 6) and says what is still wrong' $j.s1
+    Check ($j.t1 -eq 'on') 'RN ...WifiWatch is switched back on even though the run failed (try/finally)'
+    Check ($j.j1 -and $j.per1 -eq 1) 'RN ...Fix NVR''s record of that address is kept (nothing is forgotten while it is still on the PC)'
+    Check ($j.c2 -eq 0 -and $j.per2 -eq 0 -and $j.s2 -match 'DONE - network is back to normal') 'RN run again: it finishes the job and says DONE' $j.s2
+    Check (-not $j.j2 -and $j.moved -eq 1) 'RN ...then Fix NVR''s record is marked done (renamed, kept) so nothing tries to put it back again'
+    Check ($j.c3 -eq 6 -and $j.t3 -eq 'on' -and $j.s3 -match 'FAILED - Run again') 'RN two steps fail in one run: FAILED - Run again, WifiWatch still back on' $j.s3
+  }
+
+  # =====================================================================================
+  Write-Host 'Restore Network: the wrong adapter / another adapter''s record changes nothing'
+  $o = Rn-Driver 'rn4' @'
+$script:sim.ads = @((New-SimAdapter 'Ethernet' 12 $false), (New-SimAdapter 'Wi-Fi 2' 7 $true))
+Sim-Ext '192.168.250.250' 'both'
+$script:Adapter = 'Ethernet 9'
+$r1 = Run-Rn; $calls1 = @($script:sim.calls); $per1 = @($script:sim.ads[0].persistent).Count
+$script:Adapter = 'Wi-Fi 2'
+'{"version":2,"before":{"ifIndex":12,"coexist":"disabled","dhcp":true},"coexistChanged":true,"temps":[{"ip":"192.168.250.250","ifIndex":12}]}' | Set-Content (Join-Path $D 'Toolkit\fixsite-runs\_state\fixsite-temp-ips.json')
+$script:sim.calls.Clear(); $r2 = Run-Rn
+Out-Result @{ c1 = $r1.code; s1 = $r1.said; calls1 = $calls1; per1 = $per1; c2 = $r2.code; s2 = $r2.said; calls2 = @($script:sim.calls); per2 = @($script:sim.ads[0].persistent).Count; j2 = (Test-Path (Join-Path $D 'Toolkit\fixsite-runs\_state\fixsite-temp-ips.json')) }
+'@
+  $j = Get-Json $o
+  if (-not $j) { Check $false 'RN4 driver ran' $o } else {
+    Check ($j.c1 -eq 2 -and $j.s1 -match 'no network adapter called "Ethernet 9"' -and $j.s1 -match 'Nothing was changed' -and -not @($j.calls1).Count -and $j.per1 -eq 1) 'RN an adapter name this PC does not have: exit 2, "Nothing was changed", nothing touched' $j.s1
+    Check ($j.c2 -eq 0 -and -not @($j.calls2 | ? { $_ -match 'Ethernet' -or $_ -match 'removeaddr' }).Count -and $j.per2 -eq 1) 'RN restoring Wi-Fi 2 leaves the Ethernet adapter (and its Toolkit address) alone' ($j.calls2 -join "`n")
+    Check ($j.j2) 'RN ...and Fix this site''s record for the Ethernet adapter is kept (it is not this adapter''s)'
+  }
+
+  # =====================================================================================
+  Write-Host 'Restore Network: Windows permission (UAC) only when something must change; no answer from the router is FAILED'
+  $o = Rn-Driver 'rn5' @'
+$script:sim.ads = @((New-SimAdapter 'Ethernet' 12 $false)); $script:sim.admin = $false
+$r0 = Run-Rn; $el0 = $script:sim.elevated
+Sim-Ext '192.168.250.250' 'both'
+$script:sim.elevate = 'deny'; $r1 = Run-Rn; $per1 = @($script:sim.ads[0].persistent).Count
+$script:sim.elevate = 'run'; $r2 = Run-Rn
+$e = $script:sim.ads[0]; $e.routerAnswers = $false; $script:sim.admin = $true; $r3 = Run-Rn
+$e.routerAnswers = $true; $e.cable = $false; $r4 = Run-Rn
+Out-Result @{ c0 = $r0.code; s0 = $r0.said; el0 = $el0; c1 = $r1.code; s1 = $r1.said; per1 = $per1; c2 = $r2.code; s2 = $r2.said; per2 = @($e.persistent).Count; c3 = $r3.code; s3 = $r3.said; c4 = $r4.code; s4 = $r4.said }
+'@
+  $j = Get-Json $o
+  if (-not $j) { Check $false 'RN5 driver ran' $o } else {
+    Check ($j.c0 -eq 0 -and $j.el0 -eq 0 -and $j.s0 -match 'DONE') 'RN a normal adapter, no admin rights: DONE with no Windows permission question' $j.s0
+    Check ($j.c1 -eq 6 -and $j.s1 -match 'not given' -and $j.s1 -match 'FAILED - Run again' -and $j.per1 -eq 1) 'RN permission refused: "nothing was changed" + FAILED - Run again' $j.s1
+    Check ($j.c2 -eq 0 -and $j.per2 -eq 0 -and $j.s2 -match 'click Yes' -and $j.s2 -match 'DONE') 'RN permission given: the admin copy does the work and its DONE is the result' $j.s2
+    Check ($j.c3 -eq 6 -and $j.s3 -match 'no address from the router') 'RN cable in but the router gives no address: FAILED - Run again (never a false DONE)' $j.s3
+    Check ($j.c4 -eq 0 -and $j.s4 -match 'not connected right now') 'RN no cable: settings are normal, DONE says to plug in' $j.s4
+  }
+  $rnSrc = [IO.File]::ReadAllText($rnFile)
+  Check ($rnSrc -match "PolicyStore PersistentStore" -and $rnSrc -match "netsh interface ipv4 delete address") 'RN (Windows side) the saved copy is removed with Remove-NetIPAddress -PolicyStore PersistentStore and netsh delete'
+  Check ($rnSrc -match '(?s)try \{.*WifiWatch paused.*\} finally \{\s*if \(\$wwOff\)') 'RN (Windows side) WifiWatch is paused inside try and switched back on in finally'
+  Check ($rnSrc -notmatch '(?i)\b(openai|anthropic|claude|gpt|tab\.bot)\b') 'RN no Tab and no AI inside the tool'
+  $cmdTxt = [IO.File]::ReadAllText((Join-Path $tk 'Restore Network.cmd'))
+  Check ($cmdTxt -match 'RestoreNetwork\.ps1') 'RN "Restore Network.cmd" starts it on its own (standalone)'
+  $shipped = [IO.File]::ReadAllText((Join-Path $repo 'tools\shipped-files.txt'))
+  $inst = [IO.File]::ReadAllText((Join-Path $tk 'Install-Toolkit.ps1'))
+  Check ($shipped -match 'Toolkit/RestoreNetwork\.ps1' -and $shipped -match 'Toolkit/Restore Network\.cmd' -and $inst -match "'RestoreNetwork\.ps1'" -and $inst -match "'Restore Network\.cmd'") 'RN shipped with the Toolkit (installer + shipped files list)'
+
+  # =====================================================================================
+  Write-Host 'WifiWatch: the off/on cycle always switches the adapter back on (try/finally + marker for a run stopped half-way)'
+  $wwFile = Join-Path $repo 'wifiwatch\WifiWatch.ps1'
+  $wd = Join-Path $tmp 'ww'; New-Item -ItemType Directory -Force -Path $wd | Out-Null
+  $o = Invoke-Driver 'ww1' ('$ErrorActionPreference = ''Continue''; . ' + (Q $wwFile) + ' -Dir ' + (Q $wd) + "`n" + @'
+$script:ww = @{ up = $true; failEnable = 0; failDisable = $false; calls = (New-Object System.Collections.ArrayList) }
+$script:WwOps = { param($op, $a) if ($op -ne 'sleep') { [void]$script:ww.calls.Add($op) }
+  switch ($op) {
+    'disable' { if ($script:ww.failDisable) { throw 'simulated disable error' }; $script:ww.up = $false; return $true }
+    'enable' { if ($script:ww.failEnable -gt 0) { $script:ww.failEnable--; throw 'simulated enable error' }; $script:ww.up = $true; return $true }
+    'isup' { return $script:ww.up }
+    default { return $true } } }
+Invoke-WwAdapterCycle 'Wi-Fi 2' 'Reichman Mesh'
+$a1 = $script:ww.up; $m1 = Test-Path $marker
+$script:ww.failEnable = 5; Invoke-WwAdapterCycle 'Wi-Fi 2' 'Reichman Mesh'
+$a2 = $script:ww.up; $m2 = Test-Path $marker
+$script:ww.failEnable = 0; Repair-WwAdapter
+$a3 = $script:ww.up; $m3 = Test-Path $marker
+$script:ww.calls.Clear(); Repair-WwAdapter; $c4 = @($script:ww.calls).Count
+$script:ww.failDisable = $true; Invoke-WwAdapterCycle 'Wi-Fi 2' 'Reichman Mesh'; $a5 = $script:ww.up; $m5 = Test-Path $marker
+'JSON=' + (@{ a1 = $a1; m1 = $m1; a2 = $a2; m2 = $m2; a3 = $a3; m3 = $m3; c4 = $c4; a5 = $a5; m5 = $m5; log = [IO.File]::ReadAllText($log) } | ConvertTo-Json -Compress)
+'@)
+  $j = Get-Json $o
+  if (-not $j) { Check $false 'WW driver ran' $o } else {
+    Check ($j.a1 -and -not $j.m1) 'WW a normal off/on cycle ends with the adapter ON and no marker left'
+    Check ((-not $j.a2) -and $j.m2) 'WW switching it back on fails (half-way): the marker stays, so the next run knows' $j.log
+    Check ($j.a3 -and -not $j.m3) 'WW the next run switches the adapter back on FIRST and removes the marker' $j.log
+    Check ($j.c4 -eq 0) 'WW running the repair twice does nothing the second time'
+    Check ($j.a5 -and -not $j.m5) 'WW an error while switching it off still ends with the adapter on (finally)'
+  }
+  $wwSrc = [IO.File]::ReadAllText($wwFile)
+  Check ($wwSrc -match '(?m)^Repair-WwAdapter\s*$' -and $wwSrc.IndexOf('Repair-WwAdapter' + "`r`n" + '$fails') -gt 0) 'WW every run starts with the repair, before it looks at the network'
+
+  # =====================================================================================
+  Write-Host 'F16 / Codex R14: classic Fix NVR with no usable config.json stops with a plain message (missing, empty, half-written, another tool''s file, twice)'
+  $fnv = Join-Path $repo 'FixNVR\FixNVR.ps1'
+  $f16 = Join-Path $tmp 'f16'; New-Item -ItemType Directory -Force -Path $f16 | Out-Null
+  Copy-Item $fnv (Join-Path $f16 'FixNVR.ps1')
+  $mock16 = Join-Path $f16 'mock.json'; '{"url":"http://127.0.0.1:9","pc":{"ifIndex":1,"alias":"Ethernet","desc":"t","ip":"192.168.1.105","prefix":24,"gw":"192.168.1.1","dhcp":true,"link":"1 Gbps","wifi":false},"sadp":[],"arp":[],"onvif":[]}' | Set-Content $mock16
+  $cases = [ordered]@{ 'NO' = (Join-Path $f16 'missing.json'); 'an EMPTY (0 bytes)' = (Join-Path $f16 'zero.json'); 'a HALF-WRITTEN' = (Join-Path $f16 'half.json'); 'ANOTHER TOOL''S (the Toolkit''s)' = (Join-Path $f16 'other.json') }
+  [IO.File]::WriteAllText($cases['an EMPTY (0 bytes)'], ''); '{"nvr_hosts":[20,19' | Set-Content $cases['a HALF-WRITTEN']; '{"hikvisionForm":"https://x","bitwardenUrl":"https://y"}' | Set-Content $cases['ANOTHER TOOL''S (the Toolkit''s)']
+  foreach ($k in $cases.Keys) {
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    $o16 = & $exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $f16 'FixNVR.ps1') -Mode Check -ConfigPath $cases[$k] -MockFile $mock16 -NoLogin -SniffSeconds 0 2>&1 | Out-String; $c16 = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    $plans = @(Get-ChildItem -LiteralPath (Join-Path $f16 'runs') -Recurse -Filter 'before.json' -ErrorAction SilentlyContinue).Count
+    Check ($c16 -eq 2 -and $o16 -match 'config\.json' -and $o16 -match 'Nothing was checked or changed' -and $o16 -notmatch '(?i)Get-Content|Exception|At line' -and -not $plans) ('F16 ' + $k + ' config.json: one plain message, no red error, exit 2, nothing looked at') $o16
+  }
+  $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  $o2 = & $exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $f16 'FixNVR.ps1') -Mode Check -ConfigPath $cases['NO'] -MockFile $mock16 -NoLogin -SniffSeconds 0 2>&1 | Out-String; $c2 = $LASTEXITCODE
+  $ErrorActionPreference = $prev
+  Check ($c2 -eq 2 -and $o2 -match 'Nothing was checked or changed') 'F16 running it twice: the same plain message again'
+  $logs = @(Get-ChildItem -LiteralPath (Join-Path $f16 'runs') -Recurse -Filter 'log.txt' -ErrorAction SilentlyContinue | Where-Object { [IO.File]::ReadAllText($_.FullName) -match 'SAY Fix NVR cannot start' })
+  Check ($logs.Count -ge 1) 'F16 the message is in the run log too, so the Toolkit window shows it'
+  $fsrc = [IO.File]::ReadAllText($fnv)
+  Check ($fsrc -match "if \(\`$cfgWhy -and \`$Mode -eq 'Cleanup'\)") 'F16 -Mode Cleanup still runs without config.json (a missing settings file never keeps the network from being put back)'
+
+  # =====================================================================================
+  Write-Host 'R17: Run-AllTests never counts a suite with deferred checks as a pass'
+  $rat = Join-Path $repo 'tools\Run-AllTests.ps1'
+  $o = Invoke-Driver 'r17' ((Get-FnText $rat @('Get-SuiteCounts', 'Get-SuiteResult')) + "`n" + @'
+$a = Get-SuiteCounts @('PASS x', 'DEFERRED F19 y', 'Test-Fix227: 41 passed, 0 failed, 7 deferred (F15, F16)')
+$b = Get-SuiteCounts @('PASS x', '127 passed, 0 failed')
+$c = Get-SuiteCounts @('PASS x', 'DEFERRED F20 a', 'DEFERRED F20 b', '3 passed, 0 failed')
+'JSON=' + (@{ a = $a; ra = (Get-SuiteResult 0 $a); b = $b; rb = (Get-SuiteResult 0 $b); c = $c; rc = (Get-SuiteResult 0 $c); rf = (Get-SuiteResult 1 $a); rf2 = (Get-SuiteResult 2 $b) } | ConvertTo-Json -Compress -Depth 4)
+'@)
+  $j = Get-Json $o
+  if (-not $j) { Check $false 'R17 driver ran' $o } else {
+    Check ($j.a.passed -eq 41 -and $j.a.failed -eq 0 -and $j.a.deferred -eq 7) 'R17 the suite''s own "41 passed, 0 failed, 7 deferred" is read'
+    Check ($j.ra -eq 'DEFERRED') 'R17 a suite that exits 0 WITH deferred checks is DEFERRED, not PASS (Codex R17)'
+    Check ($j.rb -eq 'PASS' -and $j.b.deferred -eq 0) 'R17 a suite with no deferred check that exits 0 is PASS'
+    Check ($j.c.deferred -eq 2 -and $j.rc -eq 'DEFERRED') 'R17 DEFERRED lines count even when the summary line does not mention them'
+    Check ($j.rf -eq 'FAIL' -and $j.rf2 -eq 'FAIL') 'R17 a failing suite stays FAIL (with or without deferred)'
+  }
+  $ratSrc = [IO.File]::ReadAllText($rat)
+  Check ($ratSrc -match 'exit \(\$bad \+ \$deferredSuites\)' -and $ratSrc -match "ALL ' \+ \`$scope \+ ' PASSED'" -and $ratSrc -match 'elseif \(\$deferredSuites\)') 'R17 "ALL SUITES PASSED" and exit 0 only with no failed AND no deferred suite'
+  Check ($ratSrc -match 'Test-Fix2211\.ps1') 'R17 this suite is in Run-AllTests'
+  Write-Host 'job receipt (#4) for Fix this site: the wrong site / stopped early still leaves a receipt, a second run its own'
+  $rd = Join-Path $tmp 'rcpt'; $env:WIREIT_RECEIPT_DIR = $rd
+  foreach ($i in 1, 2) {
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    $null = & $exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $tk 'FixSite.ps1') -Mode Fix -Site 'Qq Nosuch Test 2211' -MockUrl 'http://127.0.0.1:9' -Answers (Join-Path $tmp 'none.txt') -RunsRoot (Join-Path $tmp 'rcruns') -SecretsDir (Join-Path $tmp 'rcsec') -SitesDir (Join-Path $tmp 'rcsites') 2>&1 | Out-String
+    $ErrorActionPreference = $prev
+    Start-Sleep -Milliseconds 1100
+  }
+  $env:WIREIT_RECEIPT_DIR = $null
+  $rcs = @(Get-ChildItem $rd -Filter 'FixSite-*.txt' -ErrorAction SilentlyContinue)
+  $rt = $(if ($rcs.Count) { [IO.File]::ReadAllText($rcs[0].FullName) } else { '' })
+  Check ($rcs.Count -eq 2) ('receipt: two runs -> two receipts, the first one is not overwritten (' + $rcs.Count + ')')
+  Check ($rt -match 'Site: Qq Nosuch Test 2211' -and $rt -match 'Result: (stopped|STOPPED HALF-WAY|DONE)' -and $rt -match 'Changed on the cameras / NVR:\s+- nothing') 'receipt: a run on a site this PC does not know (stopped half-way here: no network) says so and that nothing was changed' $rt
+  Write-Host 'version + the Toolkit button'
+  $v11 = @(([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'ToolkitCore.ps1')), "TkBuiltVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'FixSiteCore.ps1')), "FsVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'FixSiteBw.ps1')), "FsVersion = '([0-9.]+)'")).Groups[1].Value, [string]([IO.File]::ReadAllText((Join-Path $repo 'version.json')) | ConvertFrom-Json).version)
+  Check ((($v11 | Select-Object -Unique) -join ',') -eq '2.2.11') ('version 2.2.11 in ToolkitCore, FixSiteCore, FixSiteBw and version.json (' + ($v11 -join ',') + ')')
+  $ui = [IO.File]::ReadAllText((Join-Path $tk 'WireItToolkit.ps1'))
+  Check ($ui -match "New-Btn 'Restore network' \{ Do-RestoreNet \}" -and $ui -match "Start-Hidden 'Restore Network' \`$rn") 'the Toolkit window has a "Restore network" button that runs RestoreNetwork.ps1'
+} finally {
+  try { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue } catch {}
+}
+Write-Host ''
+Write-Host ('Test-Fix2211: ' + $script:pass + ' passed, ' + $script:fail + ' failed')
+exit $script:fail

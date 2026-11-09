@@ -11,6 +11,16 @@ HOW TO USE (2.0)
   5. Read the list of what is wrong and what it will change. Type YES to fix it all.
   6. Watch the checklist: a green check per camera. A red X says exactly what to go check.
 
+RESTORE NETWORK (2.2.11) - this PC's network back to normal, one button.
+  - Desktop shortcut "Restore Network", or "Restore network" under the Toolkit's results, or Toolkit\Restore Network.cmd.
+  - Pick the adapter (the one marked "not normal" is picked for you). It turns the adapter on, DHCP on, takes off every fixed /
+    extra address (the live AND the saved copy), the fixed router and hand-set DNS, puts DHCP+static coexistence back, reconnects,
+    then reads it all back. WifiWatch is paused while it works and always switched back on.
+  - It ends with "DONE - network is back to normal" or "FAILED - Run again". Running it twice is fine.
+  - Windows asks permission (click Yes) only when something has to change.
+JOB RECEIPT (2.2.11) - every Fix this site / Undo run and every Restore Network run saves a short plain-text receipt
+  (what was changed, whether this PC's network is back) in Toolkit\receipts (or the login's own AppData\Local\WireIt\receipts).
+
 SITE PASSWORD (2.0.3) - every site has its own password, nothing is shared between sites.
   - A site with no site password yet asks once: "Do you know the password?" Yes = type it; No = type the new
     one you want. The Toolkit never makes one up. Devices still on a factory password (cameras + NVR) get it; their NVR channels

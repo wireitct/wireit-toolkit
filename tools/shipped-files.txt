@@ -28,6 +28,8 @@ Toolkit/HikSadp.ps1
 Toolkit/Install-Toolkit.ps1
 Toolkit/NvrCheck.ps1
 Toolkit/README.txt
+Toolkit/Restore Network.cmd
+Toolkit/RestoreNetwork.ps1
 Toolkit/ScanUpload.ps1
 Toolkit/Set upload key.cmd
 Toolkit/ToolkitCore.ps1
@@ -42,6 +44,8 @@ Toolkit/modules/NvrHealth/tests/Test-NvrHealth.ps1
 Toolkit/modules/NvrHealth/tests/mock_devices.py
 Toolkit/tests/Test-Fix22.ps1
 Toolkit/tests/Test-Fix221.ps1
+Toolkit/tests/Test-Fix2210.ps1
+Toolkit/tests/Test-Fix2211.ps1
 Toolkit/tests/Test-Fix222.ps1
 Toolkit/tests/Test-Fix223.ps1
 Toolkit/tests/Test-Fix224.ps1
@@ -50,7 +54,6 @@ Toolkit/tests/Test-Fix226.ps1
 Toolkit/tests/Test-Fix227.ps1
 Toolkit/tests/Test-Fix228.ps1
 Toolkit/tests/Test-Fix229.ps1
-Toolkit/tests/Test-Fix2210.ps1
 Toolkit/tests/Test-FixIt.ps1
 Toolkit/tests/Test-FixSite.ps1
 Toolkit/tests/Test-HikReset.ps1

@@ -659,6 +659,36 @@ function Do-Net {
   [void](Start-Hidden 'Network check' $nc ('-OutDir ' + (Q $od)) $null)
   if ($TK.run) { Add-Out 'Read-only: pings every address, reads cable speed and errors. Takes about a minute.'; Add-Out '' }
 }
+# 2.2.11 (add-on #3): Restore Network - this PC's network adapter back to normal (RestoreNetwork.ps1 does it all and says
+# "DONE - network is back to normal" or "FAILED - Run again"; Windows asks permission only when something must change)
+function Do-RestoreNet {
+  $rn = Join-Path $here 'RestoreNetwork.ps1'
+  if (-not (Test-Tool $rn 'Restore Network')) { return }
+  $ads = @()
+  try {
+    $lo = Join-Path ([IO.Path]::GetTempPath()) ('wireit-rnlist-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
+    $p = [Diagnostics.Process]::Start((New-TkHiddenPsi $TK.psexe $rn '-List' $lo)); [void]$p.WaitForExit(20000)
+    $t = [IO.File]::ReadAllText($lo); Remove-Item -LiteralPath $lo -Force -ErrorAction SilentlyContinue
+    $m = [regex]::Match($t, '(?m)^JSON=(.+)$'); if ($m.Success) { $ads = @($m.Groups[1].Value.Trim() | ConvertFrom-Json) }
+  } catch {}
+  $pick = ''
+  if ($ads.Count -gt 1) {
+    $f = New-Object Windows.Forms.Form; $f.Text = 'Restore network'; $f.Font = $fNorm; $f.StartPosition = 'CenterParent'; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.AutoSize = $true; $f.AutoSizeMode = 'GrowAndShrink'; $f.Padding = New-Object Windows.Forms.Padding (Px 14)
+    $fl = New-Object Windows.Forms.FlowLayoutPanel; $fl.FlowDirection = 'TopDown'; $fl.AutoSize = $true; $fl.WrapContents = $false
+    $l = New-Object Windows.Forms.Label; $l.AutoSize = $true; $l.Text = 'Which network adapter goes back to normal (DHCP, extra addresses off)?'; $fl.Controls.Add($l)
+    $lb = New-Object Windows.Forms.ListBox; $lb.Width = Px 460; $lb.Height = Px 120
+    $sel = 0; for ($i = 0; $i -lt $ads.Count; $i++) { $a = $ads[$i]; [void]$lb.Items.Add(([string]$a.name + '  (' + [string]$a.desc + ')' + $(if ($a.needs) { '   <- not normal' } else { '' }))); if ($a.needs -and -not $sel) { $sel = $i } }
+    $lb.SelectedIndex = $sel; $fl.Controls.Add($lb)
+    $bp = New-Object Windows.Forms.FlowLayoutPanel; $bp.AutoSize = $true
+    $ok = Set-Primary (New-Btn 'Restore' $null) $cBlue; $ok.DialogResult = 'OK'; $cn = New-Btn 'Cancel' $null; $cn.DialogResult = 'Cancel'
+    $bp.Controls.Add($ok); $bp.Controls.Add($cn); $fl.Controls.Add($bp); $f.Controls.Add($fl); $f.AcceptButton = $ok; $f.CancelButton = $cn
+    if ($f.ShowDialog($TK.form) -ne 'OK') { return }
+    $pick = [string]$ads[$lb.SelectedIndex].name
+  } elseif ($ads.Count -eq 1) { $pick = [string]$ads[0].name }
+  $a2 = '-Auto' + $(if ($pick) { ' -Adapter "' + $pick + '"' } else { '' })
+  [void](Start-Hidden 'Restore Network' $rn $a2 $null)
+  if ($TK.run) { Add-Out 'Puts this PC''s network adapter back to normal. If Windows asks for permission, click Yes.'; Add-Out '' }
+}
 function Do-Snapshot {
   $a = Ask-Fields 'Save install snapshot' 'Saves a known-good record of the NVR and cameras (no passwords). Fill what you know; blanks are fine.' @(
     @('site', 'Site ID or address:', $TK.site.Text), @('router', 'Router make/model (e.g. Xfinity XB8):', ''), @('range', 'Router DHCP range (e.g. 100-254, or reserved):', ''))
@@ -1249,6 +1279,7 @@ $TK.out = $out; $res.Controls.Add($out, 0, 1); $res.SetColumnSpan($out, 2)
 $rb = New-Object Windows.Forms.FlowLayoutPanel; $rb.AutoSize = $true; $rb.WrapContents = $false; $rb.Dock = 'Fill'; $rb.Margin = New-Object Windows.Forms.Padding 0
 $rb.Controls.Add((Set-Glyph (Set-Primary (New-Btn 'Copy results' { Set-Clip ($TK.out.Text -replace "\r?\n", "`r`n") 'the results' }) $cInk) ([string][char]0xE8C8)))
 $rb.Controls.Add((Set-Glyph (New-Btn 'Open logs folder' { New-Item -ItemType Directory -Force -Path $TK.P.Logs | Out-Null; Start-Process explorer.exe (Q $TK.P.Logs) }) ([string][char]0xE838)))
+$rb.Controls.Add((Set-Glyph (New-Btn 'Restore network' { Do-RestoreNet }) ([string][char]0xE777)))   # 2.2.11 (#3)
 $res.Controls.Add($rb, 0, 2); $res.SetColumnSpan($rb, 2)
 $resCard.Controls.Add($res)
 $right.Controls.Add($resCard, 0, 2)
