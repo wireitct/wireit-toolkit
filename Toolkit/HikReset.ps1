@@ -34,6 +34,8 @@ $cfg = Get-HikConfig $cfgAll $here   # 2.2.0: the reply relay (no mail password 
 $inboxDir = Join-Path $here 'inbox\hik'
 if (-not $cfg.form) { Write-Host 'config.json has no "form" (name, email, company ...). Cannot fill Hikvision''s page.' -ForegroundColor Red; exit 2 }
 if (-not $StateDir) { $StateDir = Join-Path (Join-Path $here 'runs') 'HikReset' }
+# 2.2.10 (Codex R19): the wrong-password count per device is shared with Fix this site (same file) and kept between runs
+$script:FsLoginLedger = $(if ($PSBoundParameters.ContainsKey('StateDir')) { Join-Path $StateDir 'login-fails.json' } else { Join-Path (Join-Path (Join-Path $here 'fixsite-runs') '_state') 'login-fails.json' })
 New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 $statePath = Join-Path $StateDir 'state.json'; $reqDir = Join-Path $StateDir 'requests'; $repDir = Join-Path $StateDir 'replies'; $secDir = Join-Path $here 'vault'
 $script:FsLegacySecretsDir = Join-Path $here 'secrets'   # 2.2.3 (Codex #47): the installer moved site passwords to vault\ (secrets\ = old PCs)
@@ -102,7 +104,8 @@ if ($Mode -in @('Run', 'Import')) {
   if (@($state.devices | Where-Object { $_.status -eq 'replied' }).Count) {
     if (-not $pw) { $sec = Read-Host 'Type the new password for these devices (hidden)' -AsSecureString; $pw = (New-Object PSCredential('x', $sec)).GetNetworkCredential().Password }
     $verify = { param($ip, $p) return ((Test-FsLogin $ip 'Hikvision' $p) -eq 'ok') }
-    [void](Import-HikReplies $state $statePath $pw $verify $Only)
+    # 2.2.10 (Codex R07): the import is bound to the same device set as the submission (Retry = its own retry serials only)
+    [void](Import-HikReplies $state $statePath $pw $verify $Only -OnlySerials $onlySerials)
   }
 }
 Hk-Say ''

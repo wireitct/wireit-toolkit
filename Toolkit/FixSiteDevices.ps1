@@ -212,11 +212,57 @@ function Fs-DhSet([string]$ip, $cred, [hashtable]$kv) {
 # 2.2.3 (Codex #29): ONE wrong-password budget per device for the whole run (all steps, recovery and undo together), below the
 # lockout of Hikvision/Dahua (5-6 wrong tries). Spent = the device is not tried again with a password this run ('locked').
 $script:FsLoginFails = @{}; $script:FsMaxLoginFails = 4
+# 2.2.10 (Codex R19): the count is ALSO kept on disk per device ($script:FsLoginLedger, set by Fix this site and HikReset to the same
+# file), so a rerun does not start from zero: at most $FsMaxLoginFails wrong passwords per device until $FsLoginCooldownMin minutes
+# have passed since its last wrong one (Hikvision/Dahua lock after 5-7 and unlock after about 30 min). Inside the cool-down no
+# password at all is sent to that device. A password that works clears its count. Lockout numbers on real gear: NEEDS DEVICE CHECK.
+$script:FsLoginLedger = ''; $script:FsLoginCooldownMin = 30
+function Read-FsLoginLedger {
+  $h = @{}
+  if (-not $script:FsLoginLedger -or -not (Test-Path -LiteralPath $script:FsLoginLedger)) { return $h }
+  try { $o = Get-Content -LiteralPath $script:FsLoginLedger -Raw -ErrorAction Stop | ConvertFrom-Json; foreach ($p in @($o.PSObject.Properties)) { $h[$p.Name] = [pscustomobject]@{ fails = [int]$p.Value.fails; last = [string]$p.Value.last } } } catch { Fs-LogLine ('wrong-password count file unreadable (' + $_.Exception.Message + '); counting from this run only') }
+  return $h
+}
+function Save-FsLoginLedger($h) {
+  if (-not $script:FsLoginLedger) { return }
+  try {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:FsLoginLedger) | Out-Null
+    $o = [ordered]@{}; foreach ($k in @($h.Keys | Sort-Object)) { $o[$k] = [ordered]@{ fails = [int]$h[$k].fails; last = [string]$h[$k].last } }
+    $tmp = $script:FsLoginLedger + '.tmp'; [IO.File]::WriteAllText($tmp, ($o | ConvertTo-Json -Depth 4)); Move-Item -LiteralPath $tmp -Destination $script:FsLoginLedger -Force
+  } catch { Fs-LogLine ('wrong-password count not saved: ' + $_.Exception.Message) }
+}
+function Get-FsLoginBudget([string]$k) {
+  # { fails; until } for this device: this run's count or the saved one inside its cool-down, whichever is higher
+  $n = [int]$script:FsLoginFails[$k]; $until = $null
+  $e = (Read-FsLoginLedger)[$k]
+  if ($e -and $e.last) {
+    $t = [datetime]::MinValue; if ([datetime]::TryParse([string]$e.last, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$t)) {
+      $u = $t.ToLocalTime().AddMinutes([int]$script:FsLoginCooldownMin)
+      if ((Get-Date) -lt $u) { $n = [math]::Max($n, [int]$e.fails); $until = $u }
+    }
+  }
+  return [pscustomobject]@{ fails = $n; until = $until }
+}
+function Set-FsLoginResult([string]$k, [string]$s) {
+  if ($s -notin @('ok', 'refused', 'locked')) { return }
+  $h = Read-FsLoginLedger
+  if ($s -eq 'ok') { $script:FsLoginFails.Remove($k); if ($h.ContainsKey($k)) { $h.Remove($k); Save-FsLoginLedger $h }; return }
+  $b = Get-FsLoginBudget $k
+  $n = $(if ($s -eq 'locked') { [int]$script:FsMaxLoginFails } else { 1 + [int]$b.fails })
+  $script:FsLoginFails[$k] = $n
+  $h[$k] = [pscustomobject]@{ fails = $n; last = (Get-Date).ToUniversalTime().ToString('o') }; Save-FsLoginLedger $h
+}
 function Test-FsLogin([string]$ip, [string]$brand, [string]$pw) {
   $k = ($ip -replace ':\d+$', '')
-  if ($pw -and $script:FsLoginFails.ContainsKey($k) -and [int]$script:FsLoginFails[$k] -ge $script:FsMaxLoginFails) { Fs-LogLine ('login to ' + $k + ' not tried: ' + $script:FsMaxLoginFails + ' wrong passwords this run already'); return 'locked' }
+  if ($pw) {
+    $b = Get-FsLoginBudget $k
+    if ([int]$b.fails -ge $script:FsMaxLoginFails) {
+      Fs-LogLine ('login to ' + $k + ' not tried: ' + [int]$b.fails + ' wrong passwords already' + $(if ($b.until) { ' (this or an earlier run); not tried again before ' + $b.until.ToString('HH:mm') + ' so it does not lock' } else { ' this run' }))
+      return 'locked'
+    }
+  }
   $s = Test-FsLoginOnce $ip $brand $pw
-  if ($pw -and $s -eq 'refused') { $script:FsLoginFails[$k] = 1 + [int]$script:FsLoginFails[$k] }
+  if ($pw) { Set-FsLoginResult $k $s }
   return $s
 }
 function Test-FsLoginOnce([string]$ip, [string]$brand, [string]$pw) {

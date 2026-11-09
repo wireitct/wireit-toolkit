@@ -84,6 +84,7 @@ $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'; $runStart = Get-Date
 $runDir = Join-Path $RunsRoot ('FixSite-' + $stamp); New-Item -ItemType Directory -Force -Path $runDir | Out-Null
 $logFile = Join-Path $runDir 'log.txt'
 $tempState = Join-Path (Join-Path $RunsRoot '_state') 'fixsite-temp-ips.json'; New-Item -ItemType Directory -Force -Path (Split-Path $tempState) | Out-Null
+$script:FsLoginLedger = Join-Path (Split-Path $tempState) 'login-fails.json'   # 2.2.10 (Codex R19): wrong-password count per device, kept between runs (HikReset uses the same file)
 # 2.2.3 (Codex #31/#33, kept without the task): a run that was killed (window closed, power lost) left its temporary PC addresses in
 # this file; they are taken off FIRST, before anything else, every time Fix this site starts
 if (Test-Path -LiteralPath $tempState) { try { $nr0 = Remove-FsTempIps $tempState; if ($nr0 -and -not $nr0.ok) { Write-Host ('This PC''s network from an earlier, interrupted run could not be fully put back: ' + (@($nr0.problems) -join '; ')) -ForegroundColor Yellow } } catch {} }
