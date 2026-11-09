@@ -311,7 +311,12 @@ if (-not $NoEndToEnd -and $py) {
   $m = Start-Mock 'mock-lieber.json'
   try {
     Seed-Site "$tmp\e\sec" 'Lieber' @('Old#Site1')
+    $env:WIREIT_RECEIPT_DIR = "$tmp\e\receipts"   # 2.2.11 (#4): the job receipt of this run
     $o = E2E $m @('y', 'Site#Pw1234', 'Site#Pw1234', 'NvrPass9', 'Typed#Pw77', 'n', 'YES', 'n', 'y', 'SAVED') 'Fix' 'Lieber'
+    $env:WIREIT_RECEIPT_DIR = $null
+    $rc = @(Get-ChildItem "$tmp\e\receipts" -Filter 'FixSite-*.txt' -ErrorAction SilentlyContinue); $rct = $(if ($rc.Count) { [IO.File]::ReadAllText($rc[0].FullName) } else { '' })
+    Check ($rc.Count -eq 1 -and $rct -match 'Site: Lieber' -and $rct -match 'Result: DONE' -and $rct -match 'Back Yard' -and $rct -match 'This PC''s network:' -and $rct -match 'Undo file and full log') '2.2.11 job receipt: the Fix run saved a plain-text receipt (site, result, what changed, this PC''s network, undo file)' $rct
+    Check ($rct -notmatch 'Site#Pw1234' -and $rct -notmatch 'Old#Site1' -and $rct -notmatch 'NvrPass9') '2.2.11 job receipt: no password in it'
     # 2.0.1 default: only the 3 broken cameras (2 on the wrong scheme + the Dahua with no video) are changed; Front Door + Driveway work and are NOT touched
     Check ($o -match 'Changes only the 3 camera\(s\) listed below\. 2 working camera\(s\) will not be touched\.') 'Lieber e2e: plan says 3 change, 2 working not touched'
     Check ($o -match 'Fixed: 3   Still a problem: 0') 'Lieber e2e: the 3 broken cameras fixed'

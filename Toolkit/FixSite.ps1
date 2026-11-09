@@ -137,8 +137,27 @@ function Say-NetRestore($r) {
   # 2.2.10 (Moshe Nov 9): a restore that is not verified is FAILED - Run again, on screen and in the log; the journal is kept
   Say ('FAILED - Run again. THIS PC''S NETWORK IS NOT BACK TO NORMAL: ' + (@($r.problems) -join '; ') + '. The record of the change is kept: the next run puts it back first; restarting the PC also clears the temporary addresses.') 'Red'
 }
+# 2.2.11 (add-on #4, job receipt): at the end of a Fix / Undo run, a short plain-text receipt of what was changed and whether this
+# PC's network was put back, saved on this PC (Toolkit\receipts, or the user's own folder when that one cannot be written).
+function Write-FsReceipt([int]$code, $nr) {
+  $res = $(switch ($code) { 0 { 'DONE' } 4 { 'DONE, but some steps did not work (see below)' } 6 { 'FAILED - Run again (this PC''s network is not back to normal)' } 2 { 'stopped before changing anything' } 9 { 'STOPPED HALF-WAY by an error (see the full log). What is listed below was done; run it again or Undo' } default { 'stopped with a problem (code ' + $code + ')' } })
+  $l = @(('WireIt Toolkit ' + $script:FsVersion + ' - Fix this site receipt' + $(if ($Mode -eq 'Rollback') { ' (Undo)' } else { '' })), ('Site: ' + $(if ($siteName) { $siteName } elseif ($Site) { $Site } else { '(none)' })), ('PC: ' + $env:COMPUTERNAME + '   user: ' + $env:USERNAME + '   ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')), ('Result: ' + $res), '', 'Changed on the cameras / NVR:')
+  $rs = @(); $rv = Get-Variable -Name results -Scope Script -ErrorAction SilentlyContinue; if ($rv) { $rs = @($rv.Value | Where-Object { $_ }) }
+  if ($rs.Count) { $l += @($rs | ForEach-Object { '  - ' + ([string]$_).Replace([string][char]0x2705, '[OK]').Replace([string][char]0x274C, '[X]') }) } else { $l += '  - nothing' }
+  $l += @('', 'This PC''s network:')
+  $l += $(if ($nr -and -not $nr.ok) { '  NOT back to normal: ' + (@($nr.problems) -join '; ') + ' - run Restore Network' } elseif ($script:FsPcBefore -or $script:FsCoexistChanged) { '  temporary addresses taken off, adapter back as it was (checked)' } else { '  not changed' })
+  if ($runDir) { $l += @('', ('Undo file and full log: ' + $runDir)) }
+  $name = 'FixSite-' + $(if ($stamp) { $stamp } else { (Get-Date -Format 'yyyyMMdd-HHmmss') }) + '.txt'
+  $dirs = @(); if ($env:WIREIT_RECEIPT_DIR) { $dirs += $env:WIREIT_RECEIPT_DIR } else { $dirs += (Join-Path $here 'receipts'); if ($env:LOCALAPPDATA) { $dirs += (Join-Path $env:LOCALAPPDATA 'WireIt\receipts') }; $dirs += (Join-Path ([IO.Path]::GetTempPath()) 'WireIt-receipts') }
+  foreach ($d in $dirs) {
+    try { New-Item -ItemType Directory -Force -Path $d -ErrorAction Stop | Out-Null; $f = Join-Path $d $name; [IO.File]::WriteAllLines($f, [string[]]$l); Write-Host ('Receipt saved: ' + $f); Fs-Log ('receipt ' + $f); return $f } catch {}
+  }
+  return ''
+}
 function Done([int]$code) {
   $nr = $null; try { $nr = Remove-FsTempIps $tempState } catch { $nr = [pscustomobject]@{ ok = $false; problems = @('the clean-up stopped: ' + $_.Exception.Message) } }; Say-NetRestore $nr
+  if ($nr -and -not $nr.ok) { $code = 6 }
+  if ($Mode -in @('Fix', 'Rollback') -and (-not $MockUrl -or $env:WIREIT_RECEIPT_DIR)) { try { [void](Write-FsReceipt $code $nr) } catch {} }   # 2.2.11 (#4)
   # 2.2.2 (re-review H4): this PC's network not back = the run did NOT end well, whatever else worked (exit 6, the window says so)
   # 2.2.10: whatever the run's own result was (also "Stopped. Nothing was changed."), an unverified network restore ends as FAILED (6)
   if ($nr -and -not $nr.ok) { $code = 6 }
@@ -156,7 +175,7 @@ Write-Host ('=== WireIt Toolkit ' + $script:FsVersion + ' - Fix this site' + $(i
 Fs-Log ('start mode=' + $Mode + ' site=' + $Site + ' newsite=' + [bool]$NewSite + ' ps=' + $PSVersionTable.PSVersion + ' pc=' + $env:COMPUTERNAME)
 $lr = Clear-FsLeftoverTemps $tempState; if ($lr) { if ($lr.ok) { Say 'A temporary address a stopped run left on this PC was taken off, and its network settings are back.' 'Yellow' } else { Say-NetRestore $lr } }
 # 2.2.1 (review H4): whatever stops this run, this PC's network goes back first (the "Fix this site" task also does it after the run)
-trap { $tnr = $null; try { $tnr = Remove-FsTempIps $tempState } catch { $tnr = [pscustomobject]@{ ok = $false; problems = @('the clean-up stopped: ' + $_.Exception.Message) } }; try { Say-NetRestore $tnr } catch {}; break }
+trap { $tnr = $null; try { $tnr = Remove-FsTempIps $tempState } catch { $tnr = [pscustomobject]@{ ok = $false; problems = @('the clean-up stopped: ' + $_.Exception.Message) } }; try { Say-NetRestore $tnr } catch {}; if ($Mode -in @('Fix', 'Rollback') -and (-not $MockUrl -or $env:WIREIT_RECEIPT_DIR)) { try { [void](Write-FsReceipt $(if ($tnr -and -not $tnr.ok) { 6 } else { 9 }) $tnr) } catch {} }; break }   # 2.2.11 (#4): a run stopped half-way still leaves its receipt
 
 # ---------------- the site and its list ----------------
 $pmSite = $null
