@@ -427,7 +427,8 @@ if ($Mode -eq 'Rollback') {
       if (-not $nvrPwR.ContainsKey($nv)) { $res += [pscustomobject]@{ text = ('NVR ' + $nv + ': no saved login - put ch ' + $c.nvr.channel + ' back by hand'); ok = $false } }
       else {
         $ncr = Fs-Cred $nvrPwR[$nv]; $bfile = $(if ($c.nvr.PSObject.Properties['before_file'] -and [string]$c.nvr.before_file) { Join-Path $RollbackDir (([string]$c.nvr.before_file) -replace '[\\/]', [string][IO.Path]::DirectorySeparatorChar) } else { '' })
-        if ([string]$c.nvr.action -eq 'pending' -and -not ($bfile -and (Test-Path -LiteralPath $bfile))) {
+        if ([string]$c.nvr.action -eq 'refused') { $ok = $true; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ': not changed by the run (it showed another live camera)'); ok = $true } }   # 2.2.10 (Codex R06)
+        elseif ([string]$c.nvr.action -eq 'pending' -and -not ($bfile -and (Test-Path -LiteralPath $bfile))) {
           # 2.2.7 (F01): the run stopped while it changed this channel and no saved copy exists = the channel did not exist before
           # (it was being ADDED). Removed again only when it is there and points at this camera; otherwise nothing was changed.
           $cur = @(Get-FsNvrChannels $nv $ncr | Where-Object { [int]$_.channel -eq [int]$c.nvr.channel })
@@ -438,7 +439,7 @@ if ($Mode -eq 'Rollback') {
         }
         elseif ([string]$c.nvr.action -eq 'added') { $ok = Remove-FsNvrChannel $nv $ncr ([int]$c.nvr.channel); $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' that the run added: removed'); ok = $ok } }
         elseif ($bfile -and (Test-Path -LiteralPath $bfile)) { $w = Restore-FsNvrChannel $nv $ncr ([int]$c.nvr.channel) ([IO.File]::ReadAllText($bfile)) $pw; $ok = [bool]$w.ok; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' back exactly as it was'); ok = $ok } }
-        else { $w = Set-FsNvrChannel $nv $ncr ([int]$c.nvr.channel) ([string]$c.ip_before) $pw $c.brand ''; $ok = [bool]$w.ok; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' back to ' + $c.ip_before + ' (no saved copy of the channel)'); ok = $ok } }
+        else { $w = Set-FsNvrChannel $nv $ncr ([int]$c.nvr.channel) ([string]$c.ip_before) $pw $c.brand '' @([string]$c.ip_after, [string]$(if ($c.PSObject.Properties['ip_target']) { $c.ip_target } else { '' })); $ok = [bool]$w.ok; $res += [pscustomobject]@{ text = $(if ($w.why) { [string]$w.why } else { 'NVR ch ' + $c.nvr.channel + ' back to ' + $c.ip_before + ' (no saved copy of the channel)' }); ok = $ok } }   # 2.2.10 (Codex R06): the camera's own addresses may be moved off
         Say-PlainWarning $nv
         if ($ok) { & $markDone ($ck + '|nvr') }
       }
@@ -1001,6 +1002,7 @@ foreach ($c in $ordered) {
       $rbc.nvr = [ordered]@{ nvr = $c.nvr; channel = $ch; action = 'pending'; before_file = ('backup\nvr-' + $c.nvr + '-ch' + $ch + '.xml') }; Save-Rb
       $w = Set-FsNvrChannel $c.nvr $nvrCred[$c.nvr] $ch $ip $pw $c.brand (Join-Path $runDir 'backup'); Say-PlainWarning $c.nvr
       $rbc.nvr = [ordered]@{ nvr = $c.nvr; channel = $ch; action = $w.action; before_file = $(if ($w.before) { 'backup\nvr-' + $c.nvr + '-ch' + $ch + '.xml' } else { '' }) }; Save-Rb
+      if ($w.why) { Say ('  ' + [string]$w.why) 'Red' }   # 2.2.10 (Codex R06): a channel showing another live camera is left alone, and the tech is told
       & $step ('back on NVR ch ' + $ch) ([bool]$w.ok); $c.channel = $ch
     }
   }

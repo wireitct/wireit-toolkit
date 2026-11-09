@@ -520,12 +520,28 @@ function Get-FsNvrChannels([string]$nvrIp, $cred) {
   }
   return $out
 }
-function Set-FsNvrChannel([string]$nvrIp, $nvrCred, [int]$ch, [string]$camIp, [string]$camPw, [string]$camBrand, [string]$backupDir = '') {
+# 2.2.10 (Codex R06): is the channel showing a DIFFERENT camera that is live right now? Read just before the change.
+# Returns '' (free to change) or the reason it must not be overwritten. A live state that cannot be read counts as "may be live".
+function Get-FsNvrChannelGuard([string]$nvrIp, $nvrCred, [int]$ch, [string]$curIp, [string]$camIp, [string[]]$OwnIps = @()) {
+  if (-not $curIp -or $curIp -eq $camIp -or @($OwnIps | Where-Object { $_ }) -contains $curIp) { return '' }
+  $st = $null; try { $st = Fs-Http -Ip $nvrIp -Path '/ISAPI/ContentMgmt/InputProxy/channels/status' -Cred $nvrCred } catch { $st = $null }
+  $online = $null
+  if ($st -and $st.code -eq 200 -and ($sx = Fs-XmlDoc $st.body)) {
+    foreach ($n in @(Fs-XFind $sx 'InputProxyChannelStatus')) { if ([string](Fs-XText $n 'id') -eq [string]$ch) { $online = ((Fs-XText $n 'online') -eq 'true') } }
+  }
+  if ($online -eq $false) { return '' }
+  if ($online) { return ('NVR ' + $nvrIp + ' ch ' + $ch + ' shows another LIVE camera (' + $curIp + '), not ' + $camIp + ': not overwritten. Check which camera belongs on it and set it by hand.') }
+  return ('NVR ' + $nvrIp + ' ch ' + $ch + ' points at another camera (' + $curIp + ') and whether it is live could not be read: not overwritten. Check it by hand.')
+}
+function Set-FsNvrChannel([string]$nvrIp, $nvrCred, [int]$ch, [string]$camIp, [string]$camPw, [string]$camBrand, [string]$backupDir = '', [string[]]$OwnIps = @()) {
   # puts the camera on that channel with its new address + the site password. Updates the channel when it exists, adds it when not.
-  # returns { ok; action ('updated'|'added'|'failed'); before (xml, no password: the NVR never returns it) }
+  # returns { ok; action ('updated'|'added'|'refused'|'failed'); before (xml, no password: the NVR never returns it); why }
+  # $OwnIps: other addresses of THIS camera (Undo: its address after the run) - the channel may be moved off them
   $r = Fs-Http -Ip $nvrIp -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $ch) -Cred $nvrCred
   $proto = $(if ($camBrand -eq 'Hikvision') { 'HIKVISION' } else { 'ONVIF' }); $port = $(if ($proto -eq 'HIKVISION') { '8000' } else { '80' })
   if ($r.code -eq 200 -and ($x = Fs-XmlDoc $r.body)) {
+    $why = Get-FsNvrChannelGuard $nvrIp $nvrCred $ch ([string](Fs-XText $x 'ipAddress')) $camIp $OwnIps
+    if ($why) { Fs-LogLine $why; return [pscustomobject]@{ ok = $false; action = 'refused'; before = ''; protocol = $proto; why = $why } }
     # 2.2.1: the FIRST state of the channel in this run is kept (a second change in the same run must not overwrite it: undo uses it)
     if ($backupDir) { New-Item -ItemType Directory -Force -Path $backupDir | Out-Null; $bkf = Join-Path $backupDir ('nvr-' + $nvrIp + '-ch' + $ch + '.xml'); if (-not (Test-Path -LiteralPath $bkf)) { [IO.File]::WriteAllText($bkf, $r.body) } }
     $before = $r.body
