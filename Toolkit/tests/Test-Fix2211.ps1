@@ -355,7 +355,8 @@ $script:ww.failDisable = $true; Invoke-WwAdapterCycle 'Wi-Fi 2' 'Reichman Mesh';
     Check ($j.a5 -and -not $j.m5) 'WW an error while switching it off still ends with the adapter on (finally)'
   }
   $wwSrc = [IO.File]::ReadAllText($wwFile)
-  Check ($wwSrc -match '(?m)^Repair-WwAdapter\s*$' -and $wwSrc.IndexOf('Repair-WwAdapter' + "`r`n" + '$fails') -gt 0) 'WW every run starts with the repair, before it looks at the network'
+  $iRep = $wwSrc.IndexOf("`r`nRepair-WwAdapter`r`n"); $iPz = $wwSrc.IndexOf("`r`nif (Test-WwPaused) {"); $iF = $wwSrc.IndexOf("`r`n`$fails = 0")
+  Check ($wwSrc -match '(?m)^Repair-WwAdapter\s*$' -and $iRep -gt 0 -and $iPz -gt $iRep -and $iF -gt $iPz) 'WW every run starts with the repair, before it looks at the network (2.2.12: then the Restore Network pause check, then the network)'
 
   # =====================================================================================
   Write-Host 'F16 / Codex R14: classic Fix NVR with no usable config.json stops with a plain message (missing, empty, half-written, another tool''s file, twice)'
