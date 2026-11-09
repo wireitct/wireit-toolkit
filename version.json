@@ -1,8 +1,8 @@
 {
   "version": "2.2.10",
   "released": "2026-11-09",
-  "commit": "6919fe4f3228df9c2089bd93b03f8b989e59de25",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/6919fe4f3228df9c2089bd93b03f8b989e59de25/",
+  "commit": "055068cb17d07befeb396707f95d7280012e10ce",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/055068cb17d07befeb396707f95d7280012e10ce/",
   "notes": "2.2.10: Codex R02/R03/R04 (laptop network left as it was, FAILED - Run again when not verified), R19 (wrong-password count kept between runs), R06 (no overwrite of a live NVR channel), R07 (Retry imports only its own devices)",
   "files": [
     {
@@ -317,8 +317,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix221.ps1",
-      "sha256": "deb7751c092d3248b5eae74022ea66b1980fdd2fb961e806ba5fade151e058ca",
-      "size": 40325
+      "sha256": "0a958845f6028e4f222bdbdb54577c4edae21942af6ab5d3461a8b3320e6557e",
+      "size": 40339
     },
     {
       "path": "Toolkit/tests/Test-Fix2210.ps1",
@@ -327,13 +327,13 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "2391ede89fd5b9ae6ab56c0a501ba38edbf16c294c309480ff302cb7aab4a6c2",
-      "size": 43297
+      "sha256": "32d7cd021b590f4ec89c4a81aa05bc6babd4a312c1615ef79983ae7e7e57dd7e",
+      "size": 43270
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
-      "sha256": "babd3a799568dcf8c8fb9eefdf33ff8ed97f005dc3a21d36dad247b5cb46ebfd",
-      "size": 56897
+      "sha256": "d2768bb7d934aeb6de3988396b4d572602d69317e6cac208c578c8aa16bc5b7c",
+      "size": 56912
     },
     {
       "path": "Toolkit/tests/Test-Fix224.ps1",
