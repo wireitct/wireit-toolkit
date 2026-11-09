@@ -284,6 +284,10 @@ function Test-FsLoginOnce([string]$ip, [string]$brand, [string]$pw) {
   & ([scriptblock]::Create($imp[0].Extent.Text))
   Check ($script:imported7.Count -eq 2) 'R07 a plain Run with no -Only still imports every replied device (unchanged)'
 
+  Write-Host 'version'
+  $v10 = @(([regex]::Match((Read-Src 'Toolkit/ToolkitCore.ps1'), "TkBuiltVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match((Read-Src 'Toolkit/FixSiteCore.ps1'), "FsVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match((Read-Src 'Toolkit/FixSiteBw.ps1'), "FsVersion = '([0-9.]+)'")).Groups[1].Value, [string](Get-Content (Join-Path $repo 'version.json') -Raw | ConvertFrom-Json).version)
+  Check ((($v10 | Select-Object -Unique) -join ',') -eq '2.2.10') ('version 2.2.10 in ToolkitCore, FixSiteCore, FixSiteBw and version.json (' + ($v10 -join ',') + ')')
+
 } finally {
   try { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 }
