@@ -100,12 +100,15 @@ try {
     for ($i = 0; $i -lt 100 -and -not (Test-Path $pf); $i++) { Start-Sleep -Milliseconds 100 }
     $srvs[$mode] = @{ port = (Get-Content $pf -Raw).Trim(); log = $lf }
   }
+  # SiteCheck's read-only core is the $SC_CODE text inside SiteCheck.ps1 (its window part needs Windows' drawing library): that text is run as is
+  $scAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'sitecheck/SiteCheck.ps1'), [ref]$null, [ref]$null)
+  $scCore = [string]@($scAst.FindAll({ param($a) $a -is [Management.Automation.Language.AssignmentStatementAst] -and $a.Left.Extent.Text -eq '$SC_CODE' }, $false))[0].Right.Expression.Value
   $credLine = '$cred = New-Object PSCredential(''admin'', (ConvertTo-SecureString ''Synthetic#Pw227'' -AsPlainText -Force))'
   $tools = [ordered]@{
     'FixNVR' = @{ pre = ((Get-FnText $fnv) + "`n`$ErrorActionPreference = 'Continue'; `$script:refused = @{}; `$script:scheme = @{}; `$script:nvrTls = @{}; `$Mock = `$null; `$IsPs5 = (`$PSVersionTable.PSVersion.Major -lt 6); `$logFile = Join-Path " + (Q $tmp) + " 'f06-fn.txt'; `$sum = New-Object System.Collections.Generic.List[string]`n"); call = '$r = Http ("127.0.0.1:" + $port) ''GET'' ''/ISAPI/System/deviceInfo'' '''' ''application/xml'' $cred 5; $code = [int]$r.code' }
     'CamViews' = @{ pre = (". " + (Q (Join-Path $tk 'CamViews.ps1')) + " -Lib`n`$ErrorActionPreference = 'Continue'`n"); call = '$r = CvGet ("http://127.0.0.1:" + $port + "/ISAPI/System/deviceInfo") $cred 5; $code = [int]$r.code' }
     'NetCheck' = @{ pre = ((Get-FnText (Join-Path $repo 'NetCheck/NetCheck.ps1')) + "`n`$ErrorActionPreference = 'Continue'`n"); call = '$r = Get-Isapi ("http://127.0.0.1:" + $port) ''/ISAPI/System/deviceInfo''; $code = [int]$r.code' }
-    'SiteCheck' = @{ pre = ((Get-FnText (Join-Path $repo 'sitecheck/SiteCheck.ps1')) + "`n`$ErrorActionPreference = 'Continue'`n"); call = '$r = Invoke-ScHttpGet ("http://127.0.0.1:" + $port + "/ISAPI/System/deviceInfo") $cred 5000; $code = [int]$r.Code' }
+    'SiteCheck' = @{ pre = ($scCore + "`n`$ErrorActionPreference = 'Continue'`n"); call = '$r = Invoke-ScHttpGet ("http://127.0.0.1:" + $port + "/ISAPI/System/deviceInfo") $cred 5000; $code = [int]$r.Code' }
   }
   foreach ($tn in $tools.Keys) {
     foreach ($mode in @('basic', 'digest')) {

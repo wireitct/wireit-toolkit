@@ -353,6 +353,20 @@ function Test-NvrTlsPort([string]$ip, [int]$ms = 3000) {
     return 'error'
   } finally { try { $c.Close() } catch {} }
 }
+# 2.2.7 (Codex file-by-file F06): over plain HTTP a password is only answered to a Digest challenge (the password itself never
+# crosses the wire). A device - or a box pretending to be one - that asks only for Basic gets NO password over plain HTTP.
+# Same check in FixNVR.ps1, CamViews.ps1, NetCheck.ps1 and SiteCheck.ps1 (FixSite and NvrHealth have had it since 2.2.3).
+$script:WiAuthSeen = @{}
+function Test-WireItPlainBasicOnly([string]$uri) {
+  $u = $null; try { $u = [uri]$uri } catch { return $false }
+  if (-not $u -or $u.Scheme -ne 'http') { return $false }
+  $k = $u.Authority; if ($script:WiAuthSeen.ContainsKey($k)) { return [bool]$script:WiAuthSeen[$k] }
+  $basicOnly = $false
+  try { $rq = [Net.HttpWebRequest]::Create($u); $rq.Method = 'GET'; $rq.Timeout = 6000; $rq.AllowAutoRedirect = $false; $rs = $rq.GetResponse(); $rs.Close() }
+  catch { $ex = $_.Exception; while ($ex -and -not ($ex -is [Net.WebException])) { $ex = $ex.InnerException }
+    if ($ex -and $ex.Response) { $h = [string]$ex.Response.Headers['WWW-Authenticate']; if ($h -match '(?i)\bbasic\b' -and $h -notmatch '(?i)\bdigest\b') { $basicOnly = $true }; try { $ex.Response.Close() } catch {} } }
+  $script:WiAuthSeen[$k] = $basicOnly; return $basicOnly
+}
 function Err-Body($ex) { try { $r = $ex.Exception.Response; if ($r) { $sr = New-Object IO.StreamReader($r.GetResponseStream()); return $sr.ReadToEnd() } } catch {}; return '' }
 function Http([string]$ip, [string]$method, [string]$path, [string]$body = '', [string]$ctype = 'application/xml', $cred = $null, [int]$timeout = 10) {
   if ($script:refused.ContainsKey($ip)) { return @{ code = 401; body = ''; err = 'login refused earlier, not retried' } }
@@ -367,6 +381,7 @@ function Http([string]$ip, [string]$method, [string]$path, [string]$body = '', [
     $args2.Uri = $(if ($st -eq 'none') { 'http://' } else { 'https://' }) + $ip + $path
   }
   Log ($method + ' ' + $args2.Uri + $(if ($body) { ' BODY ' + $body } else { '' }))
+  if ($cred -and -not $Mock -and (Test-WireItPlainBasicOnly $args2.Uri)) { Log ('  -> refused: plain HTTP with Basic login only (the password is not sent)'); return @{ code = 0; body = ''; err = 'plain HTTP with Basic login only - the password was not sent' } }   # 2.2.7 (F06)
   for ($try = 0; $try -lt 2; $try++) {
     try {
       $r = Invoke-WebRequest @args2

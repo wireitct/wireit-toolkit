@@ -210,7 +210,8 @@ function Invoke-ScHttpGet([string]$url, $cred, [int]$timeoutMs = 8000) {
   try {
     $rq = [Net.HttpWebRequest]::Create($url); $rq.Method = 'GET'; $rq.Timeout = $timeoutMs; $rq.ReadWriteTimeout = $timeoutMs; $rq.AllowAutoRedirect = $false
     if (Enable-WireItLanTls) { try { $rq.ServerCertificateValidationCallback = [WireItLanTls]::Callback } catch {} }   # this request only: a self-made NVR certificate on a private address
-    if ($cred) { $cc = New-Object Net.CredentialCache; $u = [uri]$url; $base = [uri]($u.Scheme + '://' + $u.Authority); $nc = $cred.GetNetworkCredential(); $cc.Add($base, 'Digest', $nc); $cc.Add($base, 'Basic', $nc); $rq.Credentials = $cc; $rq.PreAuthenticate = $false }
+    # 2.2.7 (Codex file-by-file F06): over plain HTTP only Digest is offered the password (never Basic, which sends it in clear); HTTPS may use Basic
+    if ($cred) { $cc = New-Object Net.CredentialCache; $u = [uri]$url; $base = [uri]($u.Scheme + '://' + $u.Authority); $nc = $cred.GetNetworkCredential(); $cc.Add($base, 'Digest', $nc); if ($u.Scheme -eq 'https') { $cc.Add($base, 'Basic', $nc) }; $rq.Credentials = $cc; $rq.PreAuthenticate = $false }
     $rs = $rq.GetResponse(); $sr = New-Object IO.StreamReader($rs.GetResponseStream()); $body = $sr.ReadToEnd(); $sr.Close(); $code = [int]$rs.StatusCode; $rs.Close()
     return [pscustomobject]@{ Code = $code; Body = $body }
   } catch [Net.WebException] {

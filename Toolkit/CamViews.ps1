@@ -44,8 +44,23 @@ function Test-WireItLanHost([string]$h) {
   $b = $a.GetAddressBytes()
   return ($b[0] -eq 10 -or $b[0] -eq 127 -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 169 -and $b[1] -eq 254))
 }
-# ---- HTTP (digest / basic through -Credential; bytes kept as bytes) ----
+# 2.2.7 (Codex file-by-file F06): over plain HTTP a password is only answered to a Digest challenge (the password itself never
+# crosses the wire). A device - or a box pretending to be one - that asks only for Basic gets NO password over plain HTTP.
+# Same check in FixNVR.ps1, CamViews.ps1, NetCheck.ps1 and SiteCheck.ps1 (FixSite and NvrHealth have had it since 2.2.3).
+$script:WiAuthSeen = @{}
+function Test-WireItPlainBasicOnly([string]$uri) {
+  $u = $null; try { $u = [uri]$uri } catch { return $false }
+  if (-not $u -or $u.Scheme -ne 'http') { return $false }
+  $k = $u.Authority; if ($script:WiAuthSeen.ContainsKey($k)) { return [bool]$script:WiAuthSeen[$k] }
+  $basicOnly = $false
+  try { $rq = [Net.HttpWebRequest]::Create($u); $rq.Method = 'GET'; $rq.Timeout = 6000; $rq.AllowAutoRedirect = $false; $rs = $rq.GetResponse(); $rs.Close() }
+  catch { $ex = $_.Exception; while ($ex -and -not ($ex -is [Net.WebException])) { $ex = $ex.InnerException }
+    if ($ex -and $ex.Response) { $h = [string]$ex.Response.Headers['WWW-Authenticate']; if ($h -match '(?i)\bbasic\b' -and $h -notmatch '(?i)\bdigest\b') { $basicOnly = $true }; try { $ex.Response.Close() } catch {} } }
+  $script:WiAuthSeen[$k] = $basicOnly; return $basicOnly
+}
+# ---- HTTP (digest through -Credential; never Basic over plain HTTP; bytes kept as bytes) ----
 function CvGet([string]$url, $cred, [int]$timeout = 12) {
+  if ($cred -and -not $script:CvMock -and (Test-WireItPlainBasicOnly $url)) { CvLog ('GET ' + ($url -replace '//[^/@]*@', '//') + ' refused: plain HTTP with Basic login only (the password is not sent)'); return @{ code = 0; bytes = $null; text = ''; err = 'plain HTTP with Basic login only - the password was not sent' } }   # 2.2.7 (F06)
   $tmp = [IO.Path]::GetTempFileName()
   try {
     $a = @{ Uri = $url; Method = 'GET'; UseBasicParsing = $true; TimeoutSec = $timeout; OutFile = $tmp; PassThru = $true }

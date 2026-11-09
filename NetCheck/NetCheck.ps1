@@ -121,12 +121,31 @@ $cred = $null
 if ($CredFile -and (Test-Path $CredFile)) { $cl = Get-Content $CredFile; $User = $cl[0]; $sec = ConvertTo-SecureString $cl[1] -AsPlainText -Force; $cred = New-Object PSCredential($User, $sec) }
 elseif ($User) { $sec = Read-Host ('Password for ' + $User + ' (input hidden)') -AsSecureString; $cred = New-Object PSCredential($User, $sec) }
 
+# 2.2.7 (Codex file-by-file F06): over plain HTTP a password is only answered to a Digest challenge (the password itself never
+# crosses the wire). A device - or a box pretending to be one - that asks only for Basic gets NO password over plain HTTP.
+# Same check in FixNVR.ps1, CamViews.ps1, NetCheck.ps1 and SiteCheck.ps1 (FixSite and NvrHealth have had it since 2.2.3).
+$script:WiAuthSeen = @{}
+function Test-WireItPlainBasicOnly([string]$uri) {
+  $u = $null; try { $u = [uri]$uri } catch { return $false }
+  if (-not $u -or $u.Scheme -ne 'http') { return $false }
+  $k = $u.Authority; if ($script:WiAuthSeen.ContainsKey($k)) { return [bool]$script:WiAuthSeen[$k] }
+  $basicOnly = $false
+  try { $rq = [Net.HttpWebRequest]::Create($u); $rq.Method = 'GET'; $rq.Timeout = 6000; $rq.AllowAutoRedirect = $false; $rs = $rq.GetResponse(); $rs.Close() }
+  catch { $ex = $_.Exception; while ($ex -and -not ($ex -is [Net.WebException])) { $ex = $ex.InnerException }
+    if ($ex -and $ex.Response) { $h = [string]$ex.Response.Headers['WWW-Authenticate']; if ($h -match '(?i)\bbasic\b' -and $h -notmatch '(?i)\bdigest\b') { $basicOnly = $true }; try { $ex.Response.Close() } catch {} } }
+  $script:WiAuthSeen[$k] = $basicOnly; return $basicOnly
+}
+# 2.2.7 (F06): the request arguments: the password only to a Digest challenge over plain HTTP (PowerShell 7 needs the explicit
+# AllowUnencryptedAuthentication for that; the Basic-only refusal above is what keeps it from ever sending Basic in clear)
+function Get-NcIsapiArgs([string]$uri) { $a = @{ Uri = $uri; Credential = $cred; UseBasicParsing = $true }; if ($PSVersionTable.PSVersion.Major -ge 6 -and $uri -like 'http://*') { $a.AllowUnencryptedAuthentication = $true }; return $a }
 function Get-Isapi($base, $path) {
-  try { $r = Invoke-WebRequest -Uri ($base + $path) -Credential $cred -UseBasicParsing -TimeoutSec 8; return @{ code = 200; body = $r.Content } }
+  if ($cred -and (Test-WireItPlainBasicOnly ($base + $path))) { return @{ code = 0; body = ''; err = 'plain HTTP with Basic login only - the password was not sent' } }
+  try { $a = Get-NcIsapiArgs ($base + $path); $r = Invoke-WebRequest @a -TimeoutSec 8; return @{ code = 200; body = $r.Content } }
   catch { $c = 0; try { $c = [int]$_.Exception.Response.StatusCode } catch {}; return @{ code = $c; body = '' } }
 }
 function Post-Isapi($base, $path, $xml) {
-  try { $r = Invoke-WebRequest -Uri ($base + $path) -Method Post -Body $xml -ContentType 'application/xml' -Credential $cred -UseBasicParsing -TimeoutSec 15; return @{ code = 200; body = $r.Content } }
+  if ($cred -and (Test-WireItPlainBasicOnly ($base + $path))) { return @{ code = 0; body = ''; err = 'plain HTTP with Basic login only - the password was not sent' } }
+  try { $a = Get-NcIsapiArgs ($base + $path); $r = Invoke-WebRequest @a -Method Post -Body $xml -ContentType 'application/xml' -TimeoutSec 15; return @{ code = 200; body = $r.Content } }
   catch { $c = 0; try { $c = [int]$_.Exception.Response.StatusCode } catch {}; return @{ code = $c; body = '' } }
 }
 function Tag($xml, $t) { $m = [regex]::Match($xml, '<' + $t + '>([^<]*)</' + $t + '>'); if ($m.Success) { return $m.Groups[1].Value } else { return '' } }
