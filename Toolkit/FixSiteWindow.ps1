@@ -95,7 +95,8 @@ function Set-Busy([bool]$busy) { foreach ($b in @($big, $bNew, $bLook, $bUndo, $
 function Start-Run([string]$mode, $req, [bool]$needSite, [bool]$newSite = $false) {
   $s = $site.Text.Trim(); if ($newSite) { $s = '' }   # 2.0.2: New site ignores the site box
   if ($needSite -and -not $s) { [void][Windows.Forms.MessageBox]::Show($f, 'Type the site first (the Site ID on the QR sticker, like WI-061, or the address).', 'WireIt Toolkit'); return }
-  if ($s -and $s -notmatch $script:FsSiteRe) { [void][Windows.Forms.MessageBox]::Show($f, 'The site name can only have letters, digits, spaces and . , # & '' ( ) / _ - (up to 80).', 'WireIt Toolkit'); return }
+  # 2.2.12 (Codex 2.2.11 #13, F20): the rule is $script:FsSiteRe in FixSiteCore.ps1 (loaded above); a name outside it never reaches the command line
+  if ($s -and -not (Test-FsSiteName $s)) { [void][Windows.Forms.MessageBox]::Show($f, 'The site name can only have letters, digits, spaces and . , # & ( ) / _ - (start with a letter or digit, up to 80). No quotes.', 'WireIt Toolkit'); return }
   if ($s) { try { Set-Content -LiteralPath $lastSiteFile -Value $s -Encoding UTF8 } catch {} }
   $file = Join-Path $ToolkitDir 'FixSite.ps1'
   if (-not (Test-Path $file)) { $status.Text = 'FixSite.ps1 is missing from the Toolkit folder. Run the Toolkit installer again.'; return }
@@ -104,7 +105,7 @@ function Start-Run([string]$mode, $req, [bool]$needSite, [bool]$newSite = $false
   # 2.2.3: Crew is a local admin, so there is no background task, no question folder and no admin-only refusal: the fix runs in the
   # blue window on this login (Windows asks Yes once), every question is asked there, and closing it stops the fix (its clean-up runs).
   $a = '-NoProfile -ExecutionPolicy Bypass -File "' + $file + '" -Mode ' + $mode
-  if ($s) { $a += ' -Site "' + $s + '"' }
+  if ($s) { $qs = ConvertTo-FsCmdArg $s; if (-not $qs) { $status.Text = 'That site name can not be used (see the rule). Nothing ran.'; return }; $a += ' -Site ' + $qs }
   if ($newSite) { $a += ' -NewSite' }
   foreach ($e in @(ConvertTo-RunCli $req)) { if ($e) { $a += ' ' + $e } }
   $status.Text = 'A blue window opens (Windows asks permission first: click Yes). Everything you have to answer is asked there.'
@@ -165,7 +166,7 @@ function Update-LogView([bool]$exited) {
   }
 }
 function Finish-Run([int]$code) {
-  $st.proc = $null; Set-Busy $false; $status.Text = Get-FsExitWords $code
+  $st.proc = $null; Set-Busy $false; $status.Text = Get-FsExitWords $code $st.mode
   $kAll.Checked = $false; $kPw.Checked = $false   # tick again each run (2.0.1)
   # 2.0.2: a New site run that saved the site: its name goes in the site box (and the drop-down) for next time and for Undo
   if ($st.newSite -and $st.runDir) { $sn = ''; try { $sn = (Get-Content -LiteralPath (Join-Path $st.runDir 'site.txt') -Raw).Trim() } catch {}; if ($sn) { $site.Text = $sn; if (-not $site.Items.Contains($sn)) { [void]$site.Items.Add($sn) }; try { Set-Content -LiteralPath $lastSiteFile -Value $sn -Encoding UTF8 } catch {} } }

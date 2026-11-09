@@ -175,7 +175,7 @@ Write-Host ('=== WireIt Toolkit ' + $script:FsVersion + ' - Fix this site' + $(i
 Fs-Log ('start mode=' + $Mode + ' site=' + $Site + ' newsite=' + [bool]$NewSite + ' ps=' + $PSVersionTable.PSVersion + ' pc=' + $env:COMPUTERNAME)
 $lr = Clear-FsLeftoverTemps $tempState; if ($lr) { if ($lr.ok) { Say 'A temporary address a stopped run left on this PC was taken off, and its network settings are back.' 'Yellow' } else { Say-NetRestore $lr } }
 # 2.2.1 (review H4): whatever stops this run, this PC's network goes back first (the "Fix this site" task also does it after the run)
-trap { $tnr = $null; try { $tnr = Remove-FsTempIps $tempState } catch { $tnr = [pscustomobject]@{ ok = $false; problems = @('the clean-up stopped: ' + $_.Exception.Message) } }; try { Say-NetRestore $tnr } catch {}; if ($Mode -in @('Fix', 'Rollback') -and (-not $MockUrl -or $env:WIREIT_RECEIPT_DIR)) { try { [void](Write-FsReceipt $(if ($tnr -and -not $tnr.ok) { 6 } else { 9 }) $tnr) } catch {} }; break }   # 2.2.11 (#4): a run stopped half-way still leaves its receipt
+trap { $tnr = $null; try { $tnr = Remove-FsTempIps $tempState } catch { $tnr = [pscustomobject]@{ ok = $false; problems = @('the clean-up stopped: ' + $_.Exception.Message) } }; try { Say-NetRestore $tnr } catch {}; if ($Mode -in @('Fix', 'Rollback') -and (-not $MockUrl -or $env:WIREIT_RECEIPT_DIR)) { try { [void](Write-FsReceipt $(if ($tnr -and -not $tnr.ok) { 6 } else { 9 }) $tnr) } catch {} }; try { Fs-Log ('stopped: ' + $_.Exception.Message + ' at line ' + $_.InvocationInfo.ScriptLineNumber) } catch {}; try { if ($Mode -in @('Fix', 'Rollback')) { Say ('STOPPED HALF-WAY (' + $_.Exception.Message + '). Some cameras or NVRs may already have been changed. Press Undo the last fix to put this site back, or press Fix this site again, or call the office.') 'Red' } else { Say ('Stopped unexpectedly: ' + $_.Exception.Message) 'Red' } } catch {}; exit $(if ($tnr -and -not $tnr.ok) { 6 } elseif ($Mode -in @('Fix', 'Rollback')) { 9 } else { 1 }) }   # 2.2.12 (Codex 2.2.11 #14): an honest half-way message, and the exit code the window explains   # 2.2.11 (#4): a run stopped half-way still leaves its receipt
 
 # ---------------- the site and its list ----------------
 $pmSite = $null
@@ -924,7 +924,7 @@ $ordered = @($plan.cams | Where-Object { $_.state -eq 'fix' } | Sort-Object { Ge
 $i = 0
 foreach ($c in $ordered) {
   $i++; Write-Host ''; Say ('[' + $i + '/' + $ordered.Count + '] ' + $c.name + ' (' + $c.ip + ')') 'Cyan'; $pwBefore = ''
-  $res = New-Object System.Collections.ArrayList; $ip = $c.ip; $pw = $(if ($pwFor.ContainsKey($c.ip)) { $pwFor[$c.ip] } else { '' }); $stop = $false; $needReboot = $false
+  $res = New-Object System.Collections.ArrayList; $ip = $c.ip; $pw = $(if ($pwFor.ContainsKey($c.ip)) { $pwFor[$c.ip] } else { '' }); $stop = $false; $needReboot = $false; $streamCheck = $null
   $rbc = [ordered]@{ name = $c.name; mac = $c.mac; brand = $c.brand; ip_before = $c.ip; ip_after = ''; net_before = $null; stream_before = $null; password_changed = $false; nvr = $null; backup = '' }
   $rb.cameras += $rbc
   $step = { param($text, $ok) [void]$res.Add([pscustomobject]@{ text = $text; ok = $ok }); Say ('    ' + $text + ' ' + $(if ($ok -eq $true) { $script:FsOk } elseif ($ok -eq $false) { $script:FsBad } else { '' })) }
@@ -947,7 +947,13 @@ foreach ($c in $ordered) {
   $cr = Fs-Cred $pw
   # backup
   if (-not $stop) { $bd = Join-Path $runDir ('backup\' + (($c.name -replace '[^A-Za-z0-9_-]+', '_') + '-' + ($c.mac -replace ':', ''))); $bf = @(Save-FsBackup $ip $c.brand $cr $bd); $rbc.backup = $bd; if (Test-FsBackupComplete $bf $c.brand) { & $step 'backup saved' $true } else { & $step ('backup FAILED (' + $script:FsBackupWhy + ') - camera left alone') $false; $stop = $true } }
-  if (-not $stop) { $nb = Get-FsNet $ip $c.brand $cr; if ($nb) { $rbc.net_before = [ordered]@{ ip = $nb.ip; mask = $nb.mask; gw = $nb.gw; dhcp = $nb.dhcp; dns1 = $nb.dns1; dns2 = $nb.dns2; iface = $nb.iface } }; Save-Rb }
+  # 2.2.12 (Codex 2.2.11 #2): no change at all to a camera unless its complete, valid network settings are in the undo file first
+  # (a failed or half read is never journaled; the camera is left alone and the tech is told to run again)
+  if (-not $stop) {
+    $nb = Get-FsNet $ip $c.brand $cr
+    if ($nb) { $rbc.net_before = [ordered]@{ ip = $nb.ip; mask = $nb.mask; gw = $nb.gw; dhcp = $nb.dhcp; dns1 = $nb.dns1; dns2 = $nb.dns2; iface = $nb.iface }; Save-Rb }
+    else { Save-Rb; & $step ('its network settings could not be read (' + $script:FsNetWhy + ') - camera left alone, nothing changed. Run Fix this site again') $false; $stop = $true }
+  }
   # password
   if (-not $stop -and $pw -cne $sitePw -and ($c.steps -contains 'password' -or $opts.passwordAll)) {   # 2.2.3 (Codex #37): -cne
     # 2.2.3 (Codex #13): a camera recorded by an NVR keeps its password unless that NVR can be updated too (its login is known);
@@ -974,13 +980,26 @@ foreach ($c in $ordered) {
     if ($cur) {
       $rbc.stream_before = [ordered]@{ codec = $cur.codec; fps = $cur.fps; width = $cur.width; height = $cur.height; bitrate = $cur.bitrate; gop = $cur.gop; smartCodec = $cur.smartCodec }; Save-Rb
       $diff = @(Get-FsSettingsDiff $cur $c.settings)
-      if ($diff.Count) { $w = Set-FsStream $ip $c.brand $cr $cur $diff; if ($w.reboot) { $needReboot = $true }; & $step (Format-FsSettingsDiff $diff) ([bool]$w.ok) } else { & $step 'settings already right' $true }
+      # 2.2.12 (Codex 2.2.11 #4): a green check only when the camera's own settings, read back, have what was asked (after its
+      # restart when the write needs one); an accepted write is not proof
+      if ($diff.Count) {
+        $w = Set-FsStream $ip $c.brand $cr $cur $diff
+        if (-not $w.ok) { & $step ((Format-FsSettingsDiff $diff) + ' - the camera refused the settings') $false }
+        elseif ($w.reboot) { $needReboot = $true; $streamCheck = $diff }
+        else { $mis = @(Get-FsStreamMismatch (Get-FsStream $ip $c.brand $cr) $diff); if ($mis.Count) { & $step ('settings NOT confirmed: ' + ($mis -join '; ')) $false } else { & $step (Format-FsSettingsDiff $diff) $true } }
+      } else { & $step 'settings already right' $true }
     } else { & $step 'settings could not be read - not changed' $false }
   }
   # address
   if (-not $stop -and ($c.steps -contains 'move') -and $c.target) {
     $net = Get-FsNet $ip $c.brand $cr
     if ($net -and $net.ip -eq $c.target -and -not $net.dhcp) { & $step ('already on ' + (Get-FsShort $c.target)) $true }
+    elseif ($net -and $c.target -ne $ip -and @(Get-FsCamRecorders $c).Count -gt 1) {
+      # 2.2.12 (Codex 2.2.11 #1): a camera recorded by more than one NVR is never moved: only one NVR would be updated and checked,
+      # the others would silently lose its video. The tech hears it plainly; the camera stays where it is (Still a problem).
+      $rec = @(Get-FsCamRecorders $c)
+      & $step ('NOT moved: ' + $rec.Count + ' NVRs record this camera (' + ($rec -join ', ') + '). Moving it would cut the others off. Move it by hand on every NVR, or call the office') $false
+    }
     elseif ($net) {
       $t = $c.target
       if ($t -ne $ip -and -not (Test-FsIpFree $t)) { $t = ''; for ($n = [int]$opts.camFirst; $n -le [int]$opts.camLast; $n++) { $x = $plan.scheme + '.' + $n; if (-not @($plan.cams | Where-Object { $_.target -eq $x -or $_.ip -eq $x }).Count -and (Test-FsIpFree $x)) { $t = $x; break } } }
@@ -1010,6 +1029,12 @@ foreach ($c in $ordered) {
   }
   # restart (settings that need it, or a camera with no video)
   if (-not $stop -and ($needReboot -or $c.steps -contains 'reboot')) { $ok = Restart-FsDevice $ip $c.brand $cr; if ($ok) { Fs-Sleep 20; $ok = Wait-FsDevice $ip $c.brand $pw ([int]$opts.rebootWaitSec) }; & $step 'restarted' $ok }
+  if ($streamCheck) {
+    # 2.2.12: settings that needed a restart are read back after it (a run stopped before the restart = not confirmed)
+    if ($stop) { & $step ((Format-FsSettingsDiff $streamCheck) + ' sent, but NOT confirmed (the camera needs a restart that did not happen)') $false }
+    else { $mis = @(Get-FsStreamMismatch (Get-FsStream $ip $c.brand $cr) $streamCheck); if ($mis.Count) { & $step ('settings NOT confirmed after the restart: ' + ($mis -join '; ')) $false } else { & $step (Format-FsSettingsDiff $streamCheck) $true } }
+    $streamCheck = $null
+  }
   # back on the NVR
   if (-not $stop -and ($c.steps -contains 'nvr') -and $c.nvr) {
     if (-not $nvrCred.ContainsKey($c.nvr)) { & $step ('NVR ' + $c.nvr + ' password unknown - put it on ch ' + $c.channel + ' by hand') $false }

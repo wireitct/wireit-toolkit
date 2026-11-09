@@ -379,28 +379,61 @@ function Test-FsBackupComplete($files, [string]$brand, [switch]$Nvr) {
 }
 
 # ---------------- network ----------------
+# 2.2.12 (Codex 2.2.11 #2): an address read is only used when it is a real, complete answer: HTTP 200, a valid IPv4 address and
+# mask, a known DHCP flag and a gateway that is empty or a valid IPv4. An error page (Dahua "Error", Hikvision <ResponseStatus>) or a
+# half answer returns $null and says why in $script:FsNetWhy, so nothing is ever journaled (or moved) from a read that failed.
+function Test-FsIPv4([string]$s) {
+  $m = [regex]::Match(([string]$s).Trim(), '^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$'); if (-not $m.Success) { return $false }
+  for ($i = 1; $i -le 4; $i++) { if ([int]$m.Groups[$i].Value -gt 255) { return $false } }
+  return $true
+}
+function Test-FsNetComplete($n) {
+  # $null = complete; otherwise the plain reason
+  if (-not $n) { return 'no answer' }
+  if (-not (Test-FsIPv4 ([string]$n.ip)) -or [string]$n.ip -eq '0.0.0.0') { return 'no valid address in the answer' }
+  if (-not (Test-FsIPv4 ([string]$n.mask)) -or [string]$n.mask -eq '0.0.0.0') { return 'no valid subnet mask in the answer' }
+  if ([string]$n.gw -and -not (Test-FsIPv4 ([string]$n.gw))) { return 'the gateway in the answer is not an address' }
+  if ($n.dhcp -isnot [bool]) { return 'the answer does not say whether it uses DHCP' }
+  return $null
+}
 function Get-FsNet([string]$ip, [string]$brand, $cred) {
+  $script:FsNetWhy = ''
   if ($brand -eq 'Dahua') {
-    $h = Fs-DhLines (Fs-Http -Ip $ip -Path '/cgi-bin/configManager.cgi?action=getConfig&name=Network' -Cred $cred).body
+    $rd = Fs-Http -Ip $ip -Path '/cgi-bin/configManager.cgi?action=getConfig&name=Network' -Cred $cred
+    if (-not $rd -or [int]$rd.code -ne 200) { $script:FsNetWhy = ('the camera answered ' + $(if ($rd -and [int]$rd.code) { 'HTTP ' + $rd.code } else { 'nothing' })); return $null }
+    $h = Fs-DhLines $rd.body
     $if = [string]$h['Network.DefaultInterface']; if (-not $if) { $if = 'eth0' }
     $pre = 'Network.' + $if + '.'
-    return [pscustomobject]@{ iface = $if; ip = [string]$h[$pre + 'IPAddress']; mask = [string]$h[$pre + 'SubnetMask']; gw = [string]$h[$pre + 'DefaultGateway']; dhcp = ([string]$h[$pre + 'DhcpEnable'] -eq 'true'); dns1 = [string]$h[$pre + 'DnsServers[0]']; dns2 = [string]$h[$pre + 'DnsServers[1]']; raw = $null }
+    $dv = ([string]$h[$pre + 'DhcpEnable']).ToLower(); $dh = $null; if ($dv -eq 'true') { $dh = $true } elseif ($dv -eq 'false') { $dh = $false }
+    if (-not $h.ContainsKey($pre + 'IPAddress') -or -not $h.ContainsKey($pre + 'DefaultGateway')) { $script:FsNetWhy = 'the answer has no address/gateway lines'; return $null }
+    $o = [pscustomobject]@{ iface = $if; ip = [string]$h[$pre + 'IPAddress']; mask = [string]$h[$pre + 'SubnetMask']; gw = [string]$h[$pre + 'DefaultGateway']; dhcp = $dh; dns1 = [string]$h[$pre + 'DnsServers[0]']; dns2 = [string]$h[$pre + 'DnsServers[1]']; raw = $null }
+    $why = Test-FsNetComplete $o; if ($why) { $script:FsNetWhy = $why; return $null }
+    return $o
   }
-  $li = Fs-XmlDoc (Fs-Http -Ip $ip -Path '/ISAPI/System/Network/interfaces' -Cred $cred).body
+  $rl = Fs-Http -Ip $ip -Path '/ISAPI/System/Network/interfaces' -Cred $cred
+  $li = $null; if ($rl -and [int]$rl.code -eq 200) { $li = Fs-XmlDoc $rl.body }
   # 2.2.3 (Codex #10): a recorder with a LAN port and a PoE camera port has two interfaces; the one to read/change is the one
   # carrying the address we are talking to. One interface = that one. Several and none carries it = $null (nothing is changed).
   $ids = @(); if ($li) { foreach ($nd in @(Fs-XFind $li 'NetworkInterface')) { $v = Fs-XText $nd 'id'; if ($v) { $ids += $v } } }
   if (-not $ids.Count) { $ids = @('1') }
-  $want = ($ip -replace ':\d+$', ''); $r = $null; $x = $null; $id = ''
+  $want = ($ip -replace ':\d+$', ''); $r = $null; $x = $null; $id = ''; $lastWhy = ''
   foreach ($cand in $ids) {
-    $rr = Fs-Http -Ip $ip -Path ('/ISAPI/System/Network/interfaces/' + $cand + '/ipAddress') -Cred $cred; $xx = Fs-XmlDoc $rr.body
-    if (-not $xx) { continue }
+    $rr = Fs-Http -Ip $ip -Path ('/ISAPI/System/Network/interfaces/' + $cand + '/ipAddress') -Cred $cred
+    if (-not $rr -or [int]$rr.code -ne 200) { $lastWhy = ('the device answered ' + $(if ($rr -and [int]$rr.code) { 'HTTP ' + $rr.code } else { 'nothing' })); continue }
+    $xx = Fs-XmlDoc $rr.body
+    if (-not $xx -or -not $xx.DocumentElement -or $xx.DocumentElement.LocalName -ne 'IPAddress') { $lastWhy = 'the answer is not an address document (an error answer)'; continue }
     if ($ids.Count -eq 1 -or (Fs-XText $xx 'ipAddress') -eq $want) { $r = $rr; $x = $xx; $id = $cand; break }
   }
-  if (-not $x) { return $null }
+  if (-not $x) { $script:FsNetWhy = $(if ($lastWhy) { $lastWhy } else { 'no interface carries ' + $want }); return $null }
   $gwn = @(Fs-XFind $x 'DefaultGateway'); $gw = ''; if ($gwn.Count) { $gw = Fs-XText $gwn[0] 'ipAddress' }
   $d1 = @(Fs-XFind $x 'PrimaryDNS'); $d2 = @(Fs-XFind $x 'SecondaryDNS')
-  return [pscustomobject]@{ iface = $id; ip = (Fs-XText $x 'ipAddress'); mask = (Fs-XText $x 'subnetMask'); gw = $gw; dhcp = ((Fs-XText $x 'addressingType') -eq 'dynamic'); dns1 = $(if ($d1.Count) { Fs-XText $d1[0] 'ipAddress' } else { '' }); dns2 = $(if ($d2.Count) { Fs-XText $d2[0] 'ipAddress' } else { '' }); raw = $r.body }
+  $at = (Fs-XText $x 'addressingType').ToLower(); $dh = $null; if ($at -eq 'dynamic') { $dh = $true } elseif ($at -eq 'static') { $dh = $false }
+  # the top-level address (not the gateway's / DNS's ipAddress)
+  $top = ''; foreach ($n in @($x.DocumentElement.ChildNodes)) { if ($n.LocalName -eq 'ipAddress') { $top = ([string]$n.InnerText).Trim() } }
+  $mk = ''; foreach ($n in @($x.DocumentElement.ChildNodes)) { if ($n.LocalName -eq 'subnetMask') { $mk = ([string]$n.InnerText).Trim() } }
+  $o = [pscustomobject]@{ iface = $id; ip = $top; mask = $mk; gw = $gw; dhcp = $dh; dns1 = $(if ($d1.Count) { Fs-XText $d1[0] 'ipAddress' } else { '' }); dns2 = $(if ($d2.Count) { Fs-XText $d2[0] 'ipAddress' } else { '' }); raw = $r.body }
+  $why = Test-FsNetComplete $o; if ($why) { $script:FsNetWhy = $why; return $null }
+  return $o
 }
 function Set-FsNet([string]$ip, [string]$brand, $cred, $net, [string]$newIp, [string]$mask, [string]$gw, [string]$dns1 = '8.8.8.8', [string]$dns2 = '1.1.1.1', [switch]$Dhcp) {
   # returns { ok; reboot } . The device answers on the NEW address afterwards (or after its own restart).
