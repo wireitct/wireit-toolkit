@@ -187,6 +187,103 @@ $out.dhcp3 = $script:sim.dhcp; $out.coexist3 = $script:sim.coexist; $out.calls3 
     Check ($o -match 'FAILED' -and $o -match 'Run again') 'R04 the failed clean-up says FAILED and Run again on screen (never silent)' $o
   }
 
+  # =====================================================================================
+  Write-Host 'R19. a rerun does not lock a device: the wrong-password count is kept on disk per device, with a cool-down'
+  $led = Join-Path $tmp 'r19/_state/login-fails.json'
+  # a new run = the library loads fresh (2.2.9 forgot everything); an enforcing stand-in device locks after 6 wrong passwords
+  $stub19 = Join-Path $tmp 'r19-stub.ps1'
+  [IO.File]::WriteAllText($stub19, @'
+$script:FsLoginLedger = $led
+function Fs-LogLine([string]$s) { [void]$script:LogLines.Add($s) }
+function Test-FsLoginOnce([string]$ip, [string]$brand, [string]$pw) {
+  $script:dev19.sent++
+  if ($script:dev19.sent -gt 6 -or $script:dev19.locked) { $script:dev19.locked = $true; return 'locked' }
+  if ($pw -ceq $script:dev19.pw) { return 'ok' }; return 'refused'
+}
+'@)
+  $lib19 = @((Join-Path $tk 'FixSiteCore.ps1'), (Join-Path $tk 'FixSiteDevices.ps1'), $stub19)
+  $script:LogLines = New-Object System.Collections.ArrayList
+  $script:dev19 = @{ sent = 0; locked = $false; pw = 'RightOne1' }
+  $r19 = @()
+  for ($run = 0; $run -lt 3; $run++) { foreach ($f19 in $lib19) { . $f19 }; foreach ($p in @('Wrong1', 'Wrong2', 'Typed3')) { $r19 += (Test-FsLogin '10.0.0.19' 'Hikvision' $p) } }
+  Check ($script:dev19.sent -le 4 -and -not $script:dev19.locked) ('R19 Codex''s case: three runs of three wrong passwords reach the device at most 4 times and never lock it (2.2.9: all 6 reached it, locked). Reached: ' + $script:dev19.sent)
+  Check ($r19[-1] -eq 'locked' -and (Test-Path -LiteralPath $led)) 'R19 ...the later tries are held back (counted as locked) and the count is in a file on this PC'
+  function Read-Led { try { return (Get-Content -LiteralPath $led -Raw -ErrorAction Stop | ConvertFrom-Json) } catch { return $null } }
+  $lj = Read-Led
+  Check ($lj -and [int]$lj.'10.0.0.19'.fails -ge 4) 'R19 ...the file names the device and its wrong-password count'
+  foreach ($f19 in $lib19) { . $f19 }; $script:dev19.sent = 0
+  $s = Test-FsLogin '10.0.0.19' 'Hikvision' 'RightOne1'
+  Check ($s -eq 'locked' -and $script:dev19.sent -eq 0) 'R19 inside the cool-down even the right password is not sent (the device may still be counting)'
+  if ($lj -and $lj.'10.0.0.19') { $lj.'10.0.0.19'.last = (Get-Date).AddMinutes(-31).ToString('o'); ($lj | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $led }
+  foreach ($f19 in $lib19) { . $f19 }
+  $s = Test-FsLogin '10.0.0.19' 'Hikvision' 'RightOne1'
+  Check ($s -eq 'ok' -and $script:dev19.sent -eq 1) 'R19 after the cool-down (30 min) the device is tried again' ($s + ' sent=' + $script:dev19.sent)
+  $lj = Read-Led
+  Check ($lj -and -not $lj.'10.0.0.19' -or [int]$lj.'10.0.0.19'.fails -eq 0) 'R19 ...and a password that works clears its count'
+  foreach ($f19 in $lib19) { . $f19 }; $script:dev19 = @{ sent = 0; locked = $false; pw = 'x' }
+  [void](Test-FsLogin '10.0.0.20' 'Hikvision' 'Wrong1'); [void](Test-FsLogin '10.0.0.21' 'Hikvision' 'Wrong1')
+  $lj = Read-Led
+  Check ($lj -and [int]$lj.'10.0.0.20'.fails -eq 1 -and [int]$lj.'10.0.0.21'.fails -eq 1) 'R19 one count per device (another device''s wrong password does not spend this one''s)'
+  $fsSrc19 = Read-Src 'Toolkit/FixSite.ps1'; $hkSrc19 = Read-Src 'Toolkit/HikReset.ps1'
+  Check ($fsSrc19 -match 'FsLoginLedger' -and $hkSrc19 -match 'FsLoginLedger') 'R19 Fix this site and HikReset both use the same count file'
+
+  # =====================================================================================
+  Write-Host 'R06. an NVR channel showing a DIFFERENT live camera is never overwritten (checked just before the PUT)'
+  . (Join-Path $tk 'FixSiteCore.ps1'); . (Join-Path $tk 'FixSiteDevices.ps1')
+  $script:LogLines = New-Object System.Collections.ArrayList
+  function global:Fs-LogLine([string]$s) { [void]$script:LogLines.Add($s) }
+  $script:nvr6 = @{ ip = '192.168.1.22'; online = $true; puts = 0; statusCode = 200 }
+  function script:Fs-Http { param([string]$Ip, [string]$Path, $Cred, [string]$Method = 'GET', [string]$Body = '', [int]$Timeout = 8, [string]$ContentType = '')
+    $X = 'xmlns="http://www.hikvision.com/ver20/XMLSchema"'
+    if ($Path -eq '/ISAPI/ContentMgmt/InputProxy/channels/1' -and $Method -eq 'GET') { return [pscustomobject]@{ code = 200; body = ('<InputProxyChannel ' + $X + '><id>1</id><name>Lobby</name><sourceInputPortDescriptor><proxyProtocol>HIKVISION</proxyProtocol><addressingFormatType>ipaddress</addressingFormatType><ipAddress>' + $script:nvr6.ip + '</ipAddress><managePortNo>8000</managePortNo><srcInputPort>1</srcInputPort><userName>admin</userName><streamType>auto</streamType></sourceInputPortDescriptor></InputProxyChannel>') } }
+    if ($Path -like '/ISAPI/ContentMgmt/InputProxy/channels/status*') { return [pscustomobject]@{ code = $script:nvr6.statusCode; body = ('<InputProxyChannelStatusList ' + $X + '><InputProxyChannelStatus><id>1</id><sourceInputPortDescriptor><ipAddress>' + $script:nvr6.ip + '</ipAddress></sourceInputPortDescriptor><online>' + $(if ($script:nvr6.online) { 'true' } else { 'false' }) + '</online></InputProxyChannelStatus></InputProxyChannelStatusList>') } }
+    return [pscustomobject]@{ code = 404; body = '' }
+  }
+  function script:Fs-HttpSecret { param([string]$Ip, [string]$Method, [string]$Path, [string]$Body, $Cred) $script:nvr6.puts++; return [pscustomobject]@{ code = 200; body = '<ResponseStatus><statusCode>1</statusCode></ResponseStatus>' } }
+  $w = Set-FsNvrChannel '192.168.1.64' $null 1 '192.168.1.25' 'SitePw1!' 'Hikvision' ''
+  Check (-not $w.ok -and $script:nvr6.puts -eq 0) ('R06 Codex''s case: camera A (.25) onto ch1 while ch1 shows live camera B (.22): no PUT, not ok (2.2.9 overwrote B). action=' + $w.action)
+  Check ([string]$w.why -match '192\.168\.1\.22' -and [string]$w.why -match '(?i)live|online') 'R06 ...and it says why: the channel shows another live camera (its address)' ([string]$w.why)
+  $script:nvr6.statusCode = 500; $script:nvr6.puts = 0
+  $w = Set-FsNvrChannel '192.168.1.64' $null 1 '192.168.1.25' 'SitePw1!' 'Hikvision' ''
+  Check (-not $w.ok -and $script:nvr6.puts -eq 0) 'R06 when the channel''s live state cannot be read, a different camera on it is NOT overwritten either'
+  $script:nvr6.statusCode = 200; $script:nvr6.online = $false; $script:nvr6.puts = 0
+  $w = Set-FsNvrChannel '192.168.1.64' $null 1 '192.168.1.25' 'SitePw1!' 'Hikvision' ''
+  Check ($w.ok -and $script:nvr6.puts -eq 1) 'R06 the normal move still works: the channel shows the camera''s OLD address and no video -> updated'
+  $script:nvr6.online = $true; $script:nvr6.ip = '192.168.1.25'; $script:nvr6.puts = 0
+  $w = Set-FsNvrChannel '192.168.1.64' $null 1 '192.168.1.25' 'SitePw1!' 'Hikvision' ''
+  Check ($w.ok -and $script:nvr6.puts -eq 1) 'R06 the channel already shows this same camera (new password only) -> updated'
+  $script:nvr6.ip = '192.168.1.30'; $script:nvr6.puts = 0
+  $w = Set-FsNvrChannel '192.168.1.64' $null 1 '192.168.1.25' 'SitePw1!' 'Hikvision' '' @('192.168.1.30')
+  Check ($w.ok -and $script:nvr6.puts -eq 1) 'R06 Undo: the channel shows this camera at its other (own) address -> allowed (-OwnIps)'
+  Check ((Read-Src 'Toolkit/FixSite.ps1') -match 'Set-FsNvrChannel \$nv \$ncr \(\[int\]\$c\.nvr\.channel\) \(\[string\]\$c\.ip_before\) \$pw \$c\.brand '''' @\(') 'R06 ...the undo call passes the camera''s own addresses'
+
+  # =====================================================================================
+  Write-Host 'R07. Retry imports only its own retry serials (the import gets -OnlySerials, like the submission)'
+  $hkr = Join-Path $tk 'HikReset.ps1'
+  $ast7 = [Management.Automation.Language.Parser]::ParseFile($hkr, [ref]$null, [ref]$null)
+  $imp = @($ast7.FindAll({ param($a) $a -is [Management.Automation.Language.CommandAst] -and $a.GetCommandName() -eq 'Import-HikReplies' }, $true))
+  Check ($imp.Count -ge 1) 'R07 HikReset.ps1 calls Import-HikReplies'
+  # run the entry point's own call with its own argument shape against the real filter in Import-HikReplies
+  . (Join-Path $tk 'HikResetFlow.ps1')
+  $script:imported7 = New-Object System.Collections.ArrayList
+  $realImp = (Get-Command Import-HikReplies -CommandType Function).ScriptBlock
+  $filt = [regex]::Match($realImp.ToString(), '(?s)foreach \(\$d in @\(\$State\.devices \| Where-Object \{(.*?)\}\)\)').Groups[1].Value
+  Check ([bool]$filt) 'R07 (the real import filter was found)'
+  $script:filt7 = [scriptblock]::Create($filt)
+  function script:Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [scriptblock]$VerifyLogin, [string]$Only = '', $OnlySerials = $null) {
+    foreach ($d in @($State.devices | Where-Object $script:filt7)) { [void]$script:imported7.Add([string]$d.serial) }
+  }
+  $state = [pscustomobject]@{ devices = @([pscustomobject]@{ serial = 'RETRY-A'; status = 'replied'; ip = '10.0.0.7'; mac = 'a' }, [pscustomobject]@{ serial = 'OLD-REPLY-B'; status = 'replied'; ip = '10.0.0.8'; mac = 'b' }) }
+  $statePath = ''; $pw = 'New1!'; $verify = { $true }; $Only = ''; $onlySerials = @('RETRY-A')
+  & ([scriptblock]::Create($imp[0].Extent.Text))
+  Check ((@($script:imported7) -join ',') -eq 'RETRY-A') ('R07 Codex''s case: retry set [RETRY-A] with an old replied OLD-REPLY-B saved: only RETRY-A is imported (2.2.9 imported both). Imported: ' + (@($script:imported7) -join ','))
+  $script:imported7.Clear(); $onlySerials = @()
+  & ([scriptblock]::Create($imp[0].Extent.Text))
+  Check (-not $script:imported7.Count) 'R07 an EMPTY retry set imports nothing (empty is not "all")'
+  $script:imported7.Clear(); $onlySerials = $null
+  & ([scriptblock]::Create($imp[0].Extent.Text))
+  Check ($script:imported7.Count -eq 2) 'R07 a plain Run with no -Only still imports every replied device (unchanged)'
+
 } finally {
   try { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 }
