@@ -2,13 +2,14 @@
    Fix NVR with no usable config.json (Codex R14 / F16), and Run-AllTests never counting a deferred check as a pass (Codex R17).
    Moshe's rule: every change is tested for failing half-way, the wrong site (here: the wrong adapter / another tool's file) and
    running twice. Restore Network and WifiWatch run against a simulated Windows (no real adapter is touched here).
+   Round 2 (Nov 9 2026, Sitebox 2): the real Wi-Fi name after a reconnect (bug 1) and DONE only when really online (bug 2).
    NEEDS WINDOWS CHECK: the real Windows commands behind Restore Network (run it once on a real adapter). Windows PowerShell 5.1 or pwsh 7. #>
 $ErrorActionPreference = 'Stop'
 $tk = Split-Path -Parent $PSScriptRoot; $repo = Split-Path -Parent $tk
 $exe = $(if ($PSVersionTable.PSEdition -eq 'Core') { (Get-Process -Id $PID).Path } else { Join-Path $PSHOME 'powershell.exe' })
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('fix2211-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-$script:pass = 0; $script:fail = 0
+$script:pass = 0; $script:fail = 0; $script:deferred = 0
 function Check([bool]$ok, [string]$name, [string]$more = '') {
   if ($ok) { $script:pass++; Write-Host ('PASS ' + $name) } else { $script:fail++; Write-Host ('FAIL ' + $name); if ($more) { Write-Host ('     ' + ($more -replace "`n", "`n     ")) } }
 }
@@ -32,18 +33,19 @@ $rnFile = Join-Path $tk 'RestoreNetwork.ps1'
 $simCode = @'
 function New-SimAdapter([string]$name, [int]$ix, [bool]$wifi) {
   return @{ name = $name; ifIndex = $ix; desc = ($name + ' card'); wifi = $wifi; guid = ('g' + $ix); disabled = $false; cable = $true; dhcp = $true; coexist = 'disabled';
-            active = (New-Object System.Collections.ArrayList); persistent = (New-Object System.Collections.ArrayList); proutes = (New-Object System.Collections.ArrayList); dnsStatic = $false; lease = ('192.168.4.' + (100 + $ix)); routerAnswers = $true }
+            active = (New-Object System.Collections.ArrayList); persistent = (New-Object System.Collections.ArrayList); proutes = (New-Object System.Collections.ArrayList); dnsStatic = $false; lease = ('192.168.4.' + (100 + $ix)); routerAnswers = $true;
+            assoc = $true; joins = $true; joinSsid = 'Reichman Mesh'; profiles = @('Lizard', 'Reichman Mesh'); gwAnswers = $true; internet = $true; onlineAfter = 0; onlineCalls = 0; reconnects = 0 }
 }
 $script:sim = @{ ads = @(); admin = $true; task = 'on'; taskSets = (New-Object System.Collections.ArrayList); calls = (New-Object System.Collections.ArrayList); fail = @{}; elevate = 'deny'; elevated = 0 }
 function Sim-Ad($ix) { foreach ($x in $script:sim.ads) { if ($x.ifIndex -eq [int]$ix) { return $x } }; return $null }
 $script:RnOps = {
   param($op, $a)
-  if ($op -notin @('list', 'state', 'isadmin', 'sleep', 'task')) { [void]$script:sim.calls.Add($op + ' ' + (($a.Keys | Sort-Object | Where-Object { $_ -in @('ip', 'store', 'gw', 'on', 'name') } | ForEach-Object { $_ + '=' + $a[$_] }) -join ' ')) }
+  if ($op -notin @('list', 'state', 'isadmin', 'sleep', 'task', 'wlan', 'online')) { [void]$script:sim.calls.Add($op + ' ' + (($a.Keys | Sort-Object | Where-Object { $_ -in @('ip', 'store', 'gw', 'on', 'name') } | ForEach-Object { $_ + '=' + $a[$_] }) -join ' ')) }
   $key = $op + $(if ($a.store) { ':' + $a.store } else { '' })
   if ($script:sim.fail[$key]) { throw ('simulated: ' + $key + ' failed') }
   switch ($op) {
     'isadmin' { return $script:sim.admin }
-    'list' { return @($script:sim.ads | ForEach-Object { [pscustomobject]@{ name = $_.name; ifIndex = $_.ifIndex; desc = $_.desc; disabled = $_.disabled; connected = ((-not $_.disabled) -and $_.cable); wifi = $_.wifi; guid = $_.guid } }) }
+    'list' { return @($script:sim.ads | ForEach-Object { [pscustomobject]@{ name = $_.name; ifIndex = $_.ifIndex; desc = $_.desc; disabled = $_.disabled; connected = ((-not $_.disabled) -and $_.cable -and ((-not $_.wifi) -or $_.assoc)); wifi = $_.wifi; guid = $_.guid } }) }
     'state' {
       $x = Sim-Ad $a.ifIndex
       $act = @($x.active | ForEach-Object { [pscustomobject]@{ ip = $_.ip; prefix = 24; origin = 'Manual' } })
@@ -57,7 +59,21 @@ $script:RnOps = {
     'removeroute' { $x = Sim-Ad $a.ifIndex; if ($a.store -eq 'PersistentStore') { $x.proutes.Remove($a.gw) }; return $true }
     'dnsreset' { (Sim-Ad $a.ifIndex).dnsStatic = $false; return $true }
     'coexist' { (Sim-Ad $a.ifIndex).coexist = $(if ($a.on) { 'enabled' } else { 'disabled' }); return $true }
-    'reconnect' { return $(if ($a.wifi) { 'Reichman Mesh' } else { 'renew' }) }
+    'reconnect' {
+      # like Windows on Sitebox 2: the code may ASK for the first saved profile ("Lizard"); what it really joins is joinSsid
+      $x = Sim-Ad $a.ifIndex; $x.reconnects++
+      if ($a.wifi) { if ($x.joins -and -not $x.disabled) { $x.assoc = $true }; return $x.profiles[0] }
+      return 'renew'
+    }
+    'wlan' { $x = Sim-Ad $a.ifIndex; $c = ($x.wifi -and -not $x.disabled -and $x.assoc); return [pscustomobject]@{ connected = $c; state = $(if ($c) { 'connected' } else { 'disconnected' }); ssid = $(if ($c) { $x.joinSsid } else { '' }); profile = $(if ($c) { $x.joinSsid } else { '' }) } }
+    'online' {
+      $x = Sim-Ad $a.ifIndex; $x.onlineCalls++
+      $link = ((-not $x.disabled) -and $x.cable -and ((-not $x.wifi) -or $x.assoc))
+      $ip = $(if ($link -and $x.dhcp -and $x.routerAnswers) { $x.lease } elseif ($link -and $x.dhcp) { '169.254.10.20' } else { '' })
+      $up = ($x.onlineCalls -gt $x.onlineAfter)
+      $gw = $(if ($ip -and $ip -notlike '169.254.*') { '192.168.4.1' } else { '' })
+      return [pscustomobject]@{ link = $link; ip = $ip; gw = $gw; gwPing = [bool]($gw -and $x.gwAnswers -and $up); dns = [bool]($gw -and $x.internet -and $up); http = [bool]($gw -and $x.internet -and $up); ssid = $(if ($x.wifi -and $link) { $x.joinSsid } else { '' }); assoc = [bool]($x.wifi -and $link) }
+    }
     'task' { if ($script:sim.task -eq 'none') { return 'none' }; if ($a.set) { [void]$script:sim.taskSets.Add($a.set); $script:sim.task = $a.set }; return $script:sim.task }
     'sleep' { return $true }
     'elevate' {
@@ -190,7 +206,7 @@ Out-Result @{ c0 = $r0.code; s0 = $r0.said; el0 = $el0; c1 = $r1.code; s1 = $r1.
     Check ($j.c1 -eq 6 -and $j.s1 -match 'not given' -and $j.s1 -match 'FAILED - Run again' -and $j.per1 -eq 1) 'RN permission refused: "nothing was changed" + FAILED - Run again' $j.s1
     Check ($j.c2 -eq 0 -and $j.per2 -eq 0 -and $j.s2 -match 'click Yes' -and $j.s2 -match 'DONE') 'RN permission given: the admin copy does the work and its DONE is the result' $j.s2
     Check ($j.c3 -eq 6 -and $j.s3 -match 'no address from the router') 'RN cable in but the router gives no address: FAILED - Run again (never a false DONE)' $j.s3
-    Check ($j.c4 -eq 0 -and $j.s4 -match 'not connected right now') 'RN no cable: settings are normal, DONE says to plug in' $j.s4
+    Check ($j.c4 -eq 8 -and $j.s4 -match 'NOT FIXED - run again or call' -and $j.s4 -match 'cable' -and $j.s4 -notmatch '(?m)^DONE') 'RN no cable: settings are normal but offline, so NOT FIXED - run again or call (exit 8), never DONE (2.2.11 round 2)' $j.s4
   }
   $rnSrc = [IO.File]::ReadAllText($rnFile)
   Check ($rnSrc -match "PolicyStore PersistentStore" -and $rnSrc -match "netsh interface ipv4 delete address") 'RN (Windows side) the saved copy is removed with Remove-NetIPAddress -PolicyStore PersistentStore and netsh delete'
@@ -203,6 +219,108 @@ Out-Result @{ c0 = $r0.code; s0 = $r0.said; el0 = $el0; c1 = $r1.code; s1 = $r1.
   Check ($shipped -match 'Toolkit/RestoreNetwork\.ps1' -and $shipped -match 'Toolkit/Restore Network\.cmd' -and $inst -match "'RestoreNetwork\.ps1'" -and $inst -match "'Restore Network\.cmd'") 'RN shipped with the Toolkit (installer + shipped files list)'
 
   # =====================================================================================
+  # =====================================================================================
+  Write-Host 'Restore Network round 2, bug 1 (Sitebox 2, Nov 9): it reports the Wi-Fi it is REALLY on, read after the reconnect, never the first saved profile'
+  $o = Rn-Driver 'rn6' @'
+$w = New-SimAdapter 'Wi-Fi 2' 7 $true; $script:sim.ads = @($w)
+# case A: adapter disabled; the first saved profile is "Lizard" but Windows rejoins "Reichman Mesh"
+$w.disabled = $true; $w.assoc = $false
+$rA = Run-Rn
+$rcA = @(Get-ChildItem (Join-Path $D 'receipts') -Filter 'RestoreNetwork-*.txt' | Sort-Object LastWriteTime | ForEach-Object { [IO.File]::ReadAllText($_.FullName) })[-1]
+# case B: Wi-Fi dropped, settings normal, a standard user (no admin, no Windows question)
+$script:sim.admin = $false; $w.assoc = $false; $recB0 = $w.reconnects
+$rB = Run-Rn; $recB = $w.reconnects - $recB0; $elB = $script:sim.elevated
+# case C: run twice - already on the Wi-Fi: no reconnect at all
+$recC0 = $w.reconnects; $rC = Run-Rn; $recC = $w.reconnects - $recC0
+Out-Result @{ cA = $rA.code; sA = $rA.said; rcA = $rcA; chA = $rA.changed; cB = $rB.code; sB = $rB.said; recB = $recB; elB = $elB; cC = $rC.code; sC = $rC.said; recC = $recC }
+'@
+  $j = Get-Json $o
+  if (-not $j) { Check $false 'RN6 driver ran' $o } else {
+    Check ($j.cA -eq 0 -and $j.sA -match 'Wi-Fi connected to "Reichman Mesh"' -and $j.sA -notmatch 'Lizard') 'RN bug 1: disabled Wi-Fi comes back and the run names "Reichman Mesh" (what Windows joined), not "Lizard" (the first saved profile)' $j.sA
+    Check ($j.rcA -match 'Reichman Mesh' -and $j.rcA -notmatch 'Lizard' -and $j.rcA -match 'Result: DONE') 'RN bug 1: the receipt says the same network ("Reichman Mesh") and DONE' $j.rcA
+    Check ($j.sA -match 'DONE - network is back to normal and online \(Wi-Fi 2: Wi-Fi "Reichman Mesh"') 'RN bug 1: the DONE line carries the real network name' $j.sA
+    Check ($j.cB -eq 0 -and $j.recB -ge 1 -and $j.elB -eq 0 -and $j.sB -match 'Wi-Fi connected to "Reichman Mesh"' -and $j.sB -match 'DONE') 'RN Wi-Fi drop, settings normal, standard user: it asks the Wi-Fi to join (no admin, no Windows question) and reports the real network' $j.sB
+    Check ($j.cC -eq 0 -and $j.recC -eq 0 -and $j.sC -match 'DONE') 'RN run twice: already online on the Wi-Fi, the second run reconnects nothing and says DONE' $j.sC
+  }
+  # =====================================================================================
+  Write-Host 'Restore Network round 2, bug 2 (Sitebox 2, Nov 9): DONE only when really online; still offline = NOT FIXED - run again or call, exit 8, same in the receipt'
+  $o = Rn-Driver 'rn7' @'
+$w = New-SimAdapter 'Wi-Fi 2' 7 $true; $script:sim.ads = @($w)
+function Last-Rcpt { return @(Get-ChildItem (Join-Path $D 'receipts') -Filter 'RestoreNetwork-*.txt' | Sort-Object LastWriteTime, Name | ForEach-Object { [IO.File]::ReadAllText($_.FullName) })[-1] }
+# A: Wi-Fi dropped and it will NOT rejoin (out of range): retries, one more join request, then NOT FIXED
+$w.assoc = $false; $w.joins = $false; $w.onlineCalls = 0; $w.reconnects = 0
+$rA = Run-Rn; $rcA = Last-Rcpt; $oA = $w.onlineCalls; $reA = $w.reconnects
+# B: on the Wi-Fi, the router answers, no internet
+$w.assoc = $true; $w.joins = $true; $w.internet = $false; $rB = Run-Rn; $rcB = Last-Rcpt
+# C: the router does not answer a ping
+$w.internet = $true; $w.gwAnswers = $false; $rC = Run-Rn
+# D: slow: online only on the 4th check -> DONE after retrying
+$w.gwAnswers = $true; $w.onlineCalls = 0; $w.onlineAfter = 3; $rD = Run-Rn; $oD = $w.onlineCalls
+# E: failing half-way - the check itself breaks (and the fix runs as admin with WifiWatch paused): NOT FIXED, WifiWatch back on
+$w.onlineAfter = 0; $w.dhcp = $false; $script:sim.fail['online'] = $true; $script:sim.task = 'on'
+$rE = Run-Rn; $rcE = Last-Rcpt; $taskE = $script:sim.task; $script:sim.fail.Remove('online')
+# F: run again after NOT FIXED, the world fixed: DONE (Moshe: "run again" is fine when the tool says so honestly)
+$rF = Run-Rn
+Out-Result @{ cA = $rA.code; sA = $rA.said; rcA = $rcA; oA = $oA; reA = $reA; cB = $rB.code; sB = $rB.said; rcB = $rcB; cC = $rC.code; sC = $rC.said; cD = $rD.code; sD = $rD.said; oD = $oD; cE = $rE.code; sE = $rE.said; rcE = $rcE; taskE = $taskE; cF = $rF.code; sF = $rF.said }
+'@
+  $j = Get-Json $o
+  if (-not $j) { Check $false 'RN7 driver ran' $o } else {
+    Check ($j.cA -eq 8 -and $j.sA -match '(?m)^NOT FIXED - run again or call' -and $j.sA -notmatch '(?m)^DONE' -and $j.sA -match 'not connected to any network') 'RN bug 2: Wi-Fi dropped and it does not rejoin: NOT FIXED - run again or call, exit 8, never DONE' $j.sA
+    Check ($j.rcA -match 'Result: NOT FIXED - run again or call' -and $j.rcA -notmatch 'Result: DONE') 'RN bug 2: the receipt says NOT FIXED too' $j.rcA
+    Check ($j.oA -ge 5 -and $j.reA -ge 2) 'RN bug 2: it keeps checking (about 40 s) and asks the Wi-Fi to join once more before giving up' ('checks ' + $j.oA + ', join requests ' + $j.reA)
+    Check ($j.cB -eq 8 -and $j.sB -match 'internet does not' -and $j.rcB -match 'NOT FIXED') 'RN on the Wi-Fi, router answers but no internet: NOT FIXED with the plain reason' $j.sB
+    Check ($j.cC -eq 8 -and $j.sC -match 'router 192\.168\.4\.1 does not answer') 'RN the router does not answer a ping: NOT FIXED with the plain reason' $j.sC
+    Check ($j.cD -eq 0 -and $j.oD -eq 4 -and $j.sD -match 'DONE - network is back to normal and online') 'RN slow network: it retries and says DONE once the 4th check is online' ('checks ' + $j.oD + "`n" + $j.sD)
+    Check ($j.cE -eq 8 -and $j.sE -match 'NOT FIXED' -and $j.taskE -eq 'on' -and $j.rcE -match 'NOT FIXED' -and $j.sE -match 'DHCP on') 'RN failing half-way (the online check breaks): DHCP still fixed, NOT FIXED, receipt written, WifiWatch back on' $j.sE
+    Check ($j.cF -eq 0 -and $j.sF -match 'DONE') 'RN run again after NOT FIXED: DONE once the network is really back' $j.sF
+  }
+  # =====================================================================================
+  Write-Host 'Restore Network round 2: the wrong adapter / another adapter is never reconnected or checked'
+  $o = Rn-Driver 'rn8' @'
+$e = New-SimAdapter 'Ethernet' 12 $false; $w = New-SimAdapter 'Wi-Fi 2' 7 $true; $script:sim.ads = @($e, $w)
+$w.assoc = $false; $script:Adapter = 'Wi-Fi 9'; $r1 = Run-Rn
+$rec1 = $w.reconnects + $e.reconnects; $on1 = $w.onlineCalls + $e.onlineCalls
+$script:Adapter = 'Ethernet'; $r2 = Run-Rn
+Out-Result @{ c1 = $r1.code; s1 = $r1.said; rec1 = $rec1; on1 = $on1; c2 = $r2.code; s2 = $r2.said; wRec = $w.reconnects; wOn = $w.onlineCalls; eOn = $e.onlineCalls }
+'@
+  $j = Get-Json $o
+  if (-not $j) { Check $false 'RN8 driver ran' $o } else {
+    Check ($j.c1 -eq 2 -and $j.rec1 -eq 0 -and $j.on1 -eq 0) 'RN a wrong adapter name: exit 2, nothing reconnected, nothing checked' $j.s1
+    Check ($j.c2 -eq 0 -and $j.wRec -eq 0 -and $j.wOn -eq 0 -and $j.eOn -ge 1 -and $j.s2 -notmatch 'Wi-Fi') 'RN Ethernet chosen while the Wi-Fi is down: only Ethernet is checked, the Wi-Fi is left alone' $j.s2
+  }
+  # =====================================================================================
+  Write-Host 'Restore Network round 2: reading netsh (the real network name, the saved profile in range) - also on Windows PowerShell 5.1'
+  $parse = @'
+$ifs = "There are 2 interfaces on the system: `r`n`r`n    Name                   : Wi-Fi`r`n    Description            : Realtek`r`n    State                  : connected`r`n    SSID                   : Office 5G`r`n    BSSID                  : aa:bb:cc:dd:ee:ff`r`n    Profile                : Office 5G`r`n`r`n    Name                   : Wi-Fi 2`r`n    Description            : Intel(R) Dual Band Wireless-AC 7260 #2`r`n    State                  : connected`r`n    SSID                   : Reichman Mesh`r`n    BSSID                  : 11:22:33:44:55:66`r`n    Profile                : Reichman Mesh`r`n"
+$dis = "There is 1 interface on the system: `r`n`r`n    Name                   : Wi-Fi 2`r`n    Description            : Intel`r`n    State                  : disconnected`r`n    Radio status           : Hardware On`r`n"
+$prof = "Profiles on interface Wi-Fi 2:`r`n`r`nUser profiles`r`n-------------`r`n    All User Profile     : Lizard`r`n    All User Profile     : Reichman Mesh`r`n"
+$one = "User profiles`r`n-------------`r`n    All User Profile     : Reichman Mesh`r`n"
+$nets = "Interface name : Wi-Fi 2 `r`nThere are 2 networks currently visible. `r`n`r`nSSID 1 : Reichman Mesh`r`n    Network type            : Infrastructure`r`n`r`nSSID 2 : NETGEAR-Guest`r`n"
+$a = ConvertFrom-RnWlanText $ifs 'Wi-Fi 2'; $b = ConvertFrom-RnWlanText $dis 'Wi-Fi 2'; $c = ConvertFrom-RnWlanText $ifs 'Wi-Fi 7'
+$p1 = Select-RnWifiProfile $prof $nets; $p2 = Select-RnWifiProfile $one $nets; $p3 = Select-RnWifiProfile $prof ''
+$ok1 = Test-RnOnlineOk ([pscustomobject]@{ link = $true; ip = '169.254.3.4'; gw = '192.168.4.1'; gwPing = $true; dns = $true; http = $true })
+$ok2 = Test-RnOnlineOk ([pscustomobject]@{ link = $true; ip = '192.168.4.31'; gw = '192.168.4.1'; gwPing = $true; dns = $false; http = $true })
+'JSON=' + (@{ v = $PSVersionTable.PSVersion.Major; a = $a; b = $b; c = $c; p1 = $p1; p2 = $p2; p2t = $p2.GetType().Name; p3 = $p3; ok1 = $ok1; ok2 = $ok2 } | ConvertTo-Json -Compress -Depth 4)
+'@
+  $fnText = Get-FnText $rnFile @('ConvertFrom-RnWlanText', 'Select-RnWifiProfile', 'Test-RnOnlineOk')
+  $engines = @(@{ n = 'this PowerShell'; exe = $exe })
+  $ps51 = $(if ($env:windir) { Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe' } else { '' })
+  $ps51Deferred = $false
+  if ($ps51 -and (Test-Path -LiteralPath $ps51)) { if ($exe -ne $ps51) { $engines += @{ n = 'Windows PowerShell 5.1'; exe = $ps51 } } } else { $ps51Deferred = $true }
+  foreach ($en in $engines) {
+    $f = Join-Path $tmp ('rnparse-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.ps1'); [IO.File]::WriteAllText($f, ($fnText + "`n" + $parse), (New-Object Text.UTF8Encoding($true)))
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { $po = & $en.exe -NoProfile -ExecutionPolicy Bypass -File $f 2>&1 | Out-String } finally { $ErrorActionPreference = $prev }
+    $j = Get-Json $po; $tag = 'RN netsh (' + $en.n + $(if ($j) { ' ' + $j.v } else { '' }) + '): '
+    if (-not $j) { Check $false ($tag + 'parser ran') $po; continue }
+    Check ($j.a.connected -and $j.a.ssid -eq 'Reichman Mesh' -and $j.a.profile -eq 'Reichman Mesh') ($tag + 'two Wi-Fi interfaces: the network of "Wi-Fi 2" is read from its own block (not the BSSID line, not the other card)') $po
+    Check ((-not $j.b.connected) -and $j.b.ssid -eq '' -and (-not $j.c.connected)) ($tag + 'a disconnected Wi-Fi (no SSID line) and an unknown interface read as NOT connected') $po
+    Check ($j.p1 -eq 'Reichman Mesh' -and $j.p2 -eq 'Reichman Mesh' -and $j.p2t -eq 'String' -and $j.p3 -eq '') ($tag + 'the saved profile asked for is the one IN RANGE (not the first saved, "Lizard"); one saved profile stays one name; none in range = none') $po
+    Check ((-not $j.ok1) -and $j.ok2) ($tag + 'a 169.254 address is never "online"; router ping + the web without DNS is online') $po
+  }
+  $coreSrc = [IO.File]::ReadAllText((Join-Path $tk 'ToolkitCore.ps1'))
+  Check ($coreSrc -match "8 \{ return \('NOT FIXED - run again or call\. '") 'RN the Toolkit window ends a NOT FIXED run (exit 8) with "NOT FIXED - run again or call", not "stopped with a problem"; 7 stays Fix this site''s own code'
+  if ($ps51Deferred) { $script:deferred++; Write-Host 'DEFERRED PS51 RN netsh parser on Windows PowerShell 5.1 (this machine has no powershell.exe; runs on the Windows suite)' }
   Write-Host 'WifiWatch: the off/on cycle always switches the adapter back on (try/finally + marker for a run stopped half-way)'
   $wwFile = Join-Path $repo 'wifiwatch\WifiWatch.ps1'
   $wd = Join-Path $tmp 'ww'; New-Item -ItemType Directory -Force -Path $wd | Out-Null
@@ -312,5 +430,5 @@ $d = Get-SuiteCounts @('PASS R17 the suite''s own "41 passed, 0 failed, 7 deferr
   try { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue } catch {}
 }
 Write-Host ''
-Write-Host ('Test-Fix2211: ' + $script:pass + ' passed, ' + $script:fail + ' failed')
+Write-Host ('Test-Fix2211: ' + $script:pass + ' passed, ' + $script:fail + ' failed' + $(if ($script:deferred) { ', ' + $script:deferred + ' deferred' } else { '' }))
 exit $script:fail

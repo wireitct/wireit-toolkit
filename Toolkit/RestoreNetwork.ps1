@@ -13,10 +13,11 @@
    5. takes off a fixed default gateway (both copies) and puts DNS back to automatic
    6. DHCP+static coexistence back to off (or to what the Toolkit's own record says it was before)
    7. reconnects (Wi-Fi: its saved network; cable: asks the router for an address) and waits for the address
-   8. reads the adapter back and ends with "DONE - network is back to normal" or "FAILED - Run again"
+   8. reads the adapter back, checks the PC is REALLY online (link, address, router ping, DNS/web, ~40 s) and ends with
+      "DONE - network is back to normal and online", "NOT FIXED - run again or call" (still offline) or "FAILED - Run again"
  Windows asks for permission (UAC) only when something really has to change; an adapter that is already normal needs no admin.
  A short receipt of what was changed is saved in Toolkit\receipts\ (plain text).
- Exit codes: 0 done, 2 could not start (nothing changed), 6 FAILED - Run again.
+ Exit codes: 0 done (and online), 2 could not start (nothing changed), 6 FAILED - Run again, 8 NOT FIXED - settings normal but still offline (run again or call).
  NEEDS WINDOWS CHECK: the Windows commands (Get/Remove-NetIPAddress, Get/Remove-NetRoute, netsh, Enable-NetAdapter, the task).
 #>
 param(
@@ -29,6 +30,7 @@ param(
   [string]$FixNvrState = '',        # Fix NVR's record of its temporary addresses (default ..\FixNVR\state\temp-ips.json)
   [string]$ReceiptDir = '',         # default <Toolkit>\receipts
   [int]$WaitSeconds = 30,           # how long to wait for the router's address
+  [int]$OnlineSeconds = 40,         # 2.2.11 round 2: how long the online check keeps trying (link, address, router ping, DNS/web) before NOT FIXED
   [switch]$NoElevate                # tests: never ask Windows for admin rights
 )
 $ErrorActionPreference = 'Continue'
@@ -92,14 +94,41 @@ function Invoke-RnOp([string]$op, $a = @{}) {
     'coexist' { $null = netsh interface ipv4 set interface ([string]$a.ifIndex) ('dhcpstaticipcoexistence=' + $(if ($a.on) { 'enabled' } else { 'disabled' })); return ($LASTEXITCODE -eq 0) }
     'reconnect' {
       if ($a.wifi) {
+        # 2.2.11 round 2 (Sitebox 2, Nov 9): the profile is only what we ASK for; the network Windows really joins is read back
+        # afterwards ('wlan') and that is what is reported. Ask for the network it is on, else a saved one that is in range now.
+        $cur = Get-RnWlan $a.name
         $prof = ''
-        try { $t = (netsh wlan show interfaces) -join "`n"; $m = [regex]::Match($t, '(?m)^\s*Profile\s*:\s*(.+?)\s*$'); if ($m.Success) { $prof = $m.Groups[1].Value } } catch {}
-        if (-not $prof) { try { $t = (netsh wlan show profiles ('interface=' + $a.name)) -join "`n"; $m = [regex]::Match($t, '(?m)All User Profile\s*:\s*(.+?)\s*$'); if ($m.Success) { $prof = $m.Groups[1].Value } } catch {} }
+        if ($cur.connected -and $cur.profile) { $prof = $cur.profile }
+        if (-not $prof) {
+          $pt = ''; $nt = ''
+          try { $pt = (netsh wlan show profiles ('interface=' + $a.name)) -join "`n" } catch {}
+          try { $nt = (netsh wlan show networks ('interface=' + $a.name)) -join "`n" } catch {}
+          $prof = Select-RnWifiProfile $pt $nt
+        }
         if ($prof) { $null = netsh wlan connect ('name=' + $prof) ('interface=' + $a.name) }
+        for ($i = 0; $i -lt 8; $i++) { Start-Sleep -Seconds 2; if ((Get-RnWlan $a.name).connected) { break } }
         return $prof
       }
       try { $p = Start-Process -FilePath 'ipconfig.exe' -ArgumentList ('/renew "' + $a.name + '"') -WindowStyle Hidden -PassThru; if (-not $p.WaitForExit(40000)) { try { $p.Kill() } catch {} } } catch {}
       return 'renew'
+    }
+    'wlan' { return (Get-RnWlan $a.name) }
+    'online' {
+      # 2.2.11 round 2: a REAL check before DONE - link up, an address that is not 169.254, a router address, the router answers a
+      # ping, and DNS or the web answers (Microsoft's own connect-test address, the one Windows itself uses)
+      $ix = [int]$a.ifIndex; $r = [ordered]@{ link = $false; ip = ''; gw = ''; gwPing = $false; dns = $false; http = $false; ssid = ''; assoc = $false }
+      $n = Get-NetAdapter -InterfaceIndex $ix -ErrorAction SilentlyContinue; $r.link = [bool]($n -and [string]$n.Status -eq 'Up')
+      $ips = @(Get-NetIPAddress -InterfaceIndex $ix -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { [string]$_.IPAddress -notlike '169.254.*' -and [string]$_.IPAddress -notlike '127.*' -and [string]$_.AddressState -eq 'Preferred' })
+      if ($ips.Count) { $r.ip = [string]$ips[0].IPAddress }
+      $gws = @(Get-NetRoute -InterfaceIndex $ix -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { [string]$_.NextHop -ne '0.0.0.0' } | Sort-Object RouteMetric)
+      if ($gws.Count) { $r.gw = [string]$gws[0].NextHop }
+      if ($a.wifi) { $w = Get-RnWlan $a.name; $r.ssid = $w.ssid; $r.assoc = $w.connected }
+      if ($r.link -and $r.ip -and $r.gw) {
+        try { $pg = New-Object System.Net.NetworkInformation.Ping; for ($i = 0; $i -lt 3 -and -not $r.gwPing; $i++) { try { $r.gwPing = ([string]$pg.Send($r.gw, 1500).Status -eq 'Success') } catch {} } } catch {}
+        try { $d = @(Resolve-DnsName -Name 'www.msftconnecttest.com' -Type A -DnsOnly -QuickTimeout -ErrorAction Stop | Where-Object { $_.IPAddress }); $r.dns = ($d.Count -gt 0) } catch { try { $r.dns = (@([Net.Dns]::GetHostAddresses('www.msftconnecttest.com')).Count -gt 0) } catch {} }
+        try { $wr = Invoke-WebRequest -UseBasicParsing -Uri 'http://www.msftconnecttest.com/connecttest.txt' -TimeoutSec 6 -ErrorAction Stop; $r.http = ([string]$wr.Content -like 'Microsoft Connect Test*') } catch {}
+      }
+      return [pscustomobject]$r
     }
     'task' {
       $t = Get-ScheduledTask -TaskName $script:RnWifiWatchTask -ErrorAction SilentlyContinue
@@ -120,6 +149,63 @@ function Invoke-RnOp([string]$op, $a = @{}) {
 }
 
 # ---------------- the Toolkit's own records (which addresses it put on, what the adapter was before) ----------------
+# ---------------- 2.2.11 round 2: what the Wi-Fi is REALLY on, and is the PC really online ----------------
+# netsh wlan show interfaces -> the block of ONE interface: connected or not, its SSID and profile (English Windows output)
+function ConvertFrom-RnWlanText([string]$text, [string]$name) {
+  $r = [pscustomobject]@{ connected = $false; state = ''; ssid = ''; profile = '' }
+  if (-not $text) { return $r }
+  $blocks = @([regex]::Split($text, '(?m)^(?=\s*Name\s*:)') | Where-Object { $_ -match '(?m)^\s*Name\s*:' })
+  $b = $null
+  foreach ($x in $blocks) { $m = [regex]::Match($x, '(?m)^\s*Name\s*:\s*(.+?)\s*$'); if ($m.Success -and (-not $name -or $m.Groups[1].Value -eq $name)) { $b = $x; break } }
+  if (-not $b -and $blocks.Count -eq 1 -and -not $name) { $b = $blocks[0] }
+  if (-not $b) { return $r }
+  $m = [regex]::Match($b, '(?m)^\s*State\s*:\s*(.+?)\s*$'); if ($m.Success) { $r.state = $m.Groups[1].Value }
+  $m = [regex]::Match($b, '(?m)^\s*SSID\s*:\s*(.+?)\s*$'); if ($m.Success) { $r.ssid = $m.Groups[1].Value }
+  $m = [regex]::Match($b, '(?m)^\s*Profile\s*:\s*(.+?)\s*$'); if ($m.Success) { $r.profile = $m.Groups[1].Value }
+  $r.connected = ($r.state -eq 'connected' -and [bool]$r.ssid)
+  return $r
+}
+function Get-RnWlan([string]$name) { $t = ''; try { $t = (netsh wlan show interfaces) -join "`n" } catch {}; return (ConvertFrom-RnWlanText $t $name) }
+# which saved Wi-Fi to ASK for when it is not on one: the first saved profile that is in range now; none in range = none
+# (Windows then joins one by itself). The old code took the first saved profile ("Lizard") even when it was not there.
+function Select-RnWifiProfile([string]$profilesText, [string]$networksText) {
+  $saved = @([regex]::Matches([string]$profilesText, '(?m)^\s*(?:All )?User Profile\s*:\s*(.+?)\s*$') | ForEach-Object { $_.Groups[1].Value })
+  $seen = @([regex]::Matches([string]$networksText, '(?m)^\s*SSID \d+\s*:\s*(.*?)\s*$') | ForEach-Object { $_.Groups[1].Value } | Where-Object { $_ })
+  foreach ($p in $saved) { if ($seen -contains $p) { return [string]$p } }
+  return ''
+}
+function Test-RnOnlineOk($o) { return [bool]($o -and $o.link -and $o.ip -and ([string]$o.ip -notlike '169.254.*') -and $o.gw -and $o.gwPing -and ($o.dns -or $o.http)) }
+function Get-RnOfflineWhy($o, $ad) {
+  if (-not $o) { return 'the connection could not be checked' }
+  if (-not $o.link) { if ($ad.wifi) { return 'the Wi-Fi is not connected to any network' } else { return 'no cable link (is the cable plugged in?)' } }
+  if (-not $o.ip -or [string]$o.ip -like '169.254.*') { return 'no address from the router (DHCP did not answer)' }
+  if (-not $o.gw) { return 'no router (gateway) address' }
+  if (-not $o.gwPing) { return ('the router ' + $o.gw + ' does not answer') }
+  return 'the router answers but the internet does not (no DNS, no web)'
+}
+# polls the real connection for about $OnlineSeconds; a Wi-Fi that is still not on a network gets one more join request
+function Wait-RnOnline($ad) {
+  $last = $null; $retried = $false; $deadline = (Get-Date).AddSeconds([Math]::Max(0, $OnlineSeconds))
+  $tries = [int][Math]::Ceiling([Math]::Max(0, $OnlineSeconds) / 3) + 1
+  for ($i = 0; $i -lt $tries; $i++) {
+    try { $last = Invoke-RnOp 'online' @{ ifIndex = $ad.ifIndex; name = $ad.name; wifi = $ad.wifi } } catch { $last = $null }
+    if (Test-RnOnlineOk $last) { return $last }
+    if ($i -eq 0) { Rn-Say '  checking the connection (router, internet) - up to about 40 seconds ...' }
+    if ($ad.wifi -and $last -and -not $last.link -and -not $retried -and $i -ge 3) {
+      $retried = $true; Rn-Say '  Wi-Fi still not on a network - asking it to join again'
+      try { [void](Invoke-RnOp 'reconnect' @{ ifIndex = $ad.ifIndex; name = $ad.name; wifi = $true }) } catch {}
+    }
+    if ((Get-Date) -gt $deadline) { break }
+    [void](Invoke-RnOp 'sleep' @{ s = 3 })
+  }
+  return $last
+}
+function Say-RnWifiJoined($ad) {
+  # reports the network Windows is REALLY on, read after the reconnect - never the profile that was asked for
+  $w = $null; try { $w = Invoke-RnOp 'wlan' @{ ifIndex = $ad.ifIndex; name = $ad.name } } catch {}
+  if ($w -and $w.connected -and $w.ssid) { Rn-Changed ('Wi-Fi connected to "' + $w.ssid + '"') } else { Rn-Say '  Wi-Fi is not on a network yet' 'Yellow' }
+}
+
 function Get-RnJournals {
   $j = @()
   foreach ($f in @($script:RnFixSiteState, $FixNvrState)) {
@@ -240,7 +326,16 @@ function Invoke-RestoreNetwork {
   if (-not $plan.Count) {
     $lease = Get-RnLease $st
     if ($lease -or -not $ad.connected) {
-      Rn-Say 'Nothing needed changing.'
+      Rn-Say 'Nothing needed changing in the settings.'
+      # 2.2.11 round 2 (Sitebox 2 Wi-Fi drop said DONE while offline): a Wi-Fi that is not on a network is asked to join one
+      if ($ad.wifi -and -not $ad.disabled) {
+        $w0 = $null; try { $w0 = Invoke-RnOp 'wlan' @{ ifIndex = $ad.ifIndex; name = $ad.name } } catch {}
+        if (-not ($w0 -and $w0.connected)) {
+          try { [void](Invoke-RnOp 'reconnect' @{ ifIndex = $ad.ifIndex; name = $ad.name; wifi = $true }); Say-RnWifiJoined $ad } catch { Rn-Say ('  reconnect did not work: ' + $_.Exception.Message) 'Yellow' }
+          $ad3 = @(@(Invoke-RnOp 'list') | Where-Object { $_.ifIndex -eq $ad.ifIndex })[0]; if ($ad3) { $ad = $ad3 }
+          $st = Invoke-RnOp 'state' @{ ifIndex = $ad.ifIndex; guid = $ad.guid }
+        }
+      }
       return (Complete-RnRun $ad $st $journals)
     }
   }
@@ -255,7 +350,7 @@ function Invoke-RestoreNetwork {
     $off = 0; $deadline = (Get-Date).AddMinutes(5)
     while ($true) {
       $ex = $true; try { $ex = $p.HasExited } catch {}
-      try { if (Test-Path -LiteralPath $out) { $all = [IO.File]::ReadAllLines($out); for ($i = $off; $i -lt $all.Count; $i++) { $c = $(if ($all[$i] -match '^FAILED') { 'Red' } elseif ($all[$i] -match '^DONE') { 'Green' } else { '' }); if ($c) { Write-Host $all[$i] -ForegroundColor $c } else { Write-Host $all[$i] } }; $off = $all.Count } } catch {}
+      try { if (Test-Path -LiteralPath $out) { $all = [IO.File]::ReadAllLines($out); for ($i = $off; $i -lt $all.Count; $i++) { $c = $(if ($all[$i] -match '^(FAILED|NOT FIXED)') { 'Red' } elseif ($all[$i] -match '^DONE') { 'Green' } else { '' }); if ($c) { Write-Host $all[$i] -ForegroundColor $c } else { Write-Host $all[$i] } }; $off = $all.Count } } catch {}
       if ($ex) { break }
       if ((Get-Date) -gt $deadline) { Write-Host 'FAILED - Run again. The admin part did not finish in 5 minutes.' -ForegroundColor Red; return 6 }
       [void](Invoke-RnOp 'sleep' @{ s = 1 })
@@ -283,7 +378,7 @@ function Invoke-RestoreNetwork {
     }
     # reconnect, then wait for the router's address
     $ad2 = @(@(Invoke-RnOp 'list') | Where-Object { $_.ifIndex -eq $ad.ifIndex })[0]; if ($ad2) { $ad = $ad2 }
-    try { $rc = Invoke-RnOp 'reconnect' @{ ifIndex = $ad.ifIndex; name = $ad.name; wifi = $ad.wifi }; if ($ad.wifi) { Rn-Changed $(if ($rc) { 'Wi-Fi reconnected to "' + $rc + '"' } else { 'Wi-Fi: no saved network to reconnect to' }) } else { Rn-Changed 'asked the router for a new address' } } catch { Rn-Say ('  reconnect did not work: ' + $_.Exception.Message) 'Yellow' }
+    try { $rc = Invoke-RnOp 'reconnect' @{ ifIndex = $ad.ifIndex; name = $ad.name; wifi = $ad.wifi }; if ($ad.wifi) { Say-RnWifiJoined $ad } else { Rn-Changed 'asked the router for a new address' } } catch { Rn-Say ('  reconnect did not work: ' + $_.Exception.Message) 'Yellow' }
   } finally {
     if ($wwOff) { try { [void](Invoke-RnOp 'task' @{ set = 'on' }); Rn-Say '  WifiWatch is back on' } catch { $failed += 'WifiWatch could not be switched back on'; Rn-Say '  WifiWatch could not be switched back on' 'Red' } }
   }
@@ -312,10 +407,20 @@ function Complete-RnRun($ad, $st, $journals, $failed = @()) {
     return 6
   }
   if (@($journals | Where-Object { $_.ifIndex -eq $ad.ifIndex }).Count) { Move-RnJournals $ad $journals }
+  # 2.2.11 round 2: the settings are normal; DONE only when the PC is REALLY online on this adapter
+  $on = Wait-RnOnline $ad
+  $net = $(if ($ad.wifi -and $on -and $on.ssid) { 'Wi-Fi "' + $on.ssid + '", ' } else { '' })
   Rn-Say ''
-  if ($lease) { Rn-Say ('DONE - network is back to normal (' + $ad.name + ': DHCP, address ' + $lease + ' from the router).') 'Green' }
-  else { Rn-Say ('DONE - network is back to normal (' + $ad.name + ': DHCP). It is not connected right now: plug the cable in / pick the Wi-Fi, and it gets its address by itself.') 'Green' }
-  $r = Write-RnReceipt 'DONE - network is back to normal' $ad
+  if (-not (Test-RnOnlineOk $on)) {
+    $why = Get-RnOfflineWhy $on $ad
+    Rn-Say ('  settings are back to normal, but this PC is still offline: ' + $why) 'Red'
+    Rn-Say ('NOT FIXED - run again or call. (' + $ad.name + ': ' + $why + ')') 'Red'
+    $r = Write-RnReceipt ('NOT FIXED - run again or call (settings back to normal, still offline: ' + $why + ')') $ad
+    if ($r) { Rn-Say ('Receipt: ' + $r) }
+    return 8   # 8, not 7: Fix this site already uses 7 for its own stop
+  }
+  Rn-Say ('DONE - network is back to normal and online (' + $ad.name + ': ' + $net + 'DHCP, address ' + $on.ip + ', router ' + $on.gw + ' answers, internet answers).') 'Green'
+  $r = Write-RnReceipt ('DONE - network is back to normal and online (' + $net + 'address ' + $on.ip + ', router ' + $on.gw + ')') $ad
   if ($r) { Rn-Say ('Receipt: ' + $r) }
   return 0
 }

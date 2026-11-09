@@ -493,6 +493,7 @@ function Get-TkPlainEnd([string]$tool, [int]$code) {
     2 { return ($tool + ': could not start (see the line above, e.g. not plugged into the network).') }
     4 { return ($tool + ': finished, but some steps did not work (see above). "7 Undo last fix" puts everything back.') }
     6 { return ('FAILED - Run again. ' + $tool + ': THIS PC''s network could not be put back the way it was (see the red line). Run it again (it cleans up first) or restart the PC.') }   # 2.2.10 (Codex R04)
+    8 { return ('NOT FIXED - run again or call. ' + $tool + ': the settings are back to normal, but this PC is still offline (see the red line).') }   # 2.2.11 round 2 (Restore Network online check)
     default { return ($tool + ': stopped with a problem (code ' + $code + '). The full log is in the logs folder.') }
   }
 }
