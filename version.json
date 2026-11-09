@@ -1,9 +1,9 @@
 {
-  "version": "2.2.9",
+  "version": "2.2.10",
   "released": "2026-11-09",
-  "commit": "2d7b8b1c0e4ba5188a260d04ac1029c3b80eb140",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/2d7b8b1c0e4ba5188a260d04ac1029c3b80eb140/",
-  "notes": "2.2.9: subnet check before a Hik export/reset (second-IP steps, never static), one-session guard text, slider prompt, reboot-then-Retry after device refused (2 max, then Hik support).",
+  "commit": "6919fe4f3228df9c2089bd93b03f8b989e59de25",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/6919fe4f3228df9c2089bd93b03f8b989e59de25/",
+  "notes": "2.2.10: Codex R02/R03/R04 (laptop network left as it was, FAILED - Run again when not verified), R19 (wrong-password count kept between runs), R06 (no overwrite of a live NVR channel), R07 (Retry imports only its own devices)",
   "files": [
     {
       "path": "CamReset/Find Cameras.cmd",
@@ -42,8 +42,8 @@
     },
     {
       "path": "FixNVR/FixNVR.ps1",
-      "sha256": "bde1e1b33cd8050184a5142ac7ea5b01df72887084b3d3aafa702d93008ab053",
-      "size": 96734
+      "sha256": "91e34e82ff83a5216843cde58a13a7895830e4520ee1cf316b3e7add136dd5c0",
+      "size": 101710
     },
     {
       "path": "FixNVR/NVR Snapshot.cmd",
@@ -82,23 +82,23 @@
     },
     {
       "path": "Toolkit/FixSite.ps1",
-      "sha256": "9480b317caeb295a2af1f2a5369ec3487f5c0a6dad054cc524cb5ede338e63c7",
-      "size": 108653
+      "sha256": "0835e5e096a35da0e0704e7d65a91dd666584944bc21e412e119dadbddac72e5",
+      "size": 109867
     },
     {
       "path": "Toolkit/FixSiteBw.ps1",
-      "sha256": "3065ccd01f7bed92d46974831211baa3491c6a837a90fc8ff148925055bea78b",
-      "size": 12081
+      "sha256": "07fc626578cc7b1600caf395988c5809e504e85b0a95eec5711b8f716df867d1",
+      "size": 12082
     },
     {
       "path": "Toolkit/FixSiteCore.ps1",
-      "sha256": "2471abffdd33aa0ce44ad355ae856725a3c0bf897bd67327b003010245d8d236",
-      "size": 69629
+      "sha256": "18a1651d38e8701e411f8225eeecad80a7a1baf807c78c69c264f0feb6244e30",
+      "size": 69731
     },
     {
       "path": "Toolkit/FixSiteDevices.ps1",
-      "sha256": "e5c61816ea31931a7dba8672e04d139011ca3cf834810166c20c9555e417a996",
-      "size": 85867
+      "sha256": "4d547958441c1bdfa74e4629576c9b4bcd2a2b4e6568eea8e5cc2b6fa3137a1e",
+      "size": 93051
     },
     {
       "path": "Toolkit/FixSiteWindow.ps1",
@@ -122,13 +122,13 @@
     },
     {
       "path": "Toolkit/HikReset.ps1",
-      "sha256": "0f83dac6991414b55fef4a56dd92c8c84195d45554343ad7e89248a7bb1b169e",
-      "size": 9179
+      "sha256": "bb5c8de8a4edc103a13f8dd01835492387e6995d5b35d6ddbf13e640d178ec53",
+      "size": 9660
     },
     {
       "path": "Toolkit/HikResetFlow.ps1",
-      "sha256": "9db1f8bf55b97365bb8d36ac27fd6c6054df6d8be256dd1c5bca3cdecfc9e72b",
-      "size": 61921
+      "sha256": "0cc806cf76a7c2d61bb34390ec48b30cae3261a1a9dff24b405acdcc651b91fe",
+      "size": 63417
     },
     {
       "path": "Toolkit/HikSadp.ps1",
@@ -321,14 +321,19 @@
       "size": 40325
     },
     {
+      "path": "Toolkit/tests/Test-Fix2210.ps1",
+      "sha256": "ed637f42282ec4aa060406f93a9f384b549ddcd5782d6a88937c307d1fe21169",
+      "size": 29344
+    },
+    {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "412460366844586de8ba8178430cf8741f607a0cefe90e9bb2d8df63f37d96ee",
-      "size": 43289
+      "sha256": "2391ede89fd5b9ae6ab56c0a501ba38edbf16c294c309480ff302cb7aab4a6c2",
+      "size": 43297
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
-      "sha256": "261c3529d6d8e1f6ab7905577bba90c9403ef7986c6b862d09d3387a95f7beaf",
-      "size": 56894
+      "sha256": "babd3a799568dcf8c8fb9eefdf33ff8ed97f005dc3a21d36dad247b5cb46ebfd",
+      "size": 56897
     },
     {
       "path": "Toolkit/tests/Test-Fix224.ps1",
@@ -352,13 +357,13 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix228.ps1",
-      "sha256": "b25c1f128cbd493a76d829ed24f60b251173d54d6bf778617b90c2126760a6e6",
-      "size": 26948
+      "sha256": "874313f9b8c24b5456a920e1cddcb2f541e3fefa6277579efa14822dcee432a6",
+      "size": 26951
     },
     {
       "path": "Toolkit/tests/Test-Fix229.ps1",
-      "sha256": "35acfc9da6a33d5cfa7ba33b98dcbc543d004daf5f59d17772123aabfe221f16",
-      "size": 28614
+      "sha256": "3d83d75d1f6027d8e2348fc9ed72d9acccd14ab2588c08401c4729d46157c52e",
+      "size": 28856
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
@@ -392,8 +397,8 @@
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
-      "sha256": "d0cea2afc93d22219c94bda877bc8d8cf85751cc22b27190a03a9d57eeeffc84",
-      "size": 66228
+      "sha256": "b17f516d2f7f303dd7272b1d4206bbc5a7b30f66420bc95fba7aec214cbe6529",
+      "size": 66645
     },
     {
       "path": "Toolkit/ToolkitMigrate.ps1",
