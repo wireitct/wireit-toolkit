@@ -1,9 +1,9 @@
 {
-  "version": "2.2.8",
+  "version": "2.2.9",
   "released": "2026-11-09",
-  "commit": "0f07597c142fdd9396ff0bd126f6bd49bc78e12b",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/0f07597c142fdd9396ff0bd126f6bd49bc78e12b/",
-  "notes": "2.2.8: Hikvision reset files - emails with no/empty/non-xml attachments skipped with a reason; only a reply after the latest export is used; why a file matches no device; next steps after 'device refused'. Not released.",
+  "commit": "2d7b8b1c0e4ba5188a260d04ac1029c3b80eb140",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/2d7b8b1c0e4ba5188a260d04ac1029c3b80eb140/",
+  "notes": "2.2.9: subnet check before a Hik export/reset (second-IP steps, never static), one-session guard text, slider prompt, reboot-then-Retry after device refused (2 max, then Hik support).",
   "files": [
     {
       "path": "CamReset/Find Cameras.cmd",
@@ -87,12 +87,12 @@
     },
     {
       "path": "Toolkit/FixSiteBw.ps1",
-      "sha256": "bb5e1c1855147260aa36e50751555618ce70c88daa08cdaa61e618fa910422df",
+      "sha256": "3065ccd01f7bed92d46974831211baa3491c6a837a90fc8ff148925055bea78b",
       "size": 12081
     },
     {
       "path": "Toolkit/FixSiteCore.ps1",
-      "sha256": "a0b85707ed62b04cea716081c78626809e93823e8c371864dae03b78ec68afbf",
+      "sha256": "2471abffdd33aa0ce44ad355ae856725a3c0bf897bd67327b003010245d8d236",
       "size": 69629
     },
     {
@@ -117,18 +117,18 @@
     },
     {
       "path": "Toolkit/HikPortal.ps1",
-      "sha256": "0c11b6000fc5fa055c665608ccf3112129cafb9485762da4f3789d3b880b0c34",
-      "size": 21190
+      "sha256": "8e18216dfc412d0f519cc914b0a953b4a0ecb92419ec74b7df76d1a54c1d00f8",
+      "size": 23461
     },
     {
       "path": "Toolkit/HikReset.ps1",
-      "sha256": "285710d938da44ed02c5373d1dcbace8a13d9f6984265e12f4614bec6fdc930b",
-      "size": 7317
+      "sha256": "0f83dac6991414b55fef4a56dd92c8c84195d45554343ad7e89248a7bb1b169e",
+      "size": 9179
     },
     {
       "path": "Toolkit/HikResetFlow.ps1",
-      "sha256": "8607bd16c9e38ec82b59ea2bec1c091ca4ae2b26ce23e5ac498b56d32ee120e6",
-      "size": 41915
+      "sha256": "9db1f8bf55b97365bb8d36ac27fd6c6054df6d8be256dd1c5bca3cdecfc9e72b",
+      "size": 61921
     },
     {
       "path": "Toolkit/HikSadp.ps1",
@@ -317,17 +317,17 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix221.ps1",
-      "sha256": "5950763edce6639999e284991693d36bfa7c03fcead24fc3d5c13ae3b29acbe4",
-      "size": 40192
+      "sha256": "deb7751c092d3248b5eae74022ea66b1980fdd2fb961e806ba5fade151e058ca",
+      "size": 40325
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "05aef1cf6b9770cf0eb943ee3040486cb7b94d727b90bed9d9442faca0472438",
-      "size": 43287
+      "sha256": "412460366844586de8ba8178430cf8741f607a0cefe90e9bb2d8df63f37d96ee",
+      "size": 43289
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
-      "sha256": "908b41593a16286899313eb0caa15dae46d656ee5b24a82eca5477d6e40a03ae",
+      "sha256": "261c3529d6d8e1f6ab7905577bba90c9403ef7986c6b862d09d3387a95f7beaf",
       "size": 56894
     },
     {
@@ -352,8 +352,13 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix228.ps1",
-      "sha256": "330d22e4720618d775d0c3d8f10f3b50a0edad7c6eb475ae98a93ac7b05005be",
-      "size": 26786
+      "sha256": "b25c1f128cbd493a76d829ed24f60b251173d54d6bf778617b90c2126760a6e6",
+      "size": 26948
+    },
+    {
+      "path": "Toolkit/tests/Test-Fix229.ps1",
+      "sha256": "35acfc9da6a33d5cfa7ba33b98dcbc543d004daf5f59d17772123aabfe221f16",
+      "size": 28614
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
@@ -387,7 +392,7 @@
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
-      "sha256": "3926e6053d18568363208b4fe394ead97f5b000f34d3e1affb59c1146bcdbec3",
+      "sha256": "d0cea2afc93d22219c94bda877bc8d8cf85751cc22b27190a03a9d57eeeffc84",
       "size": 66228
     },
     {
