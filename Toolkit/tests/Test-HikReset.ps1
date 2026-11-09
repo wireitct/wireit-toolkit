@@ -270,7 +270,15 @@ if (-not $NoPortal) {
   $br = ''; foreach ($c in @('/usr/bin/chromium', '/usr/bin/google-chrome', "$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe")) { if ($c -and (Test-Path -LiteralPath $c)) { $br = $c; break } }
   if (-not $br) { Write-Host '  skip  no Chrome/Edge here' }
   else {
-    $script:PortalBrowser = $br; if ($IsLinux) { $script:PortalExtraArgs = @('--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage') }
+    # 2.2.11 (Office PC, Nov 9 2026): the test browser is HEADLESS on every PC (Windows too). 2.2.10 opened a real Chrome window on
+    # Windows: it showed up on the screen of whoever was using the PC, and when it could not come to the front the key presses were
+    # lost (2 FAILs in the normal-user run). Headless = no window on anyone's screen and no need for focus; the checks are the same
+    # real key presses (isTrusted keydown events), so what is tested is unchanged.
+    $script:PortalBrowser = $br; $script:PortalExtraArgs = @('--headless=new', '--disable-gpu', '--window-position=-32000,-32000', '--mute-audio')
+    if ($IsLinux) { $script:PortalExtraArgs += @('--no-sandbox', '--disable-dev-shm-usage') }
+    Check ((@(Get-HikBrowserArgs 1 'p' '') -contains '--headless=new')) 'portal test: the test browser runs headless on this PC (no window on anyone''s screen, no focus needed) (2.2.11)'
+    $hpSrc = [IO.File]::ReadAllText((Join-Path $tk 'HikPortal.ps1'))
+    Check ($hpSrc -match "Emulation\.setFocusEmulationEnabled' @\{ enabled = \`$true \}") 'portal: the page is told it has focus, so key presses land even with another window in front (2.2.11)'
     # A managed browser may block file:// pages. Serve this fixture on loopback, with a quoted command line on both hosts.
     $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $listener.Start(); $httpPort = $listener.LocalEndpoint.Port; $listener.Stop()
     $fixtureServer = Start-Process -FilePath $py -ArgumentList (Join-HikArgs @('-m', 'http.server', [string]$httpPort, '--bind', '127.0.0.1', '--directory', $fx)) -PassThru -RedirectStandardError (Join-Path $tmp 'fixture-http.err')
@@ -280,6 +288,7 @@ if (-not $NoPortal) {
     if ($s) {
       Check (@(Get-ChildItem -Force -LiteralPath $s.profile -ErrorAction SilentlyContinue).Count -gt 0) 'portal: the browser really writes into that throw-away profile folder'
       Check (Wait-PortalForm $s 30) 'portal: form loaded'
+      Check ([string](Invoke-CdpJs $s.cdp 'document.hasFocus() ? "yes" : "no"') -eq 'yes') 'portal: the page counts as focused (key presses do not depend on which window is in front) (2.2.11)'
       $form = [pscustomobject]@{ firstName = 'Moshe'; lastName = 'Reichman'; email = 'moshe@wireitct.com'; company = 'WireIt CT LLC'; state = 'Connecticut'; zip = '06710'; businessType = 'Installer' }
       $r = Fill-HikPortalForm $s $form $nvr $f1
       $prob = @(Test-PortalFilled $r $nvr); Eq $prob.Count 0 ('portal: every field reads back what was typed' + $(if ($prob.Count) { ': ' + ($prob -join '; ') } else { '' }))
@@ -290,6 +299,16 @@ if (-not $NoPortal) {
       $null = Invoke-CdpJs $s.cdp '(function(){ var i=document.querySelector("form#enquiry-form input[name=modelNumber]"); i.value=""; return 1 })()'
       $rf = @(Restore-PortalFields $s $form $nvr)
       Check (($rf -contains 'modelNumber') -and [string](Invoke-CdpJs $s.cdp 'document.querySelector("form#enquiry-form input[name=modelNumber]").value') -eq [string]$nvr.model) 'portal: a field the page blanked while waiting is typed again'
+      # 2.2.11: running it twice is harmless: nothing is blank now, so nothing is typed again and every field still reads the same
+      $rf2 = @(Restore-PortalFields $s $form $nvr)
+      $lf2 = Invoke-CdpJs $s.cdp 'window.__looksFilled()'
+      Check (($rf2.Count -eq 0) -and -not @('firstName','lastName','email','company','zipCode','serialNo','modelNumber' | Where-Object { -not $lf2.$_ }).Count) 'portal: putting the fields back a second time types nothing and leaves every field as it was (2.2.11)'
+      # 2.2.11: stopped half-way (two fields blanked, one of them the field the cursor is in) -> only the other one is typed again
+      $null = Invoke-CdpJs $s.cdp '(function(){ var a=document.querySelector("form#enquiry-form input[name=zipCode]"); var b=document.querySelector("form#enquiry-form input[name=email]"); a.value=""; b.value=""; b.focus(); return 1 })()'
+      $rf3 = @(Restore-PortalFields $s $form $nvr)
+      Check (($rf3 -contains 'zipCode') -and ($rf3 -notcontains 'email') -and [string](Invoke-CdpJs $s.cdp 'document.querySelector("form#enquiry-form input[name=zipCode]").value') -eq [string]$form.zip) 'portal: half-way blanked: the field the person is typing in is left alone, the other one is typed again (2.2.11)'
+      $null = Invoke-CdpJs $s.cdp '(function(){ var b=document.querySelector("form#enquiry-form input[name=email]"); b.blur(); return 1 })()'
+      [void](Restore-PortalFields $s $form $nvr)
       $null = Invoke-CdpJs $s.cdp 'setTimeout(function(){document.querySelector("input[name=Verification]").value="ABC123"; document.querySelector("#formSubmit").click()}, 3500); 1'
       Eq (Wait-PortalSubmitted $s 30) 'submitted' 'portal: the person types the picture code + Submit; the Toolkit sees the page accept it'
       $posted = Invoke-CdpJs $s.cdp 'window.__posted ? JSON.stringify(window.__posted) : ""' 5

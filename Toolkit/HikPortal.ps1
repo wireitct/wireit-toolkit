@@ -95,6 +95,9 @@ function Start-HikBrowserSession([string]$Url) {
   if (-not $ws) { try { $proc.Kill() } catch {}; return $null }
   $c = Open-Cdp $ws
   [void](Send-Cdp $c 'Page.enable'); [void](Send-Cdp $c 'DOM.enable'); [void](Send-Cdp $c 'Runtime.enable')
+  # 2.2.11 (Office PC, Nov 9 2026): the page acts as the focused window even when another window is in front (the tech clicks
+  # elsewhere, or someone is using the PC), so the real key presses below still land in the field. Nothing else changes.
+  try { [void](Send-Cdp $c 'Emulation.setFocusEmulationEnabled' @{ enabled = $true }) } catch {}
   return [pscustomobject]@{ cdp = $c; proc = $proc; profile = $prof; port = $port; exe = $exe }
 }
 function Stop-HikBrowserSession($s) {
