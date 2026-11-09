@@ -786,7 +786,10 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
     }
     else { & $add ('Clock: not checked (' + $(if ($loginWhy) { $loginWhy } else { 'could not read it' }) + ')') 'warn'; $nc.Add('clock'); $page.clock.notChecked = $true }
     $page.fw = [ordered]@{ ok = [bool]$fw.ok; problems = @($fw.problems | Select-Object -First 8) }
-    if ($fw.ok) { & $add 'Firmware: current, no known security holes.' 'ok' }
+    # 2.2.7 (Codex file-by-file F12): "ok" only means no known security hole - a device on OLD firmware is said as that (amber), never "current"
+    $fwOld = @(@($fw.devices) | Where-Object { $_ -and [string]$_.verdict -eq 'old' }); $page.fw.older = $fwOld.Count
+    if ($fw.ok -and $fwOld.Count) { & $add ('Firmware: no known security holes; ' + $fwOld.Count + ' device(s) on older firmware (' + (@($fwOld | Select-Object -First 4 | ForEach-Object { [string]$_.label + $(if ($_.latest) { ', latest ' + $_.latest } else { '' }) }) -join '; ') + ').') 'warn' }
+    elseif ($fw.ok) { & $add 'Firmware: current, no known security holes.' 'ok' }
     elseif (Test-TkNotChecked $fw) { & $add ('Firmware: not checked (' + $(if ($loginWhy) { $loginWhy } else { Get-TkNotCheckedWhy $fw }) + ')') 'warn'; $nc.Add('firmware') }
     elseif ($isDw) { & $add ('Firmware (report only - a DW server is updated with the DW installer, not by the Toolkit): ' + (& $j ($fw.problems | Select-Object -First 4))) 'warn'; $page.fw.reportOnly = $true }   # 1.6.1: never a firmware fix for DW
     else { & $add ('Firmware: ' + (& $j ($fw.problems | Select-Object -First 4))) 'red'; $fix.Add('firmware') }
