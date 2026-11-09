@@ -1,8 +1,8 @@
 {
   "version": "2.2.8",
   "released": "2026-11-09",
-  "commit": "2d5e848216ef7dd4870d877fd94360fb75f85079",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/2d5e848216ef7dd4870d877fd94360fb75f85079/",
+  "commit": "0f07597c142fdd9396ff0bd126f6bd49bc78e12b",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/0f07597c142fdd9396ff0bd126f6bd49bc78e12b/",
   "notes": "2.2.8: Hikvision reset files - emails with no/empty/non-xml attachments skipped with a reason; only a reply after the latest export is used; why a file matches no device; next steps after 'device refused'. Not released.",
   "files": [
     {
@@ -127,8 +127,8 @@
     },
     {
       "path": "Toolkit/HikResetFlow.ps1",
-      "sha256": "3d212e6c864a5f160a915999ffbc86a16dc9e611bdf7c9c921c818b9242238f6",
-      "size": 41067
+      "sha256": "8607bd16c9e38ec82b59ea2bec1c091ca4ae2b26ce23e5ac498b56d32ee120e6",
+      "size": 41915
     },
     {
       "path": "Toolkit/HikSadp.ps1",
@@ -352,8 +352,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix228.ps1",
-      "sha256": "95f2add5aa697fb4364c89a212768a34916a03f35becfe3f225ba9624d6fd403",
-      "size": 25231
+      "sha256": "330d22e4720618d775d0c3d8f10f3b50a0edad7c6eb475ae98a93ac7b05005be",
+      "size": 26786
     },
     {
       "path": "Toolkit/tests/Test-FixIt.ps1",
