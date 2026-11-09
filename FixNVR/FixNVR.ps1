@@ -102,7 +102,22 @@ function Redact([string]$s) {
 }
 function Log([string]$s) { Add-Content -Path $logFile -Value ((Get-Date -Format 'HH:mm:ss') + ' ' + (Redact $s)) }
 function Say([string]$s, [string]$color = '') { if ($color) { Write-Host $s -ForegroundColor $color } else { Write-Host $s }; $sum.Add($s); Log ('SAY ' + $s) }
-function Save-Json($obj, [string]$path) { ($obj | ConvertTo-Json -Depth 12) | Set-Content -Path $path -Encoding UTF8 }
+# 2.2.7 (Codex file-by-file F04): written to a temporary file and swapped in whole; a write that fails THROWS (2.2.6 wrote with
+# Set-Content under 'Continue': a failed rollback save was only a warning and the run went on changing devices)
+function Save-Json($obj, [string]$path) {
+  $tmp = $path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+  try {
+    [IO.File]::WriteAllText($tmp, ($obj | ConvertTo-Json -Depth 12), (New-Object Text.UTF8Encoding($true)))
+    if ([IO.File]::Exists($path)) { [IO.File]::Replace($tmp, $path, [NullString]::Value) } else { [IO.File]::Move($tmp, $path) }
+  } finally { if ([IO.File]::Exists($tmp)) { try { [IO.File]::Delete($tmp) } catch {} } }
+}
+# 2.2.7 (F05): Undo takes back every step that was SENT (done, or sent and not confirmed: a timeout, a stopped run), newest first
+function Get-FnRollbackSteps($rb) {
+  $tmp = @($rb.steps | Where-Object { $_ -and ($_.done -or ($_.PSObject.Properties['attempted'] -and $_.attempted)) -and $_.type -ne 'nvr-platform' })
+  [array]::Reverse($tmp); return $tmp
+}
+# 2.2.7 (F05): an NVR channel is not pointed at a camera's new address when that camera's move failed
+function Test-FnSkipDependent($st, [hashtable]$failedTo) { return ([string]$st.type -eq 'nvr-channel' -and $failedTo.ContainsKey([string]$st.new_ip)) }
 
 # ---------------- IP helpers ----------------
 function IpToInt([string]$ip) { $b = ([Net.IPAddress]::Parse($ip)).GetAddressBytes(); return ([uint32]$b[0] -shl 24) -bor ([uint32]$b[1] -shl 16) -bor ([uint32]$b[2] -shl 8) -bor [uint32]$b[3] }
@@ -135,7 +150,7 @@ $tempFile = Join-Path $stateDir 'temp-ips.json'
 $script:temps = New-Object System.Collections.Generic.List[object]
 $script:pcChanges = [ordered]@{ coexistence_before = $null; firewall_rule = $false; cleanup_task = $false }
 $taskName = 'WireIt FixNVR cleanup'
-function Write-TempState { Save-Json ([ordered]@{ temps = $script:temps.ToArray(); pc = $script:pcChanges; written = (Get-Date -Format 's') }) $tempFile }
+function Write-TempState { try { Save-Json ([ordered]@{ temps = $script:temps.ToArray(); pc = $script:pcChanges; written = (Get-Date -Format 's') }) $tempFile } catch { Log ('temp state not saved: ' + $_.Exception.Message) } }
 function Set-SafetyTask {
   if ($Mock -or $script:pcChanges.cleanup_task) { return }
   try {
@@ -832,7 +847,7 @@ function Invoke-Main {
   $blk = @(); for ($h = $cbS; $h -le $cbE; $h++) { if ($nvrHosts -notcontains $h) { $blk += $h } }
   $camMap = @{}   # old ip -> new ip
   if ($Mode -eq 'Rollback') {
-    $tmp = @($rb.steps | Where-Object { $_.done -and $_.type -ne 'nvr-platform' }); for ($i = $tmp.Count - 1; $i -ge 0; $i--) { $plan.Add($tmp[$i]) }
+    foreach ($st0 in @(Get-FnRollbackSteps $rb)) { $plan.Add($st0) }   # 2.2.7 (F05): also the sent-but-unconfirmed steps
   } else {
    foreach ($c in @($script:devs | Where-Object { ($_.kind -eq 'camera' -or ($MoveUnlisted -and $_.login -like 'ok*' -and $_.kind -ne 'nvr')) -and ($_.channel_of -or $MoveUnlisted) -and -not (Is-Poe $_.ip) })) {
     if (InNet $c.ip $pc.ip $pc.prefix) { continue }
@@ -900,7 +915,7 @@ function Invoke-Main {
   if ($manual.Count) { Say ''; Say ('' + $manual.Count + ' step(s) must be done by hand (Uniview NVR settings are not yet verified for automatic change, or no login). Steps are printed after the automatic part.') 'Yellow' }
   $plan | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $runDir 'plan.json')
   $before = @($script:devs | ForEach-Object { [ordered]@{ ip = $_.ip; mac = $_.mac; kind = $_.kind; brand = $_.brand; model = $_.model; serial = $_.serial; mask = $_.mask; gw = $_.gw; dns1 = $_.dns1; dns2 = $_.dns2; addressing = $_.addressing; platform_enabled = $_.platform_enabled; platform_online = $_.platform_online; channel = $_.channel_id; found_by = $_.found_by; login = $_.login } })
-  Save-Json $before (Join-Path $runDir 'before.json')
+  try { Save-Json $before (Join-Path $runDir 'before.json') } catch { Log ('before.json not saved: ' + $_.Exception.Message) }
   if ($Mode -eq 'Check') { Say ''; Say 'Check only: nothing was changed. Run "Fix NVR.cmd" (Fix mode) to apply this plan.' 'Cyan'; return }
 
   # ---------- 7. ONE confirm ----------
@@ -910,7 +925,11 @@ function Invoke-Main {
   if ($ans -cne 'YES') { Say 'Cancelled. Nothing was changed.' 'Yellow'; return }
   $rbPath = Join-Path $runDir 'rollback.json'
   $rbObj = [ordered]@{ tool = 'WireIt FixNVR ' + $Version; created = (Get-Date -Format 's'); site = $Site; pc = $pc.ip; router = $pc.gw; old_subnets = @($oldList); steps = $plan }
-  if (-not $rev) { Save-Json $rbObj $rbPath; Say ('Rollback info saved first: ' + $rbPath) }
+  if (-not $rev) {
+    try { Save-Json $rbObj $rbPath } catch { Say ('STOPPED: the rollback (undo) file could not be saved (' + $_.Exception.Message + '). Nothing was changed.') 'Red'; $script:exitCode = 7; return }
+    Say ('Rollback info saved first: ' + $rbPath)
+  }
+  $failedTo = @{}   # 2.2.7 (F05): addresses a camera move did NOT reach
 
   # ---------- 8. apply ----------
   $pfx = $pc.prefix
@@ -918,6 +937,17 @@ function Invoke-Main {
     if ($st.how -eq 'manual') { continue }
     $from = $(if ($rev) { $st.new_ip } else { $st.old_ip }); $to = $(if ($rev) { $st.old_ip } else { $st.new_ip })
     $res = $null
+    if (-not $rev -and (Test-FnSkipDependent $st $failedTo)) {
+      $st.result = 'SKIPPED: the camera did not move to ' + $st.new_ip + ', so its NVR channel was left as it was'; $applied.Add($st); Say ('  ' + $st.type + ' ' + $from + ' -> ' + $to + ': ' + $st.result) 'Red'; continue
+    }
+    # 2.2.7 (F05): marked as sent (and saved) BEFORE it is sent: an accepted change that then times out, or a stopped run, is still undone
+    if (-not $rev) {
+      if (-not $st.PSObject.Properties['attempted']) { $st | Add-Member -NotePropertyName attempted -NotePropertyValue $false }
+      $st.attempted = $true
+      try { Save-Json $rbObj $rbPath } catch { Say ('STOPPED: the rollback (undo) file could not be saved (' + $_.Exception.Message + '). Nothing more was changed.') 'Red'; $script:exitCode = 7; return }
+    }
+    if ($rev -and $st.type -eq 'cam-net' -and -not $st.done -and (Wait-Answer $to 5 $script:credCam)) { $res = @{ ok = $true; note = ('it never moved: already on ' + $to) } }
+    else {
     switch ($st.type) {
       'cam-net' {
         $d = Dev-ByMac $st.dev_mac; if (-not $d) { $d = Dev-ByIp $from }; if (-not $d) { $d = New-Dev $from $st.dev_mac 'rollback' }
@@ -962,10 +992,12 @@ function Invoke-Main {
         elseif ($res.ok) { Write-Host ('  waiting for the NVR on ' + $to + ' ...'); if (Wait-Answer $to ([int]$cfg.verify_wait_seconds) $script:credNvr) { $n.ip = $to } else { $res.ok = $false; $res.note = ($res.note + ' NVR did not answer on ' + $to + ' yet').Trim() } }
       }
     }
+    }
     if ($res) { $st.done = [bool]$res.ok; $st.result = $(if ($res.ok) { 'done' } else { 'FAILED ' + $res.note }) }
+    if (-not $rev -and $st.type -eq 'cam-net' -and -not $st.done) { $failedTo[[string]$st.new_ip] = $true }
     $applied.Add($st)
     Say ('  ' + $st.type + ' ' + $from + ' -> ' + $to + ': ' + $st.result) $(if ($st.done) { 'Green' } else { 'Red' })
-    if (-not $rev) { Save-Json $rbObj $rbPath }
+    if (-not $rev) { try { Save-Json $rbObj $rbPath } catch { Say ('STOPPED: the rollback (undo) file could not be saved (' + $_.Exception.Message + '). Nothing more was changed.') 'Red'; $script:exitCode = 7; return } }
   }
   # manual steps while the PC can still reach the old scheme
   if ($manual.Count) {
@@ -1017,7 +1049,7 @@ finally {
   Remove-AllTemp
   if ($script:temps.Count) { Write-Host 'WARNING: a temporary address could not be removed. Run "Fix NVR.cmd" again or reboot the PC (it is memory-only).' -ForegroundColor Red }
   $after = @($script:devs | ForEach-Object { [ordered]@{ ip = $_.ip; mac = $_.mac; kind = $_.kind; model = $_.model; gw = $_.gw; dns1 = $_.dns1; dns2 = $_.dns2; platform_enabled = $_.platform_enabled; platform_online = $_.platform_online; channel = $_.channel_id } })
-  Save-Json $after (Join-Path $runDir 'after.json')
+  try { Save-Json $after (Join-Path $runDir 'after.json') } catch { Log ('after.json not saved: ' + $_.Exception.Message) }
   $sum | Set-Content (Join-Path $runDir 'summary.txt')
   $script:credNvr = $null; $script:credCam = $null
   Write-Host ('Log folder: ' + $runDir)

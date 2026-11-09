@@ -63,7 +63,7 @@ try {
 `$bad = Join-Path $(Q $tmp) 'no-such-folder/deeper/rollback.json'
 `$threw = `$false; try { Save-Json @{ a = 1 } `$bad } catch { `$threw = `$true }
 `$good = Join-Path $(Q $tmp) 'f04-ok.json'; Save-Json @{ a = 1; steps = @(1, 2) } `$good
-'JSON=' + (@{ threw = `$threw; okFile = (Test-Path `$good); okJson = [bool]((Get-Content `$good -Raw | ConvertFrom-Json).a -eq 1); tmpLeft = @(Get-ChildItem $(Q $tmp) -Filter 'f04-ok.json.*').Count } | ConvertTo-Json -Compress)
+'JSON=' + (@{ threw = `$threw; okFile = (Test-Path `$good); okJson = [bool]((Get-Content `$good -Raw | ConvertFrom-Json).a -eq 1); tmpLeft = @(Get-ChildItem $(Q $tmp) | Where-Object { `$_.Name -like 'f04-ok.json.*.tmp' }).Count } | ConvertTo-Json -Compress)
 "@)
   $j = Get-Json $d
   Check ($j -and $j.threw) 'F04 classic Fix NVR: a rollback file that cannot be written STOPS the run (the writer fails loudly, it no longer just goes on)' $d
