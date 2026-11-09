@@ -1,8 +1,8 @@
 {
   "version": "2.2.12",
   "released": "2026-11-09",
-  "commit": "c41c72f076710b55d77e8fefbdba020b867256c3",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/c41c72f076710b55d77e8fefbdba020b867256c3/",
+  "commit": "516ffe492d4b7acb287ec66d41742633eb83ddee",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/516ffe492d4b7acb287ec66d41742633eb83ddee/",
   "notes": "2.2.12: every Codex NO-GO finding of 2.2.11 fixed (Fix this site multi-NVR move refused, network read checked before any change, stream settings read back; Fix NVR finish depends on the check, refused login is not OK, clean-up verifies the PC connection; Restore Network snapshots + asks before resetting a static adapter, online = real web answer through the chosen adapter, WifiWatch really paused; retention checks every day; restart must be seen; atomic scan queue; relay suite in the pack)",
   "files": [
     {
@@ -197,8 +197,8 @@
     },
     {
       "path": "Toolkit/tests/fix2212site/scenarios.py",
-      "sha256": "f871dbe8719cb0f0c698914cc30bd46220e45afe3467b87acc47e729f44de2d3",
-      "size": 9891
+      "sha256": "971e224ba21b9e310ffcb03ceeda1facab084d1ea5684d968d9202f391988b18",
+      "size": 9900
     },
     {
       "path": "Toolkit/tests/fix226/ok_server.py",
@@ -347,8 +347,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2212.ps1",
-      "sha256": "2542e9f02618ac492613dd25f09ce8089ae2bb9332375e17d13153c9b9b6b4a6",
-      "size": 19168
+      "sha256": "7785a419ff983e5f32c7b2ad062f4fc1d6c57f72f3ae3bcf802a804ad45b1a3e",
+      "size": 19336
     },
     {
       "path": "Toolkit/tests/Test-Fix2212Net.ps1",
