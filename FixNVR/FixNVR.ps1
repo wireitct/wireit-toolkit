@@ -174,7 +174,7 @@ function Get-PcNet {
 # ---------------- temporary PC address on an old scheme (always removed) ----------------
 $tempFile = Join-Path $stateDir 'temp-ips.json'
 $script:temps = New-Object System.Collections.Generic.List[object]
-$script:pcChanges = [ordered]@{ coexistence_before = $null; firewall_rule = $false; cleanup_task = $false; ifIndex = $null; alias = $null; dhcp = $null }
+$script:pcChanges = [ordered]@{ coexistence_before = $null; firewall_rule = $false; cleanup_task = $false; ifIndex = $null; alias = $null; dhcp = $null; ip = $null; gw = $null }
 $taskName = 'WireIt FixNVR cleanup'
 # 2.2.10 (Codex R04): the journal is a precondition. Write-TempState returns $false when it could not be saved, and no adapter
 # change happens without it. Each entry stays until a fresh read shows the address gone; DHCP + coexistence go back from the
@@ -199,11 +199,14 @@ function Add-TempIp([string]$p3, $pc, $avoid) {
     $ip = $p3 + '.' + $h
     if ($avoid -contains $ip) { continue }
     if ($Mock) { $script:temps.Add([pscustomobject]@{ ip = $ip; ifIndex = $pc.ifIndex }); Log ('MOCK temp ip ' + $ip); return $ip }
-    if ($null -eq $script:pcChanges.ifIndex) { $script:pcChanges.ifIndex = [int]$pc.ifIndex; $script:pcChanges.alias = [string]$pc.alias; $script:pcChanges.dhcp = [bool]$pc.dhcp }
+    if ($null -eq $script:pcChanges.ifIndex) { $script:pcChanges.ifIndex = [int]$pc.ifIndex; $script:pcChanges.alias = [string]$pc.alias; $script:pcChanges.dhcp = [bool]$pc.dhcp; $script:pcChanges.ip = [string]$pc.ip; $script:pcChanges.gw = [string]$pc.gw }
     if ($script:pcChanges.coexistence_before -eq $null -and $pc.dhcp) {
       $t = (netsh interface ipv4 show interface ([string]$pc.ifIndex)) -join "`n"
       $m = [regex]::Match($t, '(?i)DHCP/Static IP coexistence\s*:\s*(\w+)')
-      $script:pcChanges.coexistence_before = $(if ($m.Success) { $m.Groups[1].Value } else { 'unknown' })
+      # 2.2.12 (Codex P1-9): an answer the tool cannot read now stops here, before anything changes. Clean-up must read the
+      # setting back to call it restored, so a PC whose netsh answer cannot be read would otherwise be left "not restored" for good.
+      if (-not $m.Success) { Log ('coexistence not readable from netsh: ' + $t); Say 'Old scheme: no temporary address was added. Windows did not say how this PC''s DHCP setting is set (netsh gave an answer the tool cannot read), so the tool could not put it back afterwards. Nothing on this PC was changed.' 'Yellow'; return $null }
+      $script:pcChanges.coexistence_before = $m.Groups[1].Value
       # the before-state is on disk BEFORE coexistence is switched on (2.2.9 switched first)
       if (-not (Write-TempState)) { $script:pcChanges.coexistence_before = $null; Say 'FAILED - Run again. The record of this PC''s network could not be saved, so no temporary address was added (nothing on this PC was changed).' 'Red'; return $null }
       if ($script:pcChanges.coexistence_before -notmatch 'enabled') { netsh interface ipv4 set interface ([string]$pc.ifIndex) dhcpstaticipcoexistence=enabled | Out-Null }
@@ -236,7 +239,9 @@ function Restore-PcSettings($pcc, $ifIndex, [ref]$problems) {
   if ($pcc.coexistence_before -ne $null -and [string]$pcc.coexistence_before -notmatch 'enabled') {
     netsh interface ipv4 set interface ([string]$ifIndex) dhcpstaticipcoexistence=disabled | Out-Null
     $co = ((netsh interface ipv4 show interface ([string]$ifIndex)) -join "`n"); $m = [regex]::Match($co, '(?i)DHCP/Static IP coexistence\s*:\s*(\w+)')
-    if ($m.Success -and $m.Groups[1].Value -match 'enabled') { $problems.Value += 'the DHCP+static coexistence setting could not be put back' } else { Log 'coexistence restored' }
+    # 2.2.12 (Codex P1-9): an answer that cannot be read is NOT "restored" (2.2.11 logged "coexistence restored" for it)
+    if (-not $m.Success) { Log ('coexistence read-back not understood: ' + $co); $problems.Value += 'the DHCP+static coexistence setting could not be read back (Windows gave an answer the tool does not understand)' }
+    elseif ($m.Groups[1].Value -match 'enabled') { $problems.Value += 'the DHCP+static coexistence setting could not be put back' } else { Log 'coexistence restored (read back)' }
   }
   if ($pcc.dhcp) {
     $ipi = Get-NetIPInterface -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
@@ -244,6 +249,37 @@ function Restore-PcSettings($pcc, $ifIndex, [ref]$problems) {
     $ipi = Get-NetIPInterface -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
     if (-not $ipi -or $ipi.Dhcp -ne 'Enabled') { $problems.Value += 'DHCP is not back on' }
   }
+  # 2.2.12 (Codex P1-9): back to normal = a WORKING connection on the saved adapter, the way FixSite checks it: a usable address
+  # (not 169.254, not one of this tool's temporary ones) and a default route; for a fixed-address PC its own saved address and
+  # router. Windows gets time to renew the lease. Until this checks, the journal (and the safety clean-up) stay.
+  $touched = $true; if ($pcc.PSObject.Properties['changed'] -and -not $pcc.changed) { $touched = $false }   # a journal from disk always counts as touched
+  if ($touched -and -not $problems.Value.Count) { $why = Wait-PcRecovered $pcc $ifIndex; if ($why) { $problems.Value += $why } }
+}
+function Get-PcRecoveredWhy($pcc, $ifIndex) {
+  # this tool's temporary addresses are SkipAsSource, so they never count as the PC's own address
+  $addrs = @(Get-NetIPAddress -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_ -and [string]$_.IPAddress -and [string]$_.IPAddress -notlike '169.254.*' -and [string]$_.IPAddress -notlike '127.*' -and -not $_.SkipAsSource -and ([string]$_.AddressState -eq '' -or [string]$_.AddressState -eq 'Preferred') } | ForEach-Object { [string]$_.IPAddress })
+  $routes = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_ -and [string]$_.NextHop -and [string]$_.NextHop -ne '0.0.0.0' } | ForEach-Object { [string]$_.NextHop })
+  $name = $(if ($pcc.alias) { '"' + $pcc.alias + '"' } else { 'the network adapter' })
+  if (-not $pcc.dhcp -and $pcc.ip) {
+    if ($addrs -notcontains [string]$pcc.ip) { return ('this PC''s own fixed address ' + $pcc.ip + ' is not working on ' + $name + ' (check the cable / Wi-Fi)') }
+    if ($pcc.gw -and $routes -notcontains [string]$pcc.gw) { return ('this PC has no route to its router ' + $pcc.gw + ' on ' + $name + ' (check the cable / Wi-Fi)') }
+    return ''
+  }
+  if (-not $addrs.Count) { return ('this PC has no working address from the router on ' + $name + ' (no lease yet; check the cable / Wi-Fi)') }
+  if (-not $routes.Count) { return ('this PC has an address but no route to the router (no default gateway) on ' + $name) }
+  return ''
+}
+function Wait-PcRecovered($pcc, $ifIndex) {
+  $tries = $(if ($null -ne $script:FnRecoverTries) { [int]$script:FnRecoverTries } else { 10 })
+  $wait = $(if ($null -ne $script:FnRecoverWaitSec) { [int]$script:FnRecoverWaitSec } else { 3 })
+  $why = ''
+  for ($k = 0; $k -lt [math]::Max(1, $tries); $k++) {
+    if ($k -gt 0) { Start-Sleep -Seconds $wait }
+    $why = Get-PcRecoveredWhy $pcc $ifIndex
+    if (-not $why) { Log ('PC network checked back: address and default route on ifIndex ' + $ifIndex); return '' }
+    Log ('PC network not back yet (' + $why + ')')
+  }
+  return $why
 }
 function Say-CleanupFailed([string[]]$problems) {
   $m = 'FAILED - Run again. THIS PC''S NETWORK IS NOT BACK TO NORMAL: ' + ($problems -join '; ') + '. The record is kept: run "Fix NVR.cmd" again (it cleans up first) or restart the PC (the temporary address is memory-only).'
@@ -254,7 +290,10 @@ function Remove-AllTemp {
   $problems = @()
   foreach ($t in $script:temps.ToArray()) { if (Remove-OneTemp $t.ip $t.ifIndex) { Log ('temp ip ' + $t.ip + ' removed') } else { $problems += ('the temporary address ' + $t.ip + ' is still on the adapter') } }
   $ix = $script:pcChanges.ifIndex; if ($null -eq $ix -and $script:pcNet) { $ix = $script:pcNet.ifIndex }
-  $pcc = [pscustomobject]@{ coexistence_before = $script:pcChanges.coexistence_before; dhcp = $(if ($null -ne $script:pcChanges.dhcp) { $script:pcChanges.dhcp } elseif ($script:pcNet) { $script:pcNet.dhcp } else { $false }) }
+  $pcc = [pscustomobject]@{ coexistence_before = $script:pcChanges.coexistence_before; dhcp = $(if ($null -ne $script:pcChanges.dhcp) { $script:pcChanges.dhcp } elseif ($script:pcNet) { $script:pcNet.dhcp } else { $false })
+    ip = $(if ($script:pcChanges.ip) { $script:pcChanges.ip } elseif ($script:pcNet) { [string]$script:pcNet.ip } else { '' }); gw = $(if ($script:pcChanges.gw) { $script:pcChanges.gw } elseif ($script:pcNet) { [string]$script:pcNet.gw } else { '' })
+    alias = $(if ($script:pcChanges.alias) { $script:pcChanges.alias } elseif ($script:pcNet) { [string]$script:pcNet.alias } else { '' })
+    changed = ($null -ne $script:pcChanges.ifIndex -or $null -ne $script:pcChanges.coexistence_before) }   # 2.2.12: the connection check is for a PC this run touched
   if (-not $problems.Count) { Restore-PcSettings $pcc $ix ([ref]$problems) }
   if ($script:pcChanges.firewall_rule) { Remove-NetFirewallRule -DisplayName 'WireIt FixNVR discovery (temp)' -ErrorAction SilentlyContinue; Log 'temp firewall rule removed' }
   if ($problems.Count) { [void](Write-TempState); Say-CleanupFailed $problems; return $false }
@@ -945,6 +984,7 @@ function Invoke-Main {
   $cbS = [int]$cfg.camera_block_start; $cbE = [int]$cfg.camera_block_end; $chBase = [int]$cfg.camera_channel_base
   $blk = @(); for ($h = $cbS; $h -le $cbE; $h++) { if ($nvrHosts -notcontains $h) { $blk += $h } }
   $camMap = @{}   # old ip -> new ip
+  $notChecked = New-Object System.Collections.Generic.List[string]
   if ($Mode -eq 'Rollback') {
     foreach ($st0 in @(Get-FnRollbackSteps $rb)) { $plan.Add($st0) }   # 2.2.7 (F05): also the sent-but-unconfirmed steps
   } else {
@@ -960,8 +1000,10 @@ function Invoke-Main {
     if ($c.login -eq 'ok' -and $c.brand -eq 'hik' -and $c.net_xml) { $how = 'isapi' } elseif ($c.onvif) { $how = 'onvif' } else { $how = 'manual' }
     $plan.Add([pscustomobject]@{ type = 'cam-net'; how = $how; kind = 'camera'; brand = $c.brand; dev_mac = $c.mac; channel = $c.channel_id; old_ip = $c.ip; new_ip = $t; old_mask = $c.mask; new_mask = $newMask; old_gw = $c.gw; new_gw = $pc.gw; old_dns1 = $c.dns1; old_dns2 = $c.dns2; old_addressing = $c.addressing; done = $false; result = '' })
    }
+   # 2.2.12 (Codex P1-5): a recorder the tool could not log in to is NOT CHECKED, never "looks right"
+   if (-not $nvrs.Count) { $notChecked.Add('no NVR was found or identified, so no recorder was checked') }
    foreach ($n in $nvrs) {
-    if ($n.login -ne 'ok') { Say ('  Cannot change ' + (Short $n) + ' without a working login.') 'Yellow'; continue }
+    if ($n.login -ne 'ok') { Say ('  Cannot change ' + (Short $n) + ' without a working login.') 'Yellow'; $notChecked.Add((Short $n) + ': ' + $(if ($n.login -like 'REFUSED*') { 'login refused (wrong password?)' } else { 'could not log in / no answer' }) + ' - NOT CHECKED'); continue }
     if ($n.channels) {
       foreach ($ch in $n.channels) {
         if ($ch.poe -or -not $ch.ip) { continue }
@@ -995,7 +1037,13 @@ function Invoke-Main {
   # ---------- 6. preview ----------
   $rev = ($Mode -eq 'Rollback')
   Say ''; Say $(if ($rev) { '----- Rollback plan (puts things back as the Fix run found them) -----' } else { '----- Plan (nothing has been changed yet) -----' }) 'Cyan'
+  if (-not $plan.Count -and -not $rev -and $notChecked.Count) {
+    foreach ($nc in $notChecked) { Say ('NOT CHECKED: ' + $nc + '.') 'Red' }
+    Say 'Nothing was changed, but this is NOT an all-clear: the recorder was not checked. Use the right NVR login (Bitwarden) or give its address, then run again.' 'Red'
+    $script:exitCode = 2; return
+  }
   if (-not $plan.Count) { Say 'Nothing to change. Everything the tool can check looks right.' 'Green'; if ($Mode -ne 'Rollback') { $script:exitCode = 0 }; return }
+  if (-not $rev -and $notChecked.Count) { Say ''; foreach ($nc in $notChecked) { Say ('NOT CHECKED: ' + $nc + '. The plan below does not cover it.') 'Red' } }
   $i = 0
   foreach ($st in $plan) {
     $i++; $from = $(if ($rev) { $st.new_ip } else { $st.old_ip }); $to = $(if ($rev) { $st.old_ip } else { $st.new_ip })
@@ -1015,7 +1063,7 @@ function Invoke-Main {
   $plan | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $runDir 'plan.json')
   $before = @($script:devs | ForEach-Object { [ordered]@{ ip = $_.ip; mac = $_.mac; kind = $_.kind; brand = $_.brand; model = $_.model; serial = $_.serial; mask = $_.mask; gw = $_.gw; dns1 = $_.dns1; dns2 = $_.dns2; addressing = $_.addressing; platform_enabled = $_.platform_enabled; platform_online = $_.platform_online; channel = $_.channel_id; found_by = $_.found_by; login = $_.login } })
   try { Save-Json $before (Join-Path $runDir 'before.json') } catch { Log ('before.json not saved: ' + $_.Exception.Message) }
-  if ($Mode -eq 'Check') { Say ''; Say 'Check only: nothing was changed. Run "Fix NVR.cmd" (Fix mode) to apply this plan.' 'Cyan'; return }
+  if ($Mode -eq 'Check') { Say ''; Say 'Check only: nothing was changed. Run "Fix NVR.cmd" (Fix mode) to apply this plan.' 'Cyan'; if ($notChecked.Count) { Say ('Not an all-clear: ' + $notChecked.Count + ' recorder(s) NOT CHECKED (see the red lines).') 'Red'; $script:exitCode = 4 }; return }
 
   # ---------- 7. ONE confirm ----------
   Say ''
@@ -1113,23 +1161,37 @@ function Invoke-Main {
     if (-not $ConfirmWith) { [void](Read-Host 'Press Enter when done (the temporary address is removed after this)') }
   }
   # ---------- 9. verify ----------
+  # 2.2.12 (Codex P1-5): the result decides the finish. An NVR that cannot be read, a camera status that cannot be read, cameras
+  # still offline, platform access still off / not online = NOT a clean finish ("not checked" is never "checked OK").
+  $verify = New-Object System.Collections.Generic.List[string]
   if (-not $rev) {
+    foreach ($nc in $notChecked) { $verify.Add($nc) }
     Say ''; Say '----- Checking the result -----' 'Cyan'
     foreach ($n in $nvrs) {
       $n.login = ''; $n.channels = $null; Read-Dev $n
-      if ($n.login -ne 'ok') { Say ('NVR ' + $n.ip + ': cannot read it now (' + $n.login + ').') 'Red'; continue }
+      if ($n.login -ne 'ok') { Say ('NVR ' + $n.ip + ': cannot read it now (' + $(if ($n.login) { $n.login } else { 'no answer' }) + ') - NOT CHECKED.') 'Red'; $verify.Add('NVR ' + $n.ip + ' could not be read after the fix - NOT CHECKED'); continue }
       if ($n.brand -eq 'hik' -and $n.platform_enabled) {
         $end = (Get-Date).AddSeconds([int]$cfg.verify_wait_seconds)
         while (-not $n.platform_online -and (Get-Date) -lt $end) { Write-Host '  waiting for the NVR to come online in Hik-Connect ...'; Start-Sleep -Seconds 10; $ez = Http $n.ip 'GET' '/ISAPI/System/Network/EZVIZ' '' 'application/xml' $script:credNvr; $n.platform_online = ((XVal $ez.body 'registerStatus') -eq 'true') }
       }
-      Say ('NVR ' + $n.ip + ' | gateway ' + $n.gw + ' | DNS ' + $n.dns1 + ' ' + $n.dns2 + ' | platform ' + $(if ($n.platform_enabled) { 'ON' } else { 'OFF' }) + ' / ' + $(if ($n.platform_online) { 'ONLINE (app should work)' } elseif ($n.brand -eq 'unv') { 'check the EZView app' } else { 'NOT online yet' })) $(if ($n.platform_online) { 'Green' } else { 'Yellow' })
+      Say ('NVR ' + $n.ip + ' | gateway ' + $n.gw + ' | DNS ' + $n.dns1 + ' ' + $n.dns2 + ' | platform ' + $(if ($n.platform_enabled) { 'ON' } elseif ($n.platform_enabled -eq $false) { 'OFF' } else { 'NOT CHECKED' }) + ' / ' + $(if ($n.platform_online) { 'ONLINE (app should work)' } elseif ($n.brand -eq 'unv') { 'NOT CHECKED by the tool - check the EZView app' } else { 'NOT online yet' })) $(if ($n.platform_online) { 'Green' } else { 'Red' })
+      if (-not $n.platform_online) {
+        if ($n.platform_enabled -eq $false) { $verify.Add('NVR ' + $n.ip + ': platform access (Hik-Connect / EZCloud) is still OFF') }
+        elseif ($n.brand -eq 'unv') { $verify.Add('NVR ' + $n.ip + ': EZCloud online status NOT CHECKED (the tool cannot read it; check the EZView app)') }
+        elseif ($n.platform_enabled) { $verify.Add('NVR ' + $n.ip + ': platform access is on but NOT online yet (the app will not work yet)') }
+        else { $verify.Add('NVR ' + $n.ip + ': platform access NOT CHECKED (could not be read)') }
+      }
       if ($n.channels) {
         Start-Sleep -Seconds $(if ($Mock) { 0 } else { 20 })
-        $st2 = Http $n.ip 'GET' '/ISAPI/ContentMgmt/InputProxy/channels/status' '' 'application/xml' $script:credNvr
-        $onl = @{}; foreach ($mm in [regex]::Matches($st2.body, '(?s)<InputProxyChannelStatus[ >].*?</InputProxyChannelStatus>')) { $onl[(XVal $mm.Value 'id')] = ((XVal $mm.Value 'online') -eq 'true') }
-        foreach ($ch in $n.channels) { if ($onl.ContainsKey($ch.id)) { $ch.online = $onl[$ch.id] } }
+        if ($n.brand -eq 'hik') {
+          $st2 = Http $n.ip 'GET' '/ISAPI/ContentMgmt/InputProxy/channels/status' '' 'application/xml' $script:credNvr
+          if ($st2.code -ne 200) { Say ('Cameras: the NVR''s camera status could not be read now - NOT CHECKED.') 'Red'; $verify.Add('NVR ' + $n.ip + ': camera status could not be read - NOT CHECKED'); continue }
+          $onl = @{}; foreach ($mm in [regex]::Matches($st2.body, '(?s)<InputProxyChannelStatus[ >].*?</InputProxyChannelStatus>')) { $onl[(XVal $mm.Value 'id')] = ((XVal $mm.Value 'online') -eq 'true') }
+          foreach ($ch in $n.channels) { if ($onl.ContainsKey($ch.id)) { $ch.online = $onl[$ch.id] } else { $ch.online = $null } }
+        }
         $off = @($n.channels | Where-Object { -not $_.online })
-        Say ('Cameras online: ' + ($n.channels.Count - $off.Count) + ' of ' + $n.channels.Count + $(if ($off.Count) { '  | offline: ' + (($off | ForEach-Object { 'D' + $_.id + ' ' + $_.ip }) -join ', ') } else { '' })) $(if ($off.Count) { 'Yellow' } else { 'Green' })
+        Say ('Cameras online: ' + ($n.channels.Count - $off.Count) + ' of ' + $n.channels.Count + $(if ($off.Count) { '  | offline or not checked: ' + (($off | ForEach-Object { 'D' + $_.id + ' ' + $_.ip }) -join ', ') } else { '' })) $(if ($off.Count) { 'Red' } else { 'Green' })
+        if ($off.Count) { $verify.Add('NVR ' + $n.ip + ': ' + $off.Count + ' camera(s) offline or not checked (' + (($off | ForEach-Object { 'D' + $_.id }) -join ' ') + ')') }
       }
     }
   }
@@ -1137,8 +1199,12 @@ function Invoke-Main {
   # 2.2.3 (Codex #62): steps left to a person, and platform access that Undo cannot turn back off, are NOT a clean finish
   $fails += @($manual | ForEach-Object { [pscustomobject]@{ type = $_.type; done = $false; result = 'by hand' } })
   if ($rev) { foreach ($pp in @($rb.steps | Where-Object { $_.done -and $_.type -eq 'nvr-platform' })) { Say ('Undo does not turn platform access (Hik-Connect / EZCloud) back off: turn it off in the NVR''s own menu if it was off before.') 'Yellow'; $fails += [pscustomobject]@{ type = 'nvr-platform'; done = $false; result = 'by hand' } } }
+  $nSteps = $fails.Count
+  $fails += @($verify | ForEach-Object { [pscustomobject]@{ type = 'check'; done = $false; result = $_ } })
   if ($fails.Count) { $script:exitCode = 4 }
-  Say ''; Say $(if ($fails.Count) { 'Finished with ' + $fails.Count + ' step(s) not done or not confirmed (failed, by hand, or not undoable - see above). Undo everything with: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { 'Done.' + $(if (-not $rev) { ' Undo if needed: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { '' }) }) $(if ($fails.Count) { 'Yellow' } else { 'Green' })
+  Say ''
+  if ($verify.Count) { Say 'After the fix, NOT OK or NOT CHECKED:' 'Red'; foreach ($v in $verify) { Say ('  - ' + $v) 'Red' } }
+  Say $(if ($fails.Count) { 'NOT DONE - see the red lines. ' + $(if ($nSteps) { '' + $nSteps + ' step(s) not done or not confirmed (failed, by hand, or not undoable). ' } else { '' }) + $(if ($verify.Count) { '' + $verify.Count + ' check(s) after the fix not OK or not checked. ' } else { '' }) + 'Fix what is listed and run again, or undo everything with: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { 'Done.' + $(if (-not $rev) { ' Undo if needed: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { '' }) }) $(if ($fails.Count) { 'Red' } else { 'Green' })
   if (-not $rev -and $Mode -eq 'Fix' -and -not $fails.Count) { Invoke-CamViews $nvrs }
   if (-not $rev) { Say 'Tip: run "NVR Snapshot.cmd" now so the site has a known-good record.' }
 }
