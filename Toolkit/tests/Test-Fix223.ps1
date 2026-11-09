@@ -445,7 +445,7 @@ $it = Read-Src 'Toolkit/Install-Toolkit.ps1'
 Check ($fs -notmatch 'Get-FsRunnerRunsDir' -and $fw -notmatch 'siteList') '#39: the site list is read and saved by the fix itself on the tech''s login (no SYSTEM hand-over)'
 # kept protections
 Check ($fs.IndexOf('if (Test-Path -LiteralPath $tempState) { try { $nr0 = Remove-FsTempIps $tempState') -gt 0 -and $fs.IndexOf('if (Test-Path -LiteralPath $tempState) { try { $nr0') -lt $fs.IndexOf('function Done(')) '#31/#33 kept: a killed run''s temporary addresses are removed first thing on the next start'
-Check ($fs -match "trap \{ try \{ \[void\]\(Remove-FsTempIps \`$tempState\) \}" -and $fs -match 'function Done\(\[int\]\$code\) \{\s+\$nr = \$null; try \{ \$nr = Remove-FsTempIps') '#31/#33 kept: every normal or failing end cleans the network before it reports (exit 6 if not back)'
+Check ($fs -match "trap \{ \`$tnr = \`$null; try \{ \`$tnr = Remove-FsTempIps \`$tempState \}" -and $fs -match 'function Done\(\[int\]\$code\) \{\s+\$nr = \$null; try \{ \$nr = Remove-FsTempIps') '#31/#33 kept: every normal or failing end cleans the network before it reports (exit 6 if not back)'
 $ask = $fs.Substring($fs.IndexOf('function Ask('), 900)
 Check ($ask -notmatch 'Wait-FsIpcAnswer' -and $ask -match 'Read-Host') '#34 kept: a question waits for the person; closing the window ends the run (no timeout turns into "continue")'
 foreach ($cr in @('CamReset/Find-Cameras.ps1', 'CamReset/Make-Request.ps1')) { $src = Read-Src $cr; Check ($src -match 'LOCALAPPDATA' -and $src -match 'catch \{\}') ('#46 kept: ' + $cr + ' logs where it can write and never fails on the log') }

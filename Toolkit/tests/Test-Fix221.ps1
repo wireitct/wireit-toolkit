@@ -125,7 +125,7 @@ Check ($r.ok -and -not @($sim.addrs | Where-Object { $_.ip -eq '192.168.0.253' }
 $script:FsNetOps = $null
 # 2.2.3: no task any more - a run that was killed is cleaned up when Fix this site next starts
 Check ($fs -match 'if \(Test-Path -LiteralPath \$tempState\) \{ try \{ \$nr0 = Remove-FsTempIps \$tempState') 'a killed run''s network is put back when Fix this site starts again (2.2.3: replaces the task''s finally)'
-Check ($fs -match 'trap \{ try \{ \[void\]\(Remove-FsTempIps') 'FixSite itself cleans up on an error that stops it'
+Check ($fs -match 'trap \{ \$tnr = \$null; try \{ \$tnr = Remove-FsTempIps') 'FixSite itself cleans up on an error that stops it'
 
 # =====================================================================================
 Write-Host 'H1/H8. password calls over HTTPS first; exact undo (mock site)'

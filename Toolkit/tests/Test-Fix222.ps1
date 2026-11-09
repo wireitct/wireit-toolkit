@@ -184,7 +184,7 @@ $script:FsNetOps['state'] = { param($a) $script:sim.n = 1 + [int]$script:sim.n; 
 $r = Remove-FsTempIps $st4
 Check (-not $r.ok -and (@($r.problems) -join ' ') -match 'could not be read back' -and (Test-Path -LiteralPath $st4)) 'reproduction: the check-read fails = NOT back (2.2.1 swallowed it and deleted the state)'
 $script:FsRestoreChecks = 5; $script:FsNetOps = $null; $script:FsTemps.Clear(); $script:FsPcBefore = $null
-Check ($fs -match "if \(\`$nr -and -not \`$nr\.ok -and \`$code -in @\(0, 4\)\) \{ \`$code = 6 \}") 'reproduction: FixSite with the network not back exits 6, not success'
+Check ($fs -match "if \(\`$nr -and -not \`$nr\.ok\) \{ \`$code = 6 \}") 'reproduction: FixSite with the network not back exits 6, not success'
 # 2.2.3: the SYSTEM runner check is gone with the runner (FixSite's own Done() exit 6 is checked above)
 Check ((Get-FsExitWords 6) -match 'network could not be put back') 'the window says it in words (code 6)'
 
