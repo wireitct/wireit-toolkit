@@ -381,6 +381,8 @@ if ($Mode -eq 'Rollback') {
       $ip = [string]$c.ip_before; if (-not (Test-FsOnScheme $ip $pcScheme)) { [void](Add-FsTempIp (Get-FsP3 $ip) $pc $tempState) }
       foreach ($cand in $candsR) { if ($cand -and (Test-FsLogin $ip $c.brand $cand) -eq 'ok') { $pw = $cand; $ipNew = ''; break } }
     }
+    # 2.2.7 (F01): a missing camera that came back and was put on its channel: the channel goes back even when the camera is gone again
+    if (-not $pw -and $c.PSObject.Properties['recovered'] -and $c.recovered) { $pw = [string]$sec.password }
     if (-not $pw) { Say ('  ' + $c.name + ': cannot log in at ' + $ip + ' - not undone ' + $script:FsBad) 'Red'; $bad++; continue }
     $cr = Fs-Cred $pw
     if ($c.stream_before -and -not (& $isDone ($ck + '|settings')) -and -not ($cur = Get-FsStream $ip $c.brand $cr)) { $res += [pscustomobject]@{ text = 'settings could not be read - not put back'; ok = $false } }   # 2.2.3 (Codex #20)
@@ -420,7 +422,16 @@ if ($Mode -eq 'Rollback') {
       if (-not $nvrPwR.ContainsKey($nv)) { $res += [pscustomobject]@{ text = ('NVR ' + $nv + ': no saved login - put ch ' + $c.nvr.channel + ' back by hand'); ok = $false } }
       else {
         $ncr = Fs-Cred $nvrPwR[$nv]; $bfile = $(if ($c.nvr.PSObject.Properties['before_file'] -and [string]$c.nvr.before_file) { Join-Path $RollbackDir (([string]$c.nvr.before_file) -replace '[\\/]', [string][IO.Path]::DirectorySeparatorChar) } else { '' })
-        if ([string]$c.nvr.action -eq 'added') { $ok = Remove-FsNvrChannel $nv $ncr ([int]$c.nvr.channel); $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' that the run added: removed'); ok = $ok } }
+        if ([string]$c.nvr.action -eq 'pending' -and -not ($bfile -and (Test-Path -LiteralPath $bfile))) {
+          # 2.2.7 (F01): the run stopped while it changed this channel and no saved copy exists = the channel did not exist before
+          # (it was being ADDED). Removed again only when it is there and points at this camera; otherwise nothing was changed.
+          $cur = @(Get-FsNvrChannels $nv $ncr | Where-Object { [int]$_.channel -eq [int]$c.nvr.channel })
+          $mine = @($cur | Where-Object { [string]$_.ip -in @([string]$c.ip_before, [string]$c.ip_after, [string]$(if ($c.PSObject.Properties['ip_target']) { $c.ip_target } else { '' })) })
+          if ($mine.Count) { $ok = Remove-FsNvrChannel $nv $ncr ([int]$c.nvr.channel); $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' that the stopped run was adding: removed'); ok = $ok } }
+          elseif ($cur.Count) { $ok = $true; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ': not changed by the stopped run'); ok = $true } }
+          else { $ok = $true; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ': was never added'); ok = $true } }
+        }
+        elseif ([string]$c.nvr.action -eq 'added') { $ok = Remove-FsNvrChannel $nv $ncr ([int]$c.nvr.channel); $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' that the run added: removed'); ok = $ok } }
         elseif ($bfile -and (Test-Path -LiteralPath $bfile)) { $w = Restore-FsNvrChannel $nv $ncr ([int]$c.nvr.channel) ([IO.File]::ReadAllText($bfile)) $pw; $ok = [bool]$w.ok; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' back exactly as it was'); ok = $ok } }
         else { $w = Set-FsNvrChannel $nv $ncr ([int]$c.nvr.channel) ([string]$c.ip_before) $pw $c.brand ''; $ok = [bool]$w.ok; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' back to ' + $c.ip_before + ' (no saved copy of the channel)'); ok = $ok } }
         Say-PlainWarning $nv
@@ -971,6 +982,9 @@ foreach ($c in $ordered) {
     else {
       $ch = [int]$c.channel
       if (-not $ch) { $chs = @(Get-FsNvrChannels $c.nvr $nvrCred[$c.nvr]); $ch = Get-FsFreeNvrChannel $chs $ip ([string]$rbc.ip_before); if (-not $ch) { $used = @($chs | ForEach-Object { $_.channel }); for ($k = 1; $k -le 64; $k++) { if ($used -notcontains $k) { $ch = $k; break } } } }
+      # 2.2.7 (Codex file-by-file F01): the channel goes into the undo file BEFORE the NVR is changed ("pending"); a run stopped
+      # right after the NVR took the change still lets Undo put the channel back (its saved copy, or remove a channel it added)
+      $rbc.nvr = [ordered]@{ nvr = $c.nvr; channel = $ch; action = 'pending'; before_file = ('backup\nvr-' + $c.nvr + '-ch' + $ch + '.xml') }; Save-Rb
       $w = Set-FsNvrChannel $c.nvr $nvrCred[$c.nvr] $ch $ip $pw $c.brand (Join-Path $runDir 'backup'); Say-PlainWarning $c.nvr
       $rbc.nvr = [ordered]@{ nvr = $c.nvr; channel = $ch; action = $w.action; before_file = $(if ($w.before) { 'backup\nvr-' + $c.nvr + '-ch' + $ch + '.xml' } else { '' }) }; Save-Rb
       & $step ('back on NVR ch ' + $ch) ([bool]$w.ok); $c.channel = $ch
@@ -1011,7 +1025,12 @@ foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'missing' })) {
     $pr = Invoke-FsPoeCycle $siteId $c.mac $portMapDir
     if ($pr.state -eq 'done') {
       $back = $false; if ($c.listIp) { $back = Wait-FsDevice $c.listIp $c.brand $sitePw 120 }
-      if ($back -and $c.nvr -and $nvrCred.ContainsKey($c.nvr) -and $c.channel) { $w = Set-FsNvrChannel $c.nvr $nvrCred[$c.nvr] ([int]$c.channel) $c.listIp $sitePw $c.brand (Join-Path $runDir 'backup'); $vid = Test-FsVideo $c.nvr $nvrCred[$c.nvr] ([int]$c.channel) $c.listIp $c.brand (Fs-Cred $sitePw); $line = Format-FsCheckLine $c.name @([pscustomobject]@{ text = ('power-cycled ' + $c.switch + ' port ' + $c.port); ok = $true }, [pscustomobject]@{ text = 'video back'; ok = $vid }) }
+      if ($back -and $c.nvr -and $nvrCred.ContainsKey($c.nvr) -and $c.channel) {
+        # 2.2.7 (F01): this channel change gets its own undo entry first, like every other change
+        $rbm = [ordered]@{ name = $c.name; mac = $c.mac; brand = $c.brand; ip_before = $c.listIp; ip_after = ''; net_before = $null; stream_before = $null; password_changed = $false; recovered = $true; backup = ''
+                           nvr = [ordered]@{ nvr = $c.nvr; channel = [int]$c.channel; action = 'pending'; before_file = ('backup\nvr-' + $c.nvr + '-ch' + [int]$c.channel + '.xml') } }
+        $rb.cameras += $rbm; Save-Rb
+        $w = Set-FsNvrChannel $c.nvr $nvrCred[$c.nvr] ([int]$c.channel) $c.listIp $sitePw $c.brand (Join-Path $runDir 'backup'); $rbm.nvr.action = $w.action; if (-not $w.before) { $rbm.nvr.before_file = '' }; Save-Rb; $vid = Test-FsVideo $c.nvr $nvrCred[$c.nvr] ([int]$c.channel) $c.listIp $c.brand (Fs-Cred $sitePw); $line = Format-FsCheckLine $c.name @([pscustomobject]@{ text = ('power-cycled ' + $c.switch + ' port ' + $c.port); ok = $true }, [pscustomobject]@{ text = 'video back'; ok = $vid }) }
       elseif ($back) { $line = Format-FsCheckLine $c.name @([pscustomobject]@{ text = ('power-cycled ' + $c.switch + ' port ' + $c.port + ', answers again'); ok = $true }) }
       else { $line = $c.name + ': power-cycled ' + $c.switch + ' port ' + $c.port + ', still missing - go check port ' + $c.port + ' (cable, camera)' + ' ' + $script:FsBad }
     } else { $line = $c.name + ': missing - ' + ($c.why -join '; ') + ' ' + $script:FsBad }
