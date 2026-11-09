@@ -387,7 +387,10 @@ $eml = "From: noreply@hikvision.com`r`nSubject: Reset`r`nMIME-Version: 1.0`r`nCo
 $msgs = @(Get-HikFolderMessages $md ((Get-Date).AddHours(-1)))
 $codeAtt = @($msgs[0].attachments | Where-Object { $_.name -like '*-code.txt' })
 Check ($codeAtt.Count -eq 1 -and [Text.Encoding]::ASCII.GetString($codeAtt[0].bytes) -eq 'AB12CD34') 'a mail with a logo attached: the code in its text is still found (2.2.0 only read it with no attachments)'
-Check ((Read-Src 'Toolkit/HikMail.ps1') -match "notmatch '\(\?i\)\\\.\(png\|jpe\?g") 'a picture or PDF is never taken as the unlock file'
+# 2.2.8: was a check of the source text (the 2.2.1 picture filter's regex); HikMail now judges each attachment in
+# Test-HikReplyCandidate, so the same rule is checked by behaviour: a picture or a PDF carrying our serial is never the unlock file
+$pp = Find-HikReplyMatches @([pscustomobject]@{ serial = 'DS-2CD2143G2-I20231111AAWRJ12345678'; shortSerial = 'J12345678'; mac = '' }) @([pscustomobject]@{ subject = 'Reset'; id = 'p1'; text = 'serial J12345678'; attachments = @([pscustomobject]@{ name = 'J12345678.png'; bytes = [byte[]](137, 80, 78, 71); type = 'image/png' }, [pscustomobject]@{ name = 'DS-2CD2143G2-I20231111AAWRJ12345678.pdf'; bytes = [Text.Encoding]::ASCII.GetBytes('%PDF J12345678'); type = 'application/pdf' }) })
+Check (-not @($pp.matched).Count) 'a picture or PDF is never taken as the unlock file'
 
 # =====================================================================================
 Write-Host 'M6. the window fits a 768-pixel screen'

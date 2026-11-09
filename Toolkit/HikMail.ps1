@@ -130,38 +130,89 @@ function Get-HikRelayReply($Relay, [string]$Key, $Device, [int]$TimeoutSec = 20)
   return [pscustomobject]@{ state = 'found'; msg = ''; message = $msg }
 }
 # ---------------- matching ----------------
-# $Devices = state devices (serial, shortSerial, mac). Returns [{ device; name; bytes; how; mail }] and the unmatched ones.
-function Find-HikReplyMatches($Devices, $Messages) {
-  $l1 = Hm-Latin1; $matches2 = @(); $un = @()
+# 2.2.8 (3 Hewlett, Nov 8 2026): Hikvision sent two "Reset Password" emails, one with the key file and one with none. Toolkit 2.1.0
+# crashed on the empty one ("GetString ... Array cannot be null") and then said "matches no device here: (no serial or MAC of ours
+# in it)", so the real file was never used. Every email and every attachment is now judged on its own, inside its own try: one that
+# cannot be used is listed in "skipped" with a plain reason and never stops the others.
+# A file Hikvision's reply can be: .xml (what Hik sends), a code in a .txt (the relay / the "I got Hik's email" button), or any
+# other name whose contents are xml text or one code-like token. Everything else is "not an xml file".
+$script:HikNotXmlName = '(?i)\.(png|jpe?g|gif|bmp|tiff?|webp|ico|svg|pdf|html?|docx?|xlsx?|pptx?|zip|rar|7z|exe|dll|bat|cmd|ps1|js|vbs|lnk|json|csv|mp4|mov)$'
+function Test-HikReplyCandidate($a) {
+  # returns '' when the attachment can be Hikvision's reply, else the reason (plain words)
+  if ($null -eq $a) { return 'it has no attachment' }
+  if ($null -eq $a.bytes) { return 'the file is empty' }
+  $b = $null; if ($a.bytes -is [byte[]]) { $b = $a.bytes } else { try { $b = [byte[]]@($a.bytes) } catch { return 'the file could not be read' } }
+  if ($b.Length -eq 0) { return 'the file is empty' }
+  $nm = [string]$a.name; $ty = [string]$a.type
+  if ($nm -match $script:HikNotXmlName -or $ty -match '(?i)^(image/|application/pdf|text/html|video/|audio/)') { return 'not an xml file' }
+  if ($nm -match '(?i)\.xml$') { return '' }
+  $t = (Hm-Latin1).GetString($b).Trim()
+  if ($t -match '[\x00-\x08\x0E-\x1F]') { return 'not an xml file' }
+  if ($nm -match '(?i)\.txt$') { if ($t -match '^[A-Za-z0-9+/=_-]{4,64}$') { return '' }; return 'a text file with no Hikvision code in it' }
+  if ($t.StartsWith('<') -or ($t.Length -le 4000 -and $t -match '^\S+$')) { return '' }
+  return 'not an xml file'
+}
+# a Hikvision serial named in a file name or its text: <model><yyyymmdd><4 letters><short serial>, e.g. ECI-T44F220220903AAWRK52336660
+function Get-HikSerialsIn([string]$Text) {
+  if (-not $Text) { return @() }
+  $out = @(); foreach ($m in [regex]::Matches($Text, '(?i)(?<![A-Za-z0-9])([A-Z0-9][A-Z0-9-/]{1,30}?20\d{6}[A-Z]{4}[A-Z]\d{8})(?![0-9])')) { $v = $m.Groups[1].Value.ToUpper(); if ($out -notcontains $v) { $out += $v } }
+  return @($out)
+}
+# WHY a file matched none of the devices waiting for a reply. $Known = every device this site's reset knows (any status).
+function Get-HikUnmatchedWhy([string]$Name, [string]$Text, [string]$How, $Devices, $Known) {
+  if ($How -eq 'ambiguous') { return 'it could belong to more than one device here' }
+  $sers = @(Get-HikSerialsIn ([uri]::UnescapeDataString([string]$Name) + ' ' + [string]$Text))
+  foreach ($s in $sers) {
+    $k = $null; foreach ($d in @($Known)) { if ($d -and ([string]$d.serial).ToUpper() -eq $s) { $k = $d; break } }
+    if ($k) { return ('it is for serial ' + $s + ' (' + [string]$k.model + ' ' + [string]$k.ip + '), which is on this site but not waiting for a reply (status: ' + [string]$k.status + ')') }
+  }
+  if ($sers.Count) { return ('it is for serial ' + $sers[0] + ', which is not on this site') }
+  return 'no serial or MAC found in its name or contents'
+}
+# $Devices = state devices (serial, shortSerial, mac) waiting for a reply. $Known (optional) = all devices of the site, to say why a
+# file matched none. Returns { matched = [{ device; name; bytes; how; mail; src; date }]; unmatched = [{ name; bytes; mail; why; src; date }];
+#   skipped = [{ mail; src; name; why; date; quiet }] }  (quiet = an extra attachment beside a usable one, e.g. a logo: not said on screen)
+function Find-HikReplyMatches($Devices, $Messages, $Known = $null) {
+  $l1 = Hm-Latin1; $matches2 = @(); $un = @(); $sk = @()
+  if ($null -eq $Known) { $Known = $Devices }
   foreach ($m in @($Messages)) {
     if ($null -eq $m) { continue }
-    $cands = @()
-    foreach ($a in @($m.attachments)) {
-      if ($null -eq $a -or $null -eq $a.bytes) { continue }
-      # 2.2.2 (Codex M5): a picture or a PDF is never the unlock file - also when its name or text carries our serial (2.2.1 only
-      # filtered them on the mail-text path, so "SN123.pdf" could be imported as the unlock file)
-      if (([string]$a.name) -match '(?i)\.(png|jpe?g|gif|bmp|tiff?|webp|pdf|html?|docx?|xlsx?)$' -or [string]$a.type -match '(?i)^(image/|application/pdf|text/html)') { continue }
-      $cands += [pscustomobject]@{ name = $a.name; bytes = $a.bytes; fromFile = $false }
-    }
-    foreach ($c in $cands) {
-      $txt = $l1.GetString($c.bytes); $hit = $null; $how = ''
-      $matchName = [uri]::UnescapeDataString([string]$c.name)
-      foreach ($d in @($Devices)) {
-        $sn = [string]$d.serial; $sh = [string]$d.shortSerial; $mac = ([string]$d.mac) -replace '[-:]', ''
-        if ($sn -and ($matchName -like ('*' + $sn + '*') -or $txt -like ('*' + $sn + '*'))) { $hit = $d; $how = 'serial'; break }
+    $subj = ''; $src = ''; $mdate = ''
+    try { $subj = [string]$m.subject; if ($m.PSObject.Properties['mailSubject'] -and [string]$m.mailSubject) { $subj = [string]$m.mailSubject }; $src = [string]$m.id; $mdate = [string]$m.date } catch {}
+    if ($m.PSObject.Properties['error'] -and [string]$m.error) { $sk += [pscustomobject]@{ mail = $subj; src = $src; name = ''; why = ('the email could not be read (' + [string]$m.error + ')'); date = $mdate; quiet = $false }; continue }
+    try {
+      $cands = @(); $bad = @()
+      foreach ($a in @($m.attachments)) {
+        if ($null -eq $a) { continue }
+        $why = Test-HikReplyCandidate $a
+        if ($why) { $bad += [pscustomobject]@{ mail = $subj; src = $src; name = [string]$a.name; why = $why; date = $mdate; quiet = $false }; continue }
+        $cands += [pscustomobject]@{ name = [string]$a.name; bytes = $(if ($a.bytes -is [byte[]]) { $a.bytes } else { [byte[]]@($a.bytes) }); fromFile = $false }
       }
-      if (-not $hit) { foreach ($d in @($Devices)) { $sh = [string]$d.shortSerial; if ($sh -and ($c.name -like ('*' + $sh + '*') -or $txt -like ('*' + $sh + '*'))) { if ($hit) { $hit = $null; $how = 'ambiguous'; break }; $hit = $d; $how = 'short serial' } } }
-      if (-not $hit) { foreach ($d in @($Devices)) { $mac = ([string]$d.mac) -replace '[-:]', ''; if ($mac -and (($txt -replace '[-:]', '') -match ('(?i)' + $mac))) { $hit = $d; $how = 'MAC'; break } } }
-      if (-not $hit -and $how -ne 'ambiguous' -and $m.text -and ([string]$c.name) -notmatch '(?i)\.(png|jpe?g|gif|bmp|pdf|html?)$') {   # 2.2.1: never a picture or a PDF as the unlock file
-        # 2.2.0: else the mail's own text (a code mail names the serial in its text, the attachment is only the code)
-        $mt = [string]$m.text; $cnt = 0
-        foreach ($d in @($Devices)) { $sn = [string]$d.serial; $sh = [string]$d.shortSerial; if (($sn -and $mt -like ('*' + $sn + '*')) -or ($sh -and $mt -like ('*' + $sh + '*'))) { $cnt++; $hit = $d; $how = 'serial in the mail text' } }
-        if ($cnt -gt 1) { $hit = $null; $how = 'ambiguous' }
+      if (-not $cands.Count -and -not $bad.Count) { $sk += [pscustomobject]@{ mail = $subj; src = $src; name = ''; why = 'it has no attachment'; date = $mdate; quiet = $false } }
+      foreach ($x in $bad) { $x.quiet = [bool]$cands.Count; $sk += $x }
+      foreach ($c in $cands) {
+        try {
+          $txt = $l1.GetString($c.bytes); $hit = $null; $how = ''
+          $matchName = [uri]::UnescapeDataString([string]$c.name)
+          foreach ($d in @($Devices)) {
+            $sn = [string]$d.serial
+            if ($sn -and ($matchName -like ('*' + $sn + '*') -or $txt -like ('*' + $sn + '*'))) { $hit = $d; $how = 'serial'; break }
+          }
+          if (-not $hit) { foreach ($d in @($Devices)) { $sh = [string]$d.shortSerial; if ($sh -and ($c.name -like ('*' + $sh + '*') -or $txt -like ('*' + $sh + '*'))) { if ($hit) { $hit = $null; $how = 'ambiguous'; break }; $hit = $d; $how = 'short serial' } } }
+          if (-not $hit -and $how -ne 'ambiguous') { foreach ($d in @($Devices)) { $mac = ([string]$d.mac) -replace '[-:]', ''; if ($mac -and (($txt -replace '[-:]', '') -match ('(?i)' + $mac))) { $hit = $d; $how = 'MAC'; break } } }
+          if (-not $hit -and $how -ne 'ambiguous' -and $m.text) {
+            # 2.2.0: else the mail's own text (a code mail names the serial in its text, the attachment is only the code)
+            $mt = [string]$m.text; $cnt = 0
+            foreach ($d in @($Devices)) { $sn = [string]$d.serial; $sh = [string]$d.shortSerial; if (($sn -and $mt -like ('*' + $sn + '*')) -or ($sh -and $mt -like ('*' + $sh + '*'))) { $cnt++; $hit = $d; $how = 'serial in the mail text' } }
+            if ($cnt -gt 1) { $hit = $null; $how = 'ambiguous' }
+          }
+          if ($hit) { $matches2 += [pscustomobject]@{ device = $hit; name = $c.name; bytes = $c.bytes; how = $how; mail = $subj; src = $src; date = $mdate } }
+          else { $un += [pscustomobject]@{ name = $c.name; bytes = $c.bytes; mail = $subj; src = $src; date = $mdate; why = (Get-HikUnmatchedWhy $c.name $txt $how $Devices $Known) } }
+        } catch { $sk += [pscustomobject]@{ mail = $subj; src = $src; name = [string]$c.name; why = ('the file could not be read (' + $_.Exception.Message + ')'); date = $mdate; quiet = $false } }
       }
-      if ($hit) { $matches2 += [pscustomobject]@{ device = $hit; name = $c.name; bytes = $c.bytes; how = $how; mail = $m.subject; src = [string]$m.id } } else { $un += [pscustomobject]@{ name = $c.name; bytes = $c.bytes; mail = $m.subject; why = $(if ($how -eq 'ambiguous') { 'could belong to more than one device' } else { 'no serial or MAC of ours in it' }) } }
-    }
+    } catch { $sk += [pscustomobject]@{ mail = $subj; src = $src; name = ''; why = ('the email could not be read (' + $_.Exception.Message + ')'); date = $mdate; quiet = $false } }
   }
-  return [pscustomobject]@{ matched = $matches2; unmatched = $un }
+  return [pscustomobject]@{ matched = $matches2; unmatched = $un; skipped = $sk }
 }
 # a Hikvision code written in a mail's text (no attachment). Returns '' when there is none. UNVERIFIED: shape of Hik's code mail not seen yet.
 # 2.2.2 (re-review M5): only a LABELLED code: "code" / "key" (optionally "verification", "security", "reset", "unlock" before it),
@@ -193,23 +244,40 @@ function Read-HikZipEntries([string]$Path) {
   } catch { return @() } finally { if ($zip) { $zip.Dispose() } }
   return $out
 }
+# 2.2.8: when a reply arrived, as local time ($null = not known). Takes the ISO times the relay sends (UTC, "Z"), the 's' times this
+# Toolkit writes (local) and an email's own Date header ("Sun, 8 Nov 2026 21:01:12 -0500 (EST)").
+function ConvertTo-HikLocalTime([string]$s) {
+  $s = ([string]$s).Trim(); if (-not $s) { return $null }
+  $s = ($s -replace '\s*\([^)]*\)\s*$', '').Trim()
+  $o = [DateTimeOffset]::MinValue
+  if ([DateTimeOffset]::TryParse($s, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeLocal, [ref]$o)) { return $o.LocalDateTime }
+  $s2 = $s -replace '^[A-Za-z]{3},\s*', ''
+  foreach ($f in @('d MMM yyyy HH:mm:ss zzz', 'd MMM yyyy HH:mm zzz', 'd MMM yyyy HH:mm:ss')) {
+    $t = ($s2 -replace '([+-]\d\d)(\d\d)$', '$1:$2')
+    if ([DateTimeOffset]::TryParseExact($t, $f, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeLocal, [ref]$o)) { return $o.LocalDateTime }
+  }
+  return $null
+}
 # folder mode: every regular file in $Dir newer than $Since becomes a pseudo-message with one attachment (.zip = its files, .eml = its attachments or code)
+# 2.2.8: an .eml carries its own Date (when Hikvision's email arrived), not the time the file was saved; a file that cannot be read
+# is a message with "error" set (said as skipped), never a stop for the other files.
 function Get-HikFolderMessages([string]$Dir, [datetime]$Since) {
   $out = @()
   if (-not $Dir -or -not (Test-Path -LiteralPath $Dir)) { return $out }
   foreach ($f in @(Get-ChildItem -LiteralPath $Dir -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $Since -and $_.Length -lt 5MB -and $_.Name -notlike '*.json' -and $_.Name -notlike '*.tmp' })) {
-    $att = New-Object System.Collections.ArrayList; $text = ''
-    if ($f.Extension -match '(?i)\.zip$') { foreach ($z in @(Read-HikZipEntries $f.FullName)) { [void]$att.Add([pscustomobject]@{ name = ($f.BaseName + '-' + $z.name); bytes = $z.bytes; type = 'file' }) } }   # 2.2.3 (Codex #56)
-    elseif ($f.Extension -match '(?i)\.eml$') {
-      try {
-        $mm = Read-MimeMessage ([IO.File]::ReadAllBytes($f.FullName)); $text = [string]$mm.text
-        foreach ($a in @($mm.attachments)) { [void]$att.Add([pscustomobject]@{ name = ($f.BaseName + '-' + $a.name); bytes = $a.bytes; type = $a.type }) }
+    $att = New-Object System.Collections.ArrayList; $text = ''; $date = $f.LastWriteTime.ToString('s'); $subj = ''; $err = ''
+    try {
+      if ($f.Extension -match '(?i)\.zip$') { foreach ($z in @(Read-HikZipEntries $f.FullName)) { [void]$att.Add([pscustomobject]@{ name = ($f.BaseName + '-' + $z.name); bytes = $z.bytes; type = 'file' }) } }   # 2.2.3 (Codex #56)
+      elseif ($f.Extension -match '(?i)\.eml$') {
+        $mm = Read-MimeMessage ([IO.File]::ReadAllBytes($f.FullName)); $text = [string]$mm.text; $subj = [string]$mm.subject
+        $md = ConvertTo-HikLocalTime ([string]$mm.date); if ($md) { $date = $md.ToString('s') }
+        foreach ($a in @($mm.attachments)) { if ($null -eq $a) { continue }; [void]$att.Add([pscustomobject]@{ name = ($f.BaseName + '-' + $a.name); bytes = $a.bytes; type = $a.type }) }
         # 2.2.1 (review M5): a code written in the mail's text counts too - also when the mail has other attachments (a logo, a PDF)
         $code = Get-HikCodeFromText $text; if ($code) { [void]$att.Add([pscustomobject]@{ name = ($f.BaseName + '-code.txt'); bytes = [Text.Encoding]::ASCII.GetBytes($code); type = 'text/plain' }) }
-      } catch {}
-    }
-    else { [void]$att.Add([pscustomobject]@{ name = $f.Name; bytes = [IO.File]::ReadAllBytes($f.FullName); type = 'file' }) }
-    $out += [pscustomobject]@{ from = 'folder'; subject = $f.Name; date = $f.LastWriteTime.ToString('s'); text = $text; attachments = @($att); id = $f.FullName }
+      }
+      else { [void]$att.Add([pscustomobject]@{ name = $f.Name; bytes = [IO.File]::ReadAllBytes($f.FullName); type = 'file' }) }
+    } catch { $err = [string]$_.Exception.Message }
+    $out += [pscustomobject]@{ from = 'folder'; subject = $f.Name; mailSubject = $subj; date = $date; text = $text; attachments = @($att); id = $f.FullName; error = $err }
   }
   return $out
 }
