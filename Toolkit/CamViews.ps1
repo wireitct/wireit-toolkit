@@ -187,14 +187,26 @@ function Set-CvKey {
   $sec = Read-Host 'Paste the upload key (the service log "push key"; hidden)' -AsSecureString
   $k = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
   if ($k -notmatch '^[A-Za-z0-9_-]{24,}$') { CvSay 'That does not look like the key (24+ letters/digits). Nothing saved.' 'Red'; return }
-  Add-Type -AssemblyName System.Security
+  [void](Save-CvKey $k); $k = $null
+}
+# 2.2.7 (Codex file-by-file F08): the secrets folder is locked (Administrators + SYSTEM + this login, nothing inherited) BEFORE the key
+# goes in, and the lock's own answer is checked: a folder that could not be locked gets no key, and the tech is not told it was saved.
+# 2.2.6 wrote the key first, locked the folder afterwards, ignored icacls' exit code and always said "Upload key saved".
+function Save-CvKey([string]$k) {
   $dir = Join-Path $script:CvHere 'secrets'; New-Item -ItemType Directory -Force -Path $dir | Out-Null
-  $b = [Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes((@{ key = $k } | ConvertTo-Json -Compress)), [Text.Encoding]::ASCII.GetBytes('WireIt-Toolkit-v1'), [Security.Cryptography.DataProtectionScope]::LocalMachine)
-  [IO.File]::WriteAllBytes((Join-Path $dir 'upload-key.bin'), $b)
-  try { & icacls.exe $dir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' ($env:USERNAME + ':(OI)(CI)F') | Out-Null } catch {}
+  $me = Get-CvSaverSid; $a = @($dir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F'); if ($me) { $a += ('*' + $me + ':(OI)(CI)F') } elseif ($env:USERNAME) { $a += ($env:USERNAME + ':(OI)(CI)F') }
+  $locked = $false
+  if ($script:CvAclRun) { $locked = ([int](& $script:CvAclRun $a) -eq 0) } else { try { $null = & icacls.exe @a 2>&1; $locked = ($LASTEXITCODE -eq 0) } catch { $locked = $false } }
+  if (-not $locked) { CvSay 'The upload key was NOT saved: its folder could not be locked to Administrators (run the Toolkit as an admin and try again).' 'Red'; return $false }
+  $data = [Text.Encoding]::UTF8.GetBytes((@{ key = $k } | ConvertTo-Json -Compress))
+  if ($script:CvDpapi) { $b = [byte[]](& $script:CvDpapi 'protect' $data) }
+  else { Add-Type -AssemblyName System.Security; $b = [Security.Cryptography.ProtectedData]::Protect($data, [Text.Encoding]::ASCII.GetBytes('WireIt-Toolkit-v1'), [Security.Cryptography.DataProtectionScope]::LocalMachine) }
+  $kf = Join-Path $dir 'upload-key.bin'
+  try { [IO.File]::WriteAllBytes($kf, $b) } catch { CvSay ('The upload key was NOT saved: ' + $_.Exception.Message) 'Red'; return $false }
   # 2.2.4 (#26): every local admin USER may read this one file without elevation (UAC); the folder stays admins + SYSTEM + you
-  try { $mg = Join-Path $script:CvHere 'ToolkitMigrate.ps1'; if (Test-Path -LiteralPath $mg) { . $mg; $ops = Get-TkRealOps; foreach ($u in @(& $ops.adminUsers)) { [void](& $ops.icacls (Get-TkKeyReadArgs (Join-Path $dir 'upload-key.bin') $u)) } } } catch {}
+  try { $mg = Join-Path $script:CvHere 'ToolkitMigrate.ps1'; if (Test-Path -LiteralPath $mg) { . $mg; $ops = Get-TkRealOps; foreach ($u in @(& $ops.adminUsers)) { [void](& $ops.icacls (Get-TkKeyReadArgs $kf $u)) } } } catch {}
   CvSay 'Upload key saved on this PC (encrypted, this PC only).' 'Green'
+  return $true
 }
 
 # ---- send (outbox when it can't) ----
@@ -365,8 +377,12 @@ function Save-CvSite([string]$nvr, [string]$site, [string]$user, [string]$vendor
   $b = Invoke-CvDpapi 'protect' ([Text.Encoding]::UTF8.GetBytes((@{ user = $user; pw = $plain } | ConvertTo-Json -Compress)))
   $plain = $null
   $tmp = $f + '.' + [guid]::NewGuid().ToString('N').Substring(0, 12) + '.tmp'   # 2.2.5: a unique temp name (a stale locked .tmp from another run never blocks this one)
-  [IO.File]::WriteAllBytes($tmp, $b)
+  # 2.2.7 (Codex file-by-file F08): the file is created EMPTY and locked first, and only then gets the login. 2.2.6 wrote the encrypted
+  # login and locked it afterwards: for that moment (or for good, if the lock then failed and the delete did too) anyone who could
+  # read the folder could read the file - and machine-wide DPAPI lets any login on this PC decrypt it.
+  [IO.File]::WriteAllBytes($tmp, [byte[]]@())
   if (-not (Set-CvPrivateFile $tmp)) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw 'the NVR login was NOT remembered: its file could not be locked to Administrators (run it as an admin)' }
+  try { [IO.File]::WriteAllBytes($tmp, $b) } catch { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw ('the NVR login was NOT remembered: ' + $_.Exception.Message) }
   Move-CvIntoPlace $tmp $f
   $lf = Get-CvCredFile $nvr -Legacy; if (Test-Path -LiteralPath $lf) { Remove-Item -LiteralPath $lf -Force -ErrorAction SilentlyContinue }   # the 2.2.0 copy in secrets\ (Crew could read that folder)
   $list = @(Get-CvSites | Where-Object { $_.nvr -ne $nvr }) + @([pscustomobject]@{ nvr = $nvr; site = $site; vendor = $vendor; recorder = $rec })
