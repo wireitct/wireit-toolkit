@@ -1,8 +1,8 @@
 {
   "version": "2.2.13",
   "released": "2026-11-10",
-  "commit": "8892106ba64ff8e4ca278483ea047d073cc39034",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/8892106ba64ff8e4ca278483ea047d073cc39034/",
+  "commit": "c2cb6a599defb8b85246ed95c89629084402443f",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/c2cb6a599defb8b85246ed95c89629084402443f/",
   "notes": "2.2.13: every Codex NO-GO finding of 2.2.12 fixed (Fix this site never changes a camera password unless every recorder of it can be updated and checked; classic Fix NVR with nothing to change, or a missing channel list after a fix, is NOT DONE / NOT CHECKED, never the all-right; Restore Network never switches WifiWatch off and says it is back on only when Windows says so, label 'Reset chosen adapter to DHCP' with saved settings and restore steps; retention measures real gaps between clips; re-add camera, recording repair and camera restart are confirmed only by a real read-back / uptime). Not yet run on real gear.",
   "files": [
     {
@@ -152,8 +152,8 @@
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrHealth.psm1",
-      "sha256": "627c290cb0c533bdc1ba2a366f0f6fe09a88ac12a318e0607e70b273f30cb869",
-      "size": 121392
+      "sha256": "d41173731ac6ce1f9466d1b46ebff5296275fc770ebfa13659388f7d034d9e80",
+      "size": 121703
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/mock_devices.py",
