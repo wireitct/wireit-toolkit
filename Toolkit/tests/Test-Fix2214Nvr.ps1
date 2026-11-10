@@ -210,7 +210,9 @@ $ret = {
       '/ISAPI/System/time' { $b = '<Time><localTime>2026-11-08T10:00:00</localTime><timeZone>CST+5:00:00</timeZone></Time>' }
       '/ISAPI/ContentMgmt/InputProxy/channels' { $b = '<InputProxyChannelList><InputProxyChannel><id>1</id><ipAddress>10.0.0.41</ipAddress></InputProxyChannel><InputProxyChannel><id>2</id><ipAddress>10.0.0.42</ipAddress></InputProxyChannel></InputProxyChannelList>' }
       '/ISAPI/ContentMgmt/InputProxy/channels/status' { $b = '<InputProxyChannelStatusList><InputProxyChannelStatus><id>1</id><online>true</online></InputProxyChannelStatus><InputProxyChannelStatus><id>2</id><online>true</online></InputProxyChannelStatus></InputProxyChannelStatusList>' }
-      '/ISAPI/ContentMgmt/record/tracks' { $b = '<TrackList><Track><id>101</id><Enable>true</Enable></Track><Track><id>201</id><Enable>true</Enable></Track></TrackList>' }
+      # 2.2.15 (Codex 2.2.14 R5): these tracks have Enable=true but NO schedule entries = schedule unknown -> NOT CHECKED.
+      # Mode 'sched' gives both tracks a real recording schedule (the retention control).
+      '/ISAPI/ContentMgmt/record/tracks' { $sc = $(if ($script:Mode -eq 'sched') { '<TrackSchedule><ScheduleBlock><ScheduleAction><Actions><Record>true</Record></Actions></ScheduleAction></ScheduleBlock></TrackSchedule>' } else { '' }); $b = '<TrackList><Track><id>101</id><Enable>true</Enable>' + $sc + '</Track><Track><id>201</id><Enable>true</Enable>' + $sc + '</Track></TrackList>' }
       '/ISAPI/ContentMgmt/Storage' { $b = '<storage><hddList><hdd><id>1</id><capacity>1000000</capacity><freeSpace>0</freeSpace><status>ok</status><property>RW</property></hdd></hddList></storage>' }
       '/ISAPI/ContentMgmt/search' {
         $oldest = ($Body -match '2000-01-01')
@@ -227,14 +229,17 @@ $ret = {
 }
 $r = InMod $ret @($cred, 'ch2fail')
 Check (-not $r.ok) 'Codex one-camera-retention-unread: channel 2 oldest search 500, channel 1 has 50 days -> ok=false' $r.summary
-Check ($r.summary -notmatch 'target met' -and (($r.problems -join ';') -match 'NOT CHECKED')) 'one-camera-retention-unread: no "30-day target met"; problem says days held NOT CHECKED' (($r.problems -join '; ') + ' | ' + $r.summary)
+Check ($r.summary -notmatch 'target met' -and (($r.problems -join ';') -match 'days held NOT CHECKED')) 'one-camera-retention-unread: no "30-day target met"; problem says days held NOT CHECKED' (($r.problems -join '; ') + ' | ' + $r.summary)
 Check ($null -eq $r.ch2.days_held) 'channel 2 days held stays unknown (not invented)'
 $r = InMod $ret @($cred, 'ch2wrong')
 Check (-not $r.ok -and $r.summary -notmatch 'target met') 'wrong answer: channel 2 oldest search answers an error page (not a search result) = NOT CHECKED, not green' $r.summary
 $r = InMod $ret @($cred, 'bothfail')
 Check (-not $r.ok -and $r.summary -notmatch 'target met') 'both cameras oldest search fail = not green' $r.summary
 $r = InMod $ret @($cred, '')
-Check ($r.ok -and $r.summary -match 'target met') 'control: both searches answer, 50 days each = target met (no regression)' (($r.problems -join '; ') + ' | ' + $r.summary)
+# 2.2.15 (Codex 2.2.14 R5): 2.2.14 required green here although both tracks have no schedule entries (unknown). Now: NOT CHECKED.
+Check (-not $r.ok -and $r.summary -notmatch 'target met' -and (($r.problems -join ';') -match 'schedule NOT CHECKED')) 'both searches answer, 50 days each, but the tracks have NO schedule entries = schedule NOT CHECKED, not green (2.2.14 said target met)' (($r.problems -join '; ') + ' | ' + $r.summary)
+$r = InMod $ret @($cred, 'sched')
+Check ($r.ok -and $r.summary -match 'target met') 'control: both searches answer, 50 days each, real recording schedules = target met (no regression)' (($r.problems -join '; ') + ' | ' + $r.summary)
 $ra = InMod $ret @($cred, 'ch2fail'); $rb = InMod $ret @($cred, 'ch2fail')
 Check (-not $ra.ok -and -not $rb.ok -and $ra.summary -eq $rb.summary) 'running twice: the same honest NOT CHECKED result both times (read-only, nothing written)' $rb.summary
 

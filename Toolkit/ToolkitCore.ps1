@@ -773,6 +773,8 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
     $notRec = @($chs | Where-Object { -not $_.recording_now -and -not ($_.mode -match '(?i)motion|alarm|event|smart|vmd') } | ForEach-Object { $_.ch })
     $page.rec = [ordered]@{ ok = [bool]$rec.ok; channels = $chs.Count; recording = [int]$rec.recording; offline = $off; scheduleOff = $sched; daysHeld = $rec.days_held; target = $rec.target_days; problems = @($rec.problems) }
     if ($rec.ok) { & $add ('Recording: all ' + [int]$rec.recording + ' cameras recording, ' + $rec.days_held + ' days kept (target ' + $rec.target_days + ').') 'ok' }
+    # 2.2.15 (Codex 2.2.14 R9): still filling toward the target = not a fault, but never "target met" (amber)
+    elseif ($rec.PSObject.Properties['target_pending'] -and $rec.target_pending -and -not @($rec.problems).Count) { & $add ('Recording: all ' + [int]$rec.recording + ' cameras recording; ' + $rec.days_held + ' days so far, still filling - the ' + $rec.target_days + '-day target is NOT reached yet.') 'warn'; $page.rec.stillFilling = $true }
     elseif ($loginWhy) { & $add ('Recording: NOT CHECKED (' + $loginWhy + ')') 'warn'; $nc.Add('recording'); $page.rec.notChecked = $loginWhy }
     else { & $add ('Recording: ' + (& $j $rec.problems)) 'red' }
     $sf = $(if ($rec.streams) { @($rec.streams.flags) } else { @() })
