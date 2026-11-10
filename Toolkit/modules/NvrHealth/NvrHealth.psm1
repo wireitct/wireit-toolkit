@@ -452,7 +452,7 @@ function Get-NhContinuousStart([object[]]$segs, [double]$maxGapHours) {
   }
   return @{ start = $cur; hole = $hole }
 }
-function Get-HikContinuousDays($t, [int]$trackId, [DateTime]$anchor, [DateTime]$nowLocal, [int]$daysHeld) {
+function Get-HikContinuousDays($t, [int]$trackId, [DateTime]$anchor, [DateTime]$nowLocal, [int]$daysHeld, $tz = $null) {
   # how many days back from now the footage is continuous. An empty stretch longer than 36 h = a hole: retention stops there.
   # A search that fails = $null (unknown, never a pass).
   # 2.2.12 (Codex P1-8): every day up to the target (+1) or 60 days, whichever is more, is checked; older days only sampled
@@ -481,6 +481,8 @@ function Get-HikContinuousDays($t, [int]$trackId, [DateTime]$anchor, [DateTime]$
   if ($null -eq $cr) { return 0 }
   $cs = $cr.start
   $span = $nowLocal - $cs
+  # device stamps are local wall-clock: undo a DST shift between then and now (same as the oldest-clip count in Hik-Recording)
+  if ($tz -and $tz.ok) { $span = $span.Add([TimeSpan]::FromMinutes((Tz-OffsetAtLocal $tz $cs) - (Tz-OffsetAtLocal $tz $nowLocal))) }
   $days = [int][math]::Floor($span.TotalDays); if ($days -lt 0) { $days = 0 }
   if ($cr.hole -or $daysHeld -le $daily) { return [math]::Min($days, $daysHeld) }
   # older footage exists past the fully-read part: continuous only if the footage reaches (within 36 h) the start of that part
@@ -595,7 +597,7 @@ function Hik-Recording($t) {
       $o.days_held = [int][math]::Floor($span.TotalDays)
       # 2.2.4 (Codex re-review): the oldest clip alone is not retention: a full drive with 1 day of footage plus one old locked /
       # event clip said "45-day target met". Footage must be there all the way back: probe days in between; a gap ends it.
-      $cd = Get-HikContinuousDays $t $tid $(if ($o.newest) { $o.newest } else { $nowLocal }) $nowLocal ([int]$o.days_held)
+      $cd = Get-HikContinuousDays $t $tid $(if ($o.newest) { $o.newest } else { $nowLocal }) $nowLocal ([int]$o.days_held) $(if ($tm) { $tm.tz } else { $null })
       if ($null -eq $cd) { Log ('ch ' + $c.ch + ': footage check between ' + $o.oldest + ' and now failed - days held unknown'); $o.days_held = $null; $o | Add-Member -NotePropertyName days_note -NotePropertyValue 'unknown (search failed)' -Force }
       elseif ($cd -lt $o.days_held) { Log ('ch ' + $c.ch + ': oldest clip ' + $o.oldest + ' but footage is continuous only ' + $cd + ' days back'); $o | Add-Member -NotePropertyName days_note -NotePropertyValue ('older clip ' + (Fmt-Local $o.oldest 'MMM d') + ' is isolated') -Force; $o.days_held = $cd }
       if ($null -ne $cd -and [int]$script:NhContinuousSampledFrom -gt 0) { Log ('ch ' + $c.ch + ': footage checked every day for ' + ($script:NhContinuousSampledFrom - 1) + ' days; older days only sampled'); $o | Add-Member -NotePropertyName days_note -NotePropertyValue ('every day checked for ' + ($script:NhContinuousSampledFrom - 1) + ' days, older days only sampled') -Force }
