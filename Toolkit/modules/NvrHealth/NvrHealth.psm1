@@ -514,7 +514,10 @@ function Hik-ParseTracks([string]$body) {
     # 2.2.14 (Codex 2.2.13 F9): only an explicit true / false is a known state. A missing or unrecognised Enable = $null (UNKNOWN,
     # never "on"); no schedule entries at all = hasSchedule $null (unknown), not "has a schedule".
     $enabled = $(if ($en -match '^(?i)true$') { $true } elseif ($en -match '^(?i)false$') { $false } else { $null })
-    $sched = $(if (-not $rec.Count) { $null } else { ($rec -contains 'true') })
+    # 2.2.15 (Codex 2.2.14 R6): every Record value must be an explicit true / false. One value that is neither (empty, 'unknown',
+    # garbage) makes the schedule UNKNOWN ($null) - never "known off" (which the fix would then write over blindly).
+    $badRec = @($rec | Where-Object { $_ -notmatch '^(?i)(true|false)$' })
+    $sched = $(if (-not $rec.Count -or $badRec.Count) { $null } else { [bool](@($rec | Where-Object { $_ -match '^(?i)true$' }).Count) })
     $out[$id] = [pscustomobject]@{ id = $id; enabled = $enabled; modes = $modes; hasSchedule = $sched }
   }
   return $out
@@ -878,7 +881,7 @@ function Get-RecordingStatus {
   $script:NhTargetDays = $TargetDays
   $t = Resolve-Target $Ip $Vendor $Credential $Port
   Say ''; Say ('----- Recording check: ' + $Ip + ' (target ' + $TargetDays + ' days) -----') 'Cyan'
-  $result = [ordered]@{ check = 'recording'; ip = $Ip; vendor = $t.vendor; streams = $null; target_days = $TargetDays; ok = $false; days_held = $null; shortest_days = $null; short_cameras = @(); recording = 0; channels = @(); disks = @(); problems = @(); log = $script:LogFile }
+  $result = [ordered]@{ check = 'recording'; ip = $Ip; vendor = $t.vendor; streams = $null; target_days = $TargetDays; ok = $false; days_held = $null; shortest_days = $null; short_cameras = @(); target_pending = $false; recording = 0; channels = @(); disks = @(); problems = @(); log = $script:LogFile }
   $problems = New-Object System.Collections.Generic.List[string]
   $chans = @(); $disks = @(); $now = $null; $diskApi = $true
   $blk = Login-Blocked $t
@@ -941,7 +944,7 @@ function Get-RecordingStatus {
       Bad ($line + ' - ' + $why + '.'); $problems.Add('drive ' + $d.id + ' ' + $st)
     }
   }
-  $filling = $false
+  $filling = $false; $pending = $false
   $maxCap = ($disks | Measure-Object -Property capMB -Maximum).Maximum
   $big = @($disks | Where-Object { $_.capMB -ge 0.1 * $maxCap })   # a small system drive next to the media drives does not count
   $bigCap = ($big | Measure-Object -Property capMB -Sum).Sum; $bigFree = ($big | Measure-Object -Property freeMB -Sum).Sum
@@ -949,7 +952,7 @@ function Get-RecordingStatus {
   if ($capT -gt 0) { Info ('Total ' + [math]::Round($capT / 1024) + ' GB, ' + [math]::Round(100 * ($capT - $freeT) / $capT) + '% used.') }
 
   Say ''; Say 'Cameras:' 'Cyan'
-  $rec = 0; $notRec = @(); $minDays = $null; $maxDays = $null
+  $rec = 0; $notRec = @(); $minDays = $null; $maxDays = $null; $schedUnk = @()
   foreach ($c in ($chans | Sort-Object ch)) {
     # 1.4: a DW camera is named by its DW name + IP (the running number is only DW's list order, it means nothing on site)
     $label = $(if ($t.vendor -eq 'DW' -and $c.name) { [string]$c.name + $(if ($c.ip) { ' (' + $c.ip + ')' } else { '' }) } else { 'Camera ' + $c.ch + $(if ($c.ip) { ' (' + $c.ip + ')' } else { '' }) })
@@ -961,6 +964,12 @@ function Get-RecordingStatus {
     # turned OFF in its schedule, is not recording - a clip from a few minutes ago (before it dropped) does not make it "recording"
     if ($c.online -eq $false) { Bad ($label + ': camera OFFLINE, not recording' + $(if ($c.newest) { ' (last footage ' + (Fmt-Local $c.newest) + ')' } else { '' })); $notRec += $tag }
     elseif ($c.scheduled -eq $false) { Bad ($label + ': recording is turned OFF in its schedule' + $held); $notRec += $tag }
+    # 2.2.15 (Codex 2.2.14 R5): fresh footage says the camera records NOW; it does not say the schedule keeps it recording.
+    # A Hikvision / DW camera whose schedule could not be read is shown with its footage, but the schedule is NOT CHECKED (a problem).
+    elseif (($c.recording_now -or ($c.mode -match '(?i)motion|alarm|event|smart|vmd' -and $c.newest -and ($now - $c.newest).TotalHours -lt 24)) -and $t.vendor -in @('Hikvision', 'DW') -and $null -eq $c.scheduled) {
+      $rec++; $schedUnk += $tag
+      Warn ($label + ': footage is fresh' + $(if (-not $c.recording_now -and $c.newest) { ' (last clip ' + (Fmt-Local $c.newest) + ')' } else { '' }) + $held + ', but its recording schedule could NOT be read - schedule NOT CHECKED. Look at its recording schedule on the recorder.')
+    }
     elseif ($c.recording_now) { $rec++; Ok ($label + ': recording' + $held) }
     elseif ($c.mode -match '(?i)motion|alarm|event|smart|vmd' -and $c.newest -and ($now - $c.newest).TotalHours -lt 24) { $rec++; Ok ($label + ': motion recording, last clip ' + (Fmt-Local $c.newest) + $held) }
     elseif ($c.newest) { Bad ($label + ': NOT recording - last footage ' + (Fmt-Local $c.newest) + $held); $notRec += $tag }
@@ -971,6 +980,7 @@ function Get-RecordingStatus {
   # oldest clip) is NOT CHECKED and keeps the result from being green, even when another camera meets the target
   $unk = @($chans | Where-Object { $null -eq $_.days_held -and (($_.PSObject.Properties['days_note'] -and $_.days_note) -or $_.newest -or $_.recording_now) })
   if ($unk.Count -and $null -ne $maxDays) { Warn ('' + $unk.Count + ' camera(s): days held NOT CHECKED (could not be measured): ' + (@($unk | ForEach-Object { $(if ($t.vendor -eq 'DW' -and $_.name) { [string]$_.name } else { 'cam ' + $_.ch }) }) -join ', ') + '.'); $problems.Add(('days held NOT CHECKED on ' + $unk.Count + ' camera(s)')) }
+  if ($schedUnk.Count) { $problems.Add(('recording schedule NOT CHECKED on ' + $schedUnk.Count + ' camera(s): ' + (@($schedUnk | Select-Object -First 10) -join ', ') + $(if ($schedUnk.Count -gt 10) { ' and ' + ($schedUnk.Count - 10) + ' more (see the log)' } else { '' }))) }
   if ($notRec.Count) { $problems.Add(('' + $notRec.Count + ' camera(s) not recording: ' + (@($notRec | Select-Object -First 10) -join ', ') + $(if ($notRec.Count -gt 10) { ' and ' + ($notRec.Count - 10) + ' more (see the log)' } else { '' }))) }
   # stream audit (report only; never counted as a recording problem, never changes anything)
   $streams = $null
@@ -991,11 +1001,14 @@ function Get-RecordingStatus {
   if ($null -ne $maxDays) {
     if ($maxDays -ge $TargetDays) { Say ('DAYS HELD: ' + $maxDays + ' days on the deepest camera (target ' + $TargetDays + ')' + $(if ($short.Count) { '; ' + $short.Count + ' camera(s) below it (above).' } else { '. OK.' })) $(if ($short.Count) { 'Yellow' } else { 'Green' }) }
     elseif (-not $diskApi) { Say ('DAYS HELD: only ' + $maxDays + ' days (target ' + $TargetDays + '). Could not read whether the drives are full - check the recorder''s Storage page.') 'Yellow'; $problems.Add('only ' + $maxDays + ' of ' + $TargetDays + ' days (drive fill unknown)') }
-    elseif ($filling) { Say ('DAYS HELD: ' + $maxDays + ' days so far (target ' + $TargetDays + '). The drives are not full yet, so this keeps growing. Check again after they fill.') 'Yellow' }
+    # 2.2.15 (Codex 2.2.14 R9): a recorder that is still filling its drives is not a fault, but its target is NOT met yet:
+    # never "target met", never ok. The result says how far it is (target_pending).
+    elseif ($filling) { $pending = $true; Say ('DAYS HELD: ' + $maxDays + ' days so far (target ' + $TargetDays + '), still filling: the drives are not full yet, so this keeps growing. Target NOT reached yet. Check again after they fill.') 'Yellow' }
     else { Say ('DAYS HELD: only ' + $maxDays + ' days (target ' + $TargetDays + '). Drives are full and overwriting. Add storage or lower the recording bitrate.') 'Red'; $problems.Add('only ' + $maxDays + ' of ' + $TargetDays + ' days') }
   } elseif ($chans.Count) { Say 'DAYS HELD: unknown (no footage found to measure).' 'Red'; $problems.Add('days held unknown') }
-  Say $(if ($problems.Count) { 'RESULT: ' + $problems.Count + ' problem(s): ' + ($problems -join '; ') } else { 'RESULT: all ' + $rec + ' cameras recording, drives healthy, ' + $TargetDays + '-day target met.' }) $(if ($problems.Count) { 'Red' } else { 'Green' })
-  $result.streams = $streams; $result.ok = ($problems.Count -eq 0); $result.days_held = $maxDays; $result.shortest_days = $minDays; $result.short_cameras = @($short | ForEach-Object { $_.ch }); $result.recording = $rec; $result.channels = $chans; $result.disks = $disks; $result.problems = @($problems); $result.log = $script:LogFile
+  Say $(if ($problems.Count) { 'RESULT: ' + $problems.Count + ' problem(s): ' + ($problems -join '; ') } elseif ($pending) { 'RESULT: all ' + $rec + ' cameras recording, drives healthy; ' + $maxDays + ' days so far, still filling, ' + $TargetDays + '-day target not reached yet (not a fault).' } else { 'RESULT: all ' + $rec + ' cameras recording, drives healthy, ' + $TargetDays + '-day target met.' }) $(if ($problems.Count) { 'Red' } elseif ($pending) { 'Yellow' } else { 'Green' })
+  $result.target_pending = [bool]($pending -and -not $problems.Count)
+  $result.streams = $streams; $result.ok = ($problems.Count -eq 0 -and -not $pending); $result.days_held = $maxDays; $result.shortest_days = $minDays; $result.short_cameras = @($short | ForEach-Object { $_.ch }); $result.recording = $rec; $result.channels = $chans; $result.disks = $disks; $result.problems = @($problems); $result.log = $script:LogFile
   return [pscustomobject]$result
 }
 
@@ -1405,7 +1418,8 @@ function Get-NvrHealth {
   $clk = Get-ClockStatus -Ip $Ip -Vendor $t.vendor -Credential $t.cred -Port $Port -IncludeCameras:$IncludeCameras -FindIps $FindIps -NoLog
   $fw = Get-FirmwareStatus -Ip $Ip -Vendor $t.vendor -Credential $t.cred -Port $Port -IncludeCameras:$IncludeCameras -NoLog
   $out = [pscustomobject]@{ taken = (Get-Date).ToString('s'); ip = $Ip; vendor = $t.vendor; recording = $rec; clock = $clk; firmware = $fw; ok = ($rec.ok -and $clk.ok -and $fw.ok); log = $script:LogFile }
-  $wd = { param($x) if ($x.ok) { 'OK' } elseif (@($x.problems).Count -and -not @(@($x.problems) | Where-Object { $_ -notmatch 'login refused|login skipped|not checked|no answer|unreadable' }).Count) { 'NOT CHECKED' } else { 'PROBLEM' } }
+  # 2.2.15 (R9): a recorder still filling toward its target (no problem found) is STILL FILLING - not OK, not a problem
+  $wd = { param($x) if ($x.ok) { 'OK' } elseif ($x.PSObject.Properties['target_pending'] -and $x.target_pending -and -not @($x.problems).Count) { 'STILL FILLING' } elseif (@($x.problems).Count -and -not @(@($x.problems) | Where-Object { $_ -notmatch 'login refused|login skipped|not checked|no answer|unreadable' }).Count) { 'NOT CHECKED' } else { 'PROBLEM' } }
   $ws = @((& $wd $rec), (& $wd $clk), (& $wd $fw))
   Say ''; Say ('SUMMARY: recording ' + $ws[0] + ' | time ' + $ws[1] + ' | firmware ' + $ws[2]) $(if ($out.ok) { 'Green' } elseif ($ws -contains 'PROBLEM') { 'Red' } else { 'Yellow' })
   if ($Json) { ($out | ConvertTo-Json -Depth 8) | Set-Content -Path $Json -Encoding UTF8 -WhatIf:$false -Confirm:$false }

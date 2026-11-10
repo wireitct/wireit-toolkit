@@ -120,7 +120,8 @@ $run3 = {
         '/ISAPI/System/time' { return (& $ok ('<Time><timeMode>NTP</timeMode><localTime>' + $script:FakeNow.ToString('yyyy-MM-ddTHH:mm:ss') + '</localTime><timeZone>CST+5:00:00DST01:00:00,M3.2.0/02:00:00,M11.1.0/02:00:00</timeZone></Time>')) }
         '/ISAPI/ContentMgmt/InputProxy/channels' { return (& $ok '<InputProxyChannelList><InputProxyChannel><id>1</id><name>Door</name><ipAddress>10.0.0.64</ipAddress></InputProxyChannel></InputProxyChannelList>') }
         '/ISAPI/ContentMgmt/InputProxy/channels/status' { return (& $ok '<InputProxyChannelStatusList><InputProxyChannelStatus><id>1</id><online>true</online><chanDetectResult>connect</chanDetectResult></InputProxyChannelStatus></InputProxyChannelStatusList>') }
-        '/ISAPI/ContentMgmt/record/tracks' { return (& $ok '<TrackList><Track><id>101</id><Enable>true</Enable></Track></TrackList>') }
+        # 2.2.15 (Codex 2.2.14 R5): the stand-in track has a real recording schedule; Enable alone (no schedule) is now NOT CHECKED
+        '/ISAPI/ContentMgmt/record/tracks' { return (& $ok '<TrackList><Track><id>101</id><Enable>true</Enable><TrackSchedule><ScheduleBlock><ScheduleAction><Actions><Record>true</Record></Actions></ScheduleAction></ScheduleBlock></TrackSchedule></Track></TrackList>') }
         '/ISAPI/ContentMgmt/Storage' { return (& $ok '<storage><hddList><hdd><id>1</id><capacity>3815447</capacity><freeSpace>0</freeSpace><status>ok</status><property>RW</property></hdd></hddList></storage>') }
         '/ISAPI/ContentMgmt/search' {
           if ($script:FakeFail -and $Body -notmatch '<startTime>2000-') { return [pscustomobject]@{ code = 500; body = ''; err = 'x' } }

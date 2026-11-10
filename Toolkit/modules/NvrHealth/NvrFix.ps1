@@ -83,20 +83,27 @@ function Invoke-NvrFix {
         if (-not $rt.map.Count) { return (& $done $false 'The recorder lists no recording settings at all, so recording could NOT be checked. Nothing changed. Look at Storage > Recording schedule on the recorder.') }
         # 2.2.14 (Codex 2.2.13 F9): a track whose Enable is missing / not true-or-false, or that has no schedule entries, is
         # UNKNOWN - never counted as "on". Only explicit Enable=false tracks are turned on; unknown ones keep the result not green.
-        $off = @($rt.map.Values | Where-Object { $_.enabled -eq $false } | Sort-Object id)
+        # 2.2.15 (Codex 2.2.14 R6): a track with Enable=true whose schedule has only Record=false is OFF too (the read-only check
+        # says "turned OFF in its schedule"), so the fix turns its schedule slots on. A Record value that is not true/false = unknown.
+        $off = @($rt.map.Values | Where-Object { $_.enabled -eq $false -or ($_.enabled -eq $true -and $_.hasSchedule -eq $false) } | Sort-Object id)
         $unknownTr = @($rt.map.Values | Where-Object { $null -eq $_.enabled -or ($_.enabled -eq $true -and $null -eq $_.hasSchedule) } | Sort-Object id)
         $unkWords = { param($list) (@($list | ForEach-Object { [math]::Floor($_.id / 100) }) -join ', ') }
+        $offWhy = { param($o) 'camera ' + [math]::Floor($o.id / 100) + $(if ($o.enabled -eq $false -and $o.hasSchedule -eq $false) { ' (recording switched off and no recording time in its schedule)' } elseif ($o.enabled -eq $false) { ' (recording switched off)' } else { ' (its schedule has no recording time)' }) }
         if (-not $off.Count -and $unknownTr.Count) { return (& $done $false ('Recording could NOT be checked for camera(s) ' + (& $unkWords $unknownTr) + ': the recorder did not say whether recording is on (no clear Enable / schedule). NOT CHECKED, nothing changed. Look at Storage > Recording schedule on the recorder.')) }
         if (-not $off.Count) { return (& $done $true ('Recording is already on for every camera (' + $rt.map.Count + ' recording settings read). Nothing to change.')) }
         $res.backup = Fix-Save $BackupDir 'record-tracks-before.xml' $rt.body
-        if (-not (& $ask @('Turn recording back ON (continuous schedule kept as it is) for camera(s): ' + (($off | ForEach-Object { [math]::Floor($_.id / 100) }) -join ', ') + ' on ' + $Ip + '.', 'Backup of the recording settings saved: ' + $res.backup))) { return (& $done $true 'Not confirmed - nothing changed.') }
+        if (-not (& $ask @('Turn recording back ON for: ' + (@($off | ForEach-Object { & $offWhy $_ }) -join ', ') + ' on ' + $Ip + '. A switched-off camera keeps its schedule as it is; a schedule with no recording time gets every one of its time slots set to record.', 'Backup of the recording settings saved: ' + $res.backup))) { return (& $done $true 'Not confirmed - nothing changed.') }
         $res.ran = $true
         foreach ($o in $off) {
           $one = Http -Ip $Ip -Path ('/ISAPI/ContentMgmt/record/tracks/' + $o.id) -Credential $t.cred -Port $t.port
           # 2.2.13: never PUT back an answer that is not this camera's own track (an error page / another track)
-          $ox = $(if ($one.code -eq 200) { Xml $one.body } else { $null })
-          if (-not $ox -or [string](XText $ox 'id') -ne [string]$o.id -or ([string]$one.body) -notmatch '<Enable>false</Enable>') { Log ('track ' + $o.id + ': could not read it (answer ' + $one.code + ') - not written'); continue }
-          $xml = ([string]$one.body) -replace '<Enable>false</Enable>', '<Enable>true</Enable>'
+          # 2.2.15: and only when it still shows the same off state that was read in the list (else: not written, reported)
+          $oneMap = $(if ($one.code -eq 200) { Hik-ParseTracks ([string]$one.body) } else { $null })
+          $cur = $(if ($oneMap -and $oneMap.ContainsKey($o.id)) { $oneMap[$o.id] } else { $null })
+          if (-not $cur -or $cur.enabled -ne $o.enabled -or $cur.hasSchedule -ne $o.hasSchedule) { Log ('track ' + $o.id + ': could not read it, or it changed (answer ' + $one.code + ') - not written'); continue }
+          $xml = [string]$one.body
+          if ($o.enabled -eq $false) { $xml = $xml -replace '<Enable>\s*(?i:false)\s*</Enable>', '<Enable>true</Enable>' }
+          if ($o.hasSchedule -eq $false) { $xml = $xml -replace '<Record>\s*(?i:false)\s*</Record>', '<Record>true</Record>' }
           $w = Http -Ip $Ip -Method 'PUT' -Path ('/ISAPI/ContentMgmt/record/tracks/' + $o.id) -Body $xml -Credential $t.cred -Port $t.port
           if (Hik-Ok $w) { $res.changed += ('camera ' + [math]::Floor($o.id / 100)) }
         }
@@ -106,7 +113,8 @@ function Invoke-NvrFix {
           return (& $done $false ('Sent to the recorder, but its recording settings could not be read back (' + $ra.why + '), so it is NOT confirmed. Run the Recording check again.'))
         }
         $afterTracks = $ra.map
-        $still = @($off | Where-Object { -not $afterTracks.ContainsKey($_.id) -or $afterTracks[$_.id].enabled -ne $true })
+        # 2.2.15: "on again" = Enable true AND a schedule with recording time (an explicit false schedule is still off)
+        $still = @($off | Where-Object { -not $afterTracks.ContainsKey($_.id) -or $afterTracks[$_.id].enabled -ne $true -or $afterTracks[$_.id].hasSchedule -eq $false })
         $unknownAfter = @($afterTracks.Values | Where-Object { $null -eq $_.enabled -or ($_.enabled -eq $true -and $null -eq $_.hasSchedule) })
         $unkNote = $(if ($unknownAfter.Count) { ' Recording could NOT be checked for camera(s) ' + (& $unkWords $unknownAfter) + ' (no clear Enable / schedule).' } else { '' })
       } elseif ($v -eq 'DW') {
@@ -200,10 +208,25 @@ function Invoke-NvrFix {
       $ax = Xml $all.body
       if (-not $ax -or -not $ax.DocumentElement -or $ax.DocumentElement.LocalName -notmatch '(?i)^InputProxyChannelList$') { return (& $done $false 'The NVR''s answer was not a channel list, so it could not be checked which camera uses the channel. Nothing changed. Run it again.') }
       $res.backup = Fix-Save $BackupDir 'nvr-channels-before.xml' $all.body
-      $used = $null; $listed = @()
-      foreach ($c in (XFind $ax 'InputProxyChannel')) { $cid = [int](XText $c 'id'); $cip = XText $c 'ipAddress'; $listed += [pscustomobject]@{ ch = $cid; ip = $cip }; if ($cid -eq $Channel) { $used = $cip } }
+      $used = $null; $listed = @(); $slot = $null
+      foreach ($c in (XFind $ax 'InputProxyChannel')) {
+        $cidS = XText $c 'id'; $cid = 0; [void][int]::TryParse($cidS, [ref]$cid)
+        # 2.2.15 (Codex 2.2.14 R4): keep "this channel is set up" AND how it is addressed. Only a plain IP address can be checked
+        # (status read below). A hostname / domain address, or no readable address at all, is NOT a free slot.
+        $aft = XText $c 'addressingFormatType'; $cip = XText $c 'ipAddress'; $chost = XText $c 'hostName'
+        $isIp = (($aft -eq '' -or $aft -match '^(?i)ip(address)?$') -and $cip -match '^\d{1,3}(\.\d{1,3}){3}$')
+        $addr = $(if ($chost) { $chost } elseif ($cip) { $cip } else { '' })
+        $one = [pscustomobject]@{ ch = $cid; ip = $(if ($isIp) { $cip } else { '' }); isIp = $isIp; addr = $addr; type = $aft }
+        $listed += $one
+        if ($cidS -eq [string]$Channel) { $slot = $one; if ($isIp) { $used = $cip } }
+      }
       # the "already on another channel" check uses the list just read (2.2.13 re-read it; a failed 2nd read hid the duplicate)
       if (@($listed | Where-Object { $_.ip -eq $CameraIp -and $_.ch -ne $Channel }).Count) { return (& $done $false ($CameraIp + ' is already on another channel. Nothing changed.')) }
+      if ($slot -and -not $slot.isIp) {
+        $how = $(if ($slot.addr -and $slot.addr -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { 'by name (' + $slot.addr + ')' } elseif ($slot.type) { 'with address type "' + $slot.type + '"' + $(if ($slot.addr) { ' (' + $slot.addr + ')' } else { '' }) } else { 'with no address the tool can read' })
+        $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - NOT done (channel is set up ' + $how + ', not checked)'
+        return (& $done $false ('Channel ' + $Channel + ' is already set up ' + $how + '. The tool can only check cameras added by IP address, so it is NOT known whether that camera is working. Nothing changed (a working camera could lose its recording). Check channel ' + $Channel + ' in the NVR by hand, or pick another channel.'))
+      }
       if ($used -and $used -ne $CameraIp) {
         # 2.2.14 (Codex 2.2.13 F3): a channel used by a DIFFERENT camera is replaced only when that camera is POSITIVELY offline:
         # a real status list that names this channel with online=false, and the channel still shows the same camera. An
@@ -254,7 +277,21 @@ function Invoke-NvrFix {
       if (-not (& $ask @('Update ' + $di.model + ' at ' + $Ip + ' from ' + $di.firmware + ' with ' + (Split-Path -Leaf $File) + ' (SHA-256 matches). It reboots; do not unplug it for 10 minutes.', 'Settings exported first: ' + $res.backup, 'To go back: upload the old firmware file the same way, then import the exported settings in the camera''s web page (Maintenance).'))) { return (& $done $true 'Not confirmed - nothing changed.') }
       $res.ran = $true
       $w = Http -Ip $Ip -Method 'PUT' -Path '/ISAPI/System/updateFirmware' -BodyBytes ([IO.File]::ReadAllBytes($File)) -ContentType 'application/octet-stream' -Credential $t.cred -Port $t.port -Timeout 600
-      if (-not (Hik-Ok $w)) { $res.history = 'Firmware update of ' + $Ip + ' refused (' + $w.code + ')'; return (& $done $false ('The device refused the file (answer ' + $w.code + '). It still runs the old firmware.')) }
+      # 2.2.15 (Codex 2.2.14 R10): NO answer (connection dropped / timed out, code 0) is not a refusal: the device may have taken
+      # the file and be installing it. Read the device back; unless it already shows a new version it is SENT, NOT confirmed.
+      if ([int]$w.code -le 0) {
+        $res.changed += 'firmware sent (answer lost)'
+        $lost = Hik-DeviceInfo $t
+        if ($lost.login -eq 'ok' -and $lost.firmware -and $lost.firmware -ne $di.firmware) {
+          $res.changed = @($di.firmware + ' -> ' + $lost.firmware)
+          $res.history = 'Firmware ' + $Ip + ' ' + $di.firmware + ' -> ' + $lost.firmware + ' (its answer was lost; the new version was read back)'
+          return (& $done $true ('Updated: ' + $di.firmware + ' -> ' + $lost.firmware + '. The device''s answer was lost, but it now reports the new version (read back).'))
+        }
+        $seen = $(if ($lost.login -eq 'ok') { 'right now it reports ' + $(if ($lost.firmware) { $lost.firmware } else { 'no version' }) + ', which is normal while it installs' } else { 'it could not be read back (it may be rebooting)' })
+        $res.history = 'Firmware update of ' + $Ip + ' sent - NOT confirmed (the answer was lost; ' + $(if ($lost.login -eq 'ok') { 'read back: ' + $lost.firmware } else { 'read-back failed' }) + ')'
+        return (& $done $false ('Sent, but the device''s answer was lost, so it is NOT confirmed whether the update ran (' + $seen + '). Do NOT send it again yet: wait 10 minutes, then run the Firmware check. Only if that still shows ' + $di.firmware + ' try the update again. Settings export kept: ' + $res.backup))
+      }
+      if (-not (Hik-Ok $w)) { $res.history = 'Firmware update of ' + $Ip + ' refused (' + $w.code + ')'; return (& $done $false ('The device refused the file (answer ' + $w.code + '), so the update did not start. Settings export kept: ' + $res.backup)) }
       $after = Hik-DeviceInfo $t
       $ok = [bool]($after.login -eq 'ok' -and $after.firmware -ne $di.firmware)
       $res.changed += ($di.firmware + ' -> ' + $(if ($after.login -eq 'ok') { $after.firmware } else { '?' }))
