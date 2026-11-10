@@ -1,8 +1,8 @@
 {
   "version": "2.2.15",
   "released": "2026-11-10",
-  "commit": "4fc1a7aae11c5cafbac80cf58ee4279e89712a00",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/4fc1a7aae11c5cafbac80cf58ee4279e89712a00/",
+  "commit": "95a764fcdca33d8b9fba693faab429db514f289c",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/95a764fcdca33d8b9fba693faab429db514f289c/",
   "notes": "2.2.15: fixes for Codex review of 2.2.14 (R1-R11). Branch build, not released.",
   "files": [
     {
@@ -82,8 +82,8 @@
     },
     {
       "path": "Toolkit/FixSite.ps1",
-      "sha256": "2042548c3d30459f498e70a3b1d73cc742a22cceb9f7b74868948c464bf3f42c",
-      "size": 119777
+      "sha256": "ff442cff43376225540fcb3527ed2c4d216c6999919bc0060031e0611d34ff5c",
+      "size": 120303
     },
     {
       "path": "Toolkit/FixSiteBw.ps1",
@@ -472,8 +472,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2215Site.ps1",
-      "sha256": "9ee593e697a52e57b85b64261b233de4940752be0e1dc6889c9cdeffb0f3e12d",
-      "size": 17764
+      "sha256": "d9413be4a0f2e525da2d7f5fcdfdae5501d3422e0b75625ff77d4ba403fe06ad",
+      "size": 18361
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
