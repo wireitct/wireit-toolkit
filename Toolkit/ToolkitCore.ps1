@@ -101,6 +101,7 @@ function Get-TkNvrPlainEnd([string]$tool, [int]$code) {
   switch ($code) {
     0 { return ($tool + ': finished. All good, or see the CHECK lines above.') }
     2 { return ($tool + ': could not read the recorder (wrong password, wrong address, or not on its network). Nothing was changed.') }
+    3 { return ($tool + ': finished, nothing broken found, but the recorder is STILL FILLING toward its days-to-keep target - this is NOT an all-clear yet. Check again when it has had time to fill.') }   # 2.2.16 (Codex 2.2.15 F6)
     4 { return ('NOT DONE - ' + $tool + ': something is still wrong or could NOT be checked (see the red PROBLEM / NOT CHECKED lines above). Fix those, then run it again, or call the office.') }   # 2.2.12 (Codex P1-5): never reads as finished-OK
     6 { return ('FAILED - Run again. ' + $tool + ': THIS PC''s network could not be put back the way it was (see the red line). Run it again (it cleans up first) or restart the PC.') }   # 2.2.10 (Codex R04)
     default { return ($tool + ': stopped with a problem (code ' + $code + '). The full log is in the runs folder.') }
@@ -769,6 +770,9 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
   $j = { param($a) (@($a) | Where-Object { $_ }) -join '; ' }
   $page = [ordered]@{ t = (Get-Date -Format 's'); ip = $Ip; ok = $true }
   $nc = New-Object System.Collections.Generic.List[string]   # parts that could not be checked (amber, page not OK)
+  # 2.2.16 (Codex 2.2.15 F6): still filling = a non-fault PENDING state. Not red and not a problem, but never an overall all-clear:
+  # the result is not ok, says pending + why, and the headline / exit code / site page say "still filling", never "all OK".
+  $pendingWhy = ''
   $isDw = ($Health -and [string]$Health.vendor -eq 'DW')
   $loginWhy = ''; if ($Health -and $Health.recording -and (Test-TkNotChecked $Health.recording)) { $loginWhy = Get-TkNotCheckedWhy $Health.recording }
   # cameras (the list Find cameras just saved)
@@ -794,7 +798,7 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
     $page.rec = [ordered]@{ ok = [bool]$rec.ok; channels = $chs.Count; recording = [int]$rec.recording; offline = $off; scheduleOff = $sched; daysHeld = $rec.days_held; target = $rec.target_days; problems = @($rec.problems) }
     if ($rec.ok) { & $add ('Recording: all ' + [int]$rec.recording + ' cameras recording, ' + $rec.days_held + ' days kept (target ' + $rec.target_days + ').') 'ok' }
     # 2.2.15 (Codex 2.2.14 R9): still filling toward the target = not a fault, but never "target met" (amber)
-    elseif ($rec.PSObject.Properties['target_pending'] -and $rec.target_pending -and -not @($rec.problems).Count) { & $add ('Recording: all ' + [int]$rec.recording + ' cameras recording; ' + $rec.days_held + ' days so far, still filling - the ' + $rec.target_days + '-day target is NOT reached yet.') 'warn'; $page.rec.stillFilling = $true }
+    elseif ($rec.PSObject.Properties['target_pending'] -and $rec.target_pending -and -not @($rec.problems).Count) { & $add ('Recording: all ' + [int]$rec.recording + ' cameras recording; ' + $rec.days_held + ' days so far, still filling - the ' + $rec.target_days + '-day target is NOT reached yet.') 'warn'; $page.rec.stillFilling = $true; $pendingWhy = ('recorder still filling (' + $rec.days_held + ' of ' + $rec.target_days + ' days)') }
     elseif ($loginWhy) { & $add ('Recording: NOT CHECKED (' + $loginWhy + ')') 'warn'; $nc.Add('recording'); $page.rec.notChecked = $loginWhy }
     else { & $add ('Recording: ' + (& $j $rec.problems)) 'red' }
     $sf = $(if ($rec.streams) { @($rec.streams.flags) } else { @() })
@@ -860,8 +864,9 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
   } else { $page.router = $null }
   $page.fixes = @($fix | Select-Object -Unique)
   $page.notChecked = @($nc | Select-Object -Unique)
-  $page.ok = $page.ok -and -not @($L | Where-Object { $_.k -eq 'red' }).Count -and -not $nc.Count
-  return [pscustomobject]@{ ok = $page.ok; lines = $L.ToArray(); fixes = @($page.fixes); page = $page }
+  $page.pending = [bool]$pendingWhy; $page.pendingWhy = $pendingWhy
+  $page.ok = $page.ok -and -not @($L | Where-Object { $_.k -eq 'red' }).Count -and -not $nc.Count -and -not $pendingWhy
+  return [pscustomobject]@{ ok = $page.ok; pending = [bool]$pendingWhy; pendingWhy = $pendingWhy; lines = $L.ToArray(); fixes = @($page.fixes); page = $page }
 }
 
 # 2.2.2 (Codex H2): the same private-IPv4 test in plain PowerShell, for PowerShell 7's per-call certificate skip and curl's -k
