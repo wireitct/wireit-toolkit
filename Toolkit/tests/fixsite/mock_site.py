@@ -206,7 +206,7 @@ class H(BaseHTTPRequestHandler):
             a = q.get('action'); s = d['stream']; n = d['net']
             if a == 'getConfig':
                 nm = q.get('name')
-                if nm == 'Network': return self.send(200, 'table.Network.DefaultInterface=eth0\r\ntable.Network.eth0.IPAddress=%s\r\ntable.Network.eth0.SubnetMask=%s\r\ntable.Network.eth0.DefaultGateway=%s\r\ntable.Network.eth0.DhcpEnable=%s\r\ntable.Network.eth0.DnsServers[0]=%s\r\ntable.Network.eth0.DnsServers[1]=%s\r\n' % (n['ip'], n['mask'], n['gw'], 'true' if n['dhcp'] else 'false', n['dns1'], n['dns2']))
+                if nm == 'Network': return self.send(200, 'table.Network.DefaultInterface=eth0\r\ntable.Network.eth0.IPAddress=%s\r\ntable.Network.eth0.SubnetMask=%s\r\ntable.Network.eth0.DefaultGateway=%s\r\ntable.Network.eth0.DhcpEnable=%s\r\ntable.Network.eth0.DnsServers[0]=%s\r\ntable.Network.eth0.DnsServers[1]=%s\r\ntable.Network.eth0.PhysicalAddress=%s\r\n' % (n['ip'], n['mask'], n['gw'], 'true' if n['dhcp'] else 'false', n['dns1'], n['dns2'], d.get('mac', '')))
                 if nm == 'Encode': return self.send(200, 'table.Encode[0].MainFormat[0].Video.Compression=%s\r\ntable.Encode[0].MainFormat[0].Video.FPS=%d\r\ntable.Encode[0].MainFormat[0].Video.Width=%d\r\ntable.Encode[0].MainFormat[0].Video.Height=%d\r\ntable.Encode[0].MainFormat[0].Video.BitRate=%d\r\ntable.Encode[0].MainFormat[0].Video.GOP=%d\r\n' % (s['codec'].replace('.', ''), s['fps'], s['width'], s['height'], s['bitrate'], s['gop']))
                 if nm == 'SmartEncode': return self.send(200, 'table.SmartEncode[0].Enable=%s\r\n' % ('true' if s['smart'] == 'on' else 'false'))
                 return self.send(200, 'table.%s=1\r\n' % nm)

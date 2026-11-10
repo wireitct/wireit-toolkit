@@ -338,7 +338,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
   $expNvrs = @(Get-FsProp $expected 'nvrs' @())
   foreach ($nv in @(Get-FsProp $observed 'nvrs' @())) {
     $ip = [string](Get-FsProp $nv 'ip' ''); $br = Get-FsBrand ([string](Get-FsProp $nv 'brand' '')) ([string](Get-FsProp $nv 'model' '')); if (-not $nvrBrand) { $nvrBrand = $br }
-    $item = [ordered]@{ ip = $ip; brand = $br; model = [string](Get-FsProp $nv 'model' ''); mac = (ConvertTo-FsMac ([string](Get-FsProp $nv 'mac' ''))); login = [string](Get-FsProp $nv 'login' ''); target = ''; why = @(); steps = @(); chCount = @(Get-FsProp $nv 'channels' @()).Count }
+    $item = [ordered]@{ ip = $ip; brand = $br; model = [string](Get-FsProp $nv 'model' ''); mac = (ConvertTo-FsMac ([string](Get-FsProp $nv 'mac' ''))); login = [string](Get-FsProp $nv 'login' ''); target = ''; why = @(); steps = @(); chCount = @(Get-FsProp $nv 'channels' @()).Count; chRead = [bool](Get-FsProp $nv 'channelsRead' $true) }
     if (-not (Test-FsBrandSupported $br 'nvr')) { $item.why += (Get-FsUnsupportedWhy $br 'nvr'); $item.steps = @('manual'); $plan.nvrs += [pscustomobject]$item; continue }   # 2.2.3 (Codex #28)
     if ($scheme -and -not (Test-FsOnScheme $ip $scheme)) {
       $t = ''; foreach ($h in $o.nvrHosts) { if (-not $used.ContainsKey([int]$h)) { $t = $scheme + '.' + $h; break } }
@@ -508,6 +508,19 @@ function New-FsPlan($expected, $observed, $opts = $null) {
   $sp = $o.settings
   if ($o.settingsAll -and [int](Get-FsProp $sp 'fps' 0) -le 0 -and [int](Get-FsProp $sp 'bitrate' 0) -le 0 -and [string](Get-FsProp $sp 'resolution' 'keep') -eq 'keep' -and [string](Get-FsProp $sp 'codec' 'auto') -notin @('H.264', 'H.265')) { $plan.notes += 'You ticked "Apply settings to ALL cameras" but every drop-down is on "keep", so no working camera gets new settings.' }
   if (-not $hasList -and -not $o.newSite) { $plan.notes += 'This site has no camera list yet. At the end you can save what was found as the site''s list.' }
+  # 2.2.15 (Codex 2.2.14 R1): which recorders that may record each camera had their channel list NOT read at the scan (failed or
+  # garbled answer, or no login). Its own known recorders count; a camera with no known recorder may be on any NVR there, so every
+  # unread one counts. Non-empty = no password change, no address move, no official reset for it in this run (Still a problem).
+  $unread = @{}; foreach ($n in @($plan.nvrs)) { if (-not (Get-FsProp $n 'chRead' $true)) { $unread[[string]$n.ip] = [string]$n.ip; if ($n.target) { $unread[[string]$n.target] = [string]$n.ip } } }
+  foreach ($c in @($plan.cams)) {
+    $u = @()
+    if ($unread.Count) {
+      $recs = @(Get-FsCamRecorders $c)
+      if ($recs.Count) { foreach ($r in $recs) { if ($unread.ContainsKey([string]$r) -and $u -notcontains $unread[[string]$r]) { $u += $unread[[string]$r] } } }
+      else { $u = @($unread.Values | Select-Object -Unique) }
+    }
+    $c | Add-Member -NotePropertyName chUnknown -NotePropertyValue @($u) -Force
+  }
   return [pscustomobject]$plan
 }
 
@@ -553,7 +566,10 @@ function Format-FsPlan($plan) {
   $okLine = 'OK, not touched: ' + $hc + ' working camera(s)'
   if ($plan.PSObject.Properties['newSite'] -and $plan.newSite) { $L.Add((Get-FsNewSiteLine $plan)) }   # 2.0.2: first line on a new site
   if (-not $fix.Count -and -not $miss.Count -and -not $man.Count -and -not $nv.Count) {
-    $L.Add('Nothing to fix. ' + $hc + ' cameras are fine - nothing will be touched.')
+    # 2.2.15 (Codex 2.2.14 R1): an NVR whose channel list could not be read leaves its channels NOT CHECKED: never "Nothing to fix"
+    $unr = @($plan.nvrs | Where-Object { -not (Get-FsProp $_ 'chRead' $true) })
+    if ($unr.Count) { $L.Add('NOT everything was checked: the camera channel list of NVR ' + (@($unr | ForEach-Object { $_.ip }) -join ', ') + ' could not be read. Nothing is changed. Run Fix this site again.') }
+    else { $L.Add('Nothing to fix. ' + $hc + ' cameras are fine - nothing will be touched.') }
     foreach ($x in @($plan.leftAlone)) { $L.Add('Working, left as is: ' + $x) }
     foreach ($n in $plan.notes) { $L.Add('Note: ' + $n) }; return $L
   }
@@ -629,6 +645,9 @@ function Get-FsManualLines($plan) {
   # red checklist line and counts as "still a problem" (never a green "all fixed")
   $out = @()
   foreach ($n in @($plan.nvrs | Where-Object { @($_.steps) -contains 'manual' })) { $out += ('NVR ' + $n.ip + ': needs a person - ' + (@($n.why) -join '; ') + ' ' + $script:FsBad) }
+  # 2.2.15 (Codex 2.2.14 R1): an NVR that logged in but whose channel list could not be read: its channels are NOT CHECKED - a
+  # problem, never "Nothing to fix" (an NVR with no login is already a problem of its own)
+  foreach ($n in @($plan.nvrs | Where-Object { -not (Get-FsProp $_ 'chRead' $true) -and @($_.steps) -notcontains 'manual' -and [string]$_.login -and [string]$_.login -notin @('unknown', 'locked', 'refused', 'not supported') })) { $out += ('NVR ' + $n.ip + ': its camera channel list could not be read - its channels are NOT CHECKED, and cameras it may record kept their password and address. Run Fix this site again ' + $script:FsBad) }
   foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'manual' })) { $out += ($c.name + ': needs a person - ' + (@($c.why) -join '; ') + ' ' + $script:FsBad) }
   # 2.2.14 (Codex 2.2.13 F1): ANOTHER channel that records this camera (a second channel on the same NVR, or another NVR) has no
   # video: that recording is lost, whatever the camera's main channel shows - a problem, never "OK, not touched"
@@ -687,11 +706,16 @@ function Get-FsCamChannels($c) {
 function Format-FsCamChannels($chs) { return ((@($chs) | ForEach-Object { 'NVR ' + $_.nvr + ' ch ' + $_.channel }) -join ', ') }
 # 2.2.14 (Codex 2.2.13 F1): may this camera be MOVED to another address? '' = yes. Every recorder AND every channel that records it
 # would have to follow; the tool updates and checks only one channel, so more than one dependent = it is not moved.
+# 2.2.15 (Codex 2.2.14 R1): the NVRs that may record this camera whose channel list was not read (New-FsPlan's chUnknown)
+function Get-FsCamUnreadNvrs($c) { return @(@(Get-FsProp $c 'chUnknown' @()) | Where-Object { $_ }) }
 function Get-FsMoveBlock($c) {
   $rec = @(Get-FsCamRecorders $c)
   if ($rec.Count -gt 1) { return ('NOT moved: ' + $rec.Count + ' NVRs record this camera (' + ($rec -join ', ') + '). Moving it would cut the others off. Move it by hand on every NVR, or call the office') }
   $chs = @(Get-FsCamChannels $c)
   if ($chs.Count -gt 1) { return ('NOT moved: ' + $chs.Count + ' NVR channels record this camera (' + (Format-FsCamChannels $chs) + '). Only one channel would follow it, the others would lose its video. Move it by hand on every channel, or call the office') }
+  # 2.2.15 (Codex 2.2.14 R1): checked last, so the reasons above (more than one NVR / channel) keep their own words
+  $un = @(Get-FsCamUnreadNvrs $c)
+  if ($un.Count) { return ('NOT moved: the camera channel list of NVR ' + ($un -join ', ') + ' could not be read, so it is not known which channels record this camera - moving it could cut their video. Run Fix this site again; if the list still cannot be read, check the NVR by hand') }
   return ''
 }
 # 2.2.14 (Codex 2.2.13 F2): the Hikvision official reset/import CHANGES the camera password, so every camera goes through the same
@@ -725,6 +749,9 @@ function Get-FsPwChangeBlock($c, $recorders, $nvrCred) {
   # checked, the others would lose its video. Refused (the camera keeps its old password, Still a problem, nonzero exit).
   $chs = @(Get-FsCamChannels $c)
   if ($chs.Count -gt 1) { return ('password not changed: ' + $chs.Count + ' NVR channels record this camera (' + (Format-FsCamChannels $chs) + ') - only one channel could be updated and checked, the others would lose its video. Change it on every channel by hand, or call the office') }
+  # 2.2.15 (Codex 2.2.14 R1): checked last, so the reasons above (more than one NVR / channel, unknown login) keep their own words
+  $un = @(Get-FsCamUnreadNvrs $c)
+  if ($un.Count) { return ('password not changed: the camera channel list of NVR ' + ($un -join ', ') + ' could not be read, so it is not known which channels record this camera - changing it could cut their video. Run Fix this site again; if the list still cannot be read, check the NVR by hand') }
   return ''
 }
 function Get-FsCamMatchKey($c) {

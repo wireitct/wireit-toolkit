@@ -404,9 +404,18 @@ if ($Mode -eq 'Rollback') {
       foreach ($cand in $candsR) { if ($cand -and (Test-FsLogin $ip $c.brand $cand) -eq 'ok') { $pw = $cand; $ipNew = ''; break } }
     }
     # 2.2.7 (F01): a missing camera that came back and was put on its channel: the channel goes back even when the camera is gone again
+    $pwLogged = [bool]$pw
     if (-not $pw -and $c.PSObject.Properties['recovered'] -and $c.recovered) { $pw = [string]$sec.password }
     if (-not $pw) { Say ('  ' + $c.name + ': cannot log in at ' + $ip + ' - not undone ' + $script:FsBad) 'Red'; $bad++; continue }
     $cr = Fs-Cred $pw
+    # 2.2.15 (Codex 2.2.14 R2): a password that logs in is not proof it is THIS camera (the site password works on all of them, and
+    # another camera may have taken its address since). Before ANY undo write, the device's own MAC (or serial) must match the undo
+    # file. Another device, or one that does not tell: nothing is written for this camera (not its settings, password, address or
+    # NVR channel) - NOT confirmed, a problem, and pressing Undo again says the same until a person sorts it out.
+    if ($pwLogged) {
+      $idWhy = Get-FsUndoIdentityBlock $ip ([string]$c.brand) $cr ([string]$c.mac) $(if ($c.PSObject.Properties['serial']) { [string]$c.serial } else { '' })
+      if ($idWhy) { Say ('  ' + $c.name + ': NOT confirmed - ' + $idWhy + '. Nothing was changed on it. Find this camera and put it back by hand ' + $script:FsBad) 'Red'; $bad++; continue }
+    }
     if ($c.stream_before -and -not (& $isDone ($ck + '|settings')) -and -not ($cur = Get-FsStream $ip $c.brand $cr)) { $res += [pscustomobject]@{ text = 'settings could not be read - not put back'; ok = $false } }   # 2.2.3 (Codex #20)
     elseif ($c.stream_before -and -not (& $isDone ($ck + '|settings'))) { $want = [pscustomobject]@{ codec = [string]$c.stream_before.codec; fps = [int]$c.stream_before.fps; resolution = $(if ($c.stream_before.width) { '' + $c.stream_before.width + 'x' + $c.stream_before.height } else { 'keep' }); bitrate = [int]$c.stream_before.bitrate; gop = 0; smartCodec = 'keep' }
       # 2.2.7 (Codex file-by-file F09): EVERY setting the run found goes back - the I-frame interval (GOP) and Smart Codec too - and
@@ -619,13 +628,17 @@ if ($Mode -eq 'DryRun') {
       $typed = Ask ('Type the password of the NVR at ' + $nip + ' (hidden; Enter = skip - then cameras cannot be put back on it):') -Secret
       if ($typed) { Remember-Secret $typed; if ((Test-FsLogin $nip 'Hikvision' $typed) -eq 'ok') { $fp = [pscustomobject]@{ state = 'ok'; label = 'typed'; value = $typed } } else { Say 'That NVR password did not work (not tried again, so it does not lock).' 'Yellow' } }
     }
-    $nobj = [ordered]@{ ip = $nip; net = $null; brand = 'Hikvision'; model = ''; mac = ''; login = $(if ($fp.state -eq 'ok') { $fp.label } elseif ($fp.state -eq 'locked') { 'locked' } else { 'unknown' }); channels = @() }
+    $nobj = [ordered]@{ ip = $nip; net = $null; brand = 'Hikvision'; model = ''; mac = ''; login = $(if ($fp.state -eq 'ok') { $fp.label } elseif ($fp.state -eq 'locked') { 'locked' } else { 'unknown' }); channels = @(); channelsRead = $false }
     $fd = @($found | Where-Object { $_.ip -eq $nip })[0]; if ($fd) { $nobj.model = $fd.model; $nobj.mac = $fd.mac; $nobj.brand = (Get-FsBrand $fd.brand $fd.model) }
     if ($fp.state -eq 'ok') {
       $nvrPw[$nip] = $fp.value; $sec.nvr[$nip] = $fp.value
       $ntN = Get-FsNet $nip 'Hikvision' (Fs-Cred $fp.value); if ($ntN) { $nobj.net = [ordered]@{ dhcp = [bool]$ntN.dhcp; gw = [string]$ntN.gw; mask = [string]$ntN.mask; dns1 = [string]$ntN.dns1 } }   # 2.2.3 (Codex #30)
-      $chs = @(Get-FsNvrChannels $nip (Fs-Cred $fp.value)); $nobj.channels = @($chs | ForEach-Object { [ordered]@{ channel = $_.channel; ip = $_.ip; online = $_.online; name = $_.name; protocol = $_.protocol } })
-      Say ('NVR ' + $nip + ': ' + $chs.Count + ' camera channel(s), ' + @($chs | Where-Object { $_.online -eq $false }).Count + ' without video.')
+      # 2.2.15 (Codex 2.2.14 R1): a channel list that could not be read is NOT "no channels": the scan keeps that it is unknown
+      # (channelsRead), so no camera this NVR may record gets a new password, a new address or the official reset in this run
+      $rdl = Read-FsNvrChannelList $nip (Fs-Cred $fp.value); $chs = @($rdl.channels); $nobj.channelsRead = [bool]$rdl.ok
+      $nobj.channels = @($chs | ForEach-Object { [ordered]@{ channel = $_.channel; ip = $_.ip; online = $_.online; name = $_.name; protocol = $_.protocol } })
+      if ($rdl.ok) { Say ('NVR ' + $nip + ': ' + $chs.Count + ' camera channel(s), ' + @($chs | Where-Object { $_.online -eq $false }).Count + ' without video.') }
+      else { Say ('NVR ' + $nip + ': its camera channel list could NOT be read (' + $rdl.why + '). Cameras it may record keep their password and address in this run.') 'Yellow' }
     } else { Say ('NVR ' + $nip + ': could not log in, so its channel list is not read.') 'Yellow' }
     $observed.nvrs += [pscustomobject]$nobj
   }
@@ -942,7 +955,7 @@ $i = 0
 foreach ($c in $ordered) {
   $i++; Write-Host ''; Say ('[' + $i + '/' + $ordered.Count + '] ' + $c.name + ' (' + $c.ip + ')') 'Cyan'; $pwBefore = ''
   $res = New-Object System.Collections.ArrayList; $ip = $c.ip; $pw = $(if ($pwFor.ContainsKey($c.ip)) { $pwFor[$c.ip] } else { '' }); $stop = $false; $needReboot = $false; $streamCheck = $null
-  $rbc = [ordered]@{ name = $c.name; mac = $c.mac; brand = $c.brand; ip_before = $c.ip; ip_after = ''; net_before = $null; stream_before = $null; password_changed = $false; nvr = $null; backup = '' }
+  $rbc = [ordered]@{ name = $c.name; mac = $c.mac; serial = [string](Get-FsProp $c 'serial' ''); brand = $c.brand; ip_before = $c.ip; ip_after = ''; net_before = $null; stream_before = $null; password_changed = $false; nvr = $null; backup = '' }
   $rb.cameras += $rbc
   $step = { param($text, $ok) [void]$res.Add([pscustomobject]@{ text = $text; ok = $ok }); Say ('    ' + $text + ' ' + $(if ($ok -eq $true) { $script:FsOk } elseif ($ok -eq $false) { $script:FsBad } else { '' })) }
   if (-not (Test-FsOnScheme $ip $plan.scheme)) { [void](Add-FsTempIp (Get-FsP3 $ip) $pc $tempState) }
