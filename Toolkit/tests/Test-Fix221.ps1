@@ -174,7 +174,12 @@ $w = Set-FsNet '192.168.1.23' 'Hikvision' $ccr $net '192.168.1.23' '255.255.255.
 Check ($w.ok -and (Mock-State $murl).devices.'192.168.1.23'.net.dhcp) 'undo: DHCP is switched back on (2.2.0 always left it fixed)'
 Check ($fs -match "undo-progress\.json" -and $fs -match "if \(-not \`$bad\) \{ \[IO\.File\]::WriteAllText\(\(Join-Path \`$RollbackDir 'undone\.txt'\)") 'undo: each step that worked is written down; "undone" only when nothing failed'
 Check ($fs -match "\(\`$ipNew -ne \`$c\.ip_before -or \[bool\]\`$nb\.dhcp\)") 'undo: a same-address DHCP -> fixed change is undone too'   # 2.2.6: the address is $ipNew (ip_after, or ip_target of an interrupted move)
-Check ($fs -match "Remove-FsNvrChannel" -and $fs -match "Restore-FsNvrChannel") 'undo uses the saved channel / deletes an added one'
+# 2.2.14: FixSite's undo calls Restore-FsUndoChannel (FixSiteDevices), which writes the saved channel with Restore-FsNvrChannel and then
+# checks the video (Codex 2.2.13 F8) - the call is checked in code, not in a comment
+$fsd221 = Read-Src 'Toolkit/FixSiteDevices.ps1'
+$fsNoCmt = (($fs -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+$undoFn = [regex]::Match($fsd221, '(?s)function Restore-FsUndoChannel.*?\n}').Value
+Check ($fsNoCmt -match "Remove-FsNvrChannel" -and $fsNoCmt -match "Restore-FsUndoChannel" -and $undoFn -match "Restore-FsNvrChannel") 'undo uses the saved channel / deletes an added one'
 $script:FsMockUrl = ''
 
 # =====================================================================================

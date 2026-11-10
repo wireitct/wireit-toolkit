@@ -89,7 +89,9 @@ $d = @(ConvertTo-FsObserved $obs)[0]
 Eq @($d.links).Count 2 'reproduction: the camera on both NVRs keeps both associations'
 Eq $d.nvr '192.168.1.20' '...the first stays its main NVR (not overwritten by the second)'
 Eq $d.channel 5 '...with its channel'
-Check ((Read-Src 'Toolkit/FixSite.ps1') -match 'NVRs record this camera') 'FixSite: no password change on a camera that several NVRs record'
+# 2.2.14: the words moved to FixSiteCore's Get-FsMoveBlock / Get-FsPwChangeBlock (Codex 2.2.13 F1); checked in code, not in a comment
+$fs223 = ((Read-Src 'Toolkit/FixSite.ps1') -split "`n" | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+Check (($fs223 -match 'Get-FsMoveBlock' -and (Read-Src 'Toolkit/FixSiteCore.ps1') -match "' NVRs record this camera") -or $fs223 -match 'NVRs record this camera') 'FixSite: no password change on a camera that several NVRs record'
 Write-Host '#15 an offline channel of another camera is not free'
 $chs = @([pscustomobject]@{ channel = 1; ip = '192.168.1.21'; online = $true }, [pscustomobject]@{ channel = 2; ip = '192.168.1.22'; online = $false }, [pscustomobject]@{ channel = 3; ip = '192.168.1.23'; online = $null })
 Eq (Get-FsFreeNvrChannel $chs '192.168.1.40' '192.168.1.60') 0 'reproduction: offline ch 2 / unknown ch 3 belong to other cameras -> no channel taken (2.2.2 took ch 2)'
