@@ -30,7 +30,12 @@ function Invoke-TkStartupRecovery([string]$toolkitDir) {
   }
   $vp = Join-Path $prev 'version.json.prev'
   try { if (Test-Path -LiteralPath $vp) { Copy-TkAtomicFile $vp (Join-Path $toolkitDir 'version.json') } } catch { $bad += 'version.json' }
-  if ($bad.Count) { throw ('An earlier update could not be put back: ' + ($bad -join ', ') + '. Run the Toolkit installer again.') }
+  # 2.2.15 (Codex 2.2.14 R8): a "Go back" (kind = undo) that stopped half-way is FINISHED the same way: every saved old file back,
+  # the update's added files removed, the old version number back, and the version we left is not re-installed on its own
+  $isUndo = ($j.PSObject.Properties['kind'] -and [string]$j.kind -eq 'undo')
+  if ($bad.Count) { throw ('An earlier ' + $(if ($isUndo) { 'Go back' } else { 'update' }) + ' could not be put back: ' + ($bad -join ', ') + '. Run the Toolkit installer again.') }
+  if ($isUndo -and $j.PSObject.Properties['skip'] -and [string]$j.skip) { try { [IO.File]::WriteAllText((Join-Path $toolkitDir 'skip-version.txt'), [string]$j.skip) } catch {} }
   Remove-Item -LiteralPath $journal -Force -ErrorAction Stop
+  if ($isUndo) { return ('An earlier Go back to version ' + $j.to + ' stopped half-way. It was finished now: version ' + $j.to + ' is back in place.') }
   return ('An earlier update to ' + $j.to + ' stopped half-way, so version ' + $j.from + ' was put back.')
 }

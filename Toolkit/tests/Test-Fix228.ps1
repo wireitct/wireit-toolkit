@@ -215,7 +215,7 @@ try {
   # =====================================================================================
   Write-Host 'version'
   $v = @(([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'ToolkitCore.ps1')), "TkBuiltVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'FixSiteCore.ps1')), "FsVersion = '([0-9.]+)'")).Groups[1].Value, ([regex]::Match([IO.File]::ReadAllText((Join-Path $tk 'FixSiteBw.ps1')), "FsVersion = '([0-9.]+)'")).Groups[1].Value, [string](Get-Content (Join-Path $repo 'version.json') -Raw | ConvertFrom-Json).version)
-  Check ((($v | Select-Object -Unique) -join ',') -eq '2.2.14') ('version 2.2.14 (2.2.14: bumped from 2.2.13) in ToolkitCore, FixSiteCore, FixSiteBw and version.json (' + ($v -join ',') + ')')
+  Check ((($v | Select-Object -Unique) -join ',') -eq '2.2.15') ('version 2.2.15 (2.2.15: bumped from 2.2.14) in ToolkitCore, FixSiteCore, FixSiteBw and version.json (' + ($v -join ',') + ')')
 } catch {
   $script:fail++; Write-Host ('FAIL the suite stopped: ' + $_.Exception.Message + ' at ' + $_.InvocationInfo.PositionMessage)
 } finally {

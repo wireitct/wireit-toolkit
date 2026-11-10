@@ -7,6 +7,8 @@
  is shown as DEFERRED, not PASS, even when it exits 0; the table shows passed / failed / deferred per suite and the totals. "ALL SUITES
  PASSED" is printed only when no suite failed AND none has a deferred check.
  Exit code = number of suites that failed + number of suites with deferred checks (0 only for a real, full pass).
+ 2.2.15 (Codex R11): SKIP lines count as deferred; suites left out by -Portable are DEFERRED rows (and count in the exit code).
+ 2.2.15: Test-Repro2214 runs the reviewer's own 2.2.14 reproductions (Toolkit\tests\repro-2.2.14) against this code.
  2.2.12 (Codex P2-15): the Hik relay suite (appsscript\tests\hikrelay.test.js, Node) is part of the pack: it runs with node and is
  counted like any other suite; with no node on the PC it is DEFERRED (never a pass), so a broken relay can not slip through.
 #>
@@ -15,7 +17,7 @@ $ErrorActionPreference = 'Continue'
 if (-not $env:TEMP) { $env:TEMP = [IO.Path]::GetTempPath() }
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $exe = $(if ($PSVersionTable.PSEdition -eq 'Core') { (Get-Process -Id $PID).Path } else { Join-Path $PSHOME 'powershell.exe' })
-$suites = @('Toolkit\tests\Test-Fix2214Nvr.ps1', 'Toolkit\tests\Test-Fix2214Classic.ps1', 'Toolkit\tests\Test-Fix2214Site.ps1', 'Toolkit\tests\Test-Fix2213Nvr.ps1', 'Toolkit\tests\Test-Fix2213Classic.ps1', 'Toolkit\tests\Test-Fix2213Net.ps1', 'Toolkit\tests\Test-Fix2213Site.ps1', 'Toolkit\tests\Test-Fix2212.ps1', 'Toolkit\tests\Test-Fix2212Site.ps1', 'Toolkit\tests\Test-Fix2212Nvr.ps1', 'Toolkit\tests\Test-Fix2212Net.ps1', 'Toolkit\tests\Test-Fix2211.ps1', 'Toolkit\tests\Test-Fix2210.ps1', 'Toolkit\tests\Test-Fix229.ps1', 'Toolkit\tests\Test-Fix228.ps1', 'Toolkit\tests\Test-Fix227.ps1', 'Toolkit\tests\Test-Fix226.ps1', 'Toolkit\tests\Test-Review225.ps1', 'Toolkit\tests\Test-Fix225.ps1', 'Toolkit\tests\Test-Fix224.ps1', 'Toolkit\tests\Test-Fix223.ps1', 'Toolkit\tests\Test-Fix222.ps1', 'Toolkit\tests\Test-Fix221.ps1', 'Toolkit\tests\Test-Fix22.ps1',
+$suites = @('Toolkit\tests\Test-Repro2214.ps1', 'Toolkit\tests\Test-Fix2215Nvr.ps1', 'Toolkit\tests\Test-Fix2215Classic.ps1', 'Toolkit\tests\Test-Fix2215Site.ps1', 'Toolkit\tests\Test-Fix2214Nvr.ps1', 'Toolkit\tests\Test-Fix2214Classic.ps1', 'Toolkit\tests\Test-Fix2214Site.ps1', 'Toolkit\tests\Test-Fix2213Nvr.ps1', 'Toolkit\tests\Test-Fix2213Classic.ps1', 'Toolkit\tests\Test-Fix2213Net.ps1', 'Toolkit\tests\Test-Fix2213Site.ps1', 'Toolkit\tests\Test-Fix2212.ps1', 'Toolkit\tests\Test-Fix2212Site.ps1', 'Toolkit\tests\Test-Fix2212Nvr.ps1', 'Toolkit\tests\Test-Fix2212Net.ps1', 'Toolkit\tests\Test-Fix2211.ps1', 'Toolkit\tests\Test-Fix2210.ps1', 'Toolkit\tests\Test-Fix229.ps1', 'Toolkit\tests\Test-Fix228.ps1', 'Toolkit\tests\Test-Fix227.ps1', 'Toolkit\tests\Test-Fix226.ps1', 'Toolkit\tests\Test-Review225.ps1', 'Toolkit\tests\Test-Fix225.ps1', 'Toolkit\tests\Test-Fix224.ps1', 'Toolkit\tests\Test-Fix223.ps1', 'Toolkit\tests\Test-Fix222.ps1', 'Toolkit\tests\Test-Fix221.ps1', 'Toolkit\tests\Test-Fix22.ps1',
   'Toolkit\tests\Test-HikReset.ps1', 'Toolkit\tests\Test-FixSite.ps1', 'Toolkit\tests\Test-FixIt.ps1', 'Toolkit\tests\Test-Toolkit.ps1',
   'Toolkit\modules\NvrHealth\tests\Test-NvrHealth.ps1', 'sitecheck\tests\Test-SiteCheck.ps1')
 if ($Portable) {
@@ -28,6 +30,10 @@ if ($Portable) {
   })
 }
 $bad = 0; $deferredSuites = 0; $rows = @()
+# 2.2.15 (Codex 2.2.14 R11): a suite left out by -Portable is shown as a DEFERRED row (did not run), so the totals never hide it
+if ($Portable -and -not $OnlyRelay) {
+  foreach ($d in $desktop) { $rows += [pscustomobject]@{ suite = ('(not run here) ' + $d); result = 'DEFERRED'; passed = 0; failed = 0; deferred = 1; exit = 0; seconds = 0 }; $deferredSuites++ }
+}
 if ($OnlyRelay) { $suites = @() }   # 2.2.12: tests of the runner itself run only the relay part
 # reads a suite's own counts from what it printed: "N passed, M failed" (+ ", K deferred" where a suite has deferred checks)
 function Get-SuiteCounts([string[]]$lines) {
@@ -39,8 +45,10 @@ function Get-SuiteCounts([string[]]$lines) {
     if ($m.Success) { $c.passed = [int]$m.Groups[1].Value; $c.failed = [int]$m.Groups[2].Value; $c.deferred = $(if ($m.Groups[3].Success) { [int]$m.Groups[3].Value } else { 0 }) }
   }
   # a DEFERRED line printed by the suite counts even if its summary line forgot to say so
+  # 2.2.15 (Codex 2.2.14 R11): so does a SKIP line - a check that did not run here is unproved, never a pass
   $dl = @($lines | Where-Object { [string]$_ -match '^\s*DEFERRED\b' }).Count
-  if ($dl -gt $c.deferred) { $c.deferred = $dl }
+  $sl = @($lines | Where-Object { [string]$_ -match '^\s*SKIP\b' }).Count
+  if (($dl + $sl) -gt $c.deferred) { $c.deferred = $dl + $sl }
   return [pscustomobject]$c
 }
 function Get-SuiteResult([int]$code, $counts) {

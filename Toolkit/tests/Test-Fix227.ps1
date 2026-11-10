@@ -54,7 +54,7 @@ try {
     Check ($res.channel_video_back -and $res.channel_cam_old_pw -and $res.channel_undo_exit -eq 0) ('F01 a run stopped right after the NVR took a camera''s channel change: Undo puts the channel back too, so the video comes back (Undo exit ' + $res.channel_undo_exit + ')') ([string]$res.channel_out + [string]$res.channel_error)
     Check ($res.channel_video_back -or (-not $res.channel_said_all_back -and -not $res.channel_undone_file)) 'F01 ...and Undo never says "everything is back" while the channel is still changed' ([string]$res.channel_out)
     Check ($res.nvrmove_back -and $res.nvrmove_undo_exit -eq 0 -and -not $res.nvrmove_no_login_msg) ('F02 a run stopped while the NVR moved: Undo logs in at the new address with the saved login and moves it back (Undo exit ' + $res.nvrmove_undo_exit + ')') ([string]$res.nvrmove_out + [string]$res.nvrmove_error)
-    if ($res.PSObject.Properties['atomic_skipped']) { Write-Host ('SKIP F03 half-way undo-file write: ' + $res.atomic_skipped) }
+    if ($res.PSObject.Properties['atomic_skipped']) { $script:defer++; Write-Host ('DEFERRED F03 half-way undo-file write: ' + $res.atomic_skipped) }
     else {
       Check ($res.atomic_exit -eq 7) ('F03 setup: a later undo-file write fails half-way (file-size limit) and the run stops with exit 7 (exit ' + $res.atomic_exit + ')') ([string]$res.atomic_out + [string]$res.atomic_error)
       Check ([bool]$res.atomic_journal_valid) ('F03 ...and the undo file already on disk is still whole and readable (' + $res.atomic_journal_size + ' bytes), so Undo still knows the earlier changes') ([string]$res.atomic_out)
@@ -207,7 +207,7 @@ function CvSay([string]`$t, [string]`$c = '') { }
 "@)
     $j = Get-Json $d
     Check ($j -and $j.ok -and $j.key -and $j.prot -and -not $j.users) ('F08 Windows: the real upload-key folder inherits nothing and has no Users / Everyone entry (' + $(if ($j) { @($j.sids) -join ',' } else { '?' }) + ')') $d
-  } else { Write-Host 'SKIP F08 real Windows ACL on the upload-key folder (Windows only)' }
+  } else { $script:defer++; Write-Host 'DEFERRED F08 real Windows ACL on the upload-key folder (Windows only, did NOT run here)' }
 
   # =====================================================================================
   # F10 F11 F13: NvrHealth's real result logic (the recorder answers are stood in inside the module)
@@ -319,7 +319,7 @@ Set-NvrHealthOption MockUrl 'http://127.0.0.1:9'; Set-NvrHealthOption LogDir $(Q
     $o14 = & $exe -NoProfile -ExecutionPolicy Bypass -File $hr -Mode Import -Site 'Site 14' -SiteSecretsDir $f14w -StateDir (Join-Path $f14w 'state') -ConfigPath $cfg14 2>&1 | Out-String; $c14 = $LASTEXITCODE
     $ErrorActionPreference = $prev
     Check ($c14 -eq 0 -and $o14 -notmatch 'No site password saved') ('F14 Windows: the real HikReset.ps1 -Mode Import -Site finds the site password saved on this PC (exit ' + $c14 + ')') $o14
-  } else { Write-Host 'SKIP F14 real HikReset run with a DPAPI password store (Windows only)' }
+  } else { $script:defer++; Write-Host 'DEFERRED F14 real HikReset run with a DPAPI password store (Windows only, did NOT run here)' }
 
   # F15: the relay - appsscript/tests/hikrelay.test.js (node) runs as its own counted suite in tools/Run-AllTests.ps1 (2.2.12, Codex P2-15)
 
@@ -358,7 +358,7 @@ function Get-TkWeb([string]`$u, [int]`$t) { return [IO.File]::ReadAllBytes($(Q $
 
   # =====================================================================================
   # F18: a new waiting list for the same site never destroys the one already waiting (Linux: write stopped half-way)
-  if ($isWin) { Write-Host 'SKIP F18 half-way write of the waiting list (needs a per-process file-size limit: Linux)' }
+  if ($isWin) { $script:defer++; Write-Host 'DEFERRED F18 half-way write of the waiting list (needs a per-process file-size limit: Linux; did NOT run here)' }
   else {
     $f18 = Join-Path $tmp 'f18'; $otk = Join-Path $f18 'Toolkit'; $ocr = Join-Path $f18 'CamReset'; New-Item -ItemType Directory -Force -Path $otk, (Join-Path $ocr 'out'), (Join-Path $f18 'home') | Out-Null
     foreach ($f in @('ScanUpload.ps1', 'CamViews.ps1', 'ToolkitCore.ps1', 'ToolkitRecover.ps1')) { Copy-Item (Join-Path $tk $f) (Join-Path $otk $f) }

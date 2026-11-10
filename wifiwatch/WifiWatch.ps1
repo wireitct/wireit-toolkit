@@ -12,6 +12,9 @@
 #   (it checks it at the start and again right before every reconnect / adapter off / connect step); switching an adapter back ON
 #   that an earlier run left off still happens (that is recovery). An expired pause file (or one more than 30 min ahead) is ignored,
 #   so a Restore Network that crashed never stops the watcher for good.
+# 2.2.15 (Codex 2.2.14 R7): the marker must be SAVED AND READ BACK before the adapter goes off. If it can not be written (folder
+#   missing or not writable, disk full) or does not read back the adapter name, this cycle is SKIPPED: the adapter is never switched
+#   off without a marker, because a run killed half-way would then leave Wi-Fi off with nothing telling the next run to fix it.
 param([string]$Dir = 'C:\WireIt\WifiWatch', [string]$PauseFile = '')
 $ErrorActionPreference = 'SilentlyContinue'
 $log    = Join-Path $Dir 'wifiwatch.log'
@@ -65,10 +68,20 @@ function Repair-WwAdapter {
   L ('adapter "' + $name + '" was left switched off by an earlier run - switching it back on')
   if (Enable-WwAdapter $name) { Remove-Item -LiteralPath $marker -Force; L ('adapter "' + $name + '" is on again') } else { L ('adapter "' + $name + '" is STILL OFF - will try again next minute') }
 }
+# 2.2.15 (Codex 2.2.14 R7): writes the recovery marker and reads it back; $true only when the file holds exactly this adapter name
+function Save-WwMarker([string]$iface) {
+  if (-not $iface) { return $false }
+  try {
+    Set-Content -LiteralPath $marker -Value $iface -ErrorAction Stop
+    $back = [string](Get-Content -LiteralPath $marker -Raw -ErrorAction Stop)
+  } catch { return $false }
+  return ($back.Trim() -eq $iface.Trim())
+}
 function Invoke-WwAdapterCycle([string]$iface, [string]$prof) {
   if (Test-WwPaused) { L ('paused by Restore Network until ' + $script:WwPausedUntil + ' - adapter "' + $iface + '" NOT switched off'); return }
   L ('still no internet: disabling + enabling adapter "' + $iface + '"')
-  Set-Content -LiteralPath $marker -Value $iface   # written BEFORE the adapter goes off
+  # written AND checked BEFORE the adapter goes off (2.2.15 R7); no marker = no off/on this time
+  if (-not (Save-WwMarker $iface)) { L ('could not save the recovery marker ' + $marker + ' - adapter "' + $iface + '" NOT switched off, cycle skipped'); return }
   try {
     [void](Ww-Op 'disable' @{ name = $iface })
     [void](Ww-Op 'sleep' @{ s = 6 })

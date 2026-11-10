@@ -15,7 +15,7 @@ $script:TkCurVersion = ''
 # 2.2.2 (re-review NEW-2): the version these files ARE. Get-TkVersion never reads lower than this, so a copy installed from the
 # repository (no Toolkit\version.json) is not "0.0.0", and an update is only taken when the published one is NEWER (never a downgrade).
 # Same number as FixSiteCore.ps1 $FsVersion and the release manifest (version.json); Test-Fix222 checks all three.
-$script:TkBuiltVersion = '2.2.14'
+$script:TkBuiltVersion = '2.2.15'
 . (Join-Path $PSScriptRoot 'ToolkitRecover.ps1')
 
 function Get-TkPaths([string]$toolkitDir) {
@@ -281,6 +281,12 @@ function Undo-TkUpdate([string]$toolkitDir) {
   $prev = Join-Path $P.Previous ([string]$cur.previous)
   $u = Read-TkJson (Join-Path $prev 'undo.json')
   if (-not $u) { throw ('The saved copy of version ' + $cur.previous + ' is missing.') }
+  # 2.2.15 (Codex 2.2.14 R8): a journal is written BEFORE the first file is swapped. If the process or the power dies half-way, the next
+  # start of the Toolkit (Invoke-TkStartupRecovery, before the main window loads) FINISHES the go-back from the saved copy, so a mixed
+  # old/new Toolkit never stays. The journal has the same shape as an update's (prev/from/to/added) plus kind = 'undo'.
+  $journal = Join-Path $P.Previous 'update-pending.json'
+  if (Test-Path -LiteralPath $journal) { throw 'An earlier update or Go back is still half-way. Close the Toolkit and open it again first (it finishes that on start).' }
+  Write-TkJournal ([ordered]@{ kind = 'undo'; prev = $prev; from = [string]$cur.version; to = [string]$cur.previous; added = @($u.added | Where-Object { $_ -and (Test-TkManifestPath $_) }); skip = [string]$cur.version; at = (Get-Date -Format 's') }) $journal
   $bad = @()
   foreach ($fi in @(Get-ChildItem -LiteralPath $prev -Recurse -File | Where-Object { $_.Name -notin @('undo.json', 'version.json.prev') })) {
     $rel = $fi.FullName.Substring($prev.Length).TrimStart('\', '/')
@@ -288,12 +294,26 @@ function Undo-TkUpdate([string]$toolkitDir) {
     try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null; Copy-TkAtomicFile $fi.FullName $dst; if ((Get-TkSha256 $dst) -ne (Get-TkSha256 $fi.FullName)) { $bad += $rel } } catch { $bad += $rel }
   }
   foreach ($a in @($u.added)) { if ($a -and (Test-TkManifestPath $a)) { $ap = Join-Path $P.Root $a; try { if (Test-Path -LiteralPath $ap) { Remove-Item -LiteralPath $ap -Force -ErrorAction Stop } } catch { $bad += $a } } }
-  if ($bad.Count) { throw ('Going back did not finish: ' + ($bad -join ', ') + ' could not be put back (locked or not allowed). The version number was not changed. Run it as an admin.') }
+  # the journal stays: the next start tries to finish the go-back again (and says so) - never a silent mixed version
+  if ($bad.Count) { throw ('Going back did not finish: ' + ($bad -join ', ') + ' could not be put back (locked or not allowed). The Toolkit is half-way between versions; the next time it opens it tries to finish going back. Run it as an admin.') }
   $vp = Join-Path $prev 'version.json.prev'
   if (Test-Path $vp) { Copy-TkAtomicFile $vp (Join-Path $toolkitDir 'version.json') }
   # stop the next start from re-installing the version we just left
   $cfgPath = Join-Path $toolkitDir 'skip-version.txt'; Set-Content -Path $cfgPath -Value ([string]$cur.version)
+  Remove-Item -LiteralPath $journal -Force -ErrorAction Stop
   return [string]$cur.previous
+}
+# 2.2.15 (R8): writes a journal with a plain write + one move (no Copy-TkAtomicFile), flushed to disk, before any swap
+function Write-TkJournal($obj, [string]$path) {
+  $tmp = $path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+  try {
+    [IO.File]::WriteAllText($tmp, ($obj | ConvertTo-Json -Depth 8))
+    $fs = [IO.File]::Open($tmp, 'Open', 'Write', 'None'); try { $fs.Flush($true) } finally { $fs.Dispose() }
+    if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }
+    [IO.File]::Move($tmp, $path)
+  } finally { if ([IO.File]::Exists($tmp)) { [IO.File]::Delete($tmp) } }
+  $chk = $null; try { $chk = [IO.File]::ReadAllText($path) | ConvertFrom-Json } catch {}
+  if (-not $chk -or [string]$chk.prev -ne [string]$obj.prev) { throw 'Could not save the Go back journal. Nothing was changed.' }
 }
 
 function Get-TkSkipVersion([string]$toolkitDir) { $p = Join-Path $toolkitDir 'skip-version.txt'; if (Test-Path $p) { return (Get-Content $p -Raw).Trim() } ; return '' }

@@ -4,7 +4,7 @@ $tk = Split-Path -Parent $PSScriptRoot; $repo = Split-Path -Parent $tk
 $exe = (Get-Process -Id $PID).Path
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('review225-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-$script:pass = 0; $script:fail = 0
+$script:pass = 0; $script:fail = 0; $script:defer = 0   # 2.2.15 (Codex R11): Windows-only checks are DEFERRED, never SKIP/PASS
 function Check([bool]$ok, [string]$name) { if ($ok) { $script:pass++; Write-Host ('PASS ' + $name) } else { $script:fail++; Write-Host ('FAIL ' + $name) } }
 function Load-Function([string]$file, [string]$name) {
   $a = [Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$null)
@@ -139,7 +139,7 @@ try {
 
   # A controlled wrong MAC parser forces assertions in the actual SiteCheck suite to fail; its process must return those failures.
   # 2.2.6: SiteCheck needs the Windows drawing library (GDI+), so this one runs on Windows only.
-  if ($env:OS -ne 'Windows_NT') { Write-Host 'SKIP SiteCheck exit-code check (Windows only: SiteCheck needs the Windows drawing library)' } else {
+  if ($env:OS -ne 'Windows_NT') { $script:defer++; Write-Host 'DEFERRED SiteCheck exit-code check (Windows only: SiteCheck needs the Windows drawing library; did NOT run here)' } else {
   $shim = Join-Path $tmp 'sitecheck-shim.ps1'; $sc = (Join-Path $repo 'sitecheck/SiteCheck.ps1').Replace("'", "''")
   Set-Content $shim ("param([switch]`$LoadOnly)`n. '$sc' -LoadOnly`nfunction ConvertTo-ScMac { 'BROKEN' }")
   $oldTemp = $env:TEMP; $env:TEMP = $tmp
@@ -155,5 +155,5 @@ try {
   Check ($result.nvr_interrupted_attempt_only -and $result.nvr_undo_exit -eq 0 -and $result.nvr_undo_restored_password -and $result.nvr_undo_marker) 'killing a recorder password change before verification still allows Undo to restore its original password'
 } catch { $script:fail++; Write-Host ('FAIL unexpected error: ' + $_.Exception.Message + ' at ' + $_.InvocationInfo.ScriptLineNumber) }
 finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
-Write-Host ('Test-Review225: ' + $script:pass + ' passed, ' + $script:fail + ' failed')
+Write-Host ('Test-Review225: ' + $script:pass + ' passed, ' + $script:fail + ' failed, ' + $script:defer + ' deferred')
 exit $script:fail

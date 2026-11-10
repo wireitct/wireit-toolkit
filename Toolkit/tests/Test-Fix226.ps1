@@ -6,7 +6,7 @@ $tk = Split-Path -Parent $PSScriptRoot; $repo = Split-Path -Parent $tk
 $exe = $(if ($PSVersionTable.PSEdition -eq 'Core') { (Get-Process -Id $PID).Path } else { Join-Path $PSHOME 'powershell.exe' })
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('fix226-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-$script:pass = 0; $script:fail = 0
+$script:pass = 0; $script:fail = 0; $script:defer = 0   # 2.2.15 (Codex R11): Windows-only checks are DEFERRED, never SKIP/PASS
 function Check([bool]$ok, [string]$name, [string]$more = '') { if ($ok) { $script:pass++; Write-Host ('PASS ' + $name) } else { $script:fail++; Write-Host ('FAIL ' + $name); if ($more) { Write-Host $more } } }
 $srv = $null
 try {
@@ -24,7 +24,7 @@ try {
     Check ($acl.AreAccessRulesProtected -and (($sids -join ',') -eq ($want -join ','))) ('...it inherits nothing and only admins, SYSTEM and this user have access (' + ($sids -join ',') + ')')
     $wrote = $false; try { [IO.File]::WriteAllText((Join-Path $vd 'probe.tmp'), 'x'); $wrote = $true } catch {}
     Check $wrote '...and this user can still write its password file there'
-  } else { Write-Host 'SKIP password-folder ACL check (Windows only)' }
+  } else { $script:defer++; Write-Host 'DEFERRED password-folder ACL check (Windows only, did NOT run here)' }
 
   # ---- bug 5: Save camera pictures must not delete the camera lists waiting in the shared outbox ----
   . (Join-Path $PSScriptRoot 'TestPython.ps1'); $py = Get-TestPython
@@ -63,5 +63,5 @@ try {
   }
 } catch { $script:fail++; Write-Host ('FAIL unexpected error: ' + $_.Exception.Message + ' at ' + $_.InvocationInfo.ScriptLineNumber) }
 finally { if ($srv) { try { $srv.Kill() } catch {} }; Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
-Write-Host ('Test-Fix226: ' + $script:pass + ' passed, ' + $script:fail + ' failed')
+Write-Host ('Test-Fix226: ' + $script:pass + ' passed, ' + $script:fail + ' failed, ' + $script:defer + ' deferred')
 exit $script:fail
