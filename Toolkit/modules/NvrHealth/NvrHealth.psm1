@@ -407,6 +407,8 @@ function Hik-Search($t, [int]$trackId, [DateTime]$fromLocal, [DateTime]$toLocal,
   $body = '<?xml version="1.0" encoding="UTF-8"?><CMSearchDescription><searchID>' + [guid]::NewGuid().ToString().ToUpper() + '</searchID><trackIDList><trackID>' + $trackId + '</trackID></trackIDList><timeSpanList><timeSpan><startTime>' + $fromLocal.ToString('yyyy-MM-ddTHH:mm:ss') + 'Z</startTime><endTime>' + $toLocal.ToString('yyyy-MM-ddTHH:mm:ss') + 'Z</endTime></timeSpan></timeSpanList><maxResults>' + $max + '</maxResults><searchResultPostion>0</searchResultPostion><metadataList><metadataDescriptor>//recordType.meta.std-cgi.com</metadataDescriptor></metadataList></CMSearchDescription>'
   $r = Http -Ip $t.ip -Method 'POST' -Path '/ISAPI/ContentMgmt/search' -Body $body -Credential $t.cred -Port $t.port -Timeout 25
   $x = Xml $r.body; if ($r.code -ne 200 -or -not $x) { return $null }
+  # 2.2.13: an answer that is not a search result (a login / error page that happens to be XML) = failed, never "no footage"
+  if (-not $x.DocumentElement -or $x.DocumentElement.LocalName -notmatch '(?i)^CMSearchResult$') { Log ('search answer is not a search result: ' + $x.DocumentElement.LocalName); return $null }
   $segs = @()
   foreach ($m in (XFind $x 'searchMatchItem')) {
     $st = Parse-DeviceTime (XText $m 'startTime') $null; $en = Parse-DeviceTime (XText $m 'endTime') $null
@@ -414,35 +416,76 @@ function Hik-Search($t, [int]$trackId, [DateTime]$fromLocal, [DateTime]$toLocal,
   }
   return @{ status = (XText $x 'responseStatusStrg'); segs = $segs }
 }
-function Get-HikContinuousDays($t, [int]$trackId, [DateTime]$anchor, [DateTime]$nowLocal, [int]$daysHeld) {
-  # how many days back from now the footage is continuous. An empty 36 h window = a gap: retention stops at the day before it.
-  # A search that fails = $null (unknown, never a pass).
-  # 2.2.12 (Codex P1-8): 2.2.11 looked at a few sample days (1, 2, 3, 5, 7, 10, 14, 21, 28 ...) and never at the days in between,
-  # so footage missing from 19 to 15 days ago still gave "30 days". Now EVERY day is checked up to the target (+1) or 60 days,
-  # whichever is more: one search per 7-day block (up to 200 clips); a block with that many clips is checked day by day.
-  # Days older than that are only sampled; $script:NhContinuousSampledFrom then says from which day (0 = every day checked).
-  $script:NhContinuousSampledFrom = 0
-  $tg = [int]$script:NhTargetDays
-  $off = [int][math]::Floor(($nowLocal - $anchor).TotalDays)
-  $ok = [math]::Min($off, $daysHeld)
-  $daily = [math]::Min($daysHeld, [math]::Max($tg + 1, 60))
-  $hasDay = { param($segs, [int]$k) $w0 = $nowLocal.AddDays(-$k); $w1 = $w0.AddHours(36); return [bool](@($segs | Where-Object { $_.end -ge $w0 -and $_.start -le $w1 }).Count) }
-  $k = $off + 1
-  while ($k -le $daily) {
-    $kEnd = [math]::Min($k + 6, $daily)
-    $from = $nowLocal.AddDays(-$kEnd); $r = Hik-Search $t $trackId $from $nowLocal.AddDays(-$k).AddHours(36) 200
-    if ($null -eq $r) { return $null }
-    $segs = @($r.segs)
-    $truncated = ($segs.Count -ge 200 -or [string]$r.status -match '(?i)more')
-    for ($d = $k; $d -le $kEnd; $d++) {
-      if ($truncated) { $one = Hik-Search $t $trackId $nowLocal.AddDays(-$d) $nowLocal.AddDays(-$d).AddHours(36) 1; if ($null -eq $one) { return $null }; $have = [bool]@($one.segs).Count }
-      else { $have = & $hasDay $segs $d }
-      if (-not $have) { return $ok }
-      $ok = $d
-    }
-    $k = $kEnd + 1
+function Get-HikAllSegs($t, [int]$trackId, [DateTime]$from, [DateTime]$to) {
+  # 2.2.13 (Codex 2.2.12 #5): EVERY clip between $from and $to. A full answer (200 clips or "MORE") is split in half until each
+  # part is complete; a part that can not be read completely (200+ clips in 2 hours, a failed search, or the search budget used
+  # up) = $null: unknown, never treated as continuous footage.
+  if ([int]$script:NhSearchBudget -le 0) { Log ('footage search budget used up (track ' + $trackId + ')'); return $null }
+  $script:NhSearchBudget = [int]$script:NhSearchBudget - 1
+  $r = Hik-Search $t $trackId $from $to 200
+  if ($null -eq $r) { return $null }
+  $segs = @($r.segs)
+  $full = ($segs.Count -ge 200 -or [string]$r.status -match '(?i)more')
+  if (-not $full) { return ,$segs }
+  if (($to - $from).TotalHours -le 2) { Log ('track ' + $trackId + ': 200+ clips in ' + $from + ' .. ' + $to + ' - can not be read completely'); return $null }
+  $mid = $from.AddTicks([long](($to - $from).Ticks / 2))
+  $a = Get-HikAllSegs $t $trackId $from $mid; if ($null -eq $a) { return $null }
+  $b = Get-HikAllSegs $t $trackId $mid $to; if ($null -eq $b) { return $null }
+  return ,@(@($a) + @($b))
+}
+function Get-NhContinuousStart([object[]]$segs, [double]$maxGapHours) {
+  # 2.2.13 (Codex 2.2.12 #5): merge the clips (oldest first), then walk the merged stretches from the newest back; the footage is
+  # continuous back to the start of the stretch after the first REAL empty time longer than $maxGapHours (end of one stretch to
+  # the start of the next - not "does a 36 h window hold a clip"). @{ start; hole } ($hole = a hole ended it); $null = no clips.
+  $s = @($segs | Where-Object { $_ -and $_.start } | Sort-Object { $_.start })
+  if (-not $s.Count) { return $null }
+  $m = New-Object System.Collections.Generic.List[object]
+  foreach ($g in $s) {
+    $gEnd = $(if ($g.end -and $g.end -ge $g.start) { $g.end } else { $g.start })
+    if ($m.Count -and $g.start -le $m[$m.Count - 1].end) { if ($gEnd -gt $m[$m.Count - 1].end) { $m[$m.Count - 1].end = $gEnd } }
+    else { $m.Add([pscustomobject]@{ start = $g.start; end = $gEnd }) }
   }
-  if ($daysHeld -le $daily) { return $daysHeld }
+  $cur = $m[$m.Count - 1].start; $hole = $false
+  for ($i = $m.Count - 2; $i -ge 0; $i--) {
+    if (($cur - $m[$i].end).TotalHours -gt $maxGapHours) { $hole = $true; break }
+    $cur = $m[$i].start
+  }
+  return @{ start = $cur; hole = $hole }
+}
+function Get-HikContinuousDays($t, [int]$trackId, [DateTime]$anchor, [DateTime]$nowLocal, [int]$daysHeld) {
+  # how many days back from now the footage is continuous. An empty stretch longer than 36 h = a hole: retention stops there.
+  # A search that fails = $null (unknown, never a pass).
+  # 2.2.12 (Codex P1-8): every day up to the target (+1) or 60 days, whichever is more, is checked; older days only sampled
+  # ($script:NhContinuousSampledFrom then says from which day; 0 = every day checked).
+  # 2.2.13 (Codex 2.2.12 #5): 2.2.12 asked "does each 36 h window starting every 24 h hold any clip?", so a 40 h hole between two
+  # window starts passed. Now every clip of that part is read (7-day searches, a full answer split until complete) and the real
+  # empty stretches between neighbouring clips are measured. A full answer that can not be split complete = unknown.
+  $script:NhContinuousSampledFrom = 0
+  $maxGapH = 36
+  $tg = [int]$script:NhTargetDays
+  $daily = [math]::Min($daysHeld, [math]::Max($tg + 1, 60))
+  $script:NhSearchBudget = 400
+  # the fully-read part: from ($daily + 2) days ago (the oldest clip is inside it when $daysHeld <= $daily) up to the newest clip
+  $regionStart = $nowLocal.AddDays( - ($daily + 2))
+  $top = $(if ($anchor -gt $nowLocal) { $anchor } else { $nowLocal }).AddMinutes(5)
+  $all = @()
+  $b1 = $top
+  while ($b1 -gt $regionStart) {
+    $b0 = $b1.AddDays(-7); if ($b0 -lt $regionStart) { $b0 = $regionStart }
+    $part = Get-HikAllSegs $t $trackId $b0 $b1
+    if ($null -eq $part) { return $null }
+    $all += @($part)
+    $b1 = $b0
+  }
+  $cr = Get-NhContinuousStart $all $maxGapH
+  if ($null -eq $cr) { return 0 }
+  $cs = $cr.start
+  $span = $nowLocal - $cs
+  $days = [int][math]::Floor($span.TotalDays); if ($days -lt 0) { $days = 0 }
+  if ($cr.hole -or $daysHeld -le $daily) { return [math]::Min($days, $daysHeld) }
+  # older footage exists past the fully-read part: continuous only if the footage reaches (within 36 h) the start of that part
+  if ($cs -gt $nowLocal.AddDays(-$daily).AddHours($maxGapH)) { return [math]::Min($days, $daysHeld) }
+  $ok = $daily
   # older than the day-by-day part: sampled only (said so on the report, never counted as checked)
   $pts = @(75, 90, 120, 180, 270, 365) + @($daysHeld)
   $pts = @($pts | Where-Object { $_ -gt $daily -and $_ -le $daysHeld } | Sort-Object -Unique)
@@ -455,17 +498,57 @@ function Get-HikContinuousDays($t, [int]$trackId, [DateTime]$anchor, [DateTime]$
   if ($ok -gt $daily) { $script:NhContinuousSampledFrom = $daily + 1 }
   return $ok
 }
-function Hik-Tracks($t) {
-  $r = Http -Ip $t.ip -Path '/ISAPI/ContentMgmt/record/tracks' -Credential $t.cred -Port $t.port
+function Hik-ParseTracks([string]$body) {
+  # 2.2.13 (Codex 2.2.12 #7): $null = the answer is not a track list (empty, not XML, an error page): UNKNOWN, never "all on".
+  # A real list (even an empty one) = a hashtable id -> track.
+  $x = Xml $body; if (-not $x -or -not $x.DocumentElement) { return $null }
+  if ($x.DocumentElement.LocalName -notmatch '(?i)^Track(List)?$') { return $null }
   $out = @{}
-  foreach ($tr in (XFind (Xml $r.body) 'Track')) {
-    $id = [int](XText $tr 'id'); if (-not $id) { continue }
+  foreach ($tr in (XFind $x 'Track')) {
+    $id = 0; [void][int]::TryParse((XText $tr 'id'), [ref]$id); if (-not $id) { continue }
     $modes = @((XFind $tr 'ActionRecordingMode') | ForEach-Object { $_.InnerText.Trim() } | Where-Object { $_ } | Select-Object -Unique)
     $rec = @((XFind $tr 'Record') | ForEach-Object { $_.InnerText.Trim() })
     $en = XText $tr 'Enable'
     $out[$id] = [pscustomobject]@{ id = $id; enabled = ($en -ne 'false'); modes = $modes; hasSchedule = (($rec -contains 'true') -or -not $rec.Count) }
   }
   return $out
+}
+function Hik-ReadTracks($t) {
+  # 2.2.13: @{ ok; map; why } - ok only for a 200 answer that is a real track list
+  $r = Http -Ip $t.ip -Path '/ISAPI/ContentMgmt/record/tracks' -Credential $t.cred -Port $t.port
+  if ($r.code -ne 200) { return @{ ok = $false; map = @{}; why = ('answer ' + $r.code); body = '' } }
+  $m = Hik-ParseTracks ([string]$r.body)
+  if ($null -eq $m) { return @{ ok = $false; map = @{}; why = 'the answer was not a recording list'; body = '' } }
+  return @{ ok = $true; map = $m; why = ''; body = [string]$r.body }
+}
+function Hik-Tracks($t) {
+  # read-only checks: an unreadable list gives no tracks (the recording check then says "unknown" per camera)
+  $rt = Hik-ReadTracks $t
+  return $rt.map
+}
+function Hik-ReadChannel($t, [int]$ch) {
+  # 2.2.13 (Codex 2.2.12 #6): read ONE NVR channel back: which camera address it really uses and whether it is online.
+  # ok = both the channel list and the status list were real 200 answers. found = the channel is in the list.
+  $res = @{ ok = $false; found = $false; ip = ''; online = $null; why = '' }
+  $a = Http -Ip $t.ip -Path '/ISAPI/ContentMgmt/InputProxy/channels' -Credential $t.cred -Port $t.port
+  $x = $(if ($a.code -eq 200) { Xml $a.body } else { $null })
+  if (-not $x -or -not $x.DocumentElement -or $x.DocumentElement.LocalName -notmatch '(?i)^InputProxyChannelList$') { $res.why = 'the channel list could not be read (answer ' + $a.code + ')'; return $res }
+  foreach ($c in (XFind $x 'InputProxyChannel')) { if ([string](XText $c 'id') -eq [string]$ch) { $res.found = $true; $res.ip = XText $c 'ipAddress' } }
+  $s = Http -Ip $t.ip -Path '/ISAPI/ContentMgmt/InputProxy/channels/status' -Credential $t.cred -Port $t.port
+  $y = $(if ($s.code -eq 200) { Xml $s.body } else { $null })
+  if (-not $y -or -not $y.DocumentElement -or $y.DocumentElement.LocalName -notmatch '(?i)^InputProxyChannelStatusList$') { $res.why = 'the channel status could not be read (answer ' + $s.code + ')'; return $res }
+  foreach ($c in (XFind $y 'InputProxyChannelStatus')) { if ([string](XText $c 'id') -eq [string]$ch) { $res.online = ((XText $c 'online') -eq 'true') } }
+  if ($null -eq $res.online) { $res.online = $false }
+  $res.ok = $true
+  return $res
+}
+function Hik-UpTime($t, [int]$timeout = 5) {
+  # 2.2.13 (Codex 2.2.12 #8): the camera's own boot marker (seconds since it started), /ISAPI/System/status <deviceUpTime>.
+  # @{ code; up } - up = $null when the camera does not give it. UNVERIFIED on real cameras (some models may not offer it).
+  $r = Http -Ip $t.ip -Path '/ISAPI/System/status' -Credential $t.cred -Port $t.port -Timeout $timeout
+  $up = $null
+  if ($r.code -eq 200) { $v = XText (Xml $r.body) 'deviceUpTime'; $n = [double]0; if ($v -and [double]::TryParse($v, [ref]$n)) { $up = $n } }
+  return @{ code = [int]$r.code; up = $up }
 }
 function Hik-Storage($t) {
   $r = Http -Ip $t.ip -Path '/ISAPI/ContentMgmt/Storage' -Credential $t.cred -Port $t.port

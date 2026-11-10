@@ -76,20 +76,31 @@ function Invoke-NvrFix {
   switch ($Fix) {
     'recording' {
       if ($v -eq 'Hikvision') {
-        $all = Http -Ip $Ip -Path '/ISAPI/ContentMgmt/record/tracks' -Credential $t.cred -Port $t.port
-        if ($all.code -ne 200) { return (& $done $false ('Could not read the recording settings (answer ' + $all.code + '). Nothing changed.')) }
-        $off = @((Hik-Tracks $t).Values | Where-Object { -not $_.enabled } | Sort-Object id)
-        if (-not $off.Count) { return (& $done $true 'Recording is already on for every camera. Nothing to change.') }
-        $res.backup = Fix-Save $BackupDir 'record-tracks-before.xml' $all.body
+        # 2.2.13 (Codex 2.2.12 #7): ONE read of the track list, checked: a failed / unreadable answer is "could not read", never
+        # "already on for every camera". 2.2.12 read it twice and an error on the 2nd read became an empty list = all on.
+        $rt = Hik-ReadTracks $t
+        if (-not $rt.ok) { return (& $done $false ('Could not read the recording settings (' + $rt.why + '). Recording NOT CHECKED, nothing changed. Run it again.')) }
+        if (-not $rt.map.Count) { return (& $done $false 'The recorder lists no recording settings at all, so recording could NOT be checked. Nothing changed. Look at Storage > Recording schedule on the recorder.') }
+        $off = @($rt.map.Values | Where-Object { -not $_.enabled } | Sort-Object id)
+        if (-not $off.Count) { return (& $done $true ('Recording is already on for every camera (' + $rt.map.Count + ' recording settings read). Nothing to change.')) }
+        $res.backup = Fix-Save $BackupDir 'record-tracks-before.xml' $rt.body
         if (-not (& $ask @('Turn recording back ON (continuous schedule kept as it is) for camera(s): ' + (($off | ForEach-Object { [math]::Floor($_.id / 100) }) -join ', ') + ' on ' + $Ip + '.', 'Backup of the recording settings saved: ' + $res.backup))) { return (& $done $true 'Not confirmed - nothing changed.') }
         $res.ran = $true
         foreach ($o in $off) {
           $one = Http -Ip $Ip -Path ('/ISAPI/ContentMgmt/record/tracks/' + $o.id) -Credential $t.cred -Port $t.port
+          # 2.2.13: never PUT back an answer that is not this camera's own track (an error page / another track)
+          $ox = $(if ($one.code -eq 200) { Xml $one.body } else { $null })
+          if (-not $ox -or [string](XText $ox 'id') -ne [string]$o.id -or ([string]$one.body) -notmatch '<Enable>false</Enable>') { Log ('track ' + $o.id + ': could not read it (answer ' + $one.code + ') - not written'); continue }
           $xml = ([string]$one.body) -replace '<Enable>false</Enable>', '<Enable>true</Enable>'
           $w = Http -Ip $Ip -Method 'PUT' -Path ('/ISAPI/ContentMgmt/record/tracks/' + $o.id) -Body $xml -Credential $t.cred -Port $t.port
           if (Hik-Ok $w) { $res.changed += ('camera ' + [math]::Floor($o.id / 100)) }
         }
-        $afterTracks = Hik-Tracks $t
+        $ra = Hik-ReadTracks $t
+        if (-not $ra.ok) {
+          $res.history = 'Recording turn-on sent for: ' + ($res.changed -join ', ') + ' (' + $Ip + ') - NOT confirmed (read-back failed)'
+          return (& $done $false ('Sent to the recorder, but its recording settings could not be read back (' + $ra.why + '), so it is NOT confirmed. Run the Recording check again.'))
+        }
+        $afterTracks = $ra.map
         $still = @($off | Where-Object { -not $afterTracks.ContainsKey($_.id) -or -not $afterTracks[$_.id].enabled })
       } elseif ($v -eq 'DW') {
         if (-not (Dw-Login $t)) { return (& $done $false 'The DW server refused the login. Nothing changed.') }
@@ -112,6 +123,7 @@ function Invoke-NvrFix {
       $info = Http -Ip $Ip -Path $(if ($v -eq 'Uniview') { '/LAPI/V1.0/System/DeviceInfo' } else { '/ISAPI/System/deviceInfo' }) -Credential $t.cred -Port $t.port -Timeout 8
       if ($info.code -ne 200) { return (& $done $false ('The camera did not accept the login (answer ' + $info.code + '), so it was not restarted. If it does not answer at all, restart its switch port (PoE) by hand.')) }
       $res.backup = Fix-Save $BackupDir 'device-before.txt' $info.body
+      $upPre = $null; if ($v -eq 'Hikvision') { $u0 = Hik-UpTime $t 8; if ($u0.code -eq 200) { $upPre = $u0.up } }   # 2.2.13: boot marker before (null = camera does not give it)
       if (-not (& $ask @('Restart (reboot) the camera at ' + $Ip + '. It is offline for about 2 minutes.', 'Allowed: 1 restart per hour, 2 per day for this camera.'))) { return (& $done $true 'Not confirmed - nothing changed.') }
       $res.ran = $true
       $w = Http -Ip $Ip -Method 'PUT' -Path $path -Body $(if ($v -eq 'Uniview') { '{}' } else { '' }) -ContentType $(if ($v -eq 'Uniview') { 'application/json' } else { 'application/xml' }) -Credential $t.cred -Port $t.port -Timeout 8
@@ -128,18 +140,34 @@ function Invoke-NvrFix {
       Fix-LimitAdd $StateFile $Ip $now
       $res.changed += 'restart asked'; Say ('Restart accepted by the camera... waiting up to ' + $WaitSec + ' s: it must go offline and come back.')
       # 2.2.12 (Codex P1-10): an accepted request is not proof. "Restarted" needs the camera to go away and answer again.
+      # 2.2.13 (Codex 2.2.12 #8): an HTTP error answer (500, 401, ...) means the camera is UP and answering - it is not "went down".
+      # Only no answer at all (no connection / timeout, code 0) counts as offline. Where the camera gives its own uptime
+      # (Hikvision /ISAPI/System/status deviceUpTime), the restart is confirmed ONLY by that uptime starting again from low;
+      # a drop-out with the uptime still counting up is NOT a restart. Anything in between = NOT confirmed.
       $infoPath = $(if ($v -eq 'Uniview') { '/LAPI/V1.0/System/DeviceInfo' } else { '/ISAPI/System/deviceInfo' })
+      $upBefore = $null; if ($v -eq 'Hikvision' -and $null -ne $upPre) { $upBefore = $upPre }
       $pollMs = $(if ($WaitSec -ge 30) { 3000 } else { 500 })
-      $wentDown = $false; $back = $false; $end = (Get-Date).AddSeconds([math]::Max($WaitSec, 1))
+      $wentDown = $false; $back = $false; $upReset = $false; $httpErr = 0; $tSent = Get-Date; $end = $tSent.AddSeconds([math]::Max($WaitSec, 1))
       do {
         Start-Sleep -Milliseconds $pollMs
-        $pr = Http -Ip $Ip -Path $infoPath -Credential $t.cred -Port $t.port -Timeout 5
-        if ($pr.code -ne 200) { $wentDown = $true } elseif ($wentDown) { $back = $true }
+        if ($null -ne $upBefore) {
+          $u = Hik-UpTime $t 5
+          if ($u.code -eq 0) { $wentDown = $true }
+          elseif ($u.code -ne 200) { $httpErr++ }
+          elseif ($null -ne $u.up) { if ($u.up -lt $upBefore) { $upReset = $true; $back = $true } elseif ($wentDown) { $back = $true } }
+          else { $httpErr++ }
+        } else {
+          $pr = Http -Ip $Ip -Path $infoPath -Credential $t.cred -Port $t.port -Timeout 5
+          if ($pr.code -eq 0) { $wentDown = $true } elseif ($pr.code -ne 200) { $httpErr++ } elseif ($wentDown) { $back = $true }
+        }
       } while (-not $back -and (Get-Date) -lt $end)
-      if ($back) { $res.changed = @('restarted'); $res.history = 'Camera ' + $Ip + ' restarted, back online'; return (& $done $true 'The camera restarted and is back. Run the Recording check to confirm it records again.') }
+      if ($httpErr) { Log ('restart wait: ' + $httpErr + ' error answer(s) from the camera (it was answering, so not counted as offline)') }
+      $confirmed = $(if ($null -ne $upBefore) { $upReset } else { $back })
+      if ($confirmed) { $res.changed = @('restarted'); $res.history = 'Camera ' + $Ip + ' restarted, back online' + $(if ($upReset) { ' (its uptime started again)' } else { '' }); return (& $done $true 'The camera restarted and is back. Run the Recording check to confirm it records again.') }
+      if ($back -and $null -ne $upBefore) { $res.history = 'Camera ' + $Ip + ' restart asked - NOT confirmed (it dropped off but its uptime kept counting)'; return (& $done $false 'The camera dropped off the network and came back, but its own uptime kept counting, so it did NOT restart. It is NOT confirmed. Wait 5 minutes and check it; if it is still stuck, restart its switch port (PoE).') }
       if ($wentDown) { $res.history = 'Camera ' + $Ip + ' restarted, NOT back yet'; return (& $done $false ('The camera went offline for the restart but is not back after ' + $WaitSec + ' s. Restart its switch port (PoE) or go look at it.')) }
-      $res.history = 'Camera ' + $Ip + ' restart asked - NOT confirmed (it never went offline)'
-      return (& $done $false ('The camera said OK but never went offline in ' + $WaitSec + ' s, so it is NOT confirmed that it restarted. Wait 5 minutes and check it; if it is still stuck, restart its switch port (PoE).'))
+      $res.history = 'Camera ' + $Ip + ' restart asked - NOT confirmed (it never went offline' + $(if ($httpErr) { '; it answered with errors' } else { '' }) + ')'
+      return (& $done $false ('The camera said OK but never went offline in ' + $WaitSec + ' s' + $(if ($httpErr) { ' (it answered with errors, which is not a restart)' } else { '' }) + ', so it is NOT confirmed that it restarted. Wait 5 minutes and check it; if it is still stuck, restart its switch port (PoE).'))
     }
     'readd' {
       if ($v -ne 'Hikvision') { return (& $done $false 'Putting a camera back on a channel is built for Hikvision NVRs only. Nothing changed.') }
@@ -158,10 +186,20 @@ function Invoke-NvrFix {
       $xml = $null
       if (-not (Hik-Ok $w)) { $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - refused by the NVR'; return (& $done $false ('The NVR refused it (answer ' + $w.code + ').')) }
       $res.changed += ('channel ' + $Channel + ' = ' + $CameraIp)
-      $after = @(Hik-Channels $t) | Where-Object { $_.ch -eq $Channel } | Select-Object -First 1
-      $ok = [bool]($after -and $after.online)
+      # 2.2.13 (Codex 2.2.12 #6): "online" alone is not proof: the channel must be READ BACK (a real list) with the camera
+      # address we asked for. An NVR that says OK but keeps the old camera (which then comes back online) is NOT done.
+      $rb = Hik-ReadChannel $t $Channel
+      if (-not $rb.ok) {
+        $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - sent, NOT confirmed (' + $rb.why + ')'
+        return (& $done $false ('Sent to the NVR, but ' + $rb.why + ', so it is NOT confirmed that ' + $CameraIp + ' is on channel ' + $Channel + '. Run it again or check the channel in the NVR.'))
+      }
+      if (-not $rb.found -or $rb.ip -ne $CameraIp) {
+        $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - NOT done (channel shows ' + $(if ($rb.found) { $(if ($rb.ip) { $rb.ip } else { 'no address' }) } else { 'nothing' }) + ')'
+        return (& $done $false ('The NVR said OK, but channel ' + $Channel + ' still shows ' + $(if ($rb.found) { $(if ($rb.ip) { $rb.ip } else { 'no camera address' }) } else { 'no camera' }) + ', not ' + $CameraIp + '. NOT done - check the channel in the NVR.'))
+      }
+      $ok = [bool]$rb.online
       $res.history = 'Camera ' + $CameraIp + ' put back on NVR channel ' + $Channel + $(if ($ok) { ', online' } else { ', not online yet' })
-      return (& $done $ok $(if ($ok) { 'Camera ' + $CameraIp + ' is on channel ' + $Channel + ' and online.' } else { 'Added, but the NVR does not show it online yet (wrong camera password?). Check the channel in the NVR.' }))
+      return (& $done $ok $(if ($ok) { 'Camera ' + $CameraIp + ' is on channel ' + $Channel + ' (read back from the NVR) and online.' } else { 'Added (channel ' + $Channel + ' now shows ' + $CameraIp + '), but the NVR does not show it online yet (wrong camera password?). Check the channel in the NVR.' }))
     }
     'firmware' {
       if ($v -ne 'Hikvision') { return (& $done $false 'Firmware updates are built for Hikvision only. Nothing changed.') }
