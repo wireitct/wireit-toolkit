@@ -958,8 +958,21 @@ foreach ($c in $ordered) {
   if (-not $stop -and $pw -cne $sitePw -and ($c.steps -contains 'password' -or $opts.passwordAll)) {   # 2.2.3 (Codex #37): -cne
     # 2.2.3 (Codex #13): a camera recorded by an NVR keeps its password unless that NVR can be updated too (its login is known);
     # otherwise the NVR loses the picture and recording while a direct camera picture still looks fine.
-    if ($c.nvr -and -not $nvrCred.ContainsKey($c.nvr)) { & $step ('password not changed: NVR ' + $c.nvr + ' records this camera and its login is unknown') $false }
-    elseif (@($c.links | Select-Object -ExpandProperty nvr -Unique).Count -gt 1) { & $step ('password not changed: ' + @($c.links).Count + ' NVRs record this camera (' + (@($c.links | ForEach-Object { $_.nvr + ' ch ' + $_.channel }) -join ', ') + ') - change it on all of them by hand') $false }
+    # 2.2.13 (Codex 2.2.12 #1): the guard uses the COMPLETE recorder set (its NVR, the NVR the saved site list names - it may be
+    # offline today - and every NVR channel the scan found pointing at it), the same set the move guard uses. The password is only
+    # changed when that set is ONE recorder that answers right now with a known login, so it can be updated AND checked (channel
+    # updated, video back on it). Anything else: the camera keeps its old password (Still a problem, nonzero exit), and since the
+    # same set stops a move, the password is never changed ahead of a move that is then refused.
+    $pwRecs = @(Get-FsCamRecorders $c); $pwBlock = ''
+    if (-not ($c.nvr -and -not $nvrCred.ContainsKey($c.nvr))) { $pwBlock = Get-FsPwChangeBlock $c $pwRecs $nvrCred }
+    if (-not $pwBlock -and $pwRecs.Count -eq 1 -and $nvrCred.ContainsKey([string]$pwRecs[0])) {
+      $rn = [string]$pwRecs[0]; $rbr = 'Hikvision'; $rnp = @($plan.nvrs | Where-Object { $_.ip -eq $rn -or $_.target -eq $rn }) | Select-Object -First 1
+      if ($rnp -and $rnp.brand) { $rbr = [string]$rnp.brand }
+      $rst = Test-FsLogin $rn $rbr $nvrPw[$rn]
+      if ($rst -ne 'ok') { $pwBlock = 'password not changed: NVR ' + $rn + ' records this camera and does not answer right now (' + $rst + ') - it could not be updated and checked. Run Fix this site again when it is back' }
+    }
+    if ($c.nvr -and -not $nvrCred.ContainsKey($c.nvr)) { & $step ('password not changed: NVR ' + $c.nvr + ' records this camera and its login is unknown (or it did not answer at the scan) - it could not be updated and checked') $false }
+    elseif ($pwBlock) { & $step $pwBlock $false }
     elseif ((Test-FsLogin $ip $c.brand $sitePw) -eq 'ok') { $pw = $sitePw; $cr = Fs-Cred $pw; & $step 'password already set' $true }
     else {
       $sec.rollback[$stamp][$c.mac + '|' + $c.ip] = $pw; Save-FsSecrets $SecretsDir $sec; $pwBefore = $pw
