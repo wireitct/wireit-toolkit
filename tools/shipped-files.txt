@@ -57,6 +57,9 @@ Toolkit/tests/Test-Fix2213Site.ps1
 Toolkit/tests/Test-Fix2214Classic.ps1
 Toolkit/tests/Test-Fix2214Nvr.ps1
 Toolkit/tests/Test-Fix2214Site.ps1
+Toolkit/tests/Test-Fix2215Classic.ps1
+Toolkit/tests/Test-Fix2215Nvr.ps1
+Toolkit/tests/Test-Fix2215Site.ps1
 Toolkit/tests/Test-Fix222.ps1
 Toolkit/tests/Test-Fix223.ps1
 Toolkit/tests/Test-Fix224.ps1
@@ -68,6 +71,7 @@ Toolkit/tests/Test-Fix229.ps1
 Toolkit/tests/Test-FixIt.ps1
 Toolkit/tests/Test-FixSite.ps1
 Toolkit/tests/Test-HikReset.ps1
+Toolkit/tests/Test-Repro2214.ps1
 Toolkit/tests/Test-Review225.ps1
 Toolkit/tests/Test-Toolkit.ps1
 Toolkit/tests/TestPython.ps1
@@ -99,6 +103,15 @@ Toolkit/tests/hikreset/fake_sadp.py
 Toolkit/tests/hikreset/minicrypto.py
 Toolkit/tests/hikreset/mock_relay.py
 Toolkit/tests/mock_scan_server.py
+Toolkit/tests/repro-2.2.14/reproduce-channel-guard.ps1
+Toolkit/tests/repro-2.2.14/reproduce-firmware-response-lost.ps1
+Toolkit/tests/repro-2.2.14/reproduce-multichannel-unread.py
+Toolkit/tests/repro-2.2.14/reproduce-readd-hostname.ps1
+Toolkit/tests/repro-2.2.14/reproduce-recording.ps1
+Toolkit/tests/repro-2.2.14/reproduce-reset-unread.ps1
+Toolkit/tests/repro-2.2.14/reproduce-undo-wrong-device.py
+Toolkit/tests/repro-2.2.14/reproduce-update-undo-interruption.ps1
+Toolkit/tests/repro-2.2.14/reproduce-wifiwatch-marker.ps1
 Toolkit/tests/review225/scenarios.py
 Toolkit/wireit-logo.png
 Toolkit/wireit.ico
