@@ -582,6 +582,9 @@ function Hik-Read($dev) {
       $list.Add([pscustomobject]@{ id = $id; ip = (XVal $mm.Value 'ipAddress'); port = (XVal $mm.Value 'managePortNo'); protocol = (XVal $mm.Value 'proxyProtocol'); online = $online[$id]; poe = $false })
     }
     $dev.channels = $list
+    # 2.2.13 (Codex #2/#3): an unanswered or unparseable camera list / camera status is NOT the same as "no cameras" / "all fine"
+    $dev.channels_read = ($chs.code -eq 200 -and $chs.body -match '<(\w+:)?InputProxyChannelList[\s>/]')
+    $dev.status_read = ($st.code -eq 200 -and $st.body -match '<(\w+:)?InputProxyChannelStatusList[\s>/]')
   }
   return $true
 }
@@ -632,8 +635,10 @@ function Unv-Read($dev) {
     if ($cfg.uniview.cloud_path) { $cl = Http $dev.ip 'GET' $cfg.uniview.cloud_path '' 'application/json' $cred; if ($cl.code -eq 200) { $dev.platform_json = $cl.body; $cd = Unv-Data $cl.body; $en = @(Find-JsonVals $cd '(?i)^enable'); if ($en.Count) { $dev.platform_enabled = ([string]$en[0] -match '^(1|true)$') } } }
     $c = Http $dev.ip 'GET' $cfg.uniview.channels_path '' 'application/json' $cred
     $list = New-Object System.Collections.Generic.List[object]
+    $dev.channels_read = $false
     if ($c.code -eq 200) {
       $cd = Unv-Data $c.body; $arr = @(); foreach ($p in $cd.PSObject.Properties) { if ($p.Value -is [array]) { $arr = $p.Value } }
+      $dev.channels_read = ($cd -ne $null)
       foreach ($ch in $arr) { $ip = @(Find-JsonVals $ch '(?i)^(IPAddress|Address|IP)$'); $st = @(Find-JsonVals $ch '(?i)^(Status|Online|OnlineStatus)$'); $list.Add([pscustomobject]@{ id = [string]$ch.ID; ip = $(if ($ip.Count) { [string]$ip[0] } else { '' }); port = ''; protocol = 'unv'; online = $(if ($st.Count) { [string]$st[0] -match '^(1|true|online)$' } else { $null }); poe = $false }) }
     }
     $dev.channels = $list
@@ -707,7 +712,7 @@ $script:devs = New-Object System.Collections.Generic.List[object]
 function New-Dev([string]$ip, [string]$mac, [string]$by) {
   $d = [pscustomobject]@{ ip = $ip; mac = (NormMac $mac); vendor = (Vendor $mac); brand = ''; kind = ''; model = ''; serial = ''; firmware = ''; mask = ''; gw = ''; dns1 = ''; dns2 = ''; addressing = ''; dhcp = $null
     found_by = $by; login = ''; if_id = '1'; net_xml = ''; net_json = ''; dns_json = ''; platform_xml = ''; platform_json = ''; platform_enabled = $null; platform_online = $null; platform_has_code = $null
-    channels = $null; channel_of = ''; channel_id = ''; activated = ''; poe = $false; onvif = $false; onvif_token = ''; snap_ip = ''; target_ip = '' }
+    channels = $null; channels_read = $null; status_read = $null; channel_of = ''; channel_id = ''; activated = ''; poe = $false; onvif = $false; onvif_token = ''; snap_ip = ''; target_ip = '' }
   if ($d.vendor -eq 'Hikvision') { $d.brand = 'hik' } elseif ($d.vendor -eq 'Uniview') { $d.brand = 'unv' }
   $script:devs.Add($d); return $d
 }
@@ -724,6 +729,28 @@ function Merge-Dev($src) {
 function Is-Poe([string]$ip) { foreach ($p in $cfg.poe_internal_subnets) { if ((P3 $ip) -eq $p) { return $true } }; return $false }
 function Is-Private([string]$ip) { return ($ip -match '^10\.' -or $ip -match '^192\.168\.' -or $ip -match '^172\.(1[6-9]|2[0-9]|3[01])\.') }
 function Short($d) { $n = $(if ($d.kind -eq 'nvr') { 'NVR' } elseif ($d.channel_id) { 'Camera D' + $d.channel_id } elseif ($d.kind -eq 'camera') { 'Camera' } else { 'Device' }); return ($n + ' ' + $d.ip + $(if ($d.model) { ' (' + $d.model + ')' } else { '' })) }
+# 2.2.13 (Codex #2): what the tool's own read shows is still wrong or unread on the recorders it logged in to. Used when there is
+# nothing the tool can change automatically (and in Check mode), so a run that SAW a problem never ends on the green all-right line.
+function Get-FnHealthProblems($nvrList) {
+  $out = New-Object System.Collections.Generic.List[string]
+  foreach ($n in @($nvrList)) {
+    if (-not $n -or $n.login -ne 'ok') { continue }
+    $nm = 'NVR ' + $n.ip
+    if ($n.platform_enabled -eq $false) { $out.Add($nm + ': platform access (Hik-Connect / EZCloud) is OFF') }
+    elseif ($n.platform_enabled -eq $null) { $out.Add($nm + ': platform access could not be read - NOT CHECKED') }
+    elseif ($n.brand -eq 'unv') { if ($n.platform_online -ne $true) { $out.Add($nm + ': EZCloud online status NOT CHECKED (the tool cannot read it; check the EZView app)') } }
+    elseif ($n.platform_online -ne $true) { $out.Add($nm + ': platform access is on but OFFLINE (the app will not work)') }
+    if ($n.channels_read -eq $false) { $out.Add($nm + ': the camera list could not be read - cameras NOT CHECKED'); continue }
+    $chs = @($n.channels | Where-Object { $_ })
+    if (-not $chs.Count) { continue }
+    if ($n.status_read -eq $false) { $out.Add($nm + ': the camera status could not be read - ' + $chs.Count + ' camera(s) NOT CHECKED'); continue }
+    $offl = @($chs | Where-Object { $_.online -eq $false })
+    $unk = @($chs | Where-Object { $_.online -ne $true -and $_.online -ne $false })
+    if ($offl.Count) { $out.Add($nm + ': ' + $offl.Count + ' of ' + $chs.Count + ' camera(s) OFFLINE (' + (($offl | ForEach-Object { 'D' + $_.id }) -join ' ') + ')') }
+    if ($unk.Count) { $out.Add($nm + ': ' + $unk.Count + ' camera(s) with no online status - NOT CHECKED (' + (($unk | ForEach-Object { 'D' + $_.id }) -join ' ') + ')') }
+  }
+  return $out.ToArray()
+}
 function Read-Dev($d) {
   if ($d.login -eq 'ok' -or $d.login -like 'REFUSED*') { return }
   if ($d.brand -ne 'unv') { if (Hik-Read $d) { return } }
@@ -919,6 +946,8 @@ function Invoke-Main {
     if ($n.platform_enabled -eq $false) { Say '  PROBLEM: platform access (Hik-Connect / EZCloud) is turned OFF.' 'Yellow' }
     elseif ($n.platform_enabled -and $n.platform_online -eq $false) { Say '  Platform access is on but shows OFFLINE right now.' 'Yellow' }
     elseif ($n.platform_online) { Say '  Platform access: on and ONLINE.' 'Green' }
+    if ($n.login -eq 'ok' -and $n.channels_read -eq $false) { Say '  PROBLEM: the NVR''s camera list could not be read - cameras NOT CHECKED.' 'Yellow' }
+    elseif ($n.login -eq 'ok' -and $n.channels -and $n.status_read -eq $false) { Say '  PROBLEM: the NVR''s camera status could not be read - online/offline NOT CHECKED.' 'Yellow' }
     if ($n.channels) { $on = @($n.channels | Where-Object { $_.online }).Count; $poe = @($n.channels | Where-Object { $_.poe }).Count; Say ('  Cameras on the NVR: ' + $n.channels.Count + ' (' + $on + ' online; ' + $poe + ' on the NVR''s own PoE ports, left alone)') }
   }
   if (-not $nvrs.Count) { Say 'No NVR found or identified. Give its address with -Nvr if you know it.' 'Yellow' }
@@ -1039,8 +1068,16 @@ function Invoke-Main {
   Say ''; Say $(if ($rev) { '----- Rollback plan (puts things back as the Fix run found them) -----' } else { '----- Plan (nothing has been changed yet) -----' }) 'Cyan'
   if (-not $plan.Count -and -not $rev -and $notChecked.Count) {
     foreach ($nc in $notChecked) { Say ('NOT CHECKED: ' + $nc + '.') 'Red' }
+    foreach ($hp in @(Get-FnHealthProblems $nvrs)) { Say ('PROBLEM: ' + $hp + '.') 'Red' }
     Say 'Nothing was changed, but this is NOT an all-clear: the recorder was not checked. Use the right NVR login (Bitwarden) or give its address, then run again.' 'Red'
     $script:exitCode = 2; return
+  }
+  # 2.2.13 (Codex #2): no automatic plan is not the same as "all right" - the finish comes from what the read showed (Fix and Check mode)
+  $health = $(if ($rev) { @() } else { @(Get-FnHealthProblems $nvrs) })
+  if (-not $plan.Count -and $health.Count) {
+    foreach ($hp in $health) { Say ('PROBLEM: ' + $hp + '.') 'Red' }
+    Say ('Nothing was changed: the tool has no automatic fix for ' + $(if ($health.Count -eq 1) { 'this' } else { 'these ' + $health.Count + ' problems' }) + '. This is NOT an all-clear. Check the red lines on the NVR / camera (power, cable, Hik-Connect / EZCloud), then run again, or call the office.') 'Red'
+    $script:exitCode = 4; return
   }
   if (-not $plan.Count) { Say 'Nothing to change. Everything the tool can check looks right.' 'Green'; if ($Mode -ne 'Rollback') { $script:exitCode = 0 }; return }
   if (-not $rev -and $notChecked.Count) { Say ''; foreach ($nc in $notChecked) { Say ('NOT CHECKED: ' + $nc + '. The plan below does not cover it.') 'Red' } }
@@ -1063,7 +1100,13 @@ function Invoke-Main {
   $plan | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $runDir 'plan.json')
   $before = @($script:devs | ForEach-Object { [ordered]@{ ip = $_.ip; mac = $_.mac; kind = $_.kind; brand = $_.brand; model = $_.model; serial = $_.serial; mask = $_.mask; gw = $_.gw; dns1 = $_.dns1; dns2 = $_.dns2; addressing = $_.addressing; platform_enabled = $_.platform_enabled; platform_online = $_.platform_online; channel = $_.channel_id; found_by = $_.found_by; login = $_.login } })
   try { Save-Json $before (Join-Path $runDir 'before.json') } catch { Log ('before.json not saved: ' + $_.Exception.Message) }
-  if ($Mode -eq 'Check') { Say ''; Say 'Check only: nothing was changed. Run "Fix NVR.cmd" (Fix mode) to apply this plan.' 'Cyan'; if ($notChecked.Count) { Say ('Not an all-clear: ' + $notChecked.Count + ' recorder(s) NOT CHECKED (see the red lines).') 'Red'; $script:exitCode = 4 }; return }
+  if ($Mode -eq 'Check') {
+    Say ''; Say 'Check only: nothing was changed. Run "Fix NVR.cmd" (Fix mode) to apply this plan.' 'Cyan'
+    if ($notChecked.Count) { Say ('Not an all-clear: ' + $notChecked.Count + ' recorder(s) NOT CHECKED (see the red lines).') 'Red'; $script:exitCode = 4 }
+    # 2.2.13 (Codex #2): Check mode never ends as an all-clear when the read showed a problem
+    if ($health.Count) { foreach ($hp in $health) { Say ('PROBLEM now: ' + $hp + '.') 'Red' }; Say ('Not an all-clear: ' + $health.Count + ' problem(s) seen now (the plan above may fix some of them; Fix mode checks again after the change).') 'Red'; $script:exitCode = 4 }
+    return
+  }
 
   # ---------- 7. ONE confirm ----------
   Say ''
@@ -1168,7 +1211,9 @@ function Invoke-Main {
     foreach ($nc in $notChecked) { $verify.Add($nc) }
     Say ''; Say '----- Checking the result -----' 'Cyan'
     foreach ($n in $nvrs) {
-      $n.login = ''; $n.channels = $null; Read-Dev $n
+      # 2.2.13 (Codex #3): keep what the NVR had BEFORE the fix, so a missing / empty list afterwards is NOT CHECKED, never skipped
+      $expIds = @($n.channels | Where-Object { $_ } | ForEach-Object { [string]$_.id })
+      $n.login = ''; $n.channels = $null; $n.channels_read = $null; $n.status_read = $null; Read-Dev $n
       if ($n.login -ne 'ok') { Say ('NVR ' + $n.ip + ': cannot read it now (' + $(if ($n.login) { $n.login } else { 'no answer' }) + ') - NOT CHECKED.') 'Red'; $verify.Add('NVR ' + $n.ip + ' could not be read after the fix - NOT CHECKED'); continue }
       if ($n.brand -eq 'hik' -and $n.platform_enabled) {
         $end = (Get-Date).AddSeconds([int]$cfg.verify_wait_seconds)
@@ -1181,7 +1226,16 @@ function Invoke-Main {
         elseif ($n.platform_enabled) { $verify.Add('NVR ' + $n.ip + ': platform access is on but NOT online yet (the app will not work yet)') }
         else { $verify.Add('NVR ' + $n.ip + ': platform access NOT CHECKED (could not be read)') }
       }
-      if ($n.channels) {
+      $curChs = @($n.channels | Where-Object { $_ })
+      if ($n.channels_read -eq $false -or (-not $curChs.Count -and $expIds.Count)) {
+        Say ('Cameras: the NVR''s camera list could not be read now' + $(if ($expIds.Count) { ' (it had ' + $expIds.Count + ' camera(s) before the fix)' } else { '' }) + ' - NOT CHECKED.') 'Red'
+        $verify.Add('NVR ' + $n.ip + ': camera list could not be read after the fix' + $(if ($expIds.Count) { ' (' + $expIds.Count + ' camera(s) before: ' + (($expIds | ForEach-Object { 'D' + $_ }) -join ' ') + ')' } else { '' }) + ' - cameras NOT CHECKED')
+        continue
+      }
+      $curIds = @($curChs | ForEach-Object { [string]$_.id })
+      $gone = @($expIds | Where-Object { $curIds -notcontains $_ })
+      if ($gone.Count) { Say ('Cameras: ' + $gone.Count + ' camera(s) the NVR had before the fix are not on its list now (' + (($gone | ForEach-Object { 'D' + $_ }) -join ' ') + ') - NOT CHECKED.') 'Red'; $verify.Add('NVR ' + $n.ip + ': ' + $gone.Count + ' camera(s) missing from the camera list after the fix (' + (($gone | ForEach-Object { 'D' + $_ }) -join ' ') + ') - NOT CHECKED') }
+      if ($curChs.Count) {
         Start-Sleep -Seconds $(if ($Mock) { 0 } else { 20 })
         if ($n.brand -eq 'hik') {
           $st2 = Http $n.ip 'GET' '/ISAPI/ContentMgmt/InputProxy/channels/status' '' 'application/xml' $script:credNvr
