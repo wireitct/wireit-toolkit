@@ -187,7 +187,7 @@ function ConvertTo-FsObserved($observed) {
       $cip = [string](Get-FsProp $c 'ip' ''); if (-not $cip) { continue }
       $hit = $null; foreach ($d in $devs) { if ($d.ip -eq $cip -and $d.kind -ne 'nvr') { $hit = $d; break } }
       # 2.2.3 (Codex #14): every recorder that records this camera is kept (links); the first stays its main NVR/channel
-      if ($hit) { $hit.links += [pscustomobject]@{ nvr = $nip; channel = [int](Get-FsProp $c 'channel' 0) } }
+      if ($hit) { $hit.links += [pscustomobject]@{ nvr = $nip; channel = [int](Get-FsProp $c 'channel' 0); online = (Get-FsProp $c 'online' $null) } }   # 2.2.14 (Codex 2.2.13 F1): each channel's own video state
       if ($hit -and $hit.nvr) { continue }
       if ($hit) { $hit.channel = [int](Get-FsProp $c 'channel' 0); $hit.nvr = $nip; $hit.online = (Get-FsProp $c 'online' $null); $hit.chName = [string](Get-FsProp $c 'name' ''); $hit.chProtocol = [string](Get-FsProp $c 'protocol' ''); if (-not $hit.name) { $hit.name = $hit.chName } }
     }
@@ -630,6 +630,15 @@ function Get-FsManualLines($plan) {
   $out = @()
   foreach ($n in @($plan.nvrs | Where-Object { @($_.steps) -contains 'manual' })) { $out += ('NVR ' + $n.ip + ': needs a person - ' + (@($n.why) -join '; ') + ' ' + $script:FsBad) }
   foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'manual' })) { $out += ($c.name + ': needs a person - ' + (@($c.why) -join '; ') + ' ' + $script:FsBad) }
+  # 2.2.14 (Codex 2.2.13 F1): ANOTHER channel that records this camera (a second channel on the same NVR, or another NVR) has no
+  # video: that recording is lost, whatever the camera's main channel shows - a problem, never "OK, not touched"
+  foreach ($c in @($plan.cams)) {
+    $mn = [string](Get-FsProp $c 'nvr' ''); $mc = [int](Get-FsProp $c 'channel' 0)
+    foreach ($x in @(Get-FsCamChannels $c)) {
+      if ($x.nvr -eq $mn -and $x.channel -eq $mc) { continue }
+      if ($x.online -eq $false) { $out += ($c.name + ': NVR ' + $x.nvr + ' ch ' + $x.channel + ' also records this camera and has NO video - check that channel in the NVR (its password or address) ' + $script:FsBad) }
+    }
+  }
   return $out
 }
 function Get-FsNvrNetProblems($net, $pc) {
@@ -655,6 +664,52 @@ function Get-FsCamRecorders($c) {
   foreach ($l in @(Get-FsProp $c 'links' @())) { if (-not $l) { continue }; $v = [string](Get-FsProp $l 'nvr' ''); if ($v -and $mn -and $v -eq $orig) { $v = $mn }; if ($v -and $out -notcontains $v) { $out += $v } }
   return $out
 }
+# 2.2.14 (Codex 2.2.13 F1): every NVR CHANNEL that records this camera (not only every recorder): its main NVR channel plus every
+# channel the scan found pointing at it - two channels on the SAME NVR (a second sensor/stream) are two dependents. Each item:
+# nvr, channel, online ($true / $false / $null = not read). The list's NVR the run moved is the same recorder (as Get-FsCamRecorders).
+function Get-FsCamChannels($c) {
+  $out = @(); $seen = @{}
+  $mn = [string](Get-FsProp $c 'nvr' ''); $orig = [string](Get-FsProp $c 'nvrOriginal' '')
+  $links = @(Get-FsProp $c 'links' @() | Where-Object { $_ })
+  foreach ($l in $links) {
+    $v = [string](Get-FsProp $l 'nvr' ''); if (-not $v) { continue }; if ($mn -and $v -eq $orig) { $v = $mn }
+    $n = [int](Get-FsProp $l 'channel' 0); $k = $v + '|' + $n; if ($seen.ContainsKey($k)) { continue }; $seen[$k] = $true
+    $out += [pscustomobject]@{ nvr = $v; channel = $n; online = (Get-FsProp $l 'online' $null) }
+  }
+  if ($mn) {
+    $mc = [int](Get-FsProp $c 'channel' 0); $k = $mn + '|' + $mc
+    # a main NVR with no channel yet (the run puts it on one) is that NVR's link when the scan found one there
+    $onIt = @($out | Where-Object { $_.nvr -eq $mn }).Count
+    if (-not $seen.ContainsKey($k) -and -not ($mc -eq 0 -and $onIt)) { $out = @([pscustomobject]@{ nvr = $mn; channel = $mc; online = (Get-FsProp $c 'online' $null) }) + $out }
+  }
+  return $out
+}
+function Format-FsCamChannels($chs) { return ((@($chs) | ForEach-Object { 'NVR ' + $_.nvr + ' ch ' + $_.channel }) -join ', ') }
+# 2.2.14 (Codex 2.2.13 F1): may this camera be MOVED to another address? '' = yes. Every recorder AND every channel that records it
+# would have to follow; the tool updates and checks only one channel, so more than one dependent = it is not moved.
+function Get-FsMoveBlock($c) {
+  $rec = @(Get-FsCamRecorders $c)
+  if ($rec.Count -gt 1) { return ('NOT moved: ' + $rec.Count + ' NVRs record this camera (' + ($rec -join ', ') + '). Moving it would cut the others off. Move it by hand on every NVR, or call the office') }
+  $chs = @(Get-FsCamChannels $c)
+  if ($chs.Count -gt 1) { return ('NOT moved: ' + $chs.Count + ' NVR channels record this camera (' + (Format-FsCamChannels $chs) + '). Only one channel would follow it, the others would lose its video. Move it by hand on every channel, or call the office') }
+  return ''
+}
+# 2.2.14 (Codex 2.2.13 F2): the Hikvision official reset/import CHANGES the camera password, so every camera goes through the same
+# dependency guard (Get-FsPwChangeBlock, with the per-channel rule) BEFORE it becomes a reset target. NVRs that need the reset are
+# targets as before. $LiveCheck (optional): { param($nvrIp) 'ok' or the reason } = the one recorder must answer right now.
+# Returns targets (mac, ip, kind) and blocked (cam, why): a blocked camera is not reset and stays a problem with its reason.
+function Get-FsHikResetTargets($plan, $nvrCred, [scriptblock]$LiveCheck = $null) {
+  $t = @(); $b = @()
+  foreach ($n in @($plan.nvrs | Where-Object { @($_.steps) -contains 'reset' })) { $t += [pscustomobject]@{ mac = (ConvertTo-FsMac ([string]$n.mac)); ip = $n.ip; kind = 'nvr' } }
+  foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'fix' -and @($_.steps) -contains 'reset' -and $_.brand -eq 'Hikvision' })) {
+    $recs = @(Get-FsCamRecorders $c)
+    $why = [string](Get-FsPwChangeBlock $c $recs $nvrCred)
+    if (-not $why -and $recs.Count -eq 1 -and $LiveCheck) { $st = [string](& $LiveCheck ([string]$recs[0])); if ($st -ne 'ok') { $why = 'password not changed: NVR ' + $recs[0] + ' records this camera and does not answer right now (' + $st + ') - it could not be updated and checked. Run Fix this site again when it is back' } }
+    if ($why) { $b += [pscustomobject]@{ cam = $c; mac = (ConvertTo-FsMac ([string]$c.mac)); ip = $c.ip; why = ('official reset NOT run - ' + $why) }; continue }
+    $t += [pscustomobject]@{ mac = (ConvertTo-FsMac ([string]$c.mac)); ip = $c.ip; kind = 'camera' }
+  }
+  return [pscustomobject]@{ targets = $t; blocked = $b }
+}
 # 2.2.13 (Codex 2.2.12 #1): may this camera's password be changed? '' = yes; otherwise the plain reason it is not.
 # Only ONE recorder can be updated and checked by the tool (its main NVR channel); every recorder of the camera must be that one,
 # with a known login. Whether it answers right now is checked by the caller (a live login).
@@ -666,6 +721,10 @@ function Get-FsPwChangeBlock($c, $recorders, $nvrCred) {
     if (-not $nvrCred -or -not $nvrCred.ContainsKey($r)) { return ('password not changed: NVR ' + $r + ' records this camera and its login is unknown (or it did not answer) - it could not be updated and checked') }
     if ([string](Get-FsProp $c 'nvr' '') -ne $r -or @(Get-FsProp $c 'steps' @()) -notcontains 'nvr') { return ('password not changed: NVR ' + $r + ' records this camera but is not the one this run updates - change it by hand') }
   }
+  # 2.2.14 (Codex 2.2.13 F1): one recorder, but more than one of its CHANNELS records the camera: only one channel is updated and
+  # checked, the others would lose its video. Refused (the camera keeps its old password, Still a problem, nonzero exit).
+  $chs = @(Get-FsCamChannels $c)
+  if ($chs.Count -gt 1) { return ('password not changed: ' + $chs.Count + ' NVR channels record this camera (' + (Format-FsCamChannels $chs) + ') - only one channel could be updated and checked, the others would lose its video. Change it on every channel by hand, or call the office') }
   return ''
 }
 function Get-FsCamMatchKey($c) {

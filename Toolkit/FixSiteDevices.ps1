@@ -602,6 +602,43 @@ function Restore-FsNvrChannel([string]$nvrIp, $nvrCred, [int]$ch, [string]$befor
   $w = Fs-HttpSecret -Ip $nvrIp -Method 'PUT' -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $ch) -Body $x.OuterXml -Cred $nvrCred
   return [pscustomobject]@{ ok = (Fs-HikOk $w); why = $(if (Fs-HikOk $w) { '' } else { 'the NVR refused the saved channel (HTTP ' + $w.code + ')' }) }
 }
+# 2.2.14 (Codex 2.2.13 F8): the camera address a saved channel file names ('' = none / unreadable)
+function Get-FsChannelXmlIp([string]$xml) { $x = Fs-XmlDoc $xml; if (-not $x) { return '' }; $n = @(Fs-XFind $x 'ipAddress'); if ($n.Count -and $n[0]) { return ([string]$n[0].InnerText).Trim() }; return '' }
+function Get-FsChannelXmlBrand([string]$xml, [string]$default) { $x = Fs-XmlDoc $xml; $n = @(Fs-XFind $x 'proxyProtocol'); if ($n.Count -and $n[0]) { $p = ([string]$n[0].InnerText).Trim().ToUpper(); if ($p -eq 'HIKVISION') { return 'Hikvision' }; if ($p -eq 'DAHUA') { return 'Dahua' } }; return $default }
+# 2.2.14 (Codex 2.2.13 F8): Undo puts an NVR channel back from its saved copy and calls it back ONLY when the NVR shows video on it
+# again from the camera the saved copy names. The saved copy has no password (the NVR never hands it out):
+#  - the saved channel is THIS camera ($OwnIps): its own current password goes in, as before;
+#  - it is a DIFFERENT camera (the run replaced an offline one): the replacement's password is NEVER put in. A password that logs in
+#    to THAT camera ($OrigCands: the site password, ones saved at this site) is used; none = the address/settings go back without a
+#    password and the line says the password is NOT confirmed (put it in the NVR by hand) - never "back exactly as it was".
+# An accepted write alone is never "back". Returns ok ($true only with video), text, manual ($true = needs a person).
+function Restore-FsUndoChannel([string]$nvrIp, $nvrCred, [int]$ch, [string]$beforeXml, [string[]]$OwnIps, [string]$camPw, [string]$camBrand, [string[]]$OrigCands, [int]$WaitSec = 60) {
+  $origIp = Get-FsChannelXmlIp $beforeXml
+  if (-not (Fs-XmlDoc $beforeXml)) { return [pscustomobject]@{ ok = $false; manual = $true; text = ('NVR ch ' + $ch + ': the saved channel file is unreadable - put it back by hand') } }
+  $own = @($OwnIps | Where-Object { $_ })
+  $same = (-not $origIp) -or ($own -contains $origIp)
+  $useIp = $(if ($origIp) { $origIp } else { [string]@($own)[0] })
+  $brand = Get-FsChannelXmlBrand $beforeXml $camBrand
+  $usePw = ''; $known = $false
+  if ($same) { $usePw = $camPw; $known = [bool]$camPw }
+  else { foreach ($cand in @($OrigCands | Where-Object { $_ } | Select-Object -Unique)) { if ((Test-FsLogin $origIp $brand $cand) -eq 'ok') { $usePw = $cand; $known = $true; break } } }
+  $w = Restore-FsNvrChannel $nvrIp $nvrCred $ch $beforeXml $usePw
+  if (-not $w.ok) { return [pscustomobject]@{ ok = $false; manual = $true; text = ('NVR ch ' + $ch + ': ' + [string]$w.why + ' - put it back by hand') } }
+  if ($same -and $origIp -and $own.Count -and [string]$own[0] -ne $origIp) {
+    # the saved channel looks for an address this camera is no longer on (it had no video there before the run either): back =
+    # the NVR reads the channel back with that address; no video is claimed
+    $rb = @(Get-FsNvrChannels $nvrIp $nvrCred | Where-Object { [int]$_.channel -eq $ch })
+    if ($rb.Count -and [string]$rb[0].ip -eq $origIp) { return [pscustomobject]@{ ok = $true; manual = $false; text = ('NVR ch ' + $ch + ' back exactly as it was (it looks for ' + $origIp + ', as before the run; this camera is on ' + $own[0] + ', so no video there)') } }
+    return [pscustomobject]@{ ok = $false; manual = $true; text = ('NVR ch ' + $ch + ': put back, but the NVR does not read it back as it was - NOT confirmed, check ch ' + $ch + ' in the NVR') }
+  }
+  if (-not $known) {
+    return [pscustomobject]@{ ok = $false; manual = $true; text = ('NVR ch ' + $ch + ': address back to ' + $useIp + ', but its password is NOT confirmed (that camera''s own password is not known here) - put this camera''s password in the NVR by hand') }
+  }
+  $end = (Get-Date).AddSeconds($WaitSec); $vid = $false
+  do { $vid = Test-FsVideo $nvrIp $nvrCred $ch $useIp $brand (Fs-Cred $usePw); if (-not $vid) { Start-Sleep -Seconds 2 } } while (-not $vid -and (Get-Date) -lt $end)
+  if ($vid) { return [pscustomobject]@{ ok = $true; manual = $false; text = ('NVR ch ' + $ch + ' back exactly as it was' + $(if (-not $same) { ' (camera ' + $useIp + ', its own password checked)' } else { '' }) + ', video back') } }
+  return [pscustomobject]@{ ok = $false; manual = $true; text = ('NVR ch ' + $ch + ' put back to ' + $useIp + ', but NO video on it - NOT confirmed, check ch ' + $ch + ' in the NVR') }
+}
 function Remove-FsNvrChannel([string]$nvrIp, $nvrCred, [int]$ch) {
   $w = Fs-Http -Ip $nvrIp -Method 'DELETE' -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $ch) -Cred $nvrCred
   return (Fs-HikOk $w)
