@@ -675,7 +675,7 @@ function Do-RestoreNet {
   if ($ads.Count -gt 1) {
     $f = New-Object Windows.Forms.Form; $f.Text = 'Restore network'; $f.Font = $fNorm; $f.StartPosition = 'CenterParent'; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.AutoSize = $true; $f.AutoSizeMode = 'GrowAndShrink'; $f.Padding = New-Object Windows.Forms.Padding (Px 14)
     $fl = New-Object Windows.Forms.FlowLayoutPanel; $fl.FlowDirection = 'TopDown'; $fl.AutoSize = $true; $fl.WrapContents = $false
-    $l = New-Object Windows.Forms.Label; $l.AutoSize = $true; $l.Text = 'Which network adapter goes back to normal (DHCP, extra addresses off)?'; $fl.Controls.Add($l)
+    $l = New-Object Windows.Forms.Label; $l.AutoSize = $true; $l.Text = 'Reset chosen adapter to DHCP (extra addresses off). Which network adapter?'   # 2.2.13 (Codex advice): the label says what it does; $fl.Controls.Add($l)
     $lb = New-Object Windows.Forms.ListBox; $lb.Width = Px 460; $lb.Height = Px 120
     $sel = 0; for ($i = 0; $i -lt $ads.Count; $i++) { $a = $ads[$i]; [void]$lb.Items.Add(([string]$a.name + '  (' + [string]$a.desc + ')' + $(if ($a.needs) { '   <- not normal' } else { '' }))); if ($a.needs -and -not $sel) { $sel = $i } }
     $lb.SelectedIndex = $sel; $fl.Controls.Add($lb)
@@ -687,7 +687,7 @@ function Do-RestoreNet {
   } elseif ($ads.Count -eq 1) { $pick = [string]$ads[0].name }
   $a2 = '-Auto' + $(if ($pick) { ' -Adapter "' + $pick + '"' } else { '' })
   [void](Start-Hidden 'Restore Network' $rn $a2 $null)
-  if ($TK.run) { Add-Out 'Puts this PC''s network adapter back to normal. If Windows asks for permission, click Yes.'; Add-Out '' }
+  if ($TK.run) { Add-Out 'Restore network: Reset chosen adapter to DHCP (extra addresses off; its old settings are saved first). If Windows asks for permission, click Yes.'; Add-Out '' }
 }
 function Do-Snapshot {
   $a = Ask-Fields 'Save install snapshot' 'Saves a known-good record of the NVR and cameras (no passwords). Fill what you know; blanks are fine.' @(

@@ -1,0 +1,64 @@
+function New-SimAdapter([string]$name, [int]$ix, [bool]$wifi) {
+  return @{ name = $name; ifIndex = $ix; desc = ($name + ' card'); wifi = $wifi; guid = ('g' + $ix); disabled = $false; cable = $true; dhcp = $true; coexist = 'disabled';
+            active = (New-Object System.Collections.ArrayList); persistent = (New-Object System.Collections.ArrayList); proutes = (New-Object System.Collections.ArrayList); dnsStatic = $false; lease = ('192.168.4.' + (100 + $ix)); routerAnswers = $true;
+            assoc = $true; joins = $true; joinSsid = 'Reichman Mesh'; profiles = @('Lizard', 'Reichman Mesh'); gwAnswers = $true; dnsOk = $true; httpOk = $true; httpVia = -1; onlineCalls = 0; reconnects = 0 }
+}
+$script:sim = @{ ads = @(); admin = $true; task = 'on'; running = 0; stopFails = $false; stopped = 0; pauseOn = $false; pauseFail = $false; order = (New-Object System.Collections.ArrayList);
+                 calls = (New-Object System.Collections.ArrayList); fail = @{}; beforeAtChange = $null; elevate = 'deny' }
+function Sim-Ad($ix) { foreach ($x in $script:sim.ads) { if ($x.ifIndex -eq [int]$ix) { return $x } }; return $null }
+function Sim-BeforeExists { return [bool](@(Get-ChildItem (Join-Path $D 'receipts') -Filter 'RestoreNetwork-*-before.json' -ErrorAction SilentlyContinue).Count) }
+$script:RnOps = {
+  param($op, $a)
+  if ($op -notin @('list', 'state', 'isadmin', 'sleep', 'wlan', 'taskrunning')) { [void]$script:sim.order.Add($op + $(if ($a.set) { ':' + $a.set } else { '' })) }
+  if ($op -in @('enable', 'dhcp', 'removeaddr', 'removeroute', 'dnsreset', 'coexist')) {
+    [void]$script:sim.calls.Add($op + ' ' + (($a.Keys | Sort-Object | Where-Object { $_ -in @('ip', 'store', 'gw', 'on', 'name') } | ForEach-Object { $_ + '=' + $a[$_] }) -join ' '))
+    if ($null -eq $script:sim.beforeAtChange) { $script:sim.beforeAtChange = (Sim-BeforeExists) }
+  }
+  $key = $op + $(if ($a.store) { ':' + $a.store } else { '' })
+  if ($script:sim.fail[$key]) { throw ('simulated: ' + $key + ' failed') }
+  switch ($op) {
+    'isadmin' { return $script:sim.admin }
+    'list' { return @($script:sim.ads | ForEach-Object { [pscustomobject]@{ name = $_.name; ifIndex = $_.ifIndex; desc = $_.desc; disabled = $_.disabled; connected = ((-not $_.disabled) -and $_.cable -and ((-not $_.wifi) -or $_.assoc)); wifi = $_.wifi; guid = $_.guid } }) }
+    'state' {
+      $x = Sim-Ad $a.ifIndex
+      $act = @($x.active | ForEach-Object { [pscustomobject]@{ ip = $_.ip; prefix = 24; origin = 'Manual' } })
+      if ($x.dhcp -and -not $x.disabled -and $x.cable -and $x.routerAnswers) { $act += [pscustomobject]@{ ip = $x.lease; prefix = 22; origin = 'Dhcp' } }
+      $rt = @($x.proutes | ForEach-Object { [pscustomobject]@{ gw = $_; store = 'PersistentStore'; manual = $true } }) + @($x.proutes | ForEach-Object { [pscustomobject]@{ gw = $_; store = 'ActiveStore'; manual = $true } })
+      return [pscustomobject]@{ dhcp = $x.dhcp; coexist = $x.coexist; active = $act; persistent = @($x.persistent | ForEach-Object { [pscustomobject]@{ ip = $_.ip; prefix = 24; origin = 'Manual' } }); routes = $rt; dnsStatic = $x.dnsStatic; dnsServers = $(if ($x.dnsStatic) { @('10.1.10.1') } else { @() }) }
+    }
+    'enable' { (Sim-Ad $a.ifIndex).disabled = $false; return $true }
+    'dhcp' { (Sim-Ad $a.ifIndex).dhcp = $true; return $true }
+    'removeaddr' { $x = Sim-Ad $a.ifIndex; if ($a.store -eq 'PersistentStore') { $l = $x.persistent } else { $l = $x.active }; foreach ($e in @($l.ToArray() | Where-Object { $_.ip -eq $a.ip })) { $l.Remove($e) }; return $true }
+    'removeroute' { $x = Sim-Ad $a.ifIndex; if ($a.store -eq 'PersistentStore') { $x.proutes.Remove($a.gw) }; return $true }
+    'dnsreset' { (Sim-Ad $a.ifIndex).dnsStatic = $false; return $true }
+    'coexist' { (Sim-Ad $a.ifIndex).coexist = $(if ($a.on) { 'enabled' } else { 'disabled' }); return $true }
+    'reconnect' { $x = Sim-Ad $a.ifIndex; $x.reconnects++; if ($a.wifi) { if ($x.joins -and -not $x.disabled) { $x.assoc = $true }; return $x.profiles[0] }; return 'renew' }
+    'wlan' { $x = Sim-Ad $a.ifIndex; $c = ($x.wifi -and -not $x.disabled -and $x.assoc); return [pscustomobject]@{ connected = $c; state = $(if ($c) { 'connected' } else { 'disconnected' }); ssid = $(if ($c) { $x.joinSsid } else { '' }); profile = $(if ($c) { $x.joinSsid } else { '' }) } }
+    'online' {
+      $x = Sim-Ad $a.ifIndex; $x.onlineCalls++
+      [void]$script:sim.order.Add('online-while-paused=' + [bool]($script:sim.pauseOn))
+      $link = ((-not $x.disabled) -and $x.cable -and ((-not $x.wifi) -or $x.assoc))
+      $own = @($x.active | Where-Object { $_.ip -notlike '192.168.250.*' -and $_.ip -notlike '192.168.1.25*' })
+      $ip = $(if ($link -and $x.dhcp -and $x.routerAnswers) { $x.lease } elseif ($link -and -not $x.dhcp -and $own.Count) { [string]$own[0].ip } elseif ($link -and $x.dhcp) { '169.254.10.20' } else { '' })
+      $gw = $(if ($ip -and $ip -notlike '169.254.*') { $(if (-not $x.dhcp -and $x.proutes.Count) { [string]$x.proutes[0] } else { '192.168.4.1' }) } else { '' })
+      $via = $(if ($x.httpVia -ge 0) { [int]$x.httpVia } else { [int]$x.ifIndex })
+      $httpHere = [bool]($gw -and $x.httpOk -and $via -eq [int]$x.ifIndex)
+      return [pscustomobject]@{ link = $link; ip = $ip; gw = $gw; gwPing = [bool]($gw -and $x.gwAnswers); dns = [bool]($gw -and $x.dnsOk); http = $httpHere; httpAny = [bool]($gw -and $x.httpOk); httpIf = $(if ($gw -and $x.httpOk) { $via } else { -1 }); ssid = $(if ($x.wifi -and $link) { $x.joinSsid } else { '' }); assoc = [bool]($x.wifi -and $link) }
+    }
+    'task' { if ($script:sim.task -eq 'none') { return 'none' }; if ($a.set) { $script:sim.task = $a.set }; return $script:sim.task }
+    'taskrunning' { if ($script:sim.running -lt 0) { return $true }; if ($script:sim.running -gt 0) { $script:sim.running--; return $true }; return $false }
+    'taskstop' { $script:sim.stopped++; if ($script:sim.stopFails) { throw 'simulated: access denied' }; $script:sim.running = 0; return $true }
+    'pause' { if ($a.set -eq 'on') { if ($script:sim.pauseFail) { return $false }; $script:sim.pauseOn = $true; return $true }; $script:sim.pauseOn = $false; return $true }
+    'sleep' { return $true }
+    'elevate' { return $null }
+  }
+}
+function Sim-Ext($x, [string]$ip, [string]$store) { if ($store -ne 'persistent') { [void]$x.active.Add(@{ ip = $ip }) }; if ($store -ne 'active') { [void]$x.persistent.Add(@{ ip = $ip }) } }
+function Run-Rn { $script:RnLines.Clear(); $script:RnDone.Clear(); $script:sim.order.Clear(); $script:sim.calls.Clear(); $script:sim.beforeAtChange = $null; $script:Elevated = $false; $script:OutFile = ''; $c = @(Invoke-RestoreNetwork)[-1]; return [pscustomobject]@{ code = $c; said = (@($script:RnLines) -join "`n"); changed = @($script:RnDone); order = @($script:sim.order); calls = @($script:sim.calls); before = $script:sim.beforeAtChange } }
+function Ad-View($x) { return @{ dhcp = $x.dhcp; act = @($x.active | ForEach-Object { $_.ip }); per = @($x.persistent | ForEach-Object { $_.ip }); routes = @($x.proutes); dns = $x.dnsStatic; disabled = $x.disabled } }
+function Out-Result($h) { 'JSON=' + ($h | ConvertTo-Json -Compress -Depth 6) }
+# Fix this site's record: a Toolkit alias 192.168.1.250 on ifIndex 12, the adapter was FIXED (dhcp false) before it
+function Write-FsJournal([int]$ix, [bool]$dhcpBefore, [string]$ip) {
+  $j = [ordered]@{ version = 2; written = (Get-Date -Format 's'); before = [ordered]@{ ifIndex = $ix; name = 'Ethernet'; dhcp = $dhcpBefore; coexist = 'disabled'; addrs = @(); gw = @() }; coexistChanged = $false; temps = @([ordered]@{ ip = $ip; prefix = 24; ifIndex = $ix }) }
+  [IO.File]::WriteAllText((Join-Path $D 'Toolkit\fixsite-runs\_state\fixsite-temp-ips.json'), (ConvertTo-Json -Depth 5 -InputObject $j))
+}

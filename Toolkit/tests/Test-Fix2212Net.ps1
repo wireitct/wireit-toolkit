@@ -270,8 +270,9 @@ Out-Result @{ cA = $rA.code; sA = $rA.said; oA = $rA.order; stA = $stA; taskA = 
     $oa = @($j.oA); $iP = [array]::IndexOf($oa, 'pause:on'); $iOff = [array]::IndexOf($oa, 'task:off'); $iStop = [array]::IndexOf($oa, 'taskstop')
     $iFirst = -1; for ($i = 0; $i -lt $oa.Count; $i++) { if ($iFirst -lt 0 -and $oa[$i] -match '^(dhcp|removeaddr|enable|coexist|removeroute|dnsreset)') { $iFirst = $i } }
     $iOn = [array]::IndexOf($oa, 'task:on'); $iPOff = [array]::IndexOf($oa, 'pause:off'); $iLastOnline = -1; for ($i = 0; $i -lt $oa.Count; $i++) { if ($oa[$i] -eq 'online') { $iLastOnline = $i } }
-    Check ($iP -ge 0 -and $iOff -gt $iP -and $iStop -gt $iOff -and $iFirst -gt $iStop -and $j.stA -ge 1) 'P1-7 R3: the pause file, the task off, the RUNNING copy stopped - all BEFORE the first change' ($oa -join ' > ')
-    Check ($iLastOnline -gt $iFirst -and $iOn -gt $iLastOnline -and $iPOff -gt $iOn -and -not @($oa | Where-Object { $_ -eq 'online-while-paused=False' }).Count) 'P1-7 the pause holds through the FINAL online check; the task back on and the pause file off only after it' ($oa -join ' > ')
+    # 2.2.13 (Codex 2.2.12 #4): the task is never switched off any more (the old 'task:off ... task:on' order WAS the bug); the pause is the pause file
+    Check ($iP -ge 0 -and $iOff -lt 0 -and $iStop -gt $iP -and $iFirst -gt $iStop -and $j.stA -ge 1) 'P1-7 R3: the pause file, the RUNNING copy stopped - all BEFORE the first change (2.2.13: the task is NOT switched off)' ($oa -join ' > ')
+    Check ($iLastOnline -gt $iFirst -and $iPOff -gt $iLastOnline -and $iOn -lt 0 -and -not @($oa | Where-Object { $_ -eq 'online-while-paused=False' }).Count) 'P1-7 the pause holds through the FINAL online check; the pause file off only after it (2.2.13: no task switch at all)' ($oa -join ' > ')
     Check ($j.cA -eq 0 -and $j.taskA -eq 'on' -and -not $j.pA) 'P1-7 ...DONE, and WifiWatch is back on with no pause left behind' $j.sA
     Check ($j.cB -eq 0 -and $j.stB -eq 0) 'P1-7 a copy that finishes by itself is waited for (not stopped)'
     Check ($j.cC -eq 6 -and $j.sC -match 'WifiWatch could NOT be paused' -and $j.sC -notmatch '(?m)^DONE' -and $j.taskC -eq 'on' -and -not $j.pC) 'P1-7 a running copy that cannot be stopped: FAILED - Run again (never DONE); task back on, pause file off' $j.sC
@@ -297,7 +298,8 @@ Out-Result @{ cA = $rA.code; sA = $rA.said; oA = $rA.order; pA = $pA; tA = $tA; 
   if (-not $j) { Check $false 'P17b driver ran' $o } else {
     $oa = @($j.oA); $iP = [array]::IndexOf($oa, 'pause:on'); $iRc = [array]::IndexOf($oa, 'reconnect'); $iOn = [array]::IndexOf($oa, 'task:on'); $iPo = [array]::IndexOf($oa, 'pause:off')
     $iLast = -1; for ($i = 0; $i -lt $oa.Count; $i++) { if ($oa[$i] -eq 'online') { $iLast = $i } }
-    Check ($j.cA -eq 0 -and $iP -ge 0 -and $iRc -gt $iP -and $iLast -gt $iRc -and $iOn -gt $iLast -and $iPo -gt $iOn -and $j.tA -eq 'on' -and -not $j.pA) 'P1-7 no settings changed, the Wi-Fi only rejoined: WifiWatch paused BEFORE the rejoin and through the online check, then back on' ($oa -join ' > ')
+    # 2.2.13 (Codex 2.2.12 #4): no task:on in the order any more (the task is never switched off), only the pause file
+    Check ($j.cA -eq 0 -and $iP -ge 0 -and $iRc -gt $iP -and $iLast -gt $iRc -and $iPo -gt $iLast -and $iOn -lt 0 -and $j.tA -eq 'on' -and -not $j.pA) 'P1-7 no settings changed, the Wi-Fi only rejoined: WifiWatch paused BEFORE the rejoin and through the online check, then back on' ($oa -join ' > ')
     Check ($j.cB -eq 0 -and @($j.oB) -contains 'pause:on' -and -not @($j.oB | Where-Object { $_ -match '^task:' }).Count -and $j.tB -eq 'on') 'P1-7 crew login (no admin): paused by the pause file, the task is not touched' (@($j.oB) -join ' > ')
     Check ($j.cC -eq 6 -and $j.sC -notmatch '(?m)^DONE') 'P1-7 no-change path, the pause file cannot be written: not DONE' $j.sC
     Check ($j.cD -eq 0 -and -not @($j.oD | Where-Object { $_ -match '^pause' }).Count) 'P1-7 running it twice (already on the Wi-Fi): nothing paused, nothing changed, DONE' (@($j.oD) -join ' > ')

@@ -1,5 +1,6 @@
 @echo off
-rem WireIt Toolkit 2.2.11: Restore Network - this PC's network adapter back to normal (DHCP, no extra addresses). Runs on its own.
+rem WireIt Toolkit 2.2.11: Restore Network - Reset chosen adapter to DHCP (no extra addresses; old settings saved first). Runs on its own.
+echo Restore Network: Reset chosen adapter to DHCP (extra addresses off). Its old settings are saved first.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0RestoreNetwork.ps1" %*
 echo.
 pause

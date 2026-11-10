@@ -17,6 +17,11 @@ RESTORE NETWORK (2.2.11) - this PC's network back to normal, one button.
     extra address (the live AND the saved copy), the fixed router and hand-set DNS, puts DHCP+static coexistence back, reconnects,
     then reads it all back. WifiWatch is paused while it works and always switched back on.
   - It ends with "DONE - network is back to normal" or "FAILED - Run again". Running it twice is fine.
+  - 2.2.13: an adapter with its OWN fixed address is asked about first ("Reset chosen adapter to DHCP?", type Y). Its old settings are
+    saved in Toolkit\receipts\RestoreNetwork-<time>-before.json; after a reset the end of the run prints the old address, mask, gateway
+    and DNS in plain text and how to put them back (Settings > Network & Internet > the adapter > IP assignment > Edit > Manual; needs admin).
+  - 2.2.13: WifiWatch is paused only by its pause file (it expires by itself); the task is never switched off. The end says
+    "WifiWatch is back on" only when Windows says the task is on; otherwise "WifiWatch is OFF - turn it back on: <steps>".
   - Windows asks permission (click Yes) only when something has to change.
 JOB RECEIPT (2.2.11) - every Fix this site / Undo run and every Restore Network run saves a short plain-text receipt
   (what was changed, whether this PC's network is back) in Toolkit\receipts (or the login's own AppData\Local\WireIt\receipts).

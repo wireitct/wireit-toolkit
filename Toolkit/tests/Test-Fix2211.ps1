@@ -40,7 +40,8 @@ $script:sim = @{ ads = @(); admin = $true; task = 'on'; taskSets = (New-Object S
 function Sim-Ad($ix) { foreach ($x in $script:sim.ads) { if ($x.ifIndex -eq [int]$ix) { return $x } }; return $null }
 $script:RnOps = {
   param($op, $a)
-  if ($op -notin @('list', 'state', 'isadmin', 'sleep', 'task', 'wlan', 'online', 'pause', 'taskrunning')) { [void]$script:sim.calls.Add($op + ' ' + (($a.Keys | Sort-Object | Where-Object { $_ -in @('ip', 'store', 'gw', 'on', 'name') } | ForEach-Object { $_ + '=' + $a[$_] }) -join ' ')) }
+  # 2.2.13 (Codex 2.2.12 #4): 'pauseby' is a read (who wrote the pause file), not a change
+  if ($op -notin @('list', 'state', 'isadmin', 'sleep', 'task', 'wlan', 'online', 'pause', 'pauseby', 'taskrunning')) { [void]$script:sim.calls.Add($op + ' ' + (($a.Keys | Sort-Object | Where-Object { $_ -in @('ip', 'store', 'gw', 'on', 'name') } | ForEach-Object { $_ + '=' + $a[$_] }) -join ' ')) }
   $key = $op + $(if ($a.store) { ':' + $a.store } else { '' })
   if ($script:sim.fail[$key]) { throw ('simulated: ' + $key + ' failed') }
   switch ($op) {

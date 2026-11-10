@@ -6,7 +6,7 @@
 #   - the off/on cycle is in try/finally: the adapter is ALWAYS switched back on, and checked on (3 tries)
 #   - a marker file is written BEFORE the adapter goes off and removed only when it is checked on again; if this run is killed in
 #     between (the task's 2-minute limit, a restart), the next run switches the adapter back on first, before anything else
-#   - Restore Network (Toolkit) pauses this task while it works and switches it back on at the end
+#   - Restore Network (Toolkit) pauses this task while it works (2.2.13: only with the pause file below; it never switches the task off)
 # 2.2.12 (Nov 9 2026, Codex P1-7): switching the task off does not stop a copy that is ALREADY running. Restore Network now also writes
 #   a pause file (%ProgramData%\WireIt\wifiwatch.pause, line 1 "until=<UTC time>"). While it is fresh this script does nothing
 #   (it checks it at the start and again right before every reconnect / adapter off / connect step); switching an adapter back ON
