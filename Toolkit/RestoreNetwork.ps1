@@ -8,8 +8,13 @@
       receipts\RestoreNetwork-<time>-before.json BEFORE it changes anything, and says where it is
    1. pauses WifiWatch while it works (2.2.12, Codex P1-7): writes the pause file %ProgramData%\WireIt\wifiwatch.pause (WifiWatch.ps1
       reads it before every reset step and does nothing while it is fresh; an expired one is ignored, so a crashed run never
-      stops the watcher for good), switches the task off, waits for / stops a copy that is already running, and keeps the
-      pause until the FINAL online check is done; then ALWAYS back on (try/finally). A pause that failed is never DONE.
+      stops the watcher for good), waits for / stops a copy that is already running, and keeps the pause until the FINAL online
+      check is done; then the pause file comes off (try/finally). A pause that failed is never DONE.
+      2.2.13 (Codex 2.2.12 #4): the task is NEVER switched off any more (a switched-off task stayed off for good when the run was
+      killed). A task an earlier 2.2.12 run left OFF (its pause file still there) is switched back on (admin). At the end the
+      task's REAL state is read again: "WifiWatch is back on" only when Windows says so, else "WifiWatch is OFF - turn it back on: ..."
+   3b. 2.2.13 (Codex advice): the fixed-address switch is called "Reset chosen adapter to DHCP"; at the end of a run that changed the
+      adapter it prints where the old settings are saved, and after a reset the old address / mask / gateway / DNS with plain steps
    2. turns the adapter on if it is disabled
    3. DHCP on (the router gives the address). 2.2.12 (Codex P1-3): an adapter with a FIXED address of its own (not one the
       Toolkit put on) is NOT switched silently: it says "This adapter has a fixed address X (gateway Y). Restore Network will
@@ -154,7 +159,8 @@ function Invoke-RnOp([string]$op, $a = @{}) {
       return [pscustomobject]$r
     }
     'task' {
-      $t = Get-ScheduledTask -TaskName $script:RnWifiWatchTask -ErrorAction SilentlyContinue
+      # 2.2.13 (Codex 2.2.12 #4): a task Windows will not let this login read is 'unknown' (NOT 'none'); NEEDS WINDOWS CHECK
+      $t = $null; try { $t = Get-ScheduledTask -TaskName $script:RnWifiWatchTask -ErrorAction Stop } catch { if ([string]$_.CategoryInfo.Category -eq 'ObjectNotFound' -or [string]$_.FullyQualifiedErrorId -match '(?i)HRESULT 0x80070002') { return 'none' }; if ($a.set) { throw }; return 'unknown' }
       if (-not $t) { return 'none' }
       if ($a.set -eq 'off') { Disable-ScheduledTask -TaskName $script:RnWifiWatchTask -ErrorAction Stop | Out-Null; try { Set-Content -LiteralPath $script:RnWifiWatchState -Value 0 } catch {}; return 'off' }
       if ($a.set -eq 'on') { Enable-ScheduledTask -TaskName $script:RnWifiWatchTask -ErrorAction Stop | Out-Null; return 'on' }
@@ -163,6 +169,8 @@ function Invoke-RnOp([string]$op, $a = @{}) {
     # 2.2.12 (Codex P1-7): Disable-ScheduledTask only stops FUTURE runs; a copy that is already running is waited for / stopped
     'taskrunning' { $t = Get-ScheduledTask -TaskName $script:RnWifiWatchTask -ErrorAction SilentlyContinue; return [bool]($t -and [string]$t.State -eq 'Running') }
     'taskstop' { Stop-ScheduledTask -TaskName $script:RnWifiWatchTask -ErrorAction Stop; return $true }
+    # 2.2.13 (Codex 2.2.12 #4): $true when a pause file left on disk was written by Restore Network (the sign of a run that was stopped half-way)
+    'pauseby' { return (Test-RnPauseByRn $script:RnPauseFile) }
     'pause' { if ($a.set -eq 'on') { return (Write-RnPauseFile $script:RnPauseFile $script:RnPauseMinutes) }; return (Remove-RnPauseFile $script:RnPauseFile) }
     'sleep' { Start-Sleep -Seconds ([int]$a.s); return $true }
     'elevate' {
@@ -275,17 +283,35 @@ function Write-RnPauseFile([string]$file, [int]$minutes) {
 function Remove-RnPauseFile([string]$file) {
   try { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force -ErrorAction Stop }; return (-not (Test-Path -LiteralPath $file)) } catch { return $false }
 }
-# pauses WifiWatch: the pause file, the task off (admin), and a copy that is ALREADY running waited for (and stopped if it does not end).
-# returns { ok; why; taskOff; file } - ok is $true only when nothing of WifiWatch can act any more
+# 2.2.13 (Codex 2.2.12 #4): $true when the pause file on disk was written by Restore Network (any version, any age)
+function Test-RnPauseByRn([string]$file) {
+  try { if (-not (Test-Path -LiteralPath $file)) { return $false }; return [bool]([IO.File]::ReadAllText($file) -match '(?m)^by=Restore Network') } catch { return $false }
+}
+# the plain steps to switch the WifiWatch task back on by hand
+$script:RnWwOnSteps = 'Start menu > type "Task Scheduler" > open it > Task Scheduler Library > right-click "WireIt WifiWatch" > Enable (needs an admin login).'
+# pauses WifiWatch. 2.2.13 (Codex 2.2.12 #4): the task is NEVER switched off any more (a switched-off task stays off for good when
+# this run is killed or the power goes). The pause is ONLY the pause file, which WifiWatch.ps1 obeys while it is fresh and ignores once
+# it has expired, so a killed run can never stop WifiWatch for good. A copy that is already running is waited for (and stopped).
+# Recovery: an earlier 2.2.12 Restore Network that was killed left the task OFF and its pause file behind - that task is switched back on.
+# returns { ok; why; file; needed; startState; recovered; recoverFailed } - ok is $true only when nothing of WifiWatch can act any more
 function Start-RnPause([bool]$admin) {
-  $r = [pscustomobject]@{ ok = $true; why = ''; taskOff = $false; file = $false; needed = $false }
-  $ww = 'none'; try { $ww = [string](Invoke-RnOp 'task' @{ set = '' }) } catch { $ww = 'none' }
+  $r = [pscustomobject]@{ ok = $true; why = ''; taskOff = $false; file = $false; needed = $false; startState = 'none'; recovered = $false; recoverFailed = $false; leftByRn = $false }
+  $ww = 'none'; try { $ww = [string](Invoke-RnOp 'task' @{ set = '' }) } catch { $ww = 'unknown' }
+  if (-not $ww) { $ww = 'unknown' }
+  $r.startState = $ww
   if ($ww -eq 'none') { return $r }   # WifiWatch is not installed on this PC: nothing to pause
   $r.needed = $true
+  # read BEFORE this run writes its own pause file: was the one on disk left by an earlier Restore Network?
+  $left = $false; try { $left = [bool](Invoke-RnOp 'pauseby') } catch {}
+  $r.leftByRn = $left
   $f = $false; try { $f = [bool](Invoke-RnOp 'pause' @{ set = 'on' }) } catch {}
   $r.file = $f; if (-not $f) { $r.ok = $false; $r.why = 'its pause file could not be written' }
-  if ($ww -eq 'on' -and $admin) {
-    try { [void](Invoke-RnOp 'task' @{ set = 'off' }); $r.taskOff = $true } catch { $r.ok = $false; $r.why = ('the task could not be switched off: ' + $_.Exception.Message) }
+  if ($ww -eq 'off' -and $left) {
+    if ($admin) {
+      # switched on while this run's own fresh pause file holds it, so it does nothing until this run is finished
+      try { [void](Invoke-RnOp 'task' @{ set = 'on' }); $r.recovered = $true; Rn-Say '  WifiWatch was left switched OFF by an earlier Restore Network that was stopped half-way - switched back on' 'Yellow' }
+      catch { $r.recoverFailed = $true; Rn-Say ('  WifiWatch was left switched OFF by an earlier Restore Network and could NOT be switched back on: ' + $_.Exception.Message) 'Red' }
+    }
   }
   # a copy that is running right now: it reads the pause file before its next step and ends; wait for it, then stop it
   $run = $false; try { $run = [bool](Invoke-RnOp 'taskrunning') } catch {}
@@ -295,14 +321,47 @@ function Start-RnPause([bool]$admin) {
   if ($r.ok) { Rn-Say '  WifiWatch paused while this works (and while the connection is checked)' } else { Rn-Say ('  WifiWatch could NOT be paused: ' + $r.why) 'Red' }
   return $r
 }
+# 2.2.13 (Codex 2.2.12 #4): a run that did NOT pause WifiWatch (nothing to do) still looks: an earlier 2.2.12 Restore Network that was
+# killed left the task OFF and its pause file behind. Admin: switched back on (and that old pause file removed). No admin: said plainly.
+function Repair-RnWifiWatchLeftOff([bool]$admin) {
+  $ww = 'none'; try { $ww = [string](Invoke-RnOp 'task' @{ set = '' }) } catch { $ww = 'unknown' }
+  if ($ww -ne 'off') { return '' }
+  $left = $false; try { $left = [bool](Invoke-RnOp 'pauseby') } catch {}
+  if ($left -and $admin) {
+    try { [void](Invoke-RnOp 'task' @{ set = 'on' }) } catch { Rn-Say ('  WifiWatch was left switched OFF by an earlier Restore Network and could NOT be switched back on: ' + $_.Exception.Message) 'Red' }
+    try { [void](Invoke-RnOp 'pause' @{ set = 'off' }) } catch {}
+    $now = 'unknown'; try { $now = [string](Invoke-RnOp 'task' @{ set = '' }) } catch {}
+    if ($now -eq 'on') { Rn-Say '  WifiWatch was left switched OFF by an earlier Restore Network that was stopped half-way - switched back on' 'Yellow'; return '' }
+    $script:RnWwWarn = 'WifiWatch is OFF - turn it back on: ' + $script:RnWwOnSteps; Rn-Say ('  ' + $script:RnWwWarn) 'Red'
+    return 'WifiWatch is OFF (it could not be switched back on)'
+  }
+  $script:RnWwWarn = 'WifiWatch is OFF - turn it back on: ' + $script:RnWwOnSteps; Rn-Say ('  ' + $script:RnWwWarn) 'Red'
+  return ''
+}
 function Stop-RnPause($p) {
-  # the task back on FIRST, then the pause file off; returns '' or what could not be done
+  # the pause file off, then the task's REAL state read again (2.2.13, Codex 2.2.12 #4) - "back on" is said only when Windows says so.
+  # returns '' or what went wrong that this run caused or should have fixed (that makes the run FAILED - Run again).
+  # A task that is OFF for another reason (not switched off by Restore Network) is said plainly, with the steps, in $script:RnWwWarn.
   $err = ''
   if (-not $p -or -not $p.needed) { return '' }
-  if ($p.taskOff) { try { [void](Invoke-RnOp 'task' @{ set = 'on' }) } catch { $err = 'WifiWatch could not be switched back on' } }
   $gone = $false; try { $gone = [bool](Invoke-RnOp 'pause' @{ set = 'off' }) } catch {}
-  if (-not $gone -and -not $err) { $err = 'WifiWatch''s pause file could not be removed (it runs again by itself within ' + $script:RnPauseMinutes + ' min)' }
-  if ($err) { Rn-Say ('  ' + $err) 'Red' } else { Rn-Say '  WifiWatch is back on' }
+  $now = 'unknown'; try { $now = [string](Invoke-RnOp 'task' @{ set = '' }) } catch { $now = 'unknown' }
+  if (-not $now) { $now = 'unknown' }
+  if ($now -eq 'on') {
+    if ($gone) { Rn-Say '  WifiWatch is back on' }
+    else { $err = 'WifiWatch''s pause file could not be removed (it runs again by itself within ' + $script:RnPauseMinutes + ' min)'; Rn-Say ('  ' + $err) 'Red' }
+    return $err
+  }
+  if (-not $gone) { $err = 'WifiWatch''s pause file could not be removed (it runs again by itself within ' + $script:RnPauseMinutes + ' min)'; Rn-Say ('  ' + $err) 'Red' }
+  if ($now -eq 'off') {
+    $script:RnWwWarn = 'WifiWatch is OFF - turn it back on: ' + $script:RnWwOnSteps
+    if ($p.recoverFailed -or $p.recovered -or $p.startState -eq 'on') { if (-not $err) { $err = 'WifiWatch is OFF (it could not be switched back on)' } }
+  } elseif ($now -eq 'none') {
+    if ($p.startState -ne 'none') { $script:RnWwWarn = 'WifiWatch''s task is GONE from this PC (it was there when this run started) - reinstall it: C:\WireIt\WifiWatch\install-task.ps1 (needs an admin login).' }
+  } else {
+    $script:RnWwWarn = 'WifiWatch: could not read whether its task is on (this login may not see it). Check it is on: ' + $script:RnWwOnSteps
+  }
+  if ($script:RnWwWarn) { Rn-Say ('  ' + $script:RnWwWarn) 'Red' }
   return $err
 }
 
@@ -405,7 +464,7 @@ function Write-RnReceipt([string]$result, $ad) {
   try {
     $dirs = @($ReceiptDir); if ($env:LOCALAPPDATA) { $dirs += (Join-Path $env:LOCALAPPDATA 'WireIt\receipts') }; $dirs += (Join-Path ([IO.Path]::GetTempPath()) 'WireIt-receipts')
     $f = ''; $name = 'RestoreNetwork-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.txt'
-    $l = @(('WireIt Toolkit ' + $script:RnVersion + ' - Restore Network receipt'), ('PC: ' + $env:COMPUTERNAME + '   user: ' + $env:USERNAME + '   ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')), ('Adapter: ' + $(if ($ad) { $ad.name } else { '(none)' })), ('Result: ' + $result), '', 'Changed:')
+    $l = @(('WireIt Toolkit ' + $script:RnVersion + ' - Restore Network receipt'), ('PC: ' + $env:COMPUTERNAME + '   user: ' + $env:USERNAME + '   ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')), ('Adapter: ' + $(if ($ad) { $ad.name } else { '(none)' })), ('Result: ' + $result), $(if ($script:RnWwWarn) { $script:RnWwWarn } else { '' }), 'Changed:')
     if ($script:RnDone.Count) { $l += @($script:RnDone | ForEach-Object { '  - ' + $_ }) } else { $l += '  - nothing (it was already normal)' }
     $l += @('', 'What it said:') + @($script:RnLines | ForEach-Object { '  ' + $_ })
     # Toolkit\receipts first; a login that may not write there (Crew) keeps it in its own folder
@@ -447,20 +506,22 @@ function Move-RnJournals($ad, $journals) {
 # 2.2.12 (Codex P1-3): the crew decides about an adapter's OWN fixed address; returns $true = switch it to automatic
 function Confirm-RnResetStatic($own, [string]$beforeFile) {
   if ($ResetStatic) { return $true }
+  Rn-Say 'Reset chosen adapter to DHCP?' 'Yellow'   # 2.2.13 (Codex advice): the action says what it does
   Rn-Say ('This adapter has a fixed address ' + $own.text + '. Restore Network will switch it to automatic (DHCP).') 'Yellow'
   Rn-Say ('Its old settings are saved in ' + $(if ($beforeFile) { $beforeFile } else { '(the settings file could not be saved)' }) + '.')
   if (-not $beforeFile) { Rn-Say 'Because its old settings could not be saved, the fixed address is kept (nothing of it is changed).' 'Yellow'; return $false }
   $ans = $null
   if ($null -ne $script:RnAnswer) { $ans = [string]$script:RnAnswer }
   elseif ($Auto -or $Elevated) { $ans = '' }
-  else { try { $ans = [string](Read-Host 'Type Y to switch it to automatic, or just Enter to keep the fixed address') } catch { $ans = '' } }
+  else { try { $ans = [string](Read-Host 'Type Y to reset this adapter to DHCP (automatic), or just Enter to keep the fixed address') } catch { $ans = '' } }
   if ($ans.Trim() -match '^(?i)y(es)?$') { return $true }
   Rn-Say ('  Kept: the fixed address ' + $own.text + ' and its DNS stay as they are. Only the Toolkit''s own temporary changes come off.') 'Yellow'
-  if ($Auto -or $Elevated) { Rn-Say '  (To switch it to automatic: run "Restore Network.cmd", pick this adapter and type Y.)' }
+  if ($Auto -or $Elevated) { Rn-Say '  (To reset it to DHCP: run "Restore Network.cmd", pick this adapter and type Y.)' }
   return $false
 }
 
 function Invoke-RestoreNetwork {
+  $script:RnWwWarn = ''; $script:RnResetStaticOk = $false; $script:RnBeforeFile = ''; $script:RnOwnBefore = $null; $script:RnStBefore = $null
   $ads = @(Invoke-RnOp 'list')
   $journals = @(Get-RnJournals)
   foreach ($x in $ads) {
@@ -483,6 +544,7 @@ function Invoke-RestoreNetwork {
   $beforeFile = Save-RnBefore $ad $st
   if ($beforeFile) { Rn-Say ('  this adapter''s settings before this run are saved in ' + $beforeFile) } else { Rn-Say '  the settings before this run could NOT be saved' 'Yellow' }
   $own = Get-RnOwnStatic $ad $st $journals
+  $script:RnBeforeFile = $beforeFile; $script:RnOwnBefore = $own; $script:RnStBefore = $st
   $keep = $false
   if ($own) { $keep = -not (Confirm-RnResetStatic $own $beforeFile); if (-not $keep) { $script:RnResetStaticOk = $true } }
   $plan = @(Get-RnPlan $ad $st $journals $keep)
@@ -506,7 +568,9 @@ function Invoke-RestoreNetwork {
           }
         }
         $v = Get-RnVerdict $ad $st $journals $failed0 $keep
-      } finally { $e0 = Stop-RnPause $pz; if ($e0) { $failed0 += $e0 } }
+      } finally {
+        $e0 = $(if ($pz) { Stop-RnPause $pz } else { Repair-RnWifiWatchLeftOff $admin0 }); if ($e0) { $failed0 += $e0 }
+      }
       return (Complete-RnRun $ad $v $journals $failed0 $keep)
     }
   }
@@ -582,6 +646,37 @@ function Get-RnVerdict($ad, $st, $journals, $failed, [bool]$keep) {
   return [pscustomobject]@{ bad = $bad; on = $on; checked = [bool](-not $bad.Count) }
 }
 
+# after the last line: WifiWatch's state if it is not on (2.2.13, Codex 2.2.12 #4), then the saved settings and how to put them back
+function Say-RnTail($ad) {
+  if ($script:RnWwWarn) { Rn-Say $script:RnWwWarn 'Red' }
+  foreach ($x in @(Get-RnRestoreLines $ad)) { Rn-Say $x }
+}
+# 2.2.13 (Codex advice on the DHCP reset): where the old settings are, and - when this run reset the adapter's OWN fixed address to
+# DHCP - the old values in plain text with the steps a crew member can follow to put them back
+function ConvertTo-RnMask([int]$prefix) {
+  if ($prefix -lt 0 -or $prefix -gt 32) { return '' }
+  $bits = ('1' * $prefix).PadRight(32, '0'); $o = @(); for ($i = 0; $i -lt 4; $i++) { $o += [string][Convert]::ToInt32($bits.Substring($i * 8, 8), 2) }
+  return ($o -join '.')
+}
+function Get-RnRestoreLines($ad) {
+  $l = @()
+  if (-not $script:RnDone.Count) { return $l }
+  $bf = [string]$script:RnBeforeFile
+  $l += ('Settings from before this run are saved in: ' + $(if ($bf) { $bf } else { '(could not be saved)' }))
+  $own = $script:RnOwnBefore; $st = $script:RnStBefore
+  if (-not ($script:RnResetStaticOk -and $own)) { return $l }
+  $l += 'This run did "Reset chosen adapter to DHCP". Its OLD fixed settings were:'
+  foreach ($ip in @($own.ips)) {
+    $pf = -1; foreach ($x in @(@($st.persistent) + @($st.active))) { if ($x -and [string]$x.ip -eq $ip -and $pf -lt 0) { try { $pf = [int]$x.prefix } catch {} } }
+    $m = $(if ($pf -ge 0) { ConvertTo-RnMask $pf } else { '' })
+    $l += ('  IP address ' + $ip + $(if ($m) { '   subnet mask ' + $m } else { '' }))
+  }
+  $l += ('  Gateway ' + $(if (@($own.gws).Count) { (@($own.gws) -join ', ') } else { '(none)' }))
+  $dns = @(); if ($st -and $st.PSObject.Properties['dnsServers'] -and $st.dnsStatic) { $dns = @($st.dnsServers) }
+  $l += ('  DNS ' + $(if ($dns.Count) { ($dns -join ', ') } else { '(automatic)' }))
+  $l += ('To put them back (needs an admin login): Settings > Network & Internet > ' + $ad.name + ' > IP assignment > Edit > Manual > IPv4 on > type in the values above > Save.')
+  return $l
+}
 function Complete-RnRun($ad, $v, $journals, $failed = @(), [bool]$keep = $false) {
   # the end: say DONE or FAILED - Run again / NOT FIXED, write the receipt. A step that failed (also: WifiWatch not paused / not back on) is never DONE
   $bad = @($v.bad) + @($failed | Where-Object { $_ })
@@ -589,6 +684,7 @@ function Complete-RnRun($ad, $v, $journals, $failed = @(), [bool]$keep = $false)
     Rn-Say ''
     foreach ($b in $bad) { Rn-Say ('  still wrong: ' + $b) 'Red' }
     Rn-Say 'FAILED - Run again. This PC''s network is NOT back to normal yet. If it fails twice, restart the PC.' 'Red'
+    Say-RnTail $ad
     $r = Write-RnReceipt ('FAILED - Run again (' + ($bad -join '; ') + ')') $ad
     if ($r) { Rn-Say ('Receipt: ' + $r) }
     return 6
@@ -605,12 +701,14 @@ function Complete-RnRun($ad, $v, $journals, $failed = @(), [bool]$keep = $false)
     if ($keep) { $why += '; it has its own fixed address - if it should be automatic, run "Restore Network.cmd" and type Y' }
     Rn-Say ('  settings are back to normal, but this PC is still offline: ' + $why) 'Red'
     Rn-Say ('NOT FIXED - run again or call. (' + $ad.name + ': ' + $why + ')') 'Red'
+    Say-RnTail $ad
     $r = Write-RnReceipt ('NOT FIXED - run again or call (settings back to normal, still offline: ' + $why + ')') $ad
     if ($r) { Rn-Say ('Receipt: ' + $r) }
     return 8   # 8, not 7: Fix this site already uses 7 for its own stop
   }
   $gwt = $(if ($on.gw) { $(if ($on.gwPing) { ', router ' + $on.gw + ' answers' } else { ', router ' + $on.gw + ' does not answer ping (some routers never do)' }) } else { '' })
   Rn-Say ('DONE - network is back to normal and online (' + $ad.name + ': ' + $net + $how + 'address ' + $on.ip + $gwt + ', the internet answers through this adapter).') 'Green'
+  Say-RnTail $ad
   $r = Write-RnReceipt ('DONE - network is back to normal and online (' + $net + $how + 'address ' + $on.ip + $(if ($on.gw) { ', router ' + $on.gw } else { '' }) + ')') $ad
   if ($r) { Rn-Say ('Receipt: ' + $r) }
   return 0
