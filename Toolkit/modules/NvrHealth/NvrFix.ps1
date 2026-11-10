@@ -115,8 +115,18 @@ function Invoke-NvrFix {
         $afterTracks = $ra.map
         # 2.2.15: "on again" = Enable true AND a schedule with recording time (an explicit false schedule is still off)
         $still = @($off | Where-Object { -not $afterTracks.ContainsKey($_.id) -or $afterTracks[$_.id].enabled -ne $true -or $afterTracks[$_.id].hasSchedule -eq $false })
-        $unknownAfter = @($afterTracks.Values | Where-Object { $null -eq $_.enabled -or ($_.enabled -eq $true -and $null -eq $_.hasSchedule) })
-        $unkNote = $(if ($unknownAfter.Count) { ' Recording could NOT be checked for camera(s) ' + (& $unkWords $unknownAfter) + ' (no clear Enable / schedule).' } else { '' })
+        # 2.2.16 (Codex 2.2.15 F5): keep the FIRST inventory through the check. Every camera read before the change must be in the
+        # read-back with a known state: one that is missing from the read-back, or still unknown, is NOT CHECKED (never green).
+        # A camera that was on before and now reads off counts as still off.
+        $offIds = @($off | ForEach-Object { $_.id })
+        $goneAfter = @($rt.map.Values | Where-Object { -not $afterTracks.ContainsKey($_.id) -and $offIds -notcontains $_.id } | Sort-Object id)
+        $nowOff = @($rt.map.Values | Where-Object { $offIds -notcontains $_.id -and $afterTracks.ContainsKey($_.id) -and ($afterTracks[$_.id].enabled -eq $false -or ($afterTracks[$_.id].enabled -eq $true -and $afterTracks[$_.id].hasSchedule -eq $false)) } | Sort-Object id)
+        $still = @(@($still) + @($nowOff))
+        $unknownAfter = @($afterTracks.Values | Where-Object { $null -eq $_.enabled -or ($_.enabled -eq $true -and $null -eq $_.hasSchedule) } | Sort-Object id)
+        $unkNote = ''
+        if ($goneAfter.Count) { $unkNote += ' Camera(s) ' + (& $unkWords $goneAfter) + ' were in the recording list before the change but NOT in the answer read back afterwards: NOT CHECKED.' }
+        if ($unknownAfter.Count) { $unkNote += ' Recording could NOT be checked for camera(s) ' + (& $unkWords $unknownAfter) + ' (no clear Enable / schedule).' }
+        $stillWords = { param($list) (@($list | ForEach-Object { 'camera ' + [math]::Floor($_.id / 100) }) -join ', ') }
       } elseif ($v -eq 'DW') {
         if (-not (Dw-Login $t)) { return (& $done $false 'The DW server refused the login. Nothing changed.') }
         # 2.2.14 (Codex 2.2.13 F6): the list read must succeed and be a real camera list; a camera without a readable recording
@@ -141,12 +151,30 @@ function Invoke-NvrFix {
         }
         $afterDevices = @($ra.devs)
         $still = @($off | Where-Object { $id = $_.id; -not @($afterDevices | Where-Object { $_.id -eq $id -and $_.scheduled -eq $true }).Count })
+        # 2.2.16 (Codex 2.2.15 F5): keep the FIRST camera list through the check. Every camera read before the change must be in the
+        # read-back with a known state: missing from the read-back, or still unknown = NOT CHECKED (never green). A camera that was on
+        # before and now reads off counts as still off.
+        $offIds = @($off | ForEach-Object { $_.id })
+        $afterIds = @($afterDevices | ForEach-Object { $_.id })
+        $goneAfter = @($devs | Where-Object { $afterIds -notcontains $_.id -and $offIds -notcontains $_.id })
+        $nowOff = @($devs | Where-Object { $id = $_.id; $offIds -notcontains $id -and @($afterDevices | Where-Object { $_.id -eq $id -and $_.scheduled -eq $false }).Count })
+        $still = @(@($still) + @($nowOff))
         $unknownAfter = @($afterDevices | Where-Object { $null -eq $_.scheduled })
-        $unkNote = $(if ($unknownAfter.Count) { ' Recording could NOT be checked for: ' + (& $unkWords $unknownAfter) + '.' } else { '' })
+        $unkNote = ''
+        if ($goneAfter.Count) { $unkNote += ' ' + (& $unkWords $goneAfter) + ' - in DW''s camera list before the change but NOT in the list read back afterwards: NOT CHECKED.' }
+        if ($unknownAfter.Count) { $unkNote += ' Recording could NOT be checked for: ' + (& $unkWords $unknownAfter) + '.' }
+        $stillWords = { param($list) (@($list | ForEach-Object { $_.name + ' (' + $_.ip + ')' }) -join ', ') }
       } else { return (& $done $false ('Turning recording on is not built for ' + $v + ' yet. Nothing changed.')) }
       $ok = (-not $still.Count -and -not $unkNote)
-      $res.history = 'Recording turned back on: ' + ($res.changed -join ', ') + ' (' + $Ip + ')' + $(if ($unkNote) { ' - some cameras NOT CHECKED' } else { '' })
-      return (& $done $ok $(if (-not $still.Count) { 'Recording is ON again for: ' + ($res.changed -join ', ') + '.' + $(if ($unkNote) { $unkNote + ' NOT CHECKED - look at the recorder''s schedule page.' } else { ' Check again tomorrow that footage is there.' }) } else { 'Still off after the change: ' + $still.Count + '.' + $unkNote + ' Look at the recorder''s schedule page.' }))
+      # 2.2.16 (Codex 2.2.15 F5): only a fully confirmed read-back gets "Recording is ON again" and a "turned back on" history line;
+      # anything missing or unknown says NOT confirmed in both.
+      if ($ok) {
+        $res.history = 'Recording turned back on: ' + ($res.changed -join ', ') + ' (' + $Ip + ')'
+        return (& $done $true ('Recording is ON again for: ' + ($res.changed -join ', ') + '. Check again tomorrow that footage is there.'))
+      }
+      $res.history = 'Recording turn-on sent for: ' + ($res.changed -join ', ') + ' (' + $Ip + ') - NOT confirmed' + $(if ($still.Count) { ' (still off: ' + (& $stillWords $still) + ')' } else { '' }) + $(if ($unkNote) { ' - some cameras NOT CHECKED' } else { '' })
+      if (-not $still.Count) { return (& $done $false ('Recording turn-on sent for: ' + ($res.changed -join ', ') + ', but it is NOT confirmed for every camera - some are NOT CHECKED.' + $unkNote + ' Look at the recorder''s schedule page and run the Recording check again.')) }
+      return (& $done $false ('Still off after the change: ' + $still.Count + ' (' + (& $stillWords $still) + ').' + $unkNote + ' Look at the recorder''s schedule page.'))
     }
     'restart' {
       $path = $(if ($v -eq 'Uniview') { '/LAPI/V1.0/System/Reboot' } elseif ($v -eq 'Hikvision') { '/ISAPI/System/reboot' } else { '' })

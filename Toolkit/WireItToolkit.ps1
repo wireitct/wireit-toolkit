@@ -509,7 +509,7 @@ function Begin-Run([string]$name, [bool]$keep = $false) {
 function End-Run([int]$code, [string]$plain) {
   $r = $TK.run; if (-not $r) { return }
   if ($plain) { Add-Out ''; Add-Out $plain }
-  switch ($code) { 0 { Set-Pill ($r.Name + ' - done') $cOk } 4 { Set-Pill ($r.Name + ' - done, check the warnings') $cWarn } default { Set-Pill ($r.Name + ' - problem') $cRed } }
+  switch ($code) { 0 { Set-Pill ($r.Name + ' - done') $cOk } 4 { Set-Pill ($r.Name + ' - done, check the warnings') $cWarn } 3 { Set-Pill ($r.Name + ' - done, still filling (not an all-clear)') $cWarn } default { Set-Pill ($r.Name + ' - problem') $cRed } }
   $logPath = Write-TkLog $TK.P.Logs $r.Name $r.Log.ToString()
   $TK.run = $null
   Set-Busy $false; Set-Status ($r.Name + ' done. Saved to the logs folder.')
@@ -803,8 +803,13 @@ function Show-SiteCheck {
   $red = @($c.lines | Where-Object { $_.k -eq 'red' } | ForEach-Object { [string]$_.t })
   # 1.6.1: "not checked" parts (login refused / skipped, unreadable clock) are amber and the result is never "all OK"
   $ncl = @($c.lines | Where-Object { $_.k -eq 'warn' -and [string]$_.t -match '(?i)not checked' } | ForEach-Object { [string]$_.t })
+  # 2.2.16 (Codex 2.2.15 F6): a recorder still filling toward its days-to-keep target is PENDING - amber, not a fault, never "all OK".
+  # (A check saved by 2.2.15 has no 'pending' field, only page.rec.stillFilling - read that too.)
+  $pend = ''; if ($c.PSObject.Properties['pending'] -and $c.pending) { $pend = $(if ($c.PSObject.Properties['pendingWhy'] -and $c.pendingWhy) { [string]$c.pendingWhy } else { 'recorder still filling' }) }
+  elseif ($c.page -and $c.page.rec -and $c.page.rec.PSObject.Properties['stillFilling'] -and $c.page.rec.stillFilling) { $pend = 'recorder still filling (' + $c.page.rec.daysHeld + ' of ' + $c.page.rec.target + ' days)' }
   if ($red.Count) { Add-OutTop (@('CHECK THIS SITE - needs attention:') + $red + $ncl) $cRed }
-  elseif ($ncl.Count -or ($c.page -and @($c.page.notChecked).Count)) { Add-OutTop (@('CHECK THIS SITE - NOT everything could be checked (this is not an all-clear):') + $ncl) $cWarn }
+  elseif ($ncl.Count -or ($c.page -and @($c.page.notChecked).Count)) { Add-OutTop (@('CHECK THIS SITE - NOT everything could be checked (this is not an all-clear):') + $ncl + $(if ($pend) { @('Also: ' + $pend + '.') } else { @() })) $cWarn }
+  elseif ($pend) { Add-OutTop @('CHECK THIS SITE: ' + $pend + ', nothing broken found. Not an all-clear yet - check again when it has filled.') $cWarn }
   elseif ($c.ok) { Add-OutTop @('CHECK THIS SITE: all OK.') $cOk }
   else { Add-OutTop @('CHECK THIS SITE: see the details below.') $cWarn }
   Show-Fixes @($c.fixes)

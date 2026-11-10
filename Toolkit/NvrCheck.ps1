@@ -160,6 +160,8 @@ try {
   elseif ($r -and $r.PSObject.Properties['problems'] -and @($r.problems).Count) {
     if (@($r.problems | Where-Object { $_ -match $TkNotCheckedRx }).Count -and -not @($r.problems | Where-Object { $_ -notmatch $TkNotCheckedRx }).Count) { $code = 2 } else { $code = 4 }
   }
+  # 2.2.16 (Codex 2.2.15 F6): recording still filling toward its target (no problem found) = exit 3 (STILL FILLING), never 0 ("All good")
+  elseif ($Mode -eq 'Recording' -and $r -and $r.PSObject.Properties['target_pending'] -and $r.target_pending) { $code = 3 }
 } catch {
   $stopWhy = $_.Exception.Message; Say2 ('PROBLEM ' + $stopWhy) 'Red'; $code = 1
 } finally {
@@ -188,6 +190,7 @@ if ($Mode -eq 'Site') {
   Save-TkJson $chk (Join-Path $here 'logs\check-site-last.json'); Save-TkJson $chk (Join-Path $run 'check.json')
   Say2 ''; Say2 '===== CHECK THIS SITE: SUMMARY =====' 'Cyan'
   foreach ($l in @($chk.lines)) { Say2 $l.t $(switch ($l.k) { 'red' { 'Red' } 'ok' { 'Green' } 'warn' { 'Yellow' } default { '' } }) }
+  if ($chk.pending) { Say2 ('STILL FILLING: ' + $chk.pendingWhy + ' - nothing broken found, but this is not an all-clear yet.') 'Yellow' }
   if (@($chk.page.notChecked).Count) { Say2 ('NOT CHECKED: ' + (@($chk.page.notChecked) -join ', ') + ' - this is not an all-clear.') 'Yellow' }
   if (@($chk.fixes).Count) { Say2 ('Fix buttons offered in the Toolkit: ' + (@($chk.fixes) -join ', ') + ' (each asks you first; nothing was changed).') 'Yellow' }
   if (-not $Site) { Say2 'Tip: type the site to save this check to the site page.' }
@@ -205,7 +208,8 @@ if ($Mode -eq 'Site') {
       }
     } catch { Say2 ('Not saved to the site page: ' + $_.Exception.Message) 'Yellow' }
   }
-  if ($code -eq 0 -and -not $chk.ok) { $code = 4 }
+  # 2.2.16 (Codex 2.2.15 F6): only "still filling" left (nothing red, nothing NOT CHECKED) = exit 3, anything else not ok = 4
+  if ($code -eq 0 -and -not $chk.ok) { if ($chk.pending -and -not @($chk.lines | Where-Object { $_.k -eq 'red' }).Count -and -not @($chk.page.notChecked).Count) { $code = 3 } else { $code = 4 } }
 }
 Set-Content -Path (Join-Path $run 'result.json') -Value (@{ mode = $Mode; ip = $Ip; site = $Site; days = $Days; code = $code; finished = (Get-Date -Format s) } | ConvertTo-Json)
 Done $code
