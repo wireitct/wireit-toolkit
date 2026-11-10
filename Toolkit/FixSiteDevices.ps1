@@ -302,6 +302,38 @@ function Get-FsInfo([string]$ip, [string]$brand, $cred) {
   $x = Fs-XmlDoc (Fs-Http -Ip $ip -Path '/ISAPI/System/deviceInfo' -Cred $cred).body
   return [pscustomobject]@{ brand = 'Hikvision'; model = (Fs-XText $x 'model'); serial = (Fs-XText $x 'serialNumber'); mac = (Fs-XText $x 'macAddress'); firmware = ((Fs-XText $x 'firmwareVersion') + ' ' + (Fs-XText $x 'firmwareReleasedDate')).Trim() }
 }
+# 2.2.15 (Codex 2.2.14 R2): WHICH device answers at an address: its MAC and serial as the device itself reports them ('' = could not
+# be read). A password that logs in is not identity (a site password works on every camera of the site).
+function Get-FsIdentity([string]$ip, [string]$brand, $cred) {
+  $mac = ''; $ser = ''
+  try {
+    if ($brand -eq 'Dahua') {
+      $rn = Fs-Http -Ip $ip -Path '/cgi-bin/configManager.cgi?action=getConfig&name=Network' -Cred $cred
+      if ($rn -and [int]$rn.code -eq 200) { $h = Fs-DhLines $rn.body; $if = [string]$h['Network.DefaultInterface']; if (-not $if) { $if = 'eth0' }; $mac = [string]$h['Network.' + $if + '.PhysicalAddress'] }
+      $rs = Fs-Http -Ip $ip -Path '/cgi-bin/magicBox.cgi?action=getSystemInfo' -Cred $cred
+      if ($rs -and [int]$rs.code -eq 200) { $ser = [string](Fs-DhLines $rs.body)['serialNumber'] }
+    } else {
+      $r = Fs-Http -Ip $ip -Path '/ISAPI/System/deviceInfo' -Cred $cred
+      if ($r -and [int]$r.code -eq 200) { $x = Fs-XmlDoc $r.body; if ($x) { $mac = Fs-XText $x 'macAddress'; $ser = Fs-XText $x 'serialNumber' } }
+    }
+  } catch { }
+  return [pscustomobject]@{ mac = (ConvertTo-FsMac ([string]$mac)); serial = ([string]$ser).Trim() }
+}
+# 2.2.15 (Codex 2.2.14 R2): is the device that answers at $ip the camera the undo file names? '' = yes (same MAC; with no MAC in the
+# file, the same serial). Otherwise the plain reason: another device, or its identity could not be read / the file has none.
+function Get-FsUndoIdentityBlock([string]$ip, [string]$brand, $cred, [string]$wantMac, [string]$wantSerial) {
+  $wm = ConvertTo-FsMac $wantMac; $ws = ([string]$wantSerial).Trim()
+  if (-not $wm -and -not $ws) { return ('the undo file has no MAC or serial for it, so it cannot be checked that the device at ' + $ip + ' is this camera') }
+  $id = Get-FsIdentity $ip $brand $cred
+  if ($wm) {
+    if (-not $id.mac) { return ('the device at ' + $ip + ' did not tell its MAC, so it is not certain it is this camera') }
+    if ($id.mac -ne $wm) { return ('the device at ' + $ip + ' is ANOTHER device (MAC ' + $id.mac + $(if ($id.serial) { ', serial ' + $id.serial } else { '' }) + '; the undo file has MAC ' + $wm + ')') }
+    return ''
+  }
+  if (-not $id.serial) { return ('the device at ' + $ip + ' did not tell its serial, so it is not certain it is this camera') }
+  if ($id.serial.ToUpperInvariant() -ne $ws.ToUpperInvariant()) { return ('the device at ' + $ip + ' is ANOTHER device (serial ' + $id.serial + '; the undo file has ' + $ws + ')') }
+  return ''
+}
 # 2.2.4 (Codex re-review): a backup file counts only when its CONTENT is what the device exports: a login or HTML page, an
 # error answer, or a file too small to be a config export is FAILED (2.2.3 counted any non-empty file, so a login page was "backup saved").
 function Get-FsFileHead([string]$path, [int]$n = 4096) {
@@ -541,9 +573,19 @@ function Test-FsPicture([string]$ip, [string]$path, $cred) {
 }
 
 # ---------------- Hikvision NVR ----------------
-function Get-FsNvrChannels([string]$nvrIp, $cred) {
-  $r = Fs-Http -Ip $nvrIp -Path '/ISAPI/ContentMgmt/InputProxy/channels' -Cred $cred
-  $x = Fs-XmlDoc $r.body; if (-not $x) { return $null }
+# 2.2.15 (Codex 2.2.14 R1): reading an NVR's channel list says whether it WAS read. ok = $true only for an HTTP 200 answer that is a
+# real channel list (InputProxyChannelList); a failed or garbled answer is ok = $false with the reason, never "no channels".
+# Returns { ok; channels; why }. Get-FsNvrChannels (below) keeps its old shape for the callers that only need the channels.
+function Read-FsNvrChannelList([string]$nvrIp, $cred) {
+  $r = $null; try { $r = Fs-Http -Ip $nvrIp -Path '/ISAPI/ContentMgmt/InputProxy/channels' -Cred $cred } catch { $r = $null }
+  if (-not $r -or [int]$r.code -ne 200) { return [pscustomobject]@{ ok = $false; channels = @(); why = $(if ($r -and [int]$r.code) { 'the NVR answered HTTP ' + $r.code } else { 'the NVR did not answer' }) } }
+  $x = Fs-XmlDoc $r.body
+  if (-not $x -or -not $x.DocumentElement -or $x.DocumentElement.LocalName -ne 'InputProxyChannelList') { return [pscustomobject]@{ ok = $false; channels = @(); why = 'the NVR answer was not a channel list' } }
+  return [pscustomobject]@{ ok = $true; channels = @(Get-FsNvrChannels $nvrIp $cred -Body $r.body); why = '' }
+}
+function Get-FsNvrChannels([string]$nvrIp, $cred, [string]$Body = '') {
+  if ($Body) { $x = Fs-XmlDoc $Body } else { $r = Fs-Http -Ip $nvrIp -Path '/ISAPI/ContentMgmt/InputProxy/channels' -Cred $cred; $x = Fs-XmlDoc $r.body }
+  if (-not $x) { return $null }
   $st = Fs-XmlDoc (Fs-Http -Ip $nvrIp -Path '/ISAPI/ContentMgmt/InputProxy/channels/status' -Cred $cred).body
   $on = @{}; foreach ($s in (Fs-XFind $st 'InputProxyChannelStatus')) { $on[[int](Fs-XText $s 'id')] = ((Fs-XText $s 'online') -eq 'true') }
   $out = @()
@@ -559,8 +601,17 @@ function Get-FsNvrChannelGuard([string]$nvrIp, $nvrCred, [int]$ch, [string]$curI
   if (-not $curIp -or $curIp -eq $camIp -or @($OwnIps | Where-Object { $_ }) -contains $curIp) { return '' }
   $st = $null; try { $st = Fs-Http -Ip $nvrIp -Path '/ISAPI/ContentMgmt/InputProxy/channels/status' -Cred $nvrCred } catch { $st = $null }
   $online = $null
-  if ($st -and $st.code -eq 200 -and ($sx = Fs-XmlDoc $st.body)) {
-    foreach ($n in @(Fs-XFind $sx 'InputProxyChannelStatus')) { if ([string](Fs-XText $n 'id') -eq [string]$ch) { $online = ((Fs-XText $n 'online') -eq 'true') } }
+  $sx = $null; if ($st -and $st.code -eq 200) { $sx = Fs-XmlDoc $st.body }
+  if ($sx -and $sx.DocumentElement -and $sx.DocumentElement.LocalName -eq 'InputProxyChannelStatusList') {
+    # 2.2.15 (Codex 2.2.14 R3): only an explicit "true" / "false" for THIS channel id counts. A missing, empty or garbled <online>
+    # (or no entry for the channel) stays unknown = "may be live", so another camera's channel is never overwritten on a guess.
+    foreach ($n in @(Fs-XFind $sx 'InputProxyChannelStatus')) {
+      if ([string](Fs-XText $n 'id') -ne [string]$ch) { continue }
+      if (-not @(Fs-XFind $n 'online').Count) { continue }
+      $ov = ([string](Fs-XText $n 'online')).ToLowerInvariant()
+      if ($ov -eq 'true') { $online = $true } elseif ($ov -eq 'false') { if ($null -eq $online) { $online = $false } } else { $online = 'bad' }
+    }
+    if ($online -is [string]) { $online = $null }   # one garbled entry for the channel = unknown
   }
   if ($online -eq $false) { return '' }
   if ($online) { return ('NVR ' + $nvrIp + ' ch ' + $ch + ' shows another LIVE camera (' + $curIp + '), not ' + $camIp + ': not overwritten. Check which camera belongs on it and set it by hand.') }
