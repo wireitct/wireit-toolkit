@@ -511,7 +511,11 @@ function Hik-ParseTracks([string]$body) {
     $modes = @((XFind $tr 'ActionRecordingMode') | ForEach-Object { $_.InnerText.Trim() } | Where-Object { $_ } | Select-Object -Unique)
     $rec = @((XFind $tr 'Record') | ForEach-Object { $_.InnerText.Trim() })
     $en = XText $tr 'Enable'
-    $out[$id] = [pscustomobject]@{ id = $id; enabled = ($en -ne 'false'); modes = $modes; hasSchedule = (($rec -contains 'true') -or -not $rec.Count) }
+    # 2.2.14 (Codex 2.2.13 F9): only an explicit true / false is a known state. A missing or unrecognised Enable = $null (UNKNOWN,
+    # never "on"); no schedule entries at all = hasSchedule $null (unknown), not "has a schedule".
+    $enabled = $(if ($en -match '^(?i)true$') { $true } elseif ($en -match '^(?i)false$') { $false } else { $null })
+    $sched = $(if (-not $rec.Count) { $null } else { ($rec -contains 'true') })
+    $out[$id] = [pscustomobject]@{ id = $id; enabled = $enabled; modes = $modes; hasSchedule = $sched }
   }
   return $out
 }
@@ -531,7 +535,7 @@ function Hik-Tracks($t) {
 function Hik-ReadChannel($t, [int]$ch) {
   # 2.2.13 (Codex 2.2.12 #6): read ONE NVR channel back: which camera address it really uses and whether it is online.
   # ok = both the channel list and the status list were real 200 answers. found = the channel is in the list.
-  $res = @{ ok = $false; found = $false; ip = ''; online = $null; why = '' }
+  $res = @{ ok = $false; found = $false; ip = ''; online = $null; why = ''; statusFound = $false }
   $a = Http -Ip $t.ip -Path '/ISAPI/ContentMgmt/InputProxy/channels' -Credential $t.cred -Port $t.port
   $x = $(if ($a.code -eq 200) { Xml $a.body } else { $null })
   if (-not $x -or -not $x.DocumentElement -or $x.DocumentElement.LocalName -notmatch '(?i)^InputProxyChannelList$') { $res.why = 'the channel list could not be read (answer ' + $a.code + ')'; return $res }
@@ -539,7 +543,8 @@ function Hik-ReadChannel($t, [int]$ch) {
   $s = Http -Ip $t.ip -Path '/ISAPI/ContentMgmt/InputProxy/channels/status' -Credential $t.cred -Port $t.port
   $y = $(if ($s.code -eq 200) { Xml $s.body } else { $null })
   if (-not $y -or -not $y.DocumentElement -or $y.DocumentElement.LocalName -notmatch '(?i)^InputProxyChannelStatusList$') { $res.why = 'the channel status could not be read (answer ' + $s.code + ')'; return $res }
-  foreach ($c in (XFind $y 'InputProxyChannelStatus')) { if ([string](XText $c 'id') -eq [string]$ch) { $res.online = ((XText $c 'online') -eq 'true') } }
+  # 2.2.14: statusFound = the status list names this channel with an explicit online true/false (a positive reading)
+  foreach ($c in (XFind $y 'InputProxyChannelStatus')) { if ([string](XText $c 'id') -eq [string]$ch) { $on = XText $c 'online'; if ($on -match '^(?i)(true|false)$') { $res.statusFound = $true; $res.online = ($on -match '^(?i)true$') } } }
   if ($null -eq $res.online) { $res.online = $false }
   $res.ok = $true
   return $res
@@ -582,14 +587,18 @@ function Hik-Recording($t) {
   $res = @()
   foreach ($c in $chans) {
     $tid = $c.ch * 100 + 1; $tr = $tracks[$tid]
-    $o = [pscustomobject]@{ ch = $c.ch; ip = $c.ip; online = $c.online; scheduled = $(if ($tr) { $tr.enabled -and $tr.hasSchedule } else { $null }); mode = $(if ($tr) { $tr.modes -join '/' } else { '' });
+    $o = [pscustomobject]@{ ch = $c.ch; ip = $c.ip; online = $c.online; scheduled = $(if ($tr) { $(if ($tr.enabled -eq $false -or $tr.hasSchedule -eq $false) { $false } elseif ($null -eq $tr.enabled -or $null -eq $tr.hasSchedule) { $null } else { $true }) } else { $null }); mode = $(if ($tr) { $tr.modes -join '/' } else { '' });
                             recording_now = $false; newest = $null; oldest = $null; days_held = $null; detect = $c.detect }
     $old = Hik-Search $t $tid (New-Object DateTime(2000, 1, 1)) $nowLocal 1
     if ($old -and $old.segs.Count) { $o.oldest = $old.segs[0].start }
+    # 2.2.14 (Codex 2.2.13 F5): a failed oldest-clip search leaves days held UNKNOWN for this camera, and says so (the summary
+    # counts every camera with unknown retention as NOT CHECKED, whichever search failed)
+    elseif ($null -eq $old) { Log ('ch ' + $c.ch + ': oldest-clip search failed - days held unknown'); $o | Add-Member -NotePropertyName days_note -NotePropertyValue 'unknown (search failed)' -Force }
     $new = Hik-Search $t $tid $nowLocal.AddHours(-2) $nowLocal.AddMinutes(5) 50
     if ($new -and $new.segs.Count) { $o.newest = ($new.segs | Sort-Object end | Select-Object -Last 1).end }
-    elseif ($o.oldest) { $wk = Hik-Search $t $tid $nowLocal.AddDays(-7) $nowLocal 200; if ($wk -and $wk.segs.Count) { $o.newest = ($wk.segs | Sort-Object end | Select-Object -Last 1).end } }
+    elseif ($o.oldest -or $null -eq $old) { $wk = Hik-Search $t $tid $nowLocal.AddDays(-7) $nowLocal 200; if ($wk -and $wk.segs.Count) { $o.newest = ($wk.segs | Sort-Object end | Select-Object -Last 1).end } }
     if ($o.newest) { $o.recording_now = (($nowLocal - $o.newest).TotalMinutes -le [double]$script:Opt.FreshMinutes) }
+    if (-not $o.oldest -and $o.newest -and -not $o.PSObject.Properties['days_note']) { Log ('ch ' + $c.ch + ': recent clips but the oldest-clip search found none - days held unknown'); $o | Add-Member -NotePropertyName days_note -NotePropertyValue 'unknown (oldest clip not found)' -Force }
     if ($o.oldest) {
       # count in real elapsed time: device stamps are local wall-clock, so undo the DST shift (else 1 h short across a DST change)
       $span = $nowLocal - $o.oldest
@@ -754,17 +763,40 @@ function Dw-Storage($t) {
   }
   return $out
 }
-function Dw-Devices($t) {
-  $j = Dw-Get $t '/rest/v3/devices?_with=id,name,status,model,vendor,url,schedule,parameters,physicalId,mac'
+function Dw-ParseSched($d) {
+  # 2.2.14 (Codex 2.2.13 F6/F9): only an explicit true/false recording flag is known; anything else = $null (UNKNOWN, never "on")
+  if (-not $d -or -not $d.PSObject.Properties['schedule'] -or -not $d.schedule) { return $null }
+  if (-not $d.schedule.PSObject.Properties['isEnabled']) { return $null }
+  $v = $d.schedule.isEnabled
+  if ($v -is [bool]) { return $v }
+  if ([string]$v -match '^(?i)true$') { return $true }
+  if ([string]$v -match '^(?i)false$') { return $false }
+  return $null
+}
+function Dw-ReadDevices($t) {
+  # 2.2.14 (Codex 2.2.13 F6): @{ ok; devs; why }. ok only when the device list was a real 200 answer that parsed as a list of
+  # devices; a failed / unparseable answer is "could not read", never an empty list (2.2.13 turned it into "all on").
+  $r = Http -Ip $t.ip -Path '/rest/v3/devices?_with=id,name,status,model,vendor,url,schedule,parameters,physicalId,mac' -Headers @{ Authorization = ('Bearer ' + $t.token) } -Port (Dw-Port $t) -Scheme (Dw-Scheme) -ContentType 'application/json'
+  if ($r.code -ne 200) { return @{ ok = $false; devs = @(); why = ('answer ' + $r.code) } }
+  $j = $null; $parsed = $false
+  try { $j = ([string]$r.body | ConvertFrom-Json); $parsed = $true } catch {}
+  if ($parsed -and [string]$r.body -match '^\s*\[\s*\]\s*$') { return @{ ok = $true; devs = @(); why = '' } }   # a real, empty list
+  if (-not $parsed -or $null -eq $j -or [string]$r.body -notmatch '^\s*\[') { return @{ ok = $false; devs = @(); why = 'the answer was not a camera list' } }
   $out = @()
   foreach ($d in @($j)) {
     if (-not $d) { continue }
+    if (-not $d.PSObject.Properties['id'] -or -not [string]$d.id) { return @{ ok = $false; devs = @(); why = 'a camera in the list has no id (not a DW camera list)' } }
     $ip = ''; $m = [regex]::Match([string]$d.url, '//([^/:]+)'); if ($m.Success) { $ip = $m.Groups[1].Value } elseif ($d.url) { $ip = [string]$d.url }
     $fw = ''; if ($d.parameters -and $d.parameters.firmware) { $fw = [string]$d.parameters.firmware } elseif ($d.firmware) { $fw = [string]$d.firmware }
     $mac = $(if ($d.mac) { [string]$d.mac } elseif ([string]$d.physicalId -match '^([0-9A-Fa-f]{2}[-:]){5}[0-9A-Fa-f]{2}$') { [string]$d.physicalId } else { '' })
-    $out += [pscustomobject]@{ id = [string]$d.id; name = [string]$d.name; mac = $mac.ToUpper().Replace('-', ':'); ip = $ip; status = [string]$d.status; model = [string]$d.model; vendor = [string]$d.vendor; scheduled = $(if ($d.schedule) { [bool]$d.schedule.isEnabled } else { $null }); firmware = $fw }
+    $out += [pscustomobject]@{ id = [string]$d.id; name = [string]$d.name; mac = $mac.ToUpper().Replace('-', ':'); ip = $ip; status = [string]$d.status; model = [string]$d.model; vendor = [string]$d.vendor; scheduled = (Dw-ParseSched $d); firmware = $fw }
   }
-  return $out
+  return @{ ok = $true; devs = $out; why = '' }
+}
+function Dw-Devices($t) {
+  # read-only callers: an unreadable list gives no cameras (they then say "no cameras found" / not in the list - never green)
+  $rd = Dw-ReadDevices $t
+  return @($rd.devs)
 }
 function Dw-Periods($t, [string]$id, [DateTime]$nowUtc) {
   $j = Dw-Get $t ('/ec2/recordedTimePeriods?cameraId=' + [uri]::EscapeDataString($id) + '&startTime=0&endTime=' + (Utc-ToMs $nowUtc) + '&detail=60000&flat=true')
@@ -935,7 +967,10 @@ function Get-RecordingStatus {
     else { Bad ($label + ': NO footage found at all'); $notRec += $tag }
   }
   if (-not $chans.Count) { Warn 'No camera channels found on this recorder.'; $problems.Add('no channels') }
-  $unk = @($chans | Where-Object { $_.PSObject.Properties['days_note'] -and $null -eq $_.days_held }); if ($unk.Count -and $null -ne $maxDays) { Warn ('' + $unk.Count + ' camera(s): days held could not be measured.'); $problems.Add(('days held unknown on ' + $unk.Count + ' camera(s)')) }   # 2.2.4
+  # 2.2.4; 2.2.14 (Codex 2.2.13 F5): EVERY camera whose days held are unknown (any failed search, or footage with no measured
+  # oldest clip) is NOT CHECKED and keeps the result from being green, even when another camera meets the target
+  $unk = @($chans | Where-Object { $null -eq $_.days_held -and (($_.PSObject.Properties['days_note'] -and $_.days_note) -or $_.newest -or $_.recording_now) })
+  if ($unk.Count -and $null -ne $maxDays) { Warn ('' + $unk.Count + ' camera(s): days held NOT CHECKED (could not be measured): ' + (@($unk | ForEach-Object { $(if ($t.vendor -eq 'DW' -and $_.name) { [string]$_.name } else { 'cam ' + $_.ch }) }) -join ', ') + '.'); $problems.Add(('days held NOT CHECKED on ' + $unk.Count + ' camera(s)')) }
   if ($notRec.Count) { $problems.Add(('' + $notRec.Count + ' camera(s) not recording: ' + (@($notRec | Select-Object -First 10) -join ', ') + $(if ($notRec.Count -gt 10) { ' and ' + ($notRec.Count - 10) + ' more (see the log)' } else { '' }))) }
   # stream audit (report only; never counted as a recording problem, never changes anything)
   $streams = $null

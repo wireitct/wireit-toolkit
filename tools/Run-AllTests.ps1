@@ -1,7 +1,7 @@
 <#
  Run-AllTests.ps1 - runs every WireIt Toolkit test suite from a plain clone (Windows PowerShell 5.1 or pwsh 7). Not shipped (tools\).
  Usage (from anywhere):  powershell -NoProfile -ExecutionPolicy Bypass -File <clone>\tools\Run-AllTests.ps1
- Add -Portable on Linux to omit the three Windows desktop suites (and, off Windows, Test-SiteCheck: it needs the Windows drawing library); all other suites still run.
+ Add -Portable on Linux to omit the two Windows desktop suites, Test-FixIt and Test-Toolkit (and, off Windows, Test-SiteCheck: it needs the Windows drawing library); all other suites still run (2.2.14: Test-NvrHealth now runs in -Portable too).
  Needs a real Python 3 for the mock devices (Toolkit\tests\TestPython.ps1 finds it: py -3, then python, then python3; never the Windows Store stub).
  2.2.11 (Codex R17, Moshe Nov 9 2026 "deferred never counts as pass"): a suite whose own summary line says it has DEFERRED checks
  is shown as DEFERRED, not PASS, even when it exits 0; the table shows passed / failed / deferred per suite and the totals. "ALL SUITES
@@ -15,11 +15,12 @@ $ErrorActionPreference = 'Continue'
 if (-not $env:TEMP) { $env:TEMP = [IO.Path]::GetTempPath() }
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $exe = $(if ($PSVersionTable.PSEdition -eq 'Core') { (Get-Process -Id $PID).Path } else { Join-Path $PSHOME 'powershell.exe' })
-$suites = @('Toolkit\tests\Test-Fix2213Nvr.ps1', 'Toolkit\tests\Test-Fix2213Classic.ps1', 'Toolkit\tests\Test-Fix2213Net.ps1', 'Toolkit\tests\Test-Fix2213Site.ps1', 'Toolkit\tests\Test-Fix2212.ps1', 'Toolkit\tests\Test-Fix2212Site.ps1', 'Toolkit\tests\Test-Fix2212Nvr.ps1', 'Toolkit\tests\Test-Fix2212Net.ps1', 'Toolkit\tests\Test-Fix2211.ps1', 'Toolkit\tests\Test-Fix2210.ps1', 'Toolkit\tests\Test-Fix229.ps1', 'Toolkit\tests\Test-Fix228.ps1', 'Toolkit\tests\Test-Fix227.ps1', 'Toolkit\tests\Test-Fix226.ps1', 'Toolkit\tests\Test-Review225.ps1', 'Toolkit\tests\Test-Fix225.ps1', 'Toolkit\tests\Test-Fix224.ps1', 'Toolkit\tests\Test-Fix223.ps1', 'Toolkit\tests\Test-Fix222.ps1', 'Toolkit\tests\Test-Fix221.ps1', 'Toolkit\tests\Test-Fix22.ps1',
+$suites = @('Toolkit\tests\Test-Fix2214Nvr.ps1', 'Toolkit\tests\Test-Fix2214Classic.ps1', 'Toolkit\tests\Test-Fix2214Site.ps1', 'Toolkit\tests\Test-Fix2213Nvr.ps1', 'Toolkit\tests\Test-Fix2213Classic.ps1', 'Toolkit\tests\Test-Fix2213Net.ps1', 'Toolkit\tests\Test-Fix2213Site.ps1', 'Toolkit\tests\Test-Fix2212.ps1', 'Toolkit\tests\Test-Fix2212Site.ps1', 'Toolkit\tests\Test-Fix2212Nvr.ps1', 'Toolkit\tests\Test-Fix2212Net.ps1', 'Toolkit\tests\Test-Fix2211.ps1', 'Toolkit\tests\Test-Fix2210.ps1', 'Toolkit\tests\Test-Fix229.ps1', 'Toolkit\tests\Test-Fix228.ps1', 'Toolkit\tests\Test-Fix227.ps1', 'Toolkit\tests\Test-Fix226.ps1', 'Toolkit\tests\Test-Review225.ps1', 'Toolkit\tests\Test-Fix225.ps1', 'Toolkit\tests\Test-Fix224.ps1', 'Toolkit\tests\Test-Fix223.ps1', 'Toolkit\tests\Test-Fix222.ps1', 'Toolkit\tests\Test-Fix221.ps1', 'Toolkit\tests\Test-Fix22.ps1',
   'Toolkit\tests\Test-HikReset.ps1', 'Toolkit\tests\Test-FixSite.ps1', 'Toolkit\tests\Test-FixIt.ps1', 'Toolkit\tests\Test-Toolkit.ps1',
   'Toolkit\modules\NvrHealth\tests\Test-NvrHealth.ps1', 'sitecheck\tests\Test-SiteCheck.ps1')
 if ($Portable) {
-  $desktop = @('Test-FixIt.ps1', 'Test-Toolkit.ps1', 'Test-NvrHealth.ps1')
+  # 2.2.14: Test-NvrHealth runs off Windows too (pwsh + Python mock; TEMP is set above), so -Portable keeps it
+  $desktop = @('Test-FixIt.ps1', 'Test-Toolkit.ps1')
   # 2.2.6: SiteCheck draws its report with System.Drawing (GDI+), which exists only on Windows: skipped by -Portable off Windows
   if ($env:OS -ne 'Windows_NT') { $desktop += 'Test-SiteCheck.ps1' }
   $suites = @($suites | Where-Object {

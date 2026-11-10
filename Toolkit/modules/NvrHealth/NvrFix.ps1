@@ -81,7 +81,12 @@ function Invoke-NvrFix {
         $rt = Hik-ReadTracks $t
         if (-not $rt.ok) { return (& $done $false ('Could not read the recording settings (' + $rt.why + '). Recording NOT CHECKED, nothing changed. Run it again.')) }
         if (-not $rt.map.Count) { return (& $done $false 'The recorder lists no recording settings at all, so recording could NOT be checked. Nothing changed. Look at Storage > Recording schedule on the recorder.') }
-        $off = @($rt.map.Values | Where-Object { -not $_.enabled } | Sort-Object id)
+        # 2.2.14 (Codex 2.2.13 F9): a track whose Enable is missing / not true-or-false, or that has no schedule entries, is
+        # UNKNOWN - never counted as "on". Only explicit Enable=false tracks are turned on; unknown ones keep the result not green.
+        $off = @($rt.map.Values | Where-Object { $_.enabled -eq $false } | Sort-Object id)
+        $unknownTr = @($rt.map.Values | Where-Object { $null -eq $_.enabled -or ($_.enabled -eq $true -and $null -eq $_.hasSchedule) } | Sort-Object id)
+        $unkWords = { param($list) (@($list | ForEach-Object { [math]::Floor($_.id / 100) }) -join ', ') }
+        if (-not $off.Count -and $unknownTr.Count) { return (& $done $false ('Recording could NOT be checked for camera(s) ' + (& $unkWords $unknownTr) + ': the recorder did not say whether recording is on (no clear Enable / schedule). NOT CHECKED, nothing changed. Look at Storage > Recording schedule on the recorder.')) }
         if (-not $off.Count) { return (& $done $true ('Recording is already on for every camera (' + $rt.map.Count + ' recording settings read). Nothing to change.')) }
         $res.backup = Fix-Save $BackupDir 'record-tracks-before.xml' $rt.body
         if (-not (& $ask @('Turn recording back ON (continuous schedule kept as it is) for camera(s): ' + (($off | ForEach-Object { [math]::Floor($_.id / 100) }) -join ', ') + ' on ' + $Ip + '.', 'Backup of the recording settings saved: ' + $res.backup))) { return (& $done $true 'Not confirmed - nothing changed.') }
@@ -101,21 +106,39 @@ function Invoke-NvrFix {
           return (& $done $false ('Sent to the recorder, but its recording settings could not be read back (' + $ra.why + '), so it is NOT confirmed. Run the Recording check again.'))
         }
         $afterTracks = $ra.map
-        $still = @($off | Where-Object { -not $afterTracks.ContainsKey($_.id) -or -not $afterTracks[$_.id].enabled })
+        $still = @($off | Where-Object { -not $afterTracks.ContainsKey($_.id) -or $afterTracks[$_.id].enabled -ne $true })
+        $unknownAfter = @($afterTracks.Values | Where-Object { $null -eq $_.enabled -or ($_.enabled -eq $true -and $null -eq $_.hasSchedule) })
+        $unkNote = $(if ($unknownAfter.Count) { ' Recording could NOT be checked for camera(s) ' + (& $unkWords $unknownAfter) + ' (no clear Enable / schedule).' } else { '' })
       } elseif ($v -eq 'DW') {
         if (-not (Dw-Login $t)) { return (& $done $false 'The DW server refused the login. Nothing changed.') }
-        $devs = @(Dw-Devices $t); $off = @($devs | Where-Object { $_.scheduled -eq $false })
-        if (-not $off.Count) { return (& $done $true 'Recording is already on for every camera in DW. Nothing to change.') }
+        # 2.2.14 (Codex 2.2.13 F6): the list read must succeed and be a real camera list; a camera without a readable recording
+        # flag is UNKNOWN. "Already on for every camera" only when every camera's settings were read and say on.
+        $rd = Dw-ReadDevices $t
+        if (-not $rd.ok) { return (& $done $false ('Could not read DW''s camera list (' + $rd.why + '). Recording NOT CHECKED, nothing changed. Run it again.')) }
+        $devs = @($rd.devs)
+        if (-not $devs.Count) { return (& $done $false 'DW lists no cameras at all, so recording could NOT be checked. Nothing changed. Look at the cameras in the DW client.') }
+        $off = @($devs | Where-Object { $_.scheduled -eq $false })
+        $unknownDw = @($devs | Where-Object { $null -eq $_.scheduled })
+        $unkWords = { param($list) (@($list | ForEach-Object { $_.name + ' (' + $_.ip + ')' }) -join ', ') }
+        if (-not $off.Count -and $unknownDw.Count) { return (& $done $false ('Recording could NOT be checked for ' + $unknownDw.Count + ' camera(s) in DW: ' + (& $unkWords $unknownDw) + ' (DW did not say whether recording is on). NOT CHECKED, nothing changed.')) }
+        if (-not $off.Count) { return (& $done $true ('Recording is already on for every camera in DW (' + $devs.Count + ' cameras read). Nothing to change.')) }
         $res.backup = Fix-Save $BackupDir 'dw-cameras-before.json' ($devs | ConvertTo-Json -Depth 4)
         if (-not (& $ask @('Turn recording back ON in DW for: ' + (($off | ForEach-Object { $_.name + ' (' + $_.ip + ')' }) -join ', ') + '.', 'Backup of the camera list saved: ' + $res.backup))) { return (& $done $true 'Not confirmed - nothing changed.') }
         $res.ran = $true
         foreach ($o in $off) { $w = Dw-Send $t 'PATCH' ('/rest/v3/devices/' + [uri]::EscapeDataString($o.id)) @{ schedule = @{ isEnabled = $true } }; if ($w.code -eq 200) { $res.changed += $o.name } }
-        $afterDevices = @(Dw-Devices $t)
+        $ra = Dw-ReadDevices $t
+        if (-not $ra.ok) {
+          $res.history = 'Recording turn-on sent in DW for: ' + ($res.changed -join ', ') + ' (' + $Ip + ') - NOT confirmed (read-back failed)'
+          return (& $done $false ('Sent to DW, but its camera list could not be read back (' + $ra.why + '), so it is NOT confirmed. Run the Recording check again.'))
+        }
+        $afterDevices = @($ra.devs)
         $still = @($off | Where-Object { $id = $_.id; -not @($afterDevices | Where-Object { $_.id -eq $id -and $_.scheduled -eq $true }).Count })
+        $unknownAfter = @($afterDevices | Where-Object { $null -eq $_.scheduled })
+        $unkNote = $(if ($unknownAfter.Count) { ' Recording could NOT be checked for: ' + (& $unkWords $unknownAfter) + '.' } else { '' })
       } else { return (& $done $false ('Turning recording on is not built for ' + $v + ' yet. Nothing changed.')) }
-      $ok = (-not $still.Count)
-      $res.history = 'Recording turned back on: ' + ($res.changed -join ', ') + ' (' + $Ip + ')'
-      return (& $done $ok $(if ($ok) { 'Recording is ON again for: ' + ($res.changed -join ', ') + '. Check again tomorrow that footage is there.' } else { 'Still off after the change: ' + $still.Count + '. Look at the recorder''s schedule page.' }))
+      $ok = (-not $still.Count -and -not $unkNote)
+      $res.history = 'Recording turned back on: ' + ($res.changed -join ', ') + ' (' + $Ip + ')' + $(if ($unkNote) { ' - some cameras NOT CHECKED' } else { '' })
+      return (& $done $ok $(if (-not $still.Count) { 'Recording is ON again for: ' + ($res.changed -join ', ') + '.' + $(if ($unkNote) { $unkNote + ' NOT CHECKED - look at the recorder''s schedule page.' } else { ' Check again tomorrow that footage is there.' }) } else { 'Still off after the change: ' + $still.Count + '.' + $unkNote + ' Look at the recorder''s schedule page.' }))
     }
     'restart' {
       $path = $(if ($v -eq 'Uniview') { '/LAPI/V1.0/System/Reboot' } elseif ($v -eq 'Hikvision') { '/ISAPI/System/reboot' } else { '' })
@@ -174,11 +197,24 @@ function Invoke-NvrFix {
       if ($Channel -lt 1 -or $CameraIp -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { return (& $done $false 'Need the channel number and the camera IP. Nothing changed.') }
       $all = Http -Ip $Ip -Path '/ISAPI/ContentMgmt/InputProxy/channels' -Credential $t.cred -Port $t.port
       if ($all.code -ne 200) { return (& $done $false ('Could not read the NVR channel list (answer ' + $all.code + '). Nothing changed.')) }
+      $ax = Xml $all.body
+      if (-not $ax -or -not $ax.DocumentElement -or $ax.DocumentElement.LocalName -notmatch '(?i)^InputProxyChannelList$') { return (& $done $false 'The NVR''s answer was not a channel list, so it could not be checked which camera uses the channel. Nothing changed. Run it again.') }
       $res.backup = Fix-Save $BackupDir 'nvr-channels-before.xml' $all.body
-      $used = $null; foreach ($c in (XFind (Xml $all.body) 'InputProxyChannel')) { if ([int](XText $c 'id') -eq $Channel) { $used = XText $c 'ipAddress' } }
-      $chans = @(Hik-Channels $t); $cur = $chans | Where-Object { $_.ch -eq $Channel } | Select-Object -First 1
-      if ($used -and $used -ne $CameraIp -and $cur -and $cur.online) { return (& $done $false ('Channel ' + $Channel + ' is in use by ' + $used + ' and that camera is online. Nothing changed.')) }
-      if (@($chans | Where-Object { $_.ip -eq $CameraIp -and $_.ch -ne $Channel }).Count) { return (& $done $false ($CameraIp + ' is already on another channel. Nothing changed.')) }
+      $used = $null; $listed = @()
+      foreach ($c in (XFind $ax 'InputProxyChannel')) { $cid = [int](XText $c 'id'); $cip = XText $c 'ipAddress'; $listed += [pscustomobject]@{ ch = $cid; ip = $cip }; if ($cid -eq $Channel) { $used = $cip } }
+      # the "already on another channel" check uses the list just read (2.2.13 re-read it; a failed 2nd read hid the duplicate)
+      if (@($listed | Where-Object { $_.ip -eq $CameraIp -and $_.ch -ne $Channel }).Count) { return (& $done $false ($CameraIp + ' is already on another channel. Nothing changed.')) }
+      if ($used -and $used -ne $CameraIp) {
+        # 2.2.14 (Codex 2.2.13 F3): a channel used by a DIFFERENT camera is replaced only when that camera is POSITIVELY offline:
+        # a real status list that names this channel with online=false, and the channel still shows the same camera. An
+        # unreadable status (or a channel missing from it) is not "offline" - refuse, as FixSiteDevices already does.
+        $pre = Hik-ReadChannel $t $Channel
+        if (-not $pre.ok) { return (& $done $false ('Channel ' + $Channel + ' is in use by ' + $used + ', and ' + $pre.why + ', so it is NOT known that ' + $used + ' is offline. Nothing changed (a working camera could lose its recording). Run it again.')) }
+        if (-not $pre.found -or $pre.ip -ne $used) { return (& $done $false ('Channel ' + $Channel + ' changed while it was being checked (now ' + $(if ($pre.found -and $pre.ip) { $pre.ip } else { 'nothing' }) + '). Nothing changed. Run it again.')) }
+        if (-not $pre.statusFound) { return (& $done $false ('Channel ' + $Channel + ' is in use by ' + $used + ' and the NVR does not say whether that camera is online. Nothing changed (a working camera could lose its recording).')) }
+        if ($pre.online) { return (& $done $false ('Channel ' + $Channel + ' is in use by ' + $used + ' and that camera is online. Nothing changed.')) }
+        Log ('readd: channel ' + $Channel + ' holds ' + $used + ', which the NVR reports offline - it may be replaced')
+      }
       if (-not (& $ask @('Put camera ' + $CameraIp + ' on channel ' + $Channel + ' of the NVR ' + $Ip + ' (login admin + the camera password you typed; it is not saved).', 'Backup of the channel list saved: ' + $res.backup))) { return (& $done $true 'Not confirmed - nothing changed.') }
       $res.ran = $true
       $xml = '<?xml version="1.0" encoding="UTF-8"?><InputProxyChannel version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema"><id>' + $Channel + '</id><sourceInputPortDescriptor><proxyProtocol>HIKVISION</proxyProtocol><addressingFormatType>ipaddress</addressingFormatType><ipAddress>' + $CameraIp + '</ipAddress><managePortNo>8000</managePortNo><srcInputPort>1</srcInputPort><userName>' + (Fix-Xml $NewCredential.UserName) + '</userName><password>' + (Fix-Xml (Plain $NewCredential)) + '</password><streamType>auto</streamType></sourceInputPortDescriptor></InputProxyChannel>'
@@ -233,7 +269,21 @@ function Invoke-NvrFix {
       $xml = '<?xml version="1.0" encoding="UTF-8"?><User version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema"><id>1</id><userName>admin</userName><password>' + (Fix-Xml (Plain $NewCredential)) + '</password><loginPassword>' + (Fix-Xml (Plain $t.cred)) + '</loginPassword></User>'
       $w = Http -Ip $Ip -Method 'PUT' -Path '/ISAPI/Security/users/1' -Body $xml -Credential $t.cred -Port $t.port -NoLogBody
       $xml = $null
-      if (-not (Hik-Ok $w)) { $res.history = 'Site password on ' + $Ip + ' - refused'; return (& $done $false ('The device refused the new password (answer ' + $w.code + '). The old one still works.')) }
+      if (-not (Hik-Ok $w)) {
+        # 2.2.14 (Codex 2.2.13 F7): a lost / non-OK answer is NOT proof of a refusal - the device may have applied the new password
+        # and dropped the connection. Reconcile like FixSite's Resolve-FsPwChange: try the NEW password, then the old one (one try
+        # each). Only a working old password with a failing new one is "refused"; nothing working = unknown / maybe changed.
+        $nw = Http -Ip $Ip -Path '/ISAPI/System/deviceInfo' -Credential $NewCredential -Port $t.port
+        if ($nw.code -eq 200) {
+          $res.changed += 'password'; $res.history = 'Site password set on ' + $Ip + ' (its answer was ' + $w.code + ', but the new one works)'
+          return (& $done $true ('The device''s answer was not OK (answer ' + $w.code + '), but the NEW password logs in, so the password IS changed. Update it in DW/NVR if they log in to this device.'))
+        }
+        $od = Http -Ip $Ip -Path '/ISAPI/System/deviceInfo' -Credential $t.cred -Port $t.port
+        if ($od.code -eq 200) { $res.history = 'Site password on ' + $Ip + ' - refused (old one checked: still works)'; return (& $done $false ('The device refused the new password (answer ' + $w.code + '). The old one still works (checked).')) }
+        $res.changed += 'password (unknown)'
+        $res.history = 'Site password on ' + $Ip + ' - UNKNOWN, maybe changed (answer ' + $w.code + '; neither password logged in: ' + $nw.code + '/' + $od.code + ')'
+        return (& $done $false ('UNKNOWN - the password MAY have changed: the device''s answer was ' + $w.code + ' and now neither the new nor the old password logs in (' + $nw.code + ' / ' + $od.code + '). Wait 2 minutes and try both in its web page. If the new one works, update it in every NVR/DW that records this device.'))
+      }
       $chk = Http -Ip $Ip -Path '/ISAPI/System/deviceInfo' -Credential $NewCredential -Port $t.port
       $ok = ($chk.code -eq 200); $res.changed += 'password'
       $res.history = 'Site password set on ' + $Ip + $(if ($ok) { ' (new one works)' } else { ' (new one not confirmed)' })
@@ -242,7 +292,9 @@ function Invoke-NvrFix {
     'dwpassword' {
       if ($v -ne 'DW') { return (& $done $false 'This fix is for a DW server. Nothing changed.') }
       if (-not (Dw-Login $t)) { return (& $done $false 'The DW server refused the login. Nothing changed.') }
-      $devs = @(Dw-Devices $t); $d = $devs | Where-Object { $_.ip -eq $CameraIp } | Select-Object -First 1
+      $rd = Dw-ReadDevices $t
+      if (-not $rd.ok) { return (& $done $false ('Could not read DW''s camera list (' + $rd.why + '). Nothing changed. Run it again.')) }
+      $devs = @($rd.devs); $d = $devs | Where-Object { $_.ip -eq $CameraIp } | Select-Object -First 1
       if (-not $d) { return (& $done $false ($CameraIp + ' is not in DW''s camera list. Nothing changed.')) }
       $res.backup = Fix-Save $BackupDir 'dw-cameras-before.json' ($devs | ConvertTo-Json -Depth 4)
       if (-not (& $ask @('Give DW the camera password for ' + $d.name + ' (' + $CameraIp + '), so DW stops logging in with the wrong one.', 'If the camera is LOCKED, wait until it unlocks first (Camera doctor shows the minutes).'))) { return (& $done $true 'Not confirmed - nothing changed.') }

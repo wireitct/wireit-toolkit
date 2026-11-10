@@ -244,5 +244,8 @@ finally {
   if ($mock -and -not $mock.HasExited) { Stop-Process -Id $mock.Id -Force }
   Remove-Item $logs -Recurse -Force -ErrorAction SilentlyContinue
 }
-Write-Host ("`nRESULT: " + $script:pass + ' passed, ' + $script:fail + ' failed')
+# 2.2.14 (Codex 2.2.13 test assessment): every device answer here comes from mock_devices.py, so this suite proves the module's
+# logic only. Real Hikvision / Uniview / DW / ONVIF answers are NOT checked here: declared DEFERRED (never counted as a pass).
+Write-Host 'DEFERRED real-device validation: every recorder/camera answer in this suite is a mock (mock_devices.py) - NEEDS A REAL-DEVICE CHECK'
+Write-Host ("`nRESULT: " + $script:pass + ' passed, ' + $script:fail + ' failed, 1 deferred')
 if ($script:fail) { $script:failed | ForEach-Object { Write-Host (' - ' + $_) }; exit 1 }

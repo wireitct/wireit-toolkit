@@ -181,7 +181,9 @@ $rr = {
     function script:Http {
       param([string]$Ip, [string]$Method = 'GET', [string]$Path, [string]$Body = '', [string]$ContentType = '', $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0, [byte[]]$BodyBytes = $null, [string]$OutFile = '')
       $r = { param($c, $b) [pscustomobject]@{ code = $c; body = $b; err = '' } }
-      $trk = { param($id) '<Track><id>' + $id + '</id><Channel>' + $id + '</Channel><Enable>' + $script:En[$id] + '</Enable></Track>' }
+      # 2.2.14 (Codex 2.2.13 F9): a track now needs its schedule entries to count as known (a track without them is UNKNOWN), so the
+      # stand-in carries a real schedule like a real recorder does
+      $trk = { param($id) '<Track><id>' + $id + '</id><Channel>' + $id + '</Channel><Enable>' + $script:En[$id] + '</Enable><TrackSchedule><ScheduleBlock><ScheduleAction><Actions><Record>true</Record><ActionRecordingMode>CMR</ActionRecordingMode></Actions></ScheduleAction></ScheduleBlock></TrackSchedule></Track>' }
       if ($Path -eq '/ISAPI/ContentMgmt/record/tracks') {
         $script:Reads++
         switch ($script:Mode) {
