@@ -457,7 +457,15 @@ if ($Mode -eq 'Rollback') {
           else { $ok = $true; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ': was never added'); ok = $true } }
         }
         elseif ([string]$c.nvr.action -eq 'added') { $ok = Remove-FsNvrChannel $nv $ncr ([int]$c.nvr.channel); $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' that the run added: removed'); ok = $ok } }
-        elseif ($bfile -and (Test-Path -LiteralPath $bfile)) { $w = Restore-FsNvrChannel $nv $ncr ([int]$c.nvr.channel) ([IO.File]::ReadAllText($bfile)) $pw; $ok = [bool]$w.ok; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' back exactly as it was'); ok = $ok } }
+        elseif ($bfile -and (Test-Path -LiteralPath $bfile)) {
+          # 2.2.14 (Codex 2.2.13 F8): back = video on it again from the camera the saved copy names; a DIFFERENT original camera never
+          # gets this camera's password (only one that logs in to it), otherwise its password is NOT confirmed (by hand).
+          # Restore-FsUndoChannel writes the saved copy with Restore-FsNvrChannel, then checks the video.
+          $origC = @(@($sec.password) + @($sec.known) + @($old.Keys | Where-Object { $_ -like ('*|' + (Get-FsChannelXmlIp ([IO.File]::ReadAllText($bfile)))) } | ForEach-Object { $old[$_] }) | Where-Object { $_ } | ForEach-Object { [string]$_ } | Select-Object -Unique | Select-Object -First ([int]$opts.maxPasswordTries))
+          $own = @($ip, [string]$c.ip_before, [string]$c.ip_after, [string]$(if ($c.PSObject.Properties['ip_target']) { $c.ip_target } else { '' })) | Where-Object { $_ }
+          $w = Restore-FsUndoChannel $nv $ncr ([int]$c.nvr.channel) ([IO.File]::ReadAllText($bfile)) @($own) $pw $c.brand @($origC) $(if ($MockUrl) { 6 } else { 90 })
+          $ok = [bool]$w.ok; $res += [pscustomobject]@{ text = [string]$w.text; ok = $ok }
+        }
         else { $w = Set-FsNvrChannel $nv $ncr ([int]$c.nvr.channel) ([string]$c.ip_before) $pw $c.brand '' @([string]$c.ip_after, [string]$(if ($c.PSObject.Properties['ip_target']) { $c.ip_target } else { '' })); $ok = [bool]$w.ok; $res += [pscustomobject]@{ text = $(if ($w.why) { [string]$w.why } else { 'NVR ch ' + $c.nvr.channel + ' back to ' + $c.ip_before + ' (no saved copy of the channel)' }); ok = $ok } }   # 2.2.10 (Codex R06): the camera's own addresses may be moved off
         Say-PlainWarning $nv
         if ($ok) { & $markDone ($ck + '|nvr') }
@@ -814,9 +822,18 @@ Save-Rb   # 2.2.6: the undo file exists (and can be written) before the first ch
 # =====================================================================================
 $hikFixed = @{}      # mac -> $true when the official reset set the site password
 $hikPending = @{}    # mac -> 'waiting for Hikvision's reply' / reason
+# 2.2.14 (Codex 2.2.13 F2): the reset CHANGES a camera's password, so every camera passes the recorder/channel guard first
+# (Get-FsHikResetTargets in FixSiteCore, the same selection the tests drive). A blocked camera is not reset: its reason is what the
+# camera's own line says (Still a problem, nonzero exit). The selection runs also under -MockUrl, so the guard is tested there.
+$hikSel = $null
+if ($hikFlowOk -and $Mode -ne 'DryRun') {
+  $rsCred = @{}; foreach ($k in @($nvrPw.Keys)) { $rsCred[$k] = 'known' }
+  $rsLive = { param($rn) $rbr = 'Hikvision'; $rnp = @($plan.nvrs | Where-Object { $_.ip -eq $rn -or $_.target -eq $rn }) | Select-Object -First 1; if ($rnp -and $rnp.brand) { $rbr = [string]$rnp.brand }; return [string](Test-FsLogin $rn $rbr $nvrPw[$rn]) }
+  $hikSel = Get-FsHikResetTargets $plan $rsCred $rsLive
+  foreach ($bk in @($hikSel.blocked)) { if ($bk.mac) { $hikPending[[string]$bk.mac] = [string]$bk.why }; Fs-Log ('official reset blocked for ' + $bk.ip + ': ' + $bk.why) }
+}
 if ($hikFlowOk -and $Mode -ne 'DryRun' -and -not $MockUrl) {
-  $hikT = @(); foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'reset' })) { $hikT += [pscustomobject]@{ mac = (ConvertTo-FsMac ([string]$n.mac)); ip = $n.ip; kind = 'nvr' } }
-  foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'fix' -and $_.steps -contains 'reset' -and $_.brand -eq 'Hikvision' })) { $hikT += [pscustomobject]@{ mac = (ConvertTo-FsMac ([string]$c.mac)); ip = $c.ip; kind = 'camera' } }
+  $hikT = @($hikSel.targets)
   if ($hikT.Count) {
     Say ''; Say ('----- Hikvision official password reset: ' + $hikT.Count + ' device(s) (NVR and cameras alike; no power-cycle, no reset button) -----') 'Cyan'
     $script:HkSay = { param($t, $c) if ($c) { Say $t $c } else { Say $t } }
@@ -1007,11 +1024,12 @@ foreach ($c in $ordered) {
   if (-not $stop -and ($c.steps -contains 'move') -and $c.target) {
     $net = Get-FsNet $ip $c.brand $cr
     if ($net -and $net.ip -eq $c.target -and -not $net.dhcp) { & $step ('already on ' + (Get-FsShort $c.target)) $true }
-    elseif ($net -and $c.target -ne $ip -and @(Get-FsCamRecorders $c).Count -gt 1) {
+    elseif ($net -and $c.target -ne $ip -and (Get-FsMoveBlock $c)) {
       # 2.2.12 (Codex 2.2.11 #1): a camera recorded by more than one NVR is never moved: only one NVR would be updated and checked,
       # the others would silently lose its video. The tech hears it plainly; the camera stays where it is (Still a problem).
-      $rec = @(Get-FsCamRecorders $c)
-      & $step ('NOT moved: ' + $rec.Count + ' NVRs record this camera (' + ($rec -join ', ') + '). Moving it would cut the others off. Move it by hand on every NVR, or call the office') $false
+      # 2.2.14 (Codex 2.2.13 F1): the same for more than one CHANNEL of one NVR (Get-FsMoveBlock counts recorders AND channels;
+      # its words: 'NOT moved: N NVRs record this camera' / 'N NVR channels record this camera')
+      & $step ([string](Get-FsMoveBlock $c)) $false
     }
     elseif ($net) {
       $t = $c.target
