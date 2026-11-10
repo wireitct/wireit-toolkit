@@ -456,6 +456,7 @@ if ($Mode -eq 'Rollback') {
       else {
         $ncr = Fs-Cred $nvrPwR[$nv]; $bfile = $(if ($c.nvr.PSObject.Properties['before_file'] -and [string]$c.nvr.before_file) { Join-Path $RollbackDir (([string]$c.nvr.before_file) -replace '[\\/]', [string][IO.Path]::DirectorySeparatorChar) } else { '' })
         if ([string]$c.nvr.action -eq 'refused') { $ok = $true; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ': not changed by the run (it showed another live camera)'); ok = $true } }   # 2.2.10 (Codex R06)
+        elseif ([string]($idw = Get-FsUndoNvrBlock $nv $ncr $c.nvr 'nvr_mac' 'nvr_serial')) { $ok = $false; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' NOT put back: ' + $idw + '. Nothing was written to it - check which NVR is there and put the channel back by hand'); ok = $false } }   # 2.2.16 (Codex 2.2.15 F3)
         elseif ([string]$c.nvr.action -eq 'pending' -and -not ($bfile -and (Test-Path -LiteralPath $bfile))) {
           # 2.2.7 (F01): the run stopped while it changed this channel and no saved copy exists = the channel did not exist before
           # (it was being ADDED). Removed again only when it is there and points at this camera; otherwise nothing was changed.
@@ -494,6 +495,9 @@ if ($Mode -eq 'Rollback') {
     $ncands = @(@($nvrPwR[$nip], $sec.password, $oldN) | Where-Object { $_ } | Select-Object -Unique | ForEach-Object { [pscustomobject]@{ label = 'saved at this site'; value = [string]$_ } })
     $working = Find-FsPassword $nip 'Hikvision' $ncands ([int]$opts.maxPasswordTries)
     $ok = $false
+    # 2.2.16 (Codex 2.2.15 F3): a password that logs in is not proof it is the same NVR: its MAC / serial must match the undo file first
+    $idw = $(if ($working.state -eq 'ok') { Get-FsUndoNvrBlock $nip (Fs-Cred $working.value) $np } else { '' })
+    if ($idw) { Say ('  NVR ' + $nip + ': old password NOT put back - ' + $idw + '. Nothing was written to it; check which NVR is there and do it by hand ' + $script:FsBad) 'Red'; $bad++; continue }
     if ($working.state -eq 'ok') {
       $ok = ($working.value -ceq $oldN)
       if (-not $ok) {
@@ -512,9 +516,16 @@ if ($Mode -eq 'Rollback') {
     $cr = Fs-Cred $nvrPwR[[string]$n.target]; $net = Get-FsNet ([string]$n.target) 'Hikvision' $cr; [void](Add-FsTempIp (Get-FsP3 ([string]$n.old.ip)) $pc $tempState)
     if (-not $net -and [string]$n.target -ne [string]$n.old.ip -and (Test-FsLogin ([string]$n.old.ip) 'Hikvision' $nvrPwR[[string]$n.target]) -eq 'ok') {
       # 2.2.7 (F02): the stopped run's move never took: the NVR still answers on its old address
+      # 2.2.16 (Codex 2.2.15 F3): only when the device there IS that NVR (MAC / serial); another NVR there = not confirmed
+      $idw = Get-FsUndoNvrBlock ([string]$n.old.ip) $cr $n
+      if ($idw) { Say ('  NVR ' + $n.old.ip + ': NOT confirmed back - ' + $idw + '. Nothing was written; check which NVR is there and move it back by hand ' + $script:FsBad) 'Red'; $bad++; continue }
       & $markDone ('nvrmove|' + [string]$n.ip); Say ('  NVR: still on ' + $n.old.ip + ' (the move never took) ' + $script:FsOk); continue
     }
     if (-not $net) { Say ('  NVR ' + $n.target + ': its address settings could not be read - not moved back ' + $script:FsBad) 'Red'; $bad++; continue }
+    # 2.2.16 (Codex 2.2.15 F3): the device at the moved-to address must be THAT NVR (MAC / serial in the undo file) before its address is
+    # written; another NVR there, an unreadable identity, or an older undo file without one = nothing written, NOT confirmed
+    $idw = Get-FsUndoNvrBlock ([string]$n.target) $cr $n
+    if ($idw) { Say ('  NVR ' + $n.target + ': NOT moved back to ' + $n.old.ip + ' - ' + $idw + '. Nothing was written to it; check which NVR is there and move it back by hand ' + $script:FsBad) 'Red'; $bad++; continue }
     $w = Set-FsNet ([string]$n.target) 'Hikvision' $cr $net ([string]$n.old.ip) ([string]$n.old.mask) ([string]$n.old.gw) ([string]$n.old.dns1) ([string]$n.old.dns2) -Dhcp:([bool]$n.old.dhcp)
     # 2.2.3 (Codex #20): done only when the NVR answers on its old address (after the restart it may need); DHCP = the router picks it
     if ($w.ok -and $w.reboot) { [void](Restart-FsDevice ([string]$n.target) 'Hikvision' $cr) }
@@ -879,11 +890,14 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'move' })) {
   if (-not (Test-FsBackupComplete $nbf 'Hikvision' -Nvr)) { & $nvrFail ('backup FAILED (' + $script:FsBackupWhy + ') - NVR not moved'); continue }
   $net = Get-FsNet $n.ip 'Hikvision' $cr
   if (-not $net) { & $nvrFail 'its address settings could not be read - not moved'; continue }
+  # 2.2.16 (Codex 2.2.15 F3): WHICH NVR this is (MAC / serial) goes into the undo file, so Undo never moves another NVR that takes the address
+  $nid = Get-FsNvrIdRecord $n.ip $cr
+  if (-not $nid.mac -and -not $nid.serial) { & $nvrFail 'its MAC / serial could not be read, so Undo could not check it is the same NVR later - not moved'; continue }
   $taken = @($plan.cams | ForEach-Object { [string]$_.target; [string]$_.ip }) + @($plan.nvrs | Where-Object { $_ -ne $n } | ForEach-Object { [string]$_.target; [string]$_.ip })
   $t = $(if ($n.target -eq $n.ip) { $n.ip } else { Get-FsNvrMoveTarget $n.target $plan.scheme $opts.nvrHosts $taken })   # same address = only its network settings are fixed (#30)
   if (-not $t) { & $nvrFail ('not moved: ' + $n.target + ' (and the other NVR addresses) already answer on the network'); continue }
   if ($t -ne $n.target) { Say ('NVR ' + $n.ip + ': ' + $n.target + ' is already used by another device - moving it to ' + $t + ' instead') 'Yellow'; $n.target = $t }
-  $rb.nvrs += [ordered]@{ ip = $n.ip; target = $n.target; iface = $net.iface; old = [ordered]@{ ip = $net.ip; mask = $net.mask; gw = $net.gw; dhcp = $net.dhcp; dns1 = $net.dns1; dns2 = $net.dns2 } }; Save-Rb
+  $rb.nvrs += [ordered]@{ ip = $n.ip; target = $n.target; mac = [string]$nid.mac; serial = [string]$nid.serial; iface = $net.iface; old = [ordered]@{ ip = $net.ip; mask = $net.mask; gw = $net.gw; dhcp = $net.dhcp; dns1 = $net.dns1; dns2 = $net.dns2 } }; Save-Rb
   # 2.2.7 (Codex file-by-file F02): its login is saved under the NEW address too before it moves, so a run stopped mid-move
   # still lets Undo log in there (2.2.6 saved it only after the move was verified: Undo said "no saved login")
   if (-not $sec.nvr.ContainsKey($n.target)) { $sec.nvr[$n.target] = $nvrPw[$n.ip]; Save-FsSecrets $SecretsDir $sec }
@@ -901,8 +915,11 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'password' })) {
   if (-not $nvrPw.ContainsKey($nip)) { $l = 'NVR ' + $nip + ': no NVR login, so its password was not changed ' + $script:FsBad; Say $l 'Red'; $results += $l; $badCount++; continue }
   $oldN = $nvrPw[$nip]
   if ($oldN -ceq $sitePw) { Say ('NVR ' + $nip + ': already on the site password ' + $script:FsOk) 'Green'; continue }
+  # 2.2.16 (Codex 2.2.15 F3): WHICH NVR this is goes into the undo file first; Undo checks it before it puts the old password back
+  $nid = Get-FsNvrIdRecord $nip (Fs-Cred $oldN)
+  if (-not $nid.mac -and -not $nid.serial) { $l = 'NVR ' + $nip + ': its MAC / serial could not be read, so Undo could not check it is the same NVR later - password NOT changed ' + $script:FsBad; Say $l 'Red'; $results += $l; $badCount++; continue }
   $sec.rollback[$stamp]['nvr|' + $nip] = $oldN; Save-FsSecrets $SecretsDir $sec
-  $np = [ordered]@{ ip = $nip; changed = $false }; $rb.nvr_passwords += $np; Save-Rb
+  $np = [ordered]@{ ip = $nip; changed = $false; mac = [string]$nid.mac; serial = [string]$nid.serial }; $rb.nvr_passwords += $np; Save-Rb
   $np.attempted = $true; Save-Rb
   [void](Set-FsPassword $nip 'Hikvision' (Fs-Cred $oldN) $sitePw)
   Say-PlainWarning $nip
@@ -1091,9 +1108,10 @@ foreach ($c in $ordered) {
     elseif ($nvrCred.ContainsKey($c.nvr)) {
       # 2.2.7 (Codex file-by-file F01): the channel goes into the undo file BEFORE the NVR is changed ("pending"); a run stopped
       # right after the NVR took the change still lets Undo put the channel back (its saved copy, or remove a channel it added)
-      $rbc.nvr = [ordered]@{ nvr = $c.nvr; channel = $ch; action = 'pending'; before_file = ('backup\nvr-' + $c.nvr + '-ch' + $ch + '.xml') }; Save-Rb
+      $nid = Get-FsNvrIdRecord $c.nvr $nvrCred[$c.nvr]   # 2.2.16 (Codex 2.2.15 F3): which NVR, for Undo
+      $rbc.nvr = [ordered]@{ nvr = $c.nvr; channel = $ch; action = 'pending'; before_file = ('backup\nvr-' + $c.nvr + '-ch' + $ch + '.xml'); nvr_mac = [string]$nid.mac; nvr_serial = [string]$nid.serial }; Save-Rb
       $w = Set-FsNvrChannel $c.nvr $nvrCred[$c.nvr] $ch $ip $pw $c.brand (Join-Path $runDir 'backup'); Say-PlainWarning $c.nvr
-      $rbc.nvr = [ordered]@{ nvr = $c.nvr; channel = $ch; action = $w.action; before_file = $(if ($w.before) { 'backup\nvr-' + $c.nvr + '-ch' + $ch + '.xml' } else { '' }) }; Save-Rb
+      $rbc.nvr = [ordered]@{ nvr = $c.nvr; channel = $ch; action = $w.action; before_file = $(if ($w.before) { 'backup\nvr-' + $c.nvr + '-ch' + $ch + '.xml' } else { '' }); nvr_mac = [string]$nid.mac; nvr_serial = [string]$nid.serial }; Save-Rb
       if ($w.why) { Say ('  ' + [string]$w.why) 'Red' }   # 2.2.10 (Codex R06): a channel showing another live camera is left alone, and the tech is told
       & $step ('back on NVR ch ' + $ch) ([bool]$w.ok); $c.channel = $ch
     }
@@ -1135,8 +1153,9 @@ foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'missing' })) {
       $back = $false; if ($c.listIp) { $back = Wait-FsDevice $c.listIp $c.brand $sitePw 120 }
       if ($back -and $c.nvr -and $nvrCred.ContainsKey($c.nvr) -and $c.channel) {
         # 2.2.7 (F01): this channel change gets its own undo entry first, like every other change
+        $nid = Get-FsNvrIdRecord $c.nvr $nvrCred[$c.nvr]   # 2.2.16 (Codex 2.2.15 F3): which NVR, for Undo
         $rbm = [ordered]@{ name = $c.name; mac = $c.mac; brand = $c.brand; ip_before = $c.listIp; ip_after = ''; net_before = $null; stream_before = $null; password_changed = $false; recovered = $true; backup = ''
-                           nvr = [ordered]@{ nvr = $c.nvr; channel = [int]$c.channel; action = 'pending'; before_file = ('backup\nvr-' + $c.nvr + '-ch' + [int]$c.channel + '.xml') } }
+                           nvr = [ordered]@{ nvr = $c.nvr; channel = [int]$c.channel; action = 'pending'; before_file = ('backup\nvr-' + $c.nvr + '-ch' + [int]$c.channel + '.xml'); nvr_mac = [string]$nid.mac; nvr_serial = [string]$nid.serial } }
         $rb.cameras += $rbm; Save-Rb
         $w = Set-FsNvrChannel $c.nvr $nvrCred[$c.nvr] ([int]$c.channel) $c.listIp $sitePw $c.brand (Join-Path $runDir 'backup'); $rbm.nvr.action = $w.action; if (-not $w.before) { $rbm.nvr.before_file = '' }; Save-Rb; $vid = Test-FsVideo $c.nvr $nvrCred[$c.nvr] ([int]$c.channel) $c.listIp $c.brand (Fs-Cred $sitePw); $line = Format-FsCheckLine $c.name @([pscustomobject]@{ text = ('power-cycled ' + $c.switch + ' port ' + $c.port); ok = $true }, [pscustomobject]@{ text = 'video back'; ok = $vid }) }
       elseif ($back) { $line = Format-FsCheckLine $c.name @([pscustomobject]@{ text = ('power-cycled ' + $c.switch + ' port ' + $c.port + ', answers again'); ok = $true }) }
