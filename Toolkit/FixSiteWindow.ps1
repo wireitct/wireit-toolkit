@@ -1,15 +1,35 @@
 <#
- FixSiteWindow.ps1 - WireIt Toolkit 2.0 (2.2.3: Crew is a local admin; the fix runs in the blue window on this login): the ONE screen. A site box, camera-setting drop-downs, one big "Fix this site" button.
+ FixSiteWindow.ps1 - WireIt Toolkit 2.0 (2.2.16: the Crew login is a STANDARD user - see the ELEVATION note below): the ONE screen. A site box, camera-setting drop-downs, one big "Fix this site" button.
  Returns 'classic' when the user asks for the old numbered buttons ("More tools"); anything else = done.
  The work itself runs in FixSite.ps1 (a blue window asks Windows for permission, takes the YES, and does the fixing);
  this window shows the same checklist live and says when it is waiting for you. Passwords are only ever typed in that blue window.
  2.0.2: "New site (not listed)" beside the big button: one tap at a site with no saved list, nothing to type (FixSite.ps1 -NewSite).
  Sites saved on this PC (sites\*.json, e.g. from a New site run) are in the site drop-down too.
+ ELEVATION (2.2.16, Codex 2.2.15 review): 2.2.3-2.2.15 assumed Crew is a local admin. It is NOT: the default Crew login is a standard
+ user. The blue window is still started with RunAs (unchanged behaviour). For a standard user Windows then asks for an ADMINISTRATOR's
+ name and password, and the blue window runs as THAT administrator account, not as Crew: its %USERPROFILE%, its DPAPI (current-user)
+ saved passwords, its HKCU. Whether the fix then finds the site files / vault it needs, and whether this window can read its run folder,
+ is UNVERIFIED and DEFERRED until a real test as the standard Crew login. This window now says so before it starts the blue window.
 #>
 param([string]$ToolkitDir = '', [string]$Version = '', [string]$Note = '', [string]$Screenshot = '')   # -Screenshot <file.png>: tests, draw the window to a PNG, no screen
 $ErrorActionPreference = 'Continue'
 if (-not $ToolkitDir) { $ToolkitDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
 . (Join-Path $ToolkitDir 'FixSiteCore.ps1')
+# 2.2.16 (Codex 2.2.15: Crew is a standard user): '' = this login is an admin (UAC asks Yes, same account) or not Windows / unknown;
+# 'standard' = not in the local Administrators group, so RunAs asks for ANOTHER (admin) account and the elevated window runs as it
+function Get-FsElevationKind {
+  try {
+    if ($env:OS -ne 'Windows_NT') { return '' }
+    $pr = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    if ($pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { return '' }
+    $g = @(& whoami.exe /groups /fo csv 2>$null | ConvertFrom-Csv)
+    if (-not $g.Count) { return '' }
+    $sidCol = @($g[0].PSObject.Properties.Name | Where-Object { $_ -match 'SID' }) | Select-Object -First 1
+    if (-not $sidCol) { return '' }
+    if (@($g | Where-Object { [string]$_.$sidCol -eq 'S-1-5-32-544' }).Count) { return '' }
+    return 'standard'
+  } catch { return '' }
+}
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 . (Join-Path $ToolkitDir 'HikEmailDrop.ps1')
 $psexe = Join-Path $PSHOME 'powershell.exe'
@@ -102,13 +122,16 @@ function Start-Run([string]$mode, $req, [bool]$needSite, [bool]$newSite = $false
   if (-not (Test-Path $file)) { $status.Text = 'FixSite.ps1 is missing from the Toolkit folder. Run the Toolkit installer again.'; return }
   $out.Clear(); $st.since = Get-Date; $st.runDir = ''; $st.offset = 0; $st.mode = $mode; $st.newSite = $newSite
   $hikBanner.Visible = $false
-  # 2.2.3: Crew is a local admin, so there is no background task, no question folder and no admin-only refusal: the fix runs in the
-  # blue window on this login (Windows asks Yes once), every question is asked there, and closing it stops the fix (its clean-up runs).
+  # 2.2.3 design: no background task, no question folder and no admin-only refusal: the fix runs in an elevated blue window, every
+  # question is asked there, and closing it stops the fix (its clean-up runs). 2.2.3 assumed Crew is a local admin (Windows asks Yes
+  # once, same login). 2.2.16: Crew is a STANDARD user, so Windows asks for an administrator's name + password and the blue window runs
+  # as that administrator (see ELEVATION at the top). Behaviour unchanged; the crew is told; real standard-user test DEFERRED.
   $a = '-NoProfile -ExecutionPolicy Bypass -File "' + $file + '" -Mode ' + $mode
   if ($s) { $qs = ConvertTo-FsCmdArg $s; if (-not $qs) { $status.Text = 'That site name can not be used (see the rule). Nothing ran.'; return }; $a += ' -Site ' + $qs }
   if ($newSite) { $a += ' -NewSite' }
   foreach ($e in @(ConvertTo-RunCli $req)) { if ($e) { $a += ' ' + $e } }
   $status.Text = 'A blue window opens (Windows asks permission first: click Yes). Everything you have to answer is asked there.'
+  if ((Get-FsElevationKind) -eq 'standard') { $status.Text = 'This Windows login is a standard user: Windows asks for an ADMINISTRATOR name and password. The blue window then runs as that administrator (its saved passwords and files, not this login''s). Everything you have to answer is asked there.' }
   try { $st.proc = Start-Process -FilePath $psexe -ArgumentList $a -Verb RunAs -PassThru -WorkingDirectory $ToolkitDir -ErrorAction Stop }
   catch { $status.Text = 'Windows asked for permission and it was not given, so nothing ran.'; $st.proc = $null; return }
   Set-Busy $true

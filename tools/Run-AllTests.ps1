@@ -9,6 +9,9 @@
  Exit code = number of suites that failed + number of suites with deferred checks (0 only for a real, full pass).
  2.2.15 (Codex R11): SKIP lines count as deferred; suites left out by -Portable are DEFERRED rows (and count in the exit code).
  2.2.15: Test-Repro2214 runs the reviewer's own 2.2.14 reproductions (Toolkit\tests\repro-2.2.14) against this code.
+ 2.2.16: Test-Repro2215 runs the reviewer's 2.2.15 reproductions (Toolkit\tests\repro-2.2.15). The -Portable notice for a suite left
+ out says DEFERRED (Codex 2.2.15 R11 note), and a suite that fails without printing its summary (it aborted half-way) counts as at least
+ 1 failed check, so the totals never read "0 failed" over an aborted suite (Codex 2.2.15 F7).
  2.2.12 (Codex P2-15): the Hik relay suite (appsscript\tests\hikrelay.test.js, Node) is part of the pack: it runs with node and is
  counted like any other suite; with no node on the PC it is DEFERRED (never a pass), so a broken relay can not slip through.
 #>
@@ -17,7 +20,7 @@ $ErrorActionPreference = 'Continue'
 if (-not $env:TEMP) { $env:TEMP = [IO.Path]::GetTempPath() }
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $exe = $(if ($PSVersionTable.PSEdition -eq 'Core') { (Get-Process -Id $PID).Path } else { Join-Path $PSHOME 'powershell.exe' })
-$suites = @('Toolkit\tests\Test-Repro2214.ps1', 'Toolkit\tests\Test-Fix2215Nvr.ps1', 'Toolkit\tests\Test-Fix2215Classic.ps1', 'Toolkit\tests\Test-Fix2215Site.ps1', 'Toolkit\tests\Test-Fix2214Nvr.ps1', 'Toolkit\tests\Test-Fix2214Classic.ps1', 'Toolkit\tests\Test-Fix2214Site.ps1', 'Toolkit\tests\Test-Fix2213Nvr.ps1', 'Toolkit\tests\Test-Fix2213Classic.ps1', 'Toolkit\tests\Test-Fix2213Net.ps1', 'Toolkit\tests\Test-Fix2213Site.ps1', 'Toolkit\tests\Test-Fix2212.ps1', 'Toolkit\tests\Test-Fix2212Site.ps1', 'Toolkit\tests\Test-Fix2212Nvr.ps1', 'Toolkit\tests\Test-Fix2212Net.ps1', 'Toolkit\tests\Test-Fix2211.ps1', 'Toolkit\tests\Test-Fix2210.ps1', 'Toolkit\tests\Test-Fix229.ps1', 'Toolkit\tests\Test-Fix228.ps1', 'Toolkit\tests\Test-Fix227.ps1', 'Toolkit\tests\Test-Fix226.ps1', 'Toolkit\tests\Test-Review225.ps1', 'Toolkit\tests\Test-Fix225.ps1', 'Toolkit\tests\Test-Fix224.ps1', 'Toolkit\tests\Test-Fix223.ps1', 'Toolkit\tests\Test-Fix222.ps1', 'Toolkit\tests\Test-Fix221.ps1', 'Toolkit\tests\Test-Fix22.ps1',
+$suites = @('Toolkit\tests\Test-Repro2215.ps1', 'Toolkit\tests\Test-Fix2216Nvr.ps1', 'Toolkit\tests\Test-Fix2216Classic.ps1', 'Toolkit\tests\Test-Fix2216Site.ps1', 'Toolkit\tests\Test-Repro2214.ps1', 'Toolkit\tests\Test-Fix2215Nvr.ps1', 'Toolkit\tests\Test-Fix2215Classic.ps1', 'Toolkit\tests\Test-Fix2215Site.ps1', 'Toolkit\tests\Test-Fix2214Nvr.ps1', 'Toolkit\tests\Test-Fix2214Classic.ps1', 'Toolkit\tests\Test-Fix2214Site.ps1', 'Toolkit\tests\Test-Fix2213Nvr.ps1', 'Toolkit\tests\Test-Fix2213Classic.ps1', 'Toolkit\tests\Test-Fix2213Net.ps1', 'Toolkit\tests\Test-Fix2213Site.ps1', 'Toolkit\tests\Test-Fix2212.ps1', 'Toolkit\tests\Test-Fix2212Site.ps1', 'Toolkit\tests\Test-Fix2212Nvr.ps1', 'Toolkit\tests\Test-Fix2212Net.ps1', 'Toolkit\tests\Test-Fix2211.ps1', 'Toolkit\tests\Test-Fix2210.ps1', 'Toolkit\tests\Test-Fix229.ps1', 'Toolkit\tests\Test-Fix228.ps1', 'Toolkit\tests\Test-Fix227.ps1', 'Toolkit\tests\Test-Fix226.ps1', 'Toolkit\tests\Test-Review225.ps1', 'Toolkit\tests\Test-Fix225.ps1', 'Toolkit\tests\Test-Fix224.ps1', 'Toolkit\tests\Test-Fix223.ps1', 'Toolkit\tests\Test-Fix222.ps1', 'Toolkit\tests\Test-Fix221.ps1', 'Toolkit\tests\Test-Fix22.ps1',
   'Toolkit\tests\Test-HikReset.ps1', 'Toolkit\tests\Test-FixSite.ps1', 'Toolkit\tests\Test-FixIt.ps1', 'Toolkit\tests\Test-Toolkit.ps1',
   'Toolkit\modules\NvrHealth\tests\Test-NvrHealth.ps1', 'sitecheck\tests\Test-SiteCheck.ps1')
 if ($Portable) {
@@ -26,7 +29,7 @@ if ($Portable) {
   # 2.2.6: SiteCheck draws its report with System.Drawing (GDI+), which exists only on Windows: skipped by -Portable off Windows
   if ($env:OS -ne 'Windows_NT') { $desktop += 'Test-SiteCheck.ps1' }
   $suites = @($suites | Where-Object {
-    if ((Split-Path -Leaf $_) -in $desktop) { Write-Host ('SKIP Windows-only suite: ' + $_); $false } else { $true }
+    if ((Split-Path -Leaf $_) -in $desktop) { Write-Host ('DEFERRED Windows-only suite (not run here): ' + $_); $false } else { $true }
   })
 }
 $bad = 0; $deferredSuites = 0; $rows = @()
@@ -62,6 +65,8 @@ foreach ($s in $suites) {
   $out = @()
   Push-Location (Split-Path -Parent $p); try { & $exe -NoProfile -ExecutionPolicy Bypass -File $p 2>&1 | ForEach-Object { $l = [string]$_; Write-Host $l; $out += $l }; $code = $LASTEXITCODE } finally { Pop-Location }
   $cn = Get-SuiteCounts $out; $res = Get-SuiteResult $code $cn
+  # 2.2.16 (F7): a suite that stopped before its summary line (or exits non-zero with "0 failed") is at least one failed check
+  if ($res -eq 'FAIL' -and (-not $cn.failed)) { Write-Host ('FAIL ' + $s + ' stopped without a summary line or with no failed check counted (exit ' + $code + ') - counted as 1 failed check'); $cn.failed = 1; if ($null -eq $cn.passed) { $cn.passed = 0 } }
   if ($res -eq 'FAIL') { $bad++ } elseif ($res -eq 'DEFERRED') { $deferredSuites++ }
   $rows += [pscustomobject]@{ suite = $s; result = $res; passed = $cn.passed; failed = $cn.failed; deferred = $cn.deferred; exit = $code; seconds = [int]((Get-Date) - $t0).TotalSeconds }
 }

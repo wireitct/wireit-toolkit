@@ -546,6 +546,7 @@ function Start-Fix([string]$name, [string]$mode, [string[]]$extra, [scriptblock]
   Add-Out 'Type passwords there - they are hidden and never saved. Results show up here as it works.'
   Add-Out ''
   $since = Get-Date
+  # 2.2.16: on the STANDARD Crew login RunAs asks for an administrator's name + password and this runs as that admin account (not Crew); UNVERIFIED, DEFERRED
   try { $proc = Start-Process -FilePath $TK.psexe -ArgumentList $a -Verb RunAs -PassThru -WorkingDirectory $TK.P.FixNVR -ErrorAction Stop }
   catch { Add-Out 'Windows asked for permission and it was not given, so nothing ran.'; End-Run 2 ''; return }
   $TK.run.Kind = 'console'; $TK.run.Proc = $proc; $TK.run.Mode = $mode; $TK.run.Since = $since; $TK.run.RunDir = $null; $TK.run.Offset = [long]0; $TK.run.Shown = 0; $TK.run.OnDone = $onDone

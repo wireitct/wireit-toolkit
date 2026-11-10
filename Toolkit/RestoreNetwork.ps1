@@ -176,6 +176,7 @@ function Invoke-RnOp([string]$op, $a = @{}) {
     'elevate' {
       $exe = $(if ($PSVersionTable.PSEdition -eq 'Core') { (Get-Process -Id $PID).Path } else { Join-Path $PSHOME 'powershell.exe' })
       $al = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $PSCommandPath + '" -Elevated -Auto -Adapter "' + $a.name + '" -OutFile "' + $a.out + '" -ToolkitDir "' + $ToolkitDir + '" -FixNvrState "' + $FixNvrState + '" -ReceiptDir "' + $ReceiptDir + '" -PauseFile "' + $script:RnPauseFile + '"' + $(if ($a.reset) { ' -ResetStatic' } else { '' })
+      # 2.2.16: on the STANDARD Crew login RunAs asks for an administrator's name + password and this runs as that admin account (not Crew); UNVERIFIED, DEFERRED
       try { $p = Start-Process -FilePath $exe -ArgumentList $al -Verb RunAs -WindowStyle Hidden -PassThru -ErrorAction Stop } catch { return $null }
       try { $null = $p.Handle } catch {}   # keeps the handle, so the exit code can be read later
       return $p

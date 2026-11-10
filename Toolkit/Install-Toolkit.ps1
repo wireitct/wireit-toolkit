@@ -4,7 +4,8 @@
  - makes C:\WireIt\Toolkit (logs\, previous\) and copies itself there if run from somewhere else (USB stick, Downloads)
  - copies NetCheck into C:\WireIt\NetCheck if it came along in .\bundle\NetCheck
  - desktop shortcut "WireIt Toolkit" (+ Start menu) with the WireIt icon
- - (2.2.3) Crew is a local admin: there is no SYSTEM task and no folder lock any more. Run as admin, it removes 2.2.x's "Fix this
+ - (2.2.3) no SYSTEM task and no folder lock any more (2.2.3 ASSUMED Crew is a local admin; 2.2.16: it is NOT - Crew is a standard
+   user, see the NOTE this installer prints; install behaviour unchanged). Run as admin, it removes 2.2.x's "Fix this
    site" task and folder lock (back to Windows' normal permissions) and the files only that design used, moves 2.1's saved site
    passwords into vault\, and blanks the site-password word that 2.1 logged. Safe to run again.
  - camera-discovery firewall rules (UDP answers to PowerShell from the local network + SADP 37020) when run as admin and missing
@@ -101,11 +102,17 @@ if (-not (Get-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue
 $hitPaths = @((Join-Path ${env:ProgramFiles(x86)} 'HiToolsDelivery\client\HiToolsDelivery.exe'), (Join-Path $env:ProgramFiles 'HiToolsDelivery\client\HiToolsDelivery.exe'), 'C:\Program Files (x86)\HiToolsDelivery\client\HiToolsDelivery.exe', 'C:\Program Files\HiToolsDelivery\client\HiToolsDelivery.exe') | Where-Object { $_ } | Select-Object -Unique
 if (-not @($hitPaths | Where-Object { Test-Path $_ }).Count) { 'NOTE: HiTools Delivery (Hikvision''s free tool) is not installed. Button 4 needs it: hikvision.com > Support > Tools > HiTools Delivery.' }
 foreach ($t in 'FixNVR\FixNVR.ps1', 'CamReset\Find-Cameras.ps1', 'NetCheck\NetCheck.ps1') { if (-not (Test-Path (Join-Path $Root $t))) { 'MISSING: ' + (Join-Path $Root $t) + ' (copy the whole C:\WireIt folder from the old PC)' } }
-# ---------------- 2.2.3: no SYSTEM task, no folder lock (Crew is a local admin); the password vault stays ----------------
+# ---------------- 2.2.3: no SYSTEM task, no folder lock (2.2.3 assumed Crew is a local admin - it is a standard user, see below) ----------------
+# 2.2.16 (Codex 2.2.15 review): the Crew login is a STANDARD user. The elevated tools (Fix this site's blue window, Fix NVR, Restore
+# Network) are started with RunAs, so on a Crew login Windows asks for an administrator's name and password and they run as that admin
+# account (its DPAPI saved passwords, its profile), not as Crew. Install behaviour is NOT changed here; the note below says so, and the
+# real standard-Crew-login test is DEFERRED.
+'NOTE (2.2.16): the Crew login is a standard Windows user. Fix this site / Fix NVR / Restore Network ask Windows for an ADMINISTRATOR name and password there and then run as that administrator. Test once on the real Crew login before handing the PC over.'
 if (-not $adm) { 'NOTE: run this installer as administrator once to remove 2.2.x''s "Fix this site" task and folder lock if this PC had them.' }
 else {
   # 1)-2) 2.2.4: the SYSTEM task, the IPC folder, the old files and the old folder lock come off (logged); vault\ and secrets\ stay
   # locked to Administrators + SYSTEM + you, and each local admin user can read the upload key without elevation (#26). See ToolkitMigrate.ps1.
+  # (2.2.16: a STANDARD Crew login is not a local admin user, so that #26 sentence does not cover Crew - UNVERIFIED, DEFERRED)
   try {
     . (Join-Path $tk 'ToolkitMigrate.ps1')
     $mr = Invoke-TkMigration -Root $Root -ToolkitDir $tk -OwnerSid ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)

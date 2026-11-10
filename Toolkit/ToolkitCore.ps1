@@ -286,9 +286,25 @@ function Undo-TkUpdate([string]$toolkitDir) {
   # old/new Toolkit never stays. The journal has the same shape as an update's (prev/from/to/added) plus kind = 'undo'.
   $journal = Join-Path $P.Previous 'update-pending.json'
   if (Test-Path -LiteralPath $journal) { throw 'An earlier update or Go back is still half-way. Close the Toolkit and open it again first (it finishes that on start).' }
-  Write-TkJournal ([ordered]@{ kind = 'undo'; prev = $prev; from = [string]$cur.version; to = [string]$cur.previous; added = @($u.added | Where-Object { $_ -and (Test-TkManifestPath $_) }); skip = [string]$cur.version; at = (Get-Date -Format 's') }) $journal
+  # 2.2.16 (Codex 2.2.15 F2): the "do not re-install the version we are leaving" marker is saved (and read back) FIRST, before the
+  # journal and before any file is swapped. The saved copy holds an OLDER ToolkitRecover.ps1 that does not know kind = undo / skip,
+  # so a Go back stopped after that file was swapped is finished by the old loader: the marker must already be on disk by then.
+  $skipPath = Join-Path $toolkitDir 'skip-version.txt'
+  $skipBefore = $null; if (Test-Path -LiteralPath $skipPath) { try { $skipBefore = [IO.File]::ReadAllText($skipPath) } catch {} }
+  Write-TkSkipVersion $toolkitDir ([string]$cur.version)
+  # from/to keep the UPDATE meaning (from = the version that gets put back, to = the version being left) so an older loader that
+  # finishes this journal names the right versions; back/left are the Go back names the new loader uses.
+  try {
+    Write-TkJournal ([ordered]@{ kind = 'undo'; prev = $prev; from = [string]$cur.previous; to = [string]$cur.version; back = [string]$cur.previous; left = [string]$cur.version; added = @($u.added | Where-Object { $_ -and (Test-TkManifestPath $_) }); skip = [string]$cur.version; at = (Get-Date -Format 's') }) $journal
+  } catch {
+    try { if ($null -ne $skipBefore) { [IO.File]::WriteAllText($skipPath, $skipBefore) } else { Remove-Item -LiteralPath $skipPath -Force -ErrorAction SilentlyContinue } } catch {}
+    throw
+  }
   $bad = @()
-  foreach ($fi in @(Get-ChildItem -LiteralPath $prev -Recurse -File | Where-Object { $_.Name -notin @('undo.json', 'version.json.prev') })) {
+  # the loader (ToolkitRecover.ps1) is swapped LAST of the files, so most stops leave the new loader in place to finish the Go back
+  $files = @(Get-ChildItem -LiteralPath $prev -Recurse -File | Where-Object { $_.Name -notin @('undo.json', 'version.json.prev') })
+  $files = @($files | Where-Object { $_.Name -ne 'ToolkitRecover.ps1' }) + @($files | Where-Object { $_.Name -eq 'ToolkitRecover.ps1' })
+  foreach ($fi in $files) {
     $rel = $fi.FullName.Substring($prev.Length).TrimStart('\', '/')
     $dst = Join-Path $P.Root $rel
     try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null; Copy-TkAtomicFile $fi.FullName $dst; if ((Get-TkSha256 $dst) -ne (Get-TkSha256 $fi.FullName)) { $bad += $rel } } catch { $bad += $rel }
@@ -298,8 +314,8 @@ function Undo-TkUpdate([string]$toolkitDir) {
   if ($bad.Count) { throw ('Going back did not finish: ' + ($bad -join ', ') + ' could not be put back (locked or not allowed). The Toolkit is half-way between versions; the next time it opens it tries to finish going back. Run it as an admin.') }
   $vp = Join-Path $prev 'version.json.prev'
   if (Test-Path $vp) { Copy-TkAtomicFile $vp (Join-Path $toolkitDir 'version.json') }
-  # stop the next start from re-installing the version we just left
-  $cfgPath = Join-Path $toolkitDir 'skip-version.txt'; Set-Content -Path $cfgPath -Value ([string]$cur.version)
+  # the next start does not re-install the version we just left: the marker was saved before the first swap (2.2.16 F2)
+  if ((Get-TkSkipVersion $toolkitDir) -ne [string]$cur.version) { Write-TkSkipVersion $toolkitDir ([string]$cur.version) }
   Remove-Item -LiteralPath $journal -Force -ErrorAction Stop
   return [string]$cur.previous
 }
@@ -316,6 +332,19 @@ function Write-TkJournal($obj, [string]$path) {
   if (-not $chk -or [string]$chk.prev -ne [string]$obj.prev) { throw 'Could not save the Go back journal. Nothing was changed.' }
 }
 
+# 2.2.16 (F2): the skip marker is written to a temp file, flushed, moved into place and read back; a failure stops the Go back
+function Write-TkSkipVersion([string]$toolkitDir, [string]$version) {
+  $path = Join-Path $toolkitDir 'skip-version.txt'
+  $tmp = $path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+  try {
+    [IO.File]::WriteAllText($tmp, $version)
+    $fs = [IO.File]::Open($tmp, 'Open', 'Write', 'None'); try { $fs.Flush($true) } finally { $fs.Dispose() }
+    if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }
+    [IO.File]::Move($tmp, $path)
+  } catch { throw ('Could not save the "do not re-install ' + $version + '" note. Nothing was changed.') }
+  finally { if ([IO.File]::Exists($tmp)) { [IO.File]::Delete($tmp) } }
+  if ((Get-TkSkipVersion $toolkitDir) -ne $version) { throw ('Could not save the "do not re-install ' + $version + '" note. Nothing was changed.') }
+}
 function Get-TkSkipVersion([string]$toolkitDir) { $p = Join-Path $toolkitDir 'skip-version.txt'; if (Test-Path $p) { return (Get-Content $p -Raw).Trim() } ; return '' }
 
 # ---------------- passwords ----------------

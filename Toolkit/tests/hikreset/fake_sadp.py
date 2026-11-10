@@ -5,6 +5,8 @@ devices.json: [{mac, ip, mask, gw, serial, model, activated, kind, boot, code, u
   code   = what the device gives when asked for its request code (base64, starts AwAAA = 03 00 00 00)
   unlock = what Hikvision's reply file must contain for the device to accept the reset
 State changes are written to <devices.json>.state.json so a test can read what the device did.
+2.2.16 (Codex 2.2.15 F7): the state file is written whole to a temp file and moved into place (never a truncated/half file), and it is
+written BEFORE the device answers, so a test that reads it right after the answer always sees the change.
 """
 import json, socket, sys, re, os, base64
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -13,7 +15,10 @@ port = int(sys.argv[1]); path = sys.argv[2]
 devs = json.load(open(path, encoding='utf-8-sig')); statep = path + '.state.json'
 log = []
 def save():
-    json.dump({'devices': devs, 'log': log}, open(statep, 'w'), indent=1)
+    tmp = statep + '.%d.tmp' % os.getpid()
+    with open(tmp, 'w') as fh:
+        json.dump({'devices': devs, 'log': log}, fh, indent=1); fh.flush(); os.fsync(fh.fileno())
+    os.replace(tmp, statep)   # atomic: a reader sees the old whole file or the new whole file
 def tag(x, n):
     m = re.search(r'<%s>([^<]*)</%s>' % (n, n), x); return m.group(1) if m else ''
 CURUUID = ['X']
@@ -32,10 +37,11 @@ while True:
     x = data.decode('utf8', 'ignore'); ty = tag(x, 'Types'); mac = tag(x, 'MAC').lower()
     if '<Probe>' not in x: continue
     CURUUID[0] = tag(x, 'Uuid') or 'X'
-    def send(t): s.sendto(t.encode(), addr)
     if ty in ('inquiry', 'inquiry_v32'):
-        for d in devs: send(probe_match(d, ty))
+        for d in devs: s.sendto(probe_match(d, ty).encode(), addr)
         continue
+    out = []
+    def send(t): out.append(t)   # answers are held until the state is saved (F7)
     for d in devs:
         if d['mac'] != mac: continue
         log.append({'type': ty, 'mac': mac})
@@ -44,7 +50,7 @@ while True:
             n, e = minicrypto.load_rsa_public_der(base64.b64decode(tag(x, 'Code')))
             d['_sess'] = os.urandom(16).hex()
             ct = minicrypto.rsa_pkcs1v15_encrypt(n, e, d['_sess'].encode())
-            send(probe_match(d, ty, '<Result>success</Result><Code>%s</Code>' % base64.b64encode(ct).decode())); save(); continue
+            send(probe_match(d, ty, '<Result>success</Result><Code>%s</Code>' % base64.b64encode(ct).decode())); continue
         if d.get('real') and ty == 'reset':
             ok = False
             try:
@@ -55,7 +61,7 @@ while True:
                 if ok: d['activated'] = True; d['password'] = pt[16:].rstrip(b'\0').decode()
             except Exception as e: log.append({'err': str(e)})
             log[-1].update({'result': 'success' if ok else 'failed', 'form': 'reset'})
-            send(probe_match(d, ty, '<Result>%s</Result>' % ('success' if ok else 'failed'))); save(); continue
+            send(probe_match(d, ty, '<Result>%s</Result>' % ('success' if ok else 'failed'))); continue
         if ty in d.get('codeTypes', ['getcode']) and d['activated']:
             send(probe_match(d, ty, '<Code>%s</Code>' % d['code']))
         elif ty in d.get('importTypes', ['resetPassword']):
@@ -74,4 +80,6 @@ while True:
             if ok: d['ip'] = tag(x, 'IPv4Address') or d['ip']; d['mask'] = tag(x, 'IPv4SubnetMask') or d['mask']; d['gw'] = tag(x, 'IPv4Gateway') or d['gw']
             send(probe_match(d, ty, '<Result>%s</Result>' % ('success' if ok else 'failure')))
         save()
+    save()
+    for t in out: s.sendto(t.encode(), addr)
 save()

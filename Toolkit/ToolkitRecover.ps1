@@ -18,7 +18,20 @@ function Invoke-TkStartupRecovery([string]$toolkitDir) {
   $j = $null; try { $j = [IO.File]::ReadAllText($journal) | ConvertFrom-Json -ErrorAction Stop } catch {}
   if (-not $j -or -not $j.prev -or -not (Test-Path -LiteralPath ([string]$j.prev))) { throw 'An earlier update stopped half-way and its saved copy is missing. Run the Toolkit installer again.' }
   $prev = [string]$j.prev; $bad = @()
-  foreach ($fi in @(Get-ChildItem -LiteralPath $prev -Recurse -File | Where-Object { $_.Name -notin @('undo.json', 'version.json.prev') })) {
+  $isUndo = ($j.PSObject.Properties['kind'] -and [string]$j.kind -eq 'undo')
+  # 2.2.16 (Codex 2.2.15 F2): the "do not re-install" marker of a Go back is saved BEFORE any file is put back (Undo-TkUpdate saved it
+  # first too), so it can not be lost if this start is stopped as well
+  if ($isUndo -and $j.PSObject.Properties['skip'] -and [string]$j.skip) {
+    $sp = Join-Path $toolkitDir 'skip-version.txt'; $have = ''; try { if (Test-Path -LiteralPath $sp) { $have = ([IO.File]::ReadAllText($sp)).Trim() } } catch {}
+    if ($have -ne [string]$j.skip) {
+      try { [IO.File]::WriteAllText($sp, [string]$j.skip) } catch {}
+      $have = ''; try { $have = ([IO.File]::ReadAllText($sp)).Trim() } catch {}
+      if ($have -ne [string]$j.skip) { throw ('An earlier Go back stopped half-way and the "do not re-install ' + $j.skip + '" note could not be saved. Run the Toolkit installer again.') }
+    }
+  }
+  $files = @(Get-ChildItem -LiteralPath $prev -Recurse -File | Where-Object { $_.Name -notin @('undo.json', 'version.json.prev') })
+  $files = @($files | Where-Object { $_.Name -ne 'ToolkitRecover.ps1' }) + @($files | Where-Object { $_.Name -eq 'ToolkitRecover.ps1' })
+  foreach ($fi in $files) {
     $rel = $fi.FullName.Substring($prev.Length).TrimStart('\', '/')
     $dst = Join-Path $root $rel
     try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) -ErrorAction Stop | Out-Null; Copy-TkAtomicFile $fi.FullName $dst } catch { $bad += $rel }
@@ -32,10 +45,12 @@ function Invoke-TkStartupRecovery([string]$toolkitDir) {
   try { if (Test-Path -LiteralPath $vp) { Copy-TkAtomicFile $vp (Join-Path $toolkitDir 'version.json') } } catch { $bad += 'version.json' }
   # 2.2.15 (Codex 2.2.14 R8): a "Go back" (kind = undo) that stopped half-way is FINISHED the same way: every saved old file back,
   # the update's added files removed, the old version number back, and the version we left is not re-installed on its own
-  $isUndo = ($j.PSObject.Properties['kind'] -and [string]$j.kind -eq 'undo')
   if ($bad.Count) { throw ('An earlier ' + $(if ($isUndo) { 'Go back' } else { 'update' }) + ' could not be put back: ' + ($bad -join ', ') + '. Run the Toolkit installer again.') }
-  if ($isUndo -and $j.PSObject.Properties['skip'] -and [string]$j.skip) { try { [IO.File]::WriteAllText((Join-Path $toolkitDir 'skip-version.txt'), [string]$j.skip) } catch {} }
   Remove-Item -LiteralPath $journal -Force -ErrorAction Stop
-  if ($isUndo) { return ('An earlier Go back to version ' + $j.to + ' stopped half-way. It was finished now: version ' + $j.to + ' is back in place.') }
+  if ($isUndo) {
+    # 2.2.16: back/left name the versions; a 2.2.15 journal (no back) had to = the version put back
+    $back = ''; if ($j.PSObject.Properties['back'] -and [string]$j.back) { $back = [string]$j.back } else { $back = [string]$j.to }
+    return ('An earlier Go back to version ' + $back + ' stopped half-way. It was finished now: version ' + $back + ' is back in place.')
+  }
   return ('An earlier update to ' + $j.to + ' stopped half-way, so version ' + $j.from + ' was put back.')
 }

@@ -23,7 +23,11 @@ $logLines = New-Object System.Collections.ArrayList
 $script:SadpLog = { param($l) [void]$logLines.Add($l) }
 $script:HkSay = { param($t, $c) [void]$logLines.Add($t) }
 
-function Start-Py([string[]]$a) { $script:lastPyErr = (Join-Path $tmp ('py' + (Get-Random) + '.err')); $sp = @{ FilePath = $py; ArgumentList = $a; PassThru = $true; RedirectStandardError = $script:lastPyErr }; if ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows) { $sp.WindowStyle = 'Hidden' }; return (Start-Process @sp) }
+# 2.2.16 (Codex 2.2.15 F7): every helper process this suite starts is remembered and stopped in the final 'finally', even when a check
+# throws half-way (an orphaned fake device kept the pack's output stream open and stalled the runner)
+$script:kids = New-Object System.Collections.ArrayList
+function Start-Py([string[]]$a) { $script:lastPyErr = (Join-Path $tmp ('py' + (Get-Random) + '.err')); $sp = @{ FilePath = $py; ArgumentList = $a; PassThru = $true; RedirectStandardError = $script:lastPyErr }; if ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows) { $sp.WindowStyle = 'Hidden' }; $pr = Start-Process @sp; if ($pr) { [void]$script:kids.Add($pr) }; return $pr }
+function Stop-AllKids { foreach ($k in @($script:kids)) { try { if ($k -and -not $k.HasExited) { $k.Kill(); [void]$k.WaitForExit(5000) } } catch {} } }
 function Start-Fake([object[]]$devs, [int]$port) {
   $f = Join-Path $tmp ('devs' + $port + '.json'); ($devs | ConvertTo-Json -Depth 5) | Set-Content $f -Encoding UTF8
   $p = Start-Py @((Join-Path $fx 'fake_sadp.py'), $port, $f)
@@ -32,8 +36,17 @@ function Start-Fake([object[]]$devs, [int]$port) {
   if (-not $ok) { $er = ''; try { $er = (Get-Content -Raw $script:lastPyErr -ErrorAction SilentlyContinue) } catch {}; Write-Host ('  the fake devices did not start (' + $py + '): ' + $er) -ForegroundColor Red }
   return [pscustomobject]@{ proc = $p; file = $f; port = $port; started = $ok }
 }
-function Stop-Fake($fk) { Set-Content ($fk.file + '.stop') '1'; Start-Sleep -Milliseconds 800; try { if (-not $fk.proc.HasExited) { $fk.proc.Kill() } } catch {} }
-function Fake-State($fk) { Get-Content ($fk.file + '.state.json') -Raw | ConvertFrom-Json }
+function Stop-Fake($fk) { if (-not $fk) { return }; try { Set-Content ($fk.file + '.stop') '1' } catch {}; try { if (-not $fk.proc.WaitForExit(3000)) { $fk.proc.Kill(); [void]$fk.proc.WaitForExit(5000) } } catch {} }
+# 2.2.16 (F7): fake_sadp.py now writes its state file atomically before it answers; the reader still retries (up to ~3 s) so a slow
+# disk or a half-replaced file on some file system is never read as "no state" (null) or a parse error
+function Fake-State($fk) {
+  $sf = $fk.file + '.state.json'; $last = ''
+  for ($i = 0; $i -lt 30; $i++) {
+    try { $t = [IO.File]::ReadAllText($sf); if ($t.Trim()) { $o = $t | ConvertFrom-Json -ErrorAction Stop; if ($o -and $o.devices) { return $o } } } catch { $last = $_.Exception.Message }
+    Start-Sleep -Milliseconds 100
+  }
+  throw ('the fake devices'' state file could not be read: ' + $sf + ' ' + $last)
+}
 function Dev([string]$mac, [string]$ip, [string]$sn, [string]$model, [bool]$act, [string]$kind, [int]$seed, [string]$boot = '2026-11-05 19:09:38', [string[]]$ct = @('getcode'), [string[]]$it = @('resetPassword')) {
   @{ mac = $mac; ip = $ip; mask = '255.255.255.0'; gw = ($ip -replace '\.\d+$', '.1'); serial = $sn; model = $model; activated = $act; kind = $kind; boot = $boot; code = (New-Code $seed); unlock = (New-Code ($seed + 500)); codeTypes = $ct; importTypes = $it; password = '' }
 }
@@ -45,9 +58,10 @@ $devs = @(
   (Dev 'c0-6d-ed-d4-60-aa' '192.168.1.64' $SN_C3 'ECI-T44F2' $false 'camera' 4)
 )
 $port = 39000 + (Get-Random -Maximum 900)
+$fk = $null; $fk2 = $null
+try {
 $fk = Start-Fake $devs $port
 $script:SadpTest = '127.0.0.1:' + $port
-try {
 Write-Host '1. SADP'
 Check ([bool]$py) ('a real Python was found for the fake devices (' + $py + ')')
 Check $fk.started 'the fake devices started (fake_sadp.py needs only the standard library; 2.2.4 needed the cryptography package)'
@@ -345,7 +359,7 @@ Check ($all -notmatch [regex]::Escape($devs[1].unlock) -and $all -notmatch [rege
 } finally {
   if ($s) { try { Stop-HikBrowserSession $s } catch {} }
   if ($fixtureServer) { try { if (-not $fixtureServer.HasExited) { $fixtureServer.Kill(); $fixtureServer.WaitForExit() } } catch {} }
-  Stop-Fake $fk; try { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue } catch {}
+  Stop-Fake $fk; Stop-Fake $fk2; Stop-AllKids; try { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue } catch {}
 }
 Write-Host ''
 Write-Host ($script:pass.ToString() + ' passed, ' + $script:fail + ' failed')
