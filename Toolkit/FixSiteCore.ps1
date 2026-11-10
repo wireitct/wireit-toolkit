@@ -646,9 +646,27 @@ function Get-FsNvrNetProblems($net, $pc) {
 # scan found pointing at it. More than one = the camera's address is not changed by the tool (only one NVR would follow it).
 function Get-FsCamRecorders($c) {
   $out = @(); $mn = [string](Get-FsProp $c 'nvr' ''); if ($mn) { $out += $mn }
-  $ln = [string](Get-FsProp $c 'listNvr' ''); if ($ln -and $out -notcontains $ln) { $out += $ln }
-  foreach ($l in @(Get-FsProp $c 'links' @())) { if (-not $l) { continue }; $v = [string](Get-FsProp $l 'nvr' ''); if ($v -and $out -notcontains $v) { $out += $v } }
+  $ln = [string](Get-FsProp $c 'listNvr' '')
+  # 2.2.13: the list's NVR that this run moved to a new address is the SAME recorder (its main NVR now), not a second one
+  # (the scan's own channel links name it by the address it had at the scan too)
+  $orig = [string](Get-FsProp $c 'nvrOriginal' '')
+  if ($ln -and $mn -and $ln -eq $orig) { $ln = $mn }
+  if ($ln -and $out -notcontains $ln) { $out += $ln }
+  foreach ($l in @(Get-FsProp $c 'links' @())) { if (-not $l) { continue }; $v = [string](Get-FsProp $l 'nvr' ''); if ($v -and $mn -and $v -eq $orig) { $v = $mn }; if ($v -and $out -notcontains $v) { $out += $v } }
   return $out
+}
+# 2.2.13 (Codex 2.2.12 #1): may this camera's password be changed? '' = yes; otherwise the plain reason it is not.
+# Only ONE recorder can be updated and checked by the tool (its main NVR channel); every recorder of the camera must be that one,
+# with a known login. Whether it answers right now is checked by the caller (a live login).
+function Get-FsPwChangeBlock($c, $recorders, $nvrCred) {
+  $recs = @($recorders | Where-Object { $_ })
+  if ($recs.Count -gt 1) { return ('password not changed: ' + $recs.Count + ' NVRs record this camera (' + ($recs -join ', ') + ', counting the NVR the site list names) - only one could be updated and checked, the others would lose its video. Change it on all of them by hand, or call the office') }
+  if ($recs.Count -eq 1) {
+    $r = [string]$recs[0]
+    if (-not $nvrCred -or -not $nvrCred.ContainsKey($r)) { return ('password not changed: NVR ' + $r + ' records this camera and its login is unknown (or it did not answer) - it could not be updated and checked') }
+    if ([string](Get-FsProp $c 'nvr' '') -ne $r -or @(Get-FsProp $c 'steps' @()) -notcontains 'nvr') { return ('password not changed: NVR ' + $r + ' records this camera but is not the one this run updates - change it by hand') }
+  }
+  return ''
 }
 function Get-FsCamMatchKey($c) {
   # 2.2.12 (Codex 2.2.11 #12, F19): the same camera without a MAC: same serial on the same NVR channel; no serial either: the same NVR
