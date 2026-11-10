@@ -58,6 +58,8 @@ function Set-NvrState($d, $st) {
   if ($st.login -ne 'ok') { $d.login = $st.login; return }
   $d.login = 'ok'; $d.brand = 'hik'; $d.kind = 'nvr'; $d.addressing = 'static'; $d.mask = '255.255.255.0'; $d.gw = '192.168.1.1'; $d.dns1 = '8.8.8.8'; $d.dns2 = '1.1.1.1'; $d.net_xml = '<IPAddress/>'
   $d.platform_enabled = $st.platform_enabled; $d.platform_online = $st.platform_online
+  # 2.2.14 (Codex F4): the real Hik-Read now marks each read that answered; this stand-in reader marks them the same way
+  SetP $d 'net_read' $true; SetP $d 'platform_read' $true
   if ($st.cams) { $l = New-Object System.Collections.Generic.List[object]; $i = 0; foreach ($c in $st.cams) { $i++; $l.Add([pscustomobject]@{ id = [string]$i; ip = ''; port = ''; protocol = 'HIKVISION'; online = $c; poe = $false }) }; $d.channels = $l }
 }
 function Read-Dev($d) {

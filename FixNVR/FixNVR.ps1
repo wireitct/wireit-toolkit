@@ -551,6 +551,25 @@ function XGet($doc, [string]$path) { $n = XNode $doc.DocumentElement $path; if (
 function XSet($doc, [string]$path, [string]$v) { $n = XNode $doc.DocumentElement $path -Create; $n.InnerText = $v }
 
 # ---------------- Hikvision (ISAPI) ----------------
+# 2.2.14 (Codex F4): set a field even on a device object made before the field existed
+function SetP($o, [string]$name, $value) { if ($o.PSObject.Properties[$name]) { $o.$name = $value } else { $o | Add-Member -NotePropertyName $name -NotePropertyValue $value } }
+# 2.2.14 (Codex F4): only a real EZVIZ answer fills the platform fields. A failed or unparseable read = unknown ($null), never the old value.
+function Set-FnHikPlatform($dev, $ez) {
+  $ok = [bool]($ez -and $ez.code -eq 200 -and ([string]$ez.body) -match '<(\w+:)?EZVIZ[\s>/]')
+  SetP $dev 'platform_read' $ok
+  if (-not $ok) { $dev.platform_enabled = $null; $dev.platform_online = $null; return $false }
+  $dev.platform_xml = $ez.body
+  $en = XVal $ez.body 'enabled'; $rs = XVal $ez.body 'registerStatus'
+  $dev.platform_enabled = $(if ($en -eq 'true') { $true } elseif ($en -eq 'false') { $false } else { $null })
+  $dev.platform_online = $(if ($rs -eq 'true') { $true } elseif ($rs -eq 'false') { $false } else { $null })
+  $dev.platform_has_code = [bool](XVal $ez.body 'verificationCode')
+  return $true
+}
+# 2.2.14 (Codex F4): before the after-fix reread, forget everything the earlier read filled, so nothing from before the fix can pass as checked
+function Clear-FnReadState($dev) {
+  foreach ($k in 'login','model','serial','firmware','mask','gw','dns1','dns2','addressing','net_xml','net_json','dns_json','platform_xml','platform_json') { SetP $dev $k '' }
+  foreach ($k in 'platform_enabled','platform_online','platform_has_code','platform_read','net_read','dns_read','channels','channels_read','status_read') { SetP $dev $k $null }
+}
 function Hik-Read($dev) {
   $cred = Cred-For $dev
   $d = Http $dev.ip 'GET' '/ISAPI/System/deviceInfo' '' 'application/xml' $cred
@@ -564,15 +583,20 @@ function Hik-Read($dev) {
   foreach ($mm in [regex]::Matches($ifs.body, '(?s)<NetworkInterface[ >].*?</NetworkInterface>')) { if ((XVal $mm.Value 'ipAddress') -eq $dev.ip) { $ifid = XVal $mm.Value 'id'; break } }
   $dev.if_id = $ifid
   $ipx = Http $dev.ip 'GET' ('/ISAPI/System/Network/interfaces/' + $ifid + '/ipAddress') '' 'application/xml' $cred
+  # 2.2.14 (Codex F4): each settings read is tracked on its own; a failed read is "not read", never the old value
+  SetP $dev 'net_read' $false
   if ($ipx.code -eq 200) {
-    $dev.net_xml = $ipx.body
-    $doc = [xml]$ipx.body
-    $dev.addressing = XGet $doc 'addressingType'; $dev.mask = XGet $doc 'subnetMask'; $dev.gw = XGet $doc 'DefaultGateway/ipAddress'
-    $dev.dns1 = XGet $doc 'PrimaryDNS/ipAddress'; $dev.dns2 = XGet $doc 'SecondaryDNS/ipAddress'
+    $doc = $null; try { $doc = [xml]$ipx.body } catch { Log ('network settings answer could not be read: ' + $_.Exception.Message) }
+    if ($doc -and $doc.DocumentElement -and $doc.DocumentElement.LocalName -eq 'IPAddress') {
+      $dev.net_xml = $ipx.body
+      $dev.addressing = XGet $doc 'addressingType'; $dev.mask = XGet $doc 'subnetMask'; $dev.gw = XGet $doc 'DefaultGateway/ipAddress'
+      $dev.dns1 = XGet $doc 'PrimaryDNS/ipAddress'; $dev.dns2 = XGet $doc 'SecondaryDNS/ipAddress'
+      SetP $dev 'net_read' $true
+    }
   }
   if ($dev.kind -eq 'nvr') {
     $ez = Http $dev.ip 'GET' '/ISAPI/System/Network/EZVIZ' '' 'application/xml' $cred
-    if ($ez.code -eq 200) { $dev.platform_xml = $ez.body; $dev.platform_enabled = ((XVal $ez.body 'enabled') -eq 'true'); $dev.platform_online = ((XVal $ez.body 'registerStatus') -eq 'true'); $dev.platform_has_code = [bool](XVal $ez.body 'verificationCode') }
+    [void](Set-FnHikPlatform $dev $ez)
     $chs = Http $dev.ip 'GET' '/ISAPI/ContentMgmt/InputProxy/channels' '' 'application/xml' $cred
     $st = Http $dev.ip 'GET' '/ISAPI/ContentMgmt/InputProxy/channels/status' '' 'application/xml' $cred
     $online = @{}; foreach ($mm in [regex]::Matches($st.body, '(?s)<InputProxyChannelStatus[ >].*?</InputProxyChannelStatus>')) { $online[(XVal $mm.Value 'id')] = ((XVal $mm.Value 'online') -eq 'true') }
@@ -630,9 +654,11 @@ function Unv-Read($dev) {
   $dev.firmware = $x.FirmwareVersion; if ($x.Netmask) { $dev.mask = $x.Netmask }; if ($x.Gateway) { $dev.gw = $x.Gateway }
   if ($dev.model -match '(?i)^NVR|^VMS|^DVR') { $dev.kind = 'nvr' } elseif (-not $dev.kind) { $dev.kind = 'camera' }
   if ($dev.kind -eq 'nvr') {
-    $n = Http $dev.ip 'GET' $cfg.uniview.net_path '' 'application/json' $cred; if ($n.code -eq 200) { $dev.net_json = $n.body }
-    $dn = Http $dev.ip 'GET' $cfg.uniview.dns_path '' 'application/json' $cred; if ($dn.code -eq 200) { $dev.dns_json = $dn.body; $dd = Unv-Data $dn.body; $vals = @(Find-JsonVals $dd '(?i)dns'); if ($vals.Count) { $dev.dns1 = $vals[0]; if ($vals.Count -gt 1) { $dev.dns2 = $vals[1] } } }
-    if ($cfg.uniview.cloud_path) { $cl = Http $dev.ip 'GET' $cfg.uniview.cloud_path '' 'application/json' $cred; if ($cl.code -eq 200) { $dev.platform_json = $cl.body; $cd = Unv-Data $cl.body; $en = @(Find-JsonVals $cd '(?i)^enable'); if ($en.Count) { $dev.platform_enabled = ([string]$en[0] -match '^(1|true)$') } } }
+    # 2.2.14 (Codex F4): network, DNS and EZCloud reads are each tracked; a failed read leaves the field unknown, not the old value
+    SetP $dev 'net_read' $false; SetP $dev 'dns_read' $false; SetP $dev 'platform_read' $false
+    $n = Http $dev.ip 'GET' $cfg.uniview.net_path '' 'application/json' $cred; if ($n.code -eq 200 -and (Unv-Data $n.body)) { $dev.net_json = $n.body; SetP $dev 'net_read' $true }
+    $dn = Http $dev.ip 'GET' $cfg.uniview.dns_path '' 'application/json' $cred; if ($dn.code -eq 200) { $dd = Unv-Data $dn.body; if ($dd) { $dev.dns_json = $dn.body; $vals = @(Find-JsonVals $dd '(?i)dns'); if ($vals.Count) { $dev.dns1 = $vals[0]; if ($vals.Count -gt 1) { $dev.dns2 = $vals[1] }; SetP $dev 'dns_read' $true } } }
+    if ($cfg.uniview.cloud_path) { $cl = Http $dev.ip 'GET' $cfg.uniview.cloud_path '' 'application/json' $cred; if ($cl.code -eq 200) { $cd = Unv-Data $cl.body; $en = @(Find-JsonVals $cd '(?i)^enable'); if ($cd -and $en.Count) { $dev.platform_json = $cl.body; $dev.platform_enabled = ([string]$en[0] -match '^(1|true)$'); SetP $dev 'platform_read' $true } } }
     $c = Http $dev.ip 'GET' $cfg.uniview.channels_path '' 'application/json' $cred
     $list = New-Object System.Collections.Generic.List[object]
     $dev.channels_read = $false
@@ -711,7 +737,7 @@ function Onvif-SetNet($dev, [string]$ip, [int]$prefix, [string]$gw, [string]$d1,
 $script:devs = New-Object System.Collections.Generic.List[object]
 function New-Dev([string]$ip, [string]$mac, [string]$by) {
   $d = [pscustomobject]@{ ip = $ip; mac = (NormMac $mac); vendor = (Vendor $mac); brand = ''; kind = ''; model = ''; serial = ''; firmware = ''; mask = ''; gw = ''; dns1 = ''; dns2 = ''; addressing = ''; dhcp = $null
-    found_by = $by; login = ''; if_id = '1'; net_xml = ''; net_json = ''; dns_json = ''; platform_xml = ''; platform_json = ''; platform_enabled = $null; platform_online = $null; platform_has_code = $null
+    found_by = $by; login = ''; if_id = '1'; net_xml = ''; net_json = ''; dns_json = ''; platform_xml = ''; platform_json = ''; platform_enabled = $null; platform_online = $null; platform_has_code = $null; platform_read = $null; net_read = $null; dns_read = $null
     channels = $null; channels_read = $null; status_read = $null; channel_of = ''; channel_id = ''; activated = ''; poe = $false; onvif = $false; onvif_token = ''; snap_ip = ''; target_ip = '' }
   if ($d.vendor -eq 'Hikvision') { $d.brand = 'hik' } elseif ($d.vendor -eq 'Uniview') { $d.brand = 'unv' }
   $script:devs.Add($d); return $d
@@ -1213,18 +1239,44 @@ function Invoke-Main {
     foreach ($n in $nvrs) {
       # 2.2.13 (Codex #3): keep what the NVR had BEFORE the fix, so a missing / empty list afterwards is NOT CHECKED, never skipped
       $expIds = @($n.channels | Where-Object { $_ } | ForEach-Object { [string]$_.id })
-      $n.login = ''; $n.channels = $null; $n.channels_read = $null; $n.status_read = $null; Read-Dev $n
+      # 2.2.14 (Codex F4): forget EVERYTHING the earlier read filled (platform, network, DNS, login, lists) before rereading, so a failed
+      # read after the fix is NOT CHECKED, never the value from before the fix; and remember who the NVR was, to catch a different device
+      $expMac = [string]$n.mac; $expSerial = [string]$n.serial
+      Clear-FnReadState $n; Read-Dev $n
       if ($n.login -ne 'ok') { Say ('NVR ' + $n.ip + ': cannot read it now (' + $(if ($n.login) { $n.login } else { 'no answer' }) + ') - NOT CHECKED.') 'Red'; $verify.Add('NVR ' + $n.ip + ' could not be read after the fix - NOT CHECKED'); continue }
-      if ($n.brand -eq 'hik' -and $n.platform_enabled) {
-        $end = (Get-Date).AddSeconds([int]$cfg.verify_wait_seconds)
-        while (-not $n.platform_online -and (Get-Date) -lt $end) { Write-Host '  waiting for the NVR to come online in Hik-Connect ...'; Start-Sleep -Seconds 10; $ez = Http $n.ip 'GET' '/ISAPI/System/Network/EZVIZ' '' 'application/xml' $script:credNvr; $n.platform_online = ((XVal $ez.body 'registerStatus') -eq 'true') }
+      if (($expMac -and $n.mac -and (NormMac $n.mac) -ne (NormMac $expMac)) -or ($expSerial -and $n.serial -and $n.serial -ne $expSerial)) {
+        Say ('NVR ' + $n.ip + ': a DIFFERENT device answers at this address now (' + $n.model + ' ' + $n.mac + ', expected ' + $expMac + ') - NOT CHECKED.') 'Red'
+        $verify.Add('NVR ' + $n.ip + ': a different device answers at this address after the fix (expected ' + $expMac + ') - this NVR NOT CHECKED')
+        continue
       }
-      Say ('NVR ' + $n.ip + ' | gateway ' + $n.gw + ' | DNS ' + $n.dns1 + ' ' + $n.dns2 + ' | platform ' + $(if ($n.platform_enabled) { 'ON' } elseif ($n.platform_enabled -eq $false) { 'OFF' } else { 'NOT CHECKED' }) + ' / ' + $(if ($n.platform_online) { 'ONLINE (app should work)' } elseif ($n.brand -eq 'unv') { 'NOT CHECKED by the tool - check the EZView app' } else { 'NOT online yet' })) $(if ($n.platform_online) { 'Green' } else { 'Red' })
-      if (-not $n.platform_online) {
+      if ($n.brand -eq 'hik' -and $n.platform_enabled -ne $false) {
+        # wait for Hik-Connect to come online, and also re-try a platform read that failed (only a real answer can say ONLINE)
+        $end = (Get-Date).AddSeconds([int]$cfg.verify_wait_seconds); $tries = [int][math]::Ceiling([int]$cfg.verify_wait_seconds / 10)
+        for ($k = 0; $k -lt $tries -and (Get-Date) -lt $end -and -not ($n.platform_read -eq $true -and ($n.platform_enabled -ne $true -or $n.platform_online -eq $true)); $k++) {
+          Write-Host $(if ($n.platform_read -eq $true) { '  waiting for the NVR to come online in Hik-Connect ...' } else { '  reading platform access again ...' }); Start-Sleep -Seconds 10
+          $ez = Http $n.ip 'GET' '/ISAPI/System/Network/EZVIZ' '' 'application/xml' $script:credNvr; [void](Set-FnHikPlatform $n $ez)
+        }
+      }
+      $platOk = ($n.platform_read -eq $true -and $n.platform_enabled -eq $true -and $n.platform_online -eq $true)
+      $netOk = ($n.net_read -eq $true -and ($n.brand -ne 'unv' -or $n.dns_read -eq $true))
+      Say ('NVR ' + $n.ip + ' | gateway ' + $(if ($netOk) { $n.gw } else { 'NOT CHECKED' }) + ' | DNS ' + $(if ($netOk) { $n.dns1 + ' ' + $n.dns2 } else { 'NOT CHECKED' }) + ' | platform ' + $(if ($n.platform_enabled -eq $true) { 'ON' } elseif ($n.platform_enabled -eq $false) { 'OFF' } else { 'NOT CHECKED' }) + ' / ' + $(if ($platOk) { 'ONLINE (app should work)' } elseif ($n.brand -eq 'unv') { 'NOT CHECKED by the tool - check the EZView app' } elseif ($n.platform_read -ne $true -or $n.platform_online -eq $null) { 'NOT CHECKED (could not be read now)' } else { 'NOT online yet' })) $(if ($platOk -and $netOk) { 'Green' } else { 'Red' })
+      if (-not $platOk) {
         if ($n.platform_enabled -eq $false) { $verify.Add('NVR ' + $n.ip + ': platform access (Hik-Connect / EZCloud) is still OFF') }
         elseif ($n.brand -eq 'unv') { $verify.Add('NVR ' + $n.ip + ': EZCloud online status NOT CHECKED (the tool cannot read it; check the EZView app)') }
-        elseif ($n.platform_enabled) { $verify.Add('NVR ' + $n.ip + ': platform access is on but NOT online yet (the app will not work yet)') }
-        else { $verify.Add('NVR ' + $n.ip + ': platform access NOT CHECKED (could not be read)') }
+        elseif ($n.platform_enabled -eq $true -and $n.platform_online -eq $false) { $verify.Add('NVR ' + $n.ip + ': platform access is on but NOT online yet (the app will not work yet)') }
+        else { $verify.Add('NVR ' + $n.ip + ': platform access NOT CHECKED (could not be read after the fix)') }
+      }
+      if (-not $netOk) { $verify.Add('NVR ' + $n.ip + ': its network settings (gateway / DNS) could not be read after the fix - NOT CHECKED') }
+      elseif ($n.brand -eq 'hik') {
+        # 2.2.14: a network change counts only when the NVR reads back what was set
+        foreach ($ns in @($applied | Where-Object { $_.type -eq 'nvr-net' -and $_.done -and (NormMac ([string]$_.dev_mac)) -eq (NormMac $expMac) })) {
+          $bad = @()
+          if ($ns.new_mask -and $n.mask -ne $ns.new_mask) { $bad += ('mask ' + $n.mask + ' (set ' + $ns.new_mask + ')') }
+          if ($ns.new_gw -and $n.gw -ne $ns.new_gw) { $bad += ('gateway ' + $n.gw + ' (set ' + $ns.new_gw + ')') }
+          if ($ns.new_dns1 -and $n.dns1 -ne $ns.new_dns1) { $bad += ('DNS ' + $n.dns1 + ' (set ' + $ns.new_dns1 + ')') }
+          if ($ns.new_dns2 -and $n.dns2 -ne $ns.new_dns2) { $bad += ('DNS 2 ' + $n.dns2 + ' (set ' + $ns.new_dns2 + ')') }
+          if ($bad.Count) { Say ('NVR ' + $n.ip + ': the network settings read back different from what was set: ' + ($bad -join ', ')) 'Red'; $verify.Add('NVR ' + $n.ip + ': network settings NOT as set (' + ($bad -join ', ') + ')') }
+        }
       }
       $curChs = @($n.channels | Where-Object { $_ })
       if ($n.channels_read -eq $false -or (-not $curChs.Count -and $expIds.Count)) {
