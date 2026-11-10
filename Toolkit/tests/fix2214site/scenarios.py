@@ -116,7 +116,7 @@ def main():
                 rb = case / 'original-run'; (rb / 'backup').mkdir(parents=True)
                 (rb / 'backup/channel.xml').write_text(mock.H.chxml(None, '1', {'ip': origip, 'protocol': 'HIKVISION', 'name': 'Original camera'}))
                 c = {'name': 'Gate', 'mac': M50, 'brand': 'Hikvision', 'ip_before': '192.168.1.50', 'ip_after': '', 'net_before': {'ip': '192.168.1.50', 'mask': '255.255.255.0', 'gw': '192.168.1.1', 'dhcp': False, 'dns1': '8.8.8.8', 'dns2': ''},
-                     'stream_before': None, 'password_changed': False, 'nvr': {'nvr': '192.168.1.19', 'channel': 1, 'action': 'updated', 'before_file': 'backup/channel.xml'}}
+                     'stream_before': None, 'password_changed': False, 'nvr': {'nvr': '192.168.1.19', 'channel': 1, 'action': 'updated', 'before_file': 'backup/channel.xml', 'nvr_mac': M19, 'nvr_serial': 'NVR19'}}   # 2.2.16 (F3): undo files name the NVR (MAC / serial)
                 (rb / 'rollback.json').write_text(json.dumps({'run': 'review-before', 'site': 'Review', 'scheme': '192.168.1', 'taken_on': 'test', 'cameras': [c], 'nvrs': []}))
                 answers.write_text('YES\n'); cmd = base + ['-Mode', 'Rollback', '-RollbackDir', str(rb)]
             else:
