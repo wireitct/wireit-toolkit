@@ -168,6 +168,10 @@ $o.dhSame = B 'Dahua' '3c:ef:8c:00:00:77' ''; $o.dhOther = B 'Dahua' '3c:ef:8c:0
       $m = [regex]::Match($o, '(?m)^(\d+) passed, (\d+) failed'); Check ($code -eq 0 -and $m.Success -and [int]$m.Groups[2].Value -eq 0) ($s.n + ' [' + $(if ($m.Success) { $m.Value } else { 'no summary' }) + ']') (@($o -split "`n" | Where-Object { $_ -match '^FAIL' }) -join "`n")
     }
   }
+  # 2.2.15 lead (site helper's open item): the "back on the NVR" step picks a free channel only from a list that WAS read (source check)
+  $fsSrc = [IO.File]::ReadAllText((Join-Path $tk 'FixSite.ps1'))
+  $blk = [regex]::Match($fsSrc, '(?s)# back on the NVR.*?back on NVR ch')
+  Check ($blk.Success -and $blk.Value -match 'Read-FsNvrChannelList' -and $blk.Value -notmatch 'Get-FsNvrChannels \$c\.nvr' -and $blk.Value -match 'NOT put on the NVR') 'R1 follow-up (source): "back on the NVR" picks a free channel only from a channel list that was read; an unread list = NOT put on the NVR, never ch 1'
   # NEEDS WINDOWS CHECK: real Hikvision / Dahua device-info MAC formats, a real NVR answering a channel-list read with an error and
   # real NVR status answers without an online flag, on Windows PowerShell 5.1 - DEFERRED, never PASS
   $script:deferred++; Write-Host 'DEFERRED real NVR channel-list failures, real status answers and real Hikvision/Dahua MAC read-back for Undo on Windows PowerShell 5.1 (NEEDS WINDOWS CHECK)'

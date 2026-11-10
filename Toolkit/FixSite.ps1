@@ -1083,8 +1083,12 @@ foreach ($c in $ordered) {
   if (-not $stop -and ($c.steps -contains 'nvr') -and $c.nvr) {
     if (-not $nvrCred.ContainsKey($c.nvr)) { & $step ('NVR ' + $c.nvr + ' password unknown - put it on ch ' + $c.channel + ' by hand') $false }
     else {
-      $ch = [int]$c.channel
-      if (-not $ch) { $chs = @(Get-FsNvrChannels $c.nvr $nvrCred[$c.nvr]); $ch = Get-FsFreeNvrChannel $chs $ip ([string]$rbc.ip_before); if (-not $ch) { $used = @($chs | ForEach-Object { $_.channel }); for ($k = 1; $k -le 64; $k++) { if ($used -notcontains $k) { $ch = $k; break } } } }
+      $ch = [int]$c.channel; $chWhy = ''
+      # 2.2.15 (Codex 2.2.14 R1 follow-up): a free channel is picked only from a channel list that WAS read; an unread list never means "ch 1 is free"
+      if (-not $ch) { $cl = Read-FsNvrChannelList $c.nvr $nvrCred[$c.nvr]; if (-not $cl.ok) { $chWhy = $cl.why } else { $chs = @($cl.channels); $ch = Get-FsFreeNvrChannel $chs $ip ([string]$rbc.ip_before); if (-not $ch) { $used = @($chs | ForEach-Object { $_.channel }); for ($k = 1; $k -le 64; $k++) { if ($used -notcontains $k) { $ch = $k; break } } } } }
+    }
+    if (-not $ch -and $nvrCred.ContainsKey($c.nvr)) { & $step ('NVR ' + $c.nvr + $(if ($chWhy) { ' channel list could not be read (' + $chWhy + ')' } else { ' has no free channel' }) + ' - NOT put on the NVR; add it there by hand') $false }
+    elseif ($nvrCred.ContainsKey($c.nvr)) {
       # 2.2.7 (Codex file-by-file F01): the channel goes into the undo file BEFORE the NVR is changed ("pending"); a run stopped
       # right after the NVR took the change still lets Undo put the channel back (its saved copy, or remove a channel it added)
       $rbc.nvr = [ordered]@{ nvr = $c.nvr; channel = $ch; action = 'pending'; before_file = ('backup\nvr-' + $c.nvr + '-ch' + $ch + '.xml') }; Save-Rb
