@@ -405,6 +405,16 @@ Run-Safe 'sitecheck control' {
   Check (@($sc.lines | Where-Object { $_.k -eq 'red' -and $_.t -match 'CH 3 not recording' }).Count -eq 1 -and @($sc.lines | Where-Object { $_.k -eq 'red' -and $_.t -match 'security hole' }).Count -eq 1 -and @($sc.fixes) -contains 'firmware') 'control: problems that were read stay red (recording, firmware) and the firmware fix is still offered'
 }
 
+Run-Safe 'migration ACL unread' {
+  # ToolkitMigrate (class C twin): a folder whose permissions cannot be read was taken as "not locked" and skipped without a word
+  . (Join-Path $tk 'ToolkitMigrate.ps1')
+  $script:icaclsN = 0
+  $ops = @{ taskExists = { param($n) $false }; taskDelete = { param($n) $true }; icacls = { param([string[]]$a) $script:icaclsN++; 0 }; isLocked = { param($p) $null }
+    adminUsers = { @() }; exists = { param($p) -not ([string]$p -match '(?i)ipc|upload-key|\.ps1$|\.cmd$|\.json$') }; create = { param($p) }; remove = { param($p) }; children = { param($p) @() } }
+  $m = Invoke-TkMigration -Root '/r' -ToolkitDir '/r/Toolkit' -OwnerSid 'S-1-5-21-1' -Ops $ops
+  Check (@($m.warnings | Where-Object { $_ -match 'NOT CHECKED' }).Count -ge 1) 'ToolkitMigrate twin (class C): folder permissions that cannot be read are reported NOT CHECKED, not taken as "no old lock" (2.2.18: skipped silently)' ((@($m.warnings) + @($m.log)) -join ' | ')
+}
+
 Deferred 'real devices: the SADP reset resume / import on real Hikvision cameras (MAC/serial as SADP reports them)'
 Deferred 'Windows: a reset record / pictures / outbox folder that Windows refuses to write (ACLs, a full disk), Windows PowerShell 5.1'
 }
