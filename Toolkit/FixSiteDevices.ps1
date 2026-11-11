@@ -217,52 +217,112 @@ $script:FsLoginFails = @{}; $script:FsMaxLoginFails = 4
 # have passed since its last wrong one (Hikvision/Dahua lock after 5-7 and unlock after about 30 min). Inside the cool-down no
 # password at all is sent to that device. A password that works clears its count. Lockout numbers on real gear: NEEDS DEVICE CHECK.
 $script:FsLoginLedger = ''; $script:FsLoginCooldownMin = 30
+# 2.2.19 (Codex 2.2.18 F27): the count file is SAFETY state. 2.2.10-2.2.18 read a damaged file as "no wrong passwords yet" and
+# carried on when it could not be saved, so a rerun could send a full set of wrong passwords inside a device's cool-down. Now:
+# - a count file that is there but cannot be read, or holds an entry without a whole number of tries and a time = the count is
+#   UNKNOWN: no password is sent to any device until the file is sorted out (Read-FsLoginLedger sets $script:FsLoginLedgerWhy)
+# - every password try is WRITTEN DOWN (count + 1, now) and read back BEFORE it is sent; if that cannot be saved the password is
+#   not sent to that device. A try that got no answer gives its count back; a refused one keeps it; one that works clears it.
+# - a save that fails afterwards holds that device for the rest of this run ($script:FsLoginHold), the plain reason logged.
+$script:FsLoginLedgerWhy = ''; $script:FsLoginHold = @{}; $script:FsLoginHoldSaid = @{}
+function Test-FsLedgerTime([string]$s) {
+  $t = [datetime]::MinValue
+  return ([bool]$s -and [datetime]::TryParse($s, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$t))
+}
 function Read-FsLoginLedger {
-  $h = @{}
-  if (-not $script:FsLoginLedger -or -not (Test-Path -LiteralPath $script:FsLoginLedger)) { return $h }
-  try { $o = Get-Content -LiteralPath $script:FsLoginLedger -Raw -ErrorAction Stop | ConvertFrom-Json; foreach ($p in @($o.PSObject.Properties)) { $h[$p.Name] = [pscustomobject]@{ fails = [int]$p.Value.fails; last = [string]$p.Value.last } } } catch { Fs-LogLine ('wrong-password count file unreadable (' + $_.Exception.Message + '); counting from this run only') }
+  # a table device -> { fails; last }. A missing file = nothing counted yet. A file that is there but unreadable or damaged:
+  # $script:FsLoginLedgerWhy says why (the budget is then unknown) and the table holds only what could be read.
+  $h = @{}; $script:FsLoginLedgerWhy = ''
+  if (-not $script:FsLoginLedger) { return $h }
+  $there = $false; try { $there = Test-Path -LiteralPath $script:FsLoginLedger -ErrorAction Stop } catch { $script:FsLoginLedgerWhy = 'the wrong-password count file could not be checked (' + $_.Exception.Message + ')'; return $h }
+  if (-not $there) { return $h }
+  $o = $null
+  try { $raw = [IO.File]::ReadAllText($script:FsLoginLedger); $o = $raw | ConvertFrom-Json -ErrorAction Stop } catch { $script:FsLoginLedgerWhy = 'the wrong-password count file could not be read (' + $_.Exception.Message + ')'; return $h }
+  if ($null -eq $o -or $o -is [array] -or $o -isnot [pscustomobject]) { $script:FsLoginLedgerWhy = 'the wrong-password count file is damaged (it does not hold a list of devices)'; return $h }
+  foreach ($p in @($o.PSObject.Properties)) {
+    $v = $p.Value; $n = 0
+    if ($null -eq $v -or $v -isnot [pscustomobject] -or -not $v.PSObject.Properties['fails'] -or -not $v.PSObject.Properties['last'] -or -not [int]::TryParse([string]$v.fails, [ref]$n) -or $n -lt 0 -or -not (Test-FsLedgerTime ([string]$v.last))) {
+      $script:FsLoginLedgerWhy = 'the wrong-password count file is damaged (the entry for ' + $p.Name + ' has no whole count and time)'; continue
+    }
+    $h[$p.Name] = [pscustomobject]@{ fails = $n; last = [string]$v.last }
+  }
   return $h
 }
+# $true only when the file was written AND reads back with the same counts
 function Save-FsLoginLedger($h) {
-  if (-not $script:FsLoginLedger) { return }
+  if (-not $script:FsLoginLedger) { return $true }
   try {
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:FsLoginLedger) | Out-Null
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:FsLoginLedger) -ErrorAction Stop | Out-Null
     $o = [ordered]@{}; foreach ($k in @($h.Keys | Sort-Object)) { $o[$k] = [ordered]@{ fails = [int]$h[$k].fails; last = [string]$h[$k].last } }
-    $tmp = $script:FsLoginLedger + '.tmp'; [IO.File]::WriteAllText($tmp, ($o | ConvertTo-Json -Depth 4)); Move-Item -LiteralPath $tmp -Destination $script:FsLoginLedger -Force
-  } catch { Fs-LogLine ('wrong-password count not saved: ' + $_.Exception.Message) }
+    $tmp = $script:FsLoginLedger + '.tmp'; [IO.File]::WriteAllText($tmp, (ConvertTo-Json -Depth 4 -InputObject $o)); Move-Item -LiteralPath $tmp -Destination $script:FsLoginLedger -Force -ErrorAction Stop
+  } catch { Fs-LogLine ('wrong-password count not saved: ' + $_.Exception.Message); return $false }
+  $back = Read-FsLoginLedger
+  if ($script:FsLoginLedgerWhy) { Fs-LogLine ('wrong-password count saved but does not read back: ' + $script:FsLoginLedgerWhy); return $false }
+  foreach ($k in @($h.Keys)) { if (-not $back.ContainsKey($k) -or [int]$back[$k].fails -ne [int]$h[$k].fails) { Fs-LogLine ('wrong-password count for ' + $k + ' does not read back as saved'); return $false } }
+  if (@($back.Keys).Count -ne @($h.Keys).Count) { Fs-LogLine 'wrong-password count file does not read back as saved'; return $false }
+  return $true
 }
 function Get-FsLoginBudget([string]$k) {
-  # { fails; until } for this device: this run's count or the saved one inside its cool-down, whichever is higher
+  # { fails; until; unknown } for this device: this run's count or the saved one inside its cool-down, whichever is higher.
+  # unknown = why the count is not known (the file unreadable, or this device's count could not be saved this run): the device
+  # counts as spent (fails = the limit) and no password is sent to it.
   $n = [int]$script:FsLoginFails[$k]; $until = $null
-  $e = (Read-FsLoginLedger)[$k]
+  $led = Read-FsLoginLedger
+  if ($script:FsLoginLedgerWhy) { return [pscustomobject]@{ fails = [int]$script:FsMaxLoginFails; until = $null; unknown = [string]$script:FsLoginLedgerWhy } }
+  if ($script:FsLoginHold.ContainsKey($k)) { return [pscustomobject]@{ fails = [int]$script:FsMaxLoginFails; until = $null; unknown = [string]$script:FsLoginHold[$k] } }
+  $e = $led[$k]
   if ($e -and $e.last) {
     $t = [datetime]::MinValue; if ([datetime]::TryParse([string]$e.last, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$t)) {
       $u = $t.ToLocalTime().AddMinutes([int]$script:FsLoginCooldownMin)
       if ((Get-Date) -lt $u) { $n = [math]::Max($n, [int]$e.fails); $until = $u }
     }
   }
-  return [pscustomobject]@{ fails = $n; until = $until }
+  return [pscustomobject]@{ fails = $n; until = $until; unknown = '' }
 }
-function Set-FsLoginResult([string]$k, [string]$s) {
-  if ($s -notin @('ok', 'refused', 'locked')) { return }
+# writes the result of one try. $prev = the device's entry before the try was reserved ($null = none)
+function Set-FsLoginResult([string]$k, [string]$s, $prev = $null, [int]$reserved = -1) {
+  if ($s -notin @('ok', 'refused', 'locked', 'noanswer', 'notfound')) { return }
   $h = Read-FsLoginLedger
-  if ($s -eq 'ok') { $script:FsLoginFails.Remove($k); if ($h.ContainsKey($k)) { $h.Remove($k); Save-FsLoginLedger $h }; return }
-  $b = Get-FsLoginBudget $k
-  $n = $(if ($s -eq 'locked') { [int]$script:FsMaxLoginFails } else { 1 + [int]$b.fails })
+  if ($script:FsLoginLedgerWhy) { $script:FsLoginHold[$k] = $script:FsLoginLedgerWhy; return }
+  if ($s -eq 'ok') { $script:FsLoginFails.Remove($k); if ($h.ContainsKey($k)) { $h.Remove($k); if (-not (Save-FsLoginLedger $h)) { $script:FsLoginHold[$k] = 'the wrong-password count for this device could not be saved' } }; return }
+  if ($s -in @('noanswer', 'notfound')) {
+    # nothing was refused: the reserved try is given back (a failed save leaves the higher count = the careful side)
+    if ($null -ne $prev) { $h[$k] = $prev } else { [void]$h.Remove($k) }
+    if (-not (Save-FsLoginLedger $h)) { Fs-LogLine ('the reserved try for ' + $k + ' could not be given back (the count stays one higher)') }
+    return
+  }
+  $n = $(if ($s -eq 'locked') { [int]$script:FsMaxLoginFails } elseif ($reserved -ge 1) { $reserved } else { 1 + [int](Get-FsLoginBudget $k).fails })
   $script:FsLoginFails[$k] = $n
-  $h[$k] = [pscustomobject]@{ fails = $n; last = (Get-Date).ToUniversalTime().ToString('o') }; Save-FsLoginLedger $h
+  $h[$k] = [pscustomobject]@{ fails = $n; last = (Get-Date).ToUniversalTime().ToString('o') }
+  if (-not (Save-FsLoginLedger $h)) { $script:FsLoginHold[$k] = 'the wrong-password count for this device could not be saved' }
+}
+function Say-FsLoginHold([string]$k, [string]$why) {
+  $t = 'login to ' + $k + ' not tried: ' + $why + ', so it is not known how many wrong passwords it has had - no password is sent to it until that is sorted out (it could lock)'
+  Fs-LogLine $t
+  if (-not $script:FsLoginHoldSaid.ContainsKey($k)) { $script:FsLoginHoldSaid[$k] = $true; try { Write-Host ('  ' + $t) -ForegroundColor Yellow } catch {} }
 }
 function Test-FsLogin([string]$ip, [string]$brand, [string]$pw) {
   $k = ($ip -replace ':\d+$', '')
+  $prev = $null; $res = -1
   if ($pw) {
     $b = Get-FsLoginBudget $k
+    if ($b.unknown) { Say-FsLoginHold $k ([string]$b.unknown); return 'locked' }
     if ([int]$b.fails -ge $script:FsMaxLoginFails) {
       Fs-LogLine ('login to ' + $k + ' not tried: ' + [int]$b.fails + ' wrong passwords already' + $(if ($b.until) { ' (this or an earlier run); not tried again before ' + $b.until.ToString('HH:mm') + ' so it does not lock' } else { ' this run' }))
       return 'locked'
     }
+    # 2.2.19 (F27): the try is written down BEFORE the password is sent
+    $res = 1 + [int]$b.fails
+    if ($script:FsLoginLedger) {
+      $h = Read-FsLoginLedger
+      if ($script:FsLoginLedgerWhy) { Say-FsLoginHold $k $script:FsLoginLedgerWhy; return 'locked' }
+      if ($h.ContainsKey($k)) { $prev = $h[$k] }
+      $h[$k] = [pscustomobject]@{ fails = $res; last = (Get-Date).ToUniversalTime().ToString('o') }
+      if (-not (Save-FsLoginLedger $h)) { $script:FsLoginHold[$k] = 'the wrong-password count could not be saved before the try'; Say-FsLoginHold $k $script:FsLoginHold[$k]; return 'locked' }
+    }
   }
   $s = Test-FsLoginOnce $ip $brand $pw
-  if ($pw) { Set-FsLoginResult $k $s }
+  if ($pw) { Set-FsLoginResult $k $s $prev $res }
   return $s
 }
 function Test-FsLoginOnce([string]$ip, [string]$brand, [string]$pw) {
@@ -834,16 +894,37 @@ $script:FsCoexistChanged = $false
 $script:FsNetOps = $null          # TESTS ONLY: a hashtable of scriptblocks standing in for Windows' network commands (see Invoke-FsNetOp)
 $script:FsLastRestore = $null     # { ok; problems } of the last Restore-FsPcNet
 $script:FsNetBlocked = $null      # 2.2.10 (Codex R03): why no adapter change may happen in this run (an unreadable journal)
+# 2.2.19 (F08): $true when a failed Windows network query only means "there is none" (no address / no route), not a failed read
+function Test-FsNoneFound($err) {
+  try { if ([string]$err.CategoryInfo.Category -eq 'ObjectNotFound') { return $true } } catch {}
+  try { if ($err.Exception -and $err.Exception.GetType().Name -eq 'CimException' -and [string]$err.Exception.NativeErrorCode -eq 'NotFound') { return $true } } catch {}
+  return $false
+}
 function Invoke-FsNetOp([string]$op, [hashtable]$a) {
   if ($script:FsNetOps -and $script:FsNetOps.ContainsKey($op)) { return (& $script:FsNetOps[$op] $a) }
   $ix = [int]$a.ifIndex
   switch ($op) {
     'state' {
-      $ipi = Get-NetIPInterface -InterfaceIndex $ix -AddressFamily IPv4 -ErrorAction SilentlyContinue
+      # 2.2.19 (Codex 2.2.18 F08): every query's success is tracked on its own ($unread names what could not be read). A query that
+      # FAILS is not "no addresses" / "no router": 2.2.18 read SilentlyContinue's empty answer as proof a temporary address was gone.
+      # Windows answers "no matching object" (ObjectNotFound) when there really is none: that one is a real empty answer.
+      $unread = @()
+      $ipi = $null; try { $ipi = Get-NetIPInterface -InterfaceIndex $ix -AddressFamily IPv4 -ErrorAction Stop } catch { $unread += 'the DHCP setting' }
+      if (-not $ipi -and -not ($unread -contains 'the DHCP setting')) { $unread += 'the DHCP setting' }
       $co = 'unknown'; try { $t = (netsh interface ipv4 show interface ([string]$ix)) -join "`n"; $m = [regex]::Match($t, '(?i)DHCP/Static IP coexistence\s*:\s*(\w+)'); if ($m.Success) { $co = $m.Groups[1].Value.ToLower() } } catch {}
-      $ad = @(Get-NetIPAddress -InterfaceIndex $ix -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ ip = [string]$_.IPAddress; prefix = [int]$_.PrefixLength; origin = [string]$_.PrefixOrigin; skip = [bool]$_.SkipAsSource; store = [string]$_.PolicyStore; addrState = [string]$_.AddressState } })
-      $gw = @(Get-NetRoute -InterfaceIndex $ix -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.NextHop } | Select-Object -Unique)
-      return [pscustomobject]@{ dhcp = ($ipi -and [string]$ipi.Dhcp -eq 'Enabled'); coexist = $co; addrs = $ad; gw = $gw }
+      $ad = @(); try { $ad = @(Get-NetIPAddress -InterfaceIndex $ix -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ ip = [string]$_.IPAddress; prefix = [int]$_.PrefixLength; origin = [string]$_.PrefixOrigin; skip = [bool]$_.SkipAsSource; store = [string]$_.PolicyStore; addrState = [string]$_.AddressState } }) } catch { if (-not (Test-FsNoneFound $_)) { $unread += 'the addresses' } }
+      $gw = @(); try { $gw = @(Get-NetRoute -InterfaceIndex $ix -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { [string]$_.NextHop } | Select-Object -Unique) } catch { if (-not (Test-FsNoneFound $_)) { $unread += 'the router (default route)' } }
+      return [pscustomobject]@{ dhcp = ($ipi -and [string]$ipi.Dhcp -eq 'Enabled'); coexist = $co; addrs = $ad; gw = $gw; unread = @($unread) }
+    }
+    # 2.2.19 (Codex 2.2.18 F05): which adapter is at this number right now (name + its InterfaceGuid, which never changes); $null = unread
+    'ident' { try { $n = @(Get-NetAdapter -InterfaceIndex $ix -ErrorAction Stop)[0]; if (-not $n) { return $null }; return [pscustomobject]@{ name = [string]$n.Name; guid = [string]$n.InterfaceGuid } } catch { return $null } }
+    # 2.2.19 (decision: a positive check of the actual state): every connected adapter, each with a full state read; $null = unread
+    'allstate' {
+      try {
+        $l = @()
+        foreach ($n in @(Get-NetAdapter -ErrorAction Stop | Where-Object { [string]$_.Status -eq 'Up' })) { $l += [pscustomobject]@{ name = [string]$n.Name; ifIndex = [int]$n.ifIndex; state = (Invoke-FsNetOp 'state' @{ ifIndex = [int]$n.ifIndex }) } }
+        return [pscustomobject]@{ adapters = $l }
+      } catch { return $null }
     }
     'coexist' { $null = netsh interface ipv4 set interface ([string]$ix) ('dhcpstaticipcoexistence=' + $(if ($a.on) { 'enabled' } else { 'disabled' })); return ($LASTEXITCODE -eq 0) }
     'dhcp' { Set-NetIPInterface -InterfaceIndex $ix -AddressFamily IPv4 -Dhcp $(if ($a.on) { 'Enabled' } else { 'Disabled' }) -ErrorAction Stop; return $true }
@@ -924,6 +1005,40 @@ function Save-FsNetState([string]$stateFile) {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stateFile) | Out-Null
   $tmp = $stateFile + '.tmp'; [IO.File]::WriteAllText($tmp, ($o | ConvertTo-Json -Depth 6)); Move-Item -LiteralPath $tmp -Destination $stateFile -Force
 }
+# 2.2.19 (Codex 2.2.18 F05/F08): '' when this state read is complete, else what could not be read (plain words).
+# $null (the "nothing came back" answer) is a failed read too. A read that lists what it could not read ('unread') is incomplete.
+function Get-FsNetReadProblem($st) {
+  if ($null -eq $st) { return 'this PC''s network settings could not be read back' }
+  if ($st.PSObject.Properties['unread'] -and @($st.unread | Where-Object { $_ }).Count) { return ('this PC''s network settings could not be fully read back (' + (@($st.unread | Where-Object { $_ }) -join ', ') + ')') }
+  if (-not $st.PSObject.Properties['addrs']) { return 'this PC''s network settings could not be read back (no address list came back)' }
+  return ''
+}
+# 2.2.19 (Codex 2.2.18 F05): '' when the adapter at the saved number is positively the saved one, else why not (plain words).
+# The saved adapter = its InterfaceGuid (it never changes, also when the adapter is renamed or another one takes its number) AND
+# its name. A record from before 2.2.19 has no GUID: then the name must match exactly, and the log says it was matched by name only.
+# Read FRESH every time it is asked (right before each change), never from an earlier answer.
+function Get-FsPcAdapterIdProblem($b, [int]$ix) {
+  if (-not $b) { return 'the record does not say which adapter it was (no adapter name), so nothing on this PC''s network is changed' }
+  $want = [string]$b.name; $wantG = $(if ($b.PSObject.Properties['guid']) { [string]$b.guid } else { '' })
+  if (-not $want) { return 'the record does not say which adapter it was (no adapter name), so nothing on this PC''s network is changed' }
+  $id = $null; try { $id = Invoke-FsNetOp 'ident' @{ ifIndex = $ix } } catch { $id = $null }
+  if (-not $id -or -not [string]$id.name) { return ('it could not be read which adapter is number ' + $ix + ' now (it should be "' + $want + '"), so nothing on it was changed') }
+  $gotG = $(if ($id.PSObject.Properties['guid']) { [string]$id.guid } else { '' })
+  if ($wantG) {
+    if (-not $gotG) { return ('the ID of adapter number ' + $ix + ' could not be read (it should be "' + $want + '"), so nothing on it was changed') }
+    if ($gotG.Trim('{}').ToLower() -ne $wantG.Trim('{}').ToLower()) { return ('adapter number ' + $ix + ' is now another adapter ("' + [string]$id.name + '", not "' + $want + '"), so nothing on it was changed') }
+  }
+  if ([string]$id.name -ne $want) { return ('adapter number ' + $ix + ' is now "' + [string]$id.name + '", not "' + $want + '", so nothing on it was changed') }
+  if (-not $wantG -and -not $script:FsIdNameOnlySaid) { $script:FsIdNameOnlySaid = $true; Fs-LogLine ('the network record has no adapter ID (older Toolkit): adapter "' + $want + '" matched by its name only') }
+  return ''
+}
+$script:FsIdNameOnlySaid = $false
+# a change to this PC's adapter during recovery: the adapter is identified again right before it, the change is refused otherwise
+function Invoke-FsNetFix([string]$op, [hashtable]$a) {
+  $w = Get-FsPcAdapterIdProblem $script:FsPcBefore ([int]$a.ifIndex)
+  if ($w) { throw $w }
+  return (Invoke-FsNetOp $op $a)
+}
 function Add-FsTempIp([string]$p3, $pc, [string]$stateFile) {
   # memory-only (ActiveStore) extra address on the old scheme; never used as a source for normal traffic; removed at the end
   foreach ($t in $script:FsTemps) { if ($t.p3 -eq $p3) { return $t.ip } }
@@ -933,22 +1048,35 @@ function Add-FsTempIp([string]$p3, $pc, [string]$stateFile) {
   # 1) the adapter as it is now, saved BEFORE anything changes
   if (-not $script:FsPcBefore) {
     try { $st = Invoke-FsNetOp 'state' @{ ifIndex = $pc.ifIndex } } catch { Fs-LogLine ('could not read this PC''s network settings - no temporary address added: ' + $_.Exception.Message); return '' }
-    $script:FsPcBefore = [pscustomobject]@{ ifIndex = [int]$pc.ifIndex; name = [string]$pc.name; dhcp = [bool]$st.dhcp; coexist = [string]$st.coexist; addrs = @($st.addrs | Where-Object { -not $_.skip }); gw = @($st.gw) }
-    Save-FsNetState $stateFile
+    # 2.2.19 (F08): an incomplete read is not "the adapter as it was": nothing is added
+    $rp = Get-FsNetReadProblem $st; if ($rp) { Fs-LogLine ($rp + ' - no temporary address added'); return '' }
+    # 2.2.19 (F05): the adapter's stable ID is saved with it, so the clean-up can check it is still the same adapter
+    $id = $null; try { $id = Invoke-FsNetOp 'ident' @{ ifIndex = $pc.ifIndex } } catch { $id = $null }
+    if (-not $id -or -not [string]$id.name) { Fs-LogLine ('could not read which adapter is number ' + $pc.ifIndex + ' - no temporary address added'); return '' }
+    if ([string]$id.name -ne [string]$pc.name) { Fs-LogLine ('adapter number ' + $pc.ifIndex + ' is "' + [string]$id.name + '", not the chosen "' + [string]$pc.name + '" - no temporary address added'); return '' }
+    # 2.2.19 (class D): the coexistence setting must be known on a DHCP adapter - 2.2.18 read 'unknown' as "not enabled" and turned
+    # it OFF at the end even when it had been on
+    if ([bool]$st.dhcp -and [string]$st.coexist -notin @('enabled', 'disabled')) { Fs-LogLine 'the DHCP+static coexistence setting of this PC could not be read - no temporary address added (DHCP could not be kept safely)'; return '' }
+    $script:FsPcBefore = [pscustomobject]@{ ifIndex = [int]$pc.ifIndex; name = [string]$pc.name; guid = $(if ($id.PSObject.Properties['guid']) { [string]$id.guid } else { '' }); dhcp = [bool]$st.dhcp; coexist = [string]$st.coexist; addrs = @($st.addrs | Where-Object { -not $_.skip }); gw = @($st.gw) }
+    # 2.2.19 (class E): the record is the safety net - no record on disk, no change to the adapter
+    try { Save-FsNetState $stateFile } catch { Fs-LogLine ('the record of this PC''s network could not be saved (' + $_.Exception.Message + ') - no temporary address added'); $script:FsPcBefore = $null; return '' }
   }
   # 2) a DHCP adapter keeps DHCP while it has an extra fixed address (Windows can switch DHCP off otherwise: review H4)
   # 2.2.10 (Codex R03): the intent is journaled BEFORE coexistence is switched on, so a run stopped in between still puts it back
   if ($script:FsPcBefore.dhcp -and $script:FsPcBefore.coexist -ne 'enabled' -and -not $script:FsCoexistChanged) {
-    $script:FsCoexistChanged = $true; Save-FsNetState $stateFile
-    $okc = $false; try { $okc = [bool](Invoke-FsNetOp 'coexist' @{ ifIndex = $pc.ifIndex; on = $true }) } catch {}
+    $script:FsCoexistChanged = $true
+    try { Save-FsNetState $stateFile } catch { $script:FsCoexistChanged = $false; Fs-LogLine ('the record of this PC''s network could not be saved (' + $_.Exception.Message + ') - no temporary address added'); return '' }
+    $okc = $false; try { $okc = [bool](Invoke-FsNetFix 'coexist' @{ ifIndex = $pc.ifIndex; on = $true }) } catch { Fs-LogLine ('coexistence not turned on: ' + $_.Exception.Message) }
     if (-not $okc) { Fs-LogLine 'could not turn on DHCP+static coexistence on this PC - no temporary address added (DHCP would be lost)'; return '' }   # the journal keeps "changed": the restore puts it back (harmless if it never changed)
   }
   foreach ($h in @(253, 252, 247, 246, 245)) {
     $ip = $p3 + '.' + $h; if (-not (Test-FsIpFree $ip)) { continue }
     $t = [pscustomobject]@{ p3 = $p3; ip = $ip; ifIndex = [int]$pc.ifIndex }
-    [void]$script:FsTemps.Add($t); Save-FsNetState $stateFile   # written BEFORE the address goes on: a crash in between is still cleaned up
+    [void]$script:FsTemps.Add($t)
+    # written BEFORE the address goes on: a crash in between is still cleaned up. 2.2.19: not saved = not added
+    try { Save-FsNetState $stateFile } catch { [void]$script:FsTemps.Remove($t); Fs-LogLine ('the record of this PC''s network could not be saved (' + $_.Exception.Message + ') - no temporary address added'); return '' }
     try {
-      $st = [string](Invoke-FsNetOp 'addtemp' @{ ifIndex = $pc.ifIndex; ip = $ip; prefix = 24 })
+      $st = [string](Invoke-FsNetFix 'addtemp' @{ ifIndex = $pc.ifIndex; ip = $ip; prefix = 24 })
       if ($st -eq 'Duplicate') {
         Fs-LogLine ('temp IP ' + $ip + ' is used by another device - trying the next')
         # 2.2.10 (Codex R03): it leaves the journal only once it is checked off the adapter; otherwise stop adding more
@@ -968,55 +1096,79 @@ function Add-FsTempIp([string]$p3, $pc, [string]$stateFile) {
   return ''
 }
 # 2.2.10 (Codex R03): remove one temporary address and drop it from the journal ONLY when a fresh read shows it gone.
+# 2.2.19 (F05/F08): only on the same adapter (identified again first), and "gone" only from a COMPLETE read of its addresses.
 function Remove-FsOneTempChecked($t, [string]$stateFile) {
-  try { [void](Invoke-FsNetOp 'remove' @{ ifIndex = $t.ifIndex; ip = $t.ip }) } catch { Fs-LogLine ('removing temp IP ' + $t.ip + ' failed: ' + $_.Exception.Message) }
+  try { [void](Invoke-FsNetFix 'remove' @{ ifIndex = $t.ifIndex; ip = $t.ip }) } catch { Fs-LogLine ('removing temp IP ' + $t.ip + ' failed: ' + $_.Exception.Message) }
   $gone = $false
-  try { $now = Invoke-FsNetOp 'state' @{ ifIndex = $t.ifIndex }; if ($now) { $gone = -not @(@($now.addrs) | Where-Object { $_ -and [string]$_.ip -eq [string]$t.ip }).Count } } catch { $gone = $false }
-  if ($gone) { [void]$script:FsTemps.Remove($t); Save-FsNetState $stateFile; return $true }
+  try { $now = Invoke-FsNetOp 'state' @{ ifIndex = $t.ifIndex }; if (-not (Get-FsNetReadProblem $now)) { $gone = -not @(@($now.addrs) | Where-Object { $_ -and [string]$_.ip -eq [string]$t.ip }).Count } } catch { $gone = $false }
+  if ($gone) {
+    [void]$script:FsTemps.Remove($t)
+    try { Save-FsNetState $stateFile } catch { Fs-LogLine ('the record could not be updated (' + $_.Exception.Message + '); the older copy still lists ' + $t.ip + ' - the clean-up checks it again') }
+    return $true
+  }
   Fs-LogLine ('temp IP ' + $t.ip + ' may still be on this PC - kept in the journal so the clean-up takes it off')
-  try { Save-FsNetState $stateFile } catch {}
+  try { Save-FsNetState $stateFile } catch { Fs-LogLine ('the record could not be updated: ' + $_.Exception.Message) }
   return $false
 }
 function Restore-FsPcNet([string]$stateFile) {
   # takes every temporary address off, then puts the adapter back the way it was (DHCP, coexistence, its own addresses, its router).
   # Returns { ok; problems }. The saved state is kept (and tried again next start) unless every part checked back to normal.
+  # 2.2.19 (Codex 2.2.18 F05/F08): nothing is changed unless the adapter at the saved number is positively the saved one (GUID +
+  # name, read fresh before each change); a state read that is missing or incomplete is never taken as "the address is gone" or
+  # "back to normal"; every temporary address and the record stay until a COMPLETE read shows them gone.
   $problems = @()
-  $ix = $(if ($script:FsPcBefore) { [int]$script:FsPcBefore.ifIndex } else { -1 })
-  foreach ($t in @($script:FsTemps)) { try { [void](Invoke-FsNetOp 'remove' @{ ifIndex = $t.ifIndex; ip = $t.ip }) } catch {}; if ($ix -lt 0) { $ix = [int]$t.ifIndex } }
-  if ($ix -ge 0 -and ($script:FsPcBefore -or @($script:FsTemps).Count)) {
-    $now = $null; try { $now = Invoke-FsNetOp 'state' @{ ifIndex = $ix } } catch { $problems += ('could not read the network settings back: ' + $_.Exception.Message) }
-    if ($now) {
-      $left = @(); foreach ($t in @($script:FsTemps)) { if (@($now.addrs | Where-Object { $_.ip -eq $t.ip }).Count) { $left += $t; $problems += ('the temporary address ' + $t.ip + ' is still on the adapter') } }
-      $script:FsTemps.Clear(); foreach ($t in $left) { [void]$script:FsTemps.Add($t) }
-      $b = $script:FsPcBefore
-      if ($b) {
-        if ($b.dhcp -and -not $now.dhcp) { try { [void](Invoke-FsNetOp 'dhcp' @{ ifIndex = $ix; on = $true }); Fs-LogLine 'DHCP switched back on for this PC' } catch { $problems += ('DHCP could not be switched back on: ' + $_.Exception.Message) } }
+  $b = $script:FsPcBefore
+  $ix = $(if ($b) { [int]$b.ifIndex } else { -1 })
+  if (-not $b -and @($script:FsTemps).Count) {
+    # a record without the adapter (2.2.0 list): no adapter name to check, so nothing is changed - only checked
+    $ix = [int]@($script:FsTemps)[0].ifIndex
+    $now = $null; try { $now = Invoke-FsNetOp 'state' @{ ifIndex = $ix } } catch { $now = $null }
+    $rp = Get-FsNetReadProblem $now
+    if ($rp) { $problems += ($rp + ', so it is not known whether the temporary addresses of an older run are gone') }
+    else { foreach ($t in @($script:FsTemps)) { if (@(@($now.addrs) | Where-Object { $_ -and [string]$_.ip -eq [string]$t.ip }).Count) { $problems += ('the temporary address ' + $t.ip + ' of an older run is still on adapter number ' + $ix + '; its record does not name the adapter, so it is not taken off automatically - restart this PC (that takes it off), then run again') } } }
+  }
+  elseif ($b) {
+    $coexistAtStart = [bool]$script:FsCoexistChanged
+    $idw = Get-FsPcAdapterIdProblem $b $ix
+    if ($idw) { $problems += $idw }
+    else {
+      foreach ($t in @($script:FsTemps)) { try { [void](Invoke-FsNetFix 'remove' @{ ifIndex = $ix; ip = $t.ip }) } catch { $problems += ('the temporary address ' + $t.ip + ' was not taken off: ' + $_.Exception.Message) } }
+      $now = $null; try { $now = Invoke-FsNetOp 'state' @{ ifIndex = $ix } } catch { $problems += ('could not read the network settings back: ' + $_.Exception.Message) }
+      $rp = Get-FsNetReadProblem $now
+      if ($rp) { $problems += ($rp + ', so it is not known whether the temporary addresses are gone; they stay in the record') }
+      else {
+        $left = @(); foreach ($t in @($script:FsTemps)) { if (@(@($now.addrs) | Where-Object { $_ -and $_.ip -eq $t.ip }).Count) { $left += $t; $problems += ('the temporary address ' + $t.ip + ' is still on the adapter') } }
+        $script:FsTemps.Clear(); foreach ($t in $left) { [void]$script:FsTemps.Add($t) }
+        if ($b.dhcp -and -not $now.dhcp) { try { [void](Invoke-FsNetFix 'dhcp' @{ ifIndex = $ix; on = $true }); Fs-LogLine 'DHCP switched back on for this PC' } catch { $problems += ('DHCP could not be switched back on: ' + $_.Exception.Message) } }
         if (-not $b.dhcp) {
-          foreach ($ad in @($b.addrs)) { if (-not @($now.addrs | Where-Object { $_.ip -eq $ad.ip }).Count) { try { [void](Invoke-FsNetOp 'addstatic' @{ ifIndex = $ix; ip = $ad.ip; prefix = $ad.prefix; gw = '' }); Fs-LogLine ('this PC''s own address ' + $ad.ip + ' put back') } catch { $problems += ('this PC''s own address ' + $ad.ip + ' could not be put back: ' + $_.Exception.Message) } } }
-          foreach ($g in @($b.gw)) { if ($g -and @($now.gw) -notcontains $g) { try { [void](Invoke-FsNetOp 'addroute' @{ ifIndex = $ix; gw = $g }); Fs-LogLine ('this PC''s router ' + $g + ' put back') } catch { $problems += ('the router route ' + $g + ' could not be put back: ' + $_.Exception.Message) } } }
+          foreach ($ad in @($b.addrs)) { if ($ad -and -not @(@($now.addrs) | Where-Object { $_ -and $_.ip -eq $ad.ip }).Count) { try { [void](Invoke-FsNetFix 'addstatic' @{ ifIndex = $ix; ip = $ad.ip; prefix = $ad.prefix; gw = '' }); Fs-LogLine ('this PC''s own address ' + $ad.ip + ' put back') } catch { $problems += ('this PC''s own address ' + $ad.ip + ' could not be put back: ' + $_.Exception.Message) } } }
+          foreach ($g in @($b.gw)) { if ($g -and @($now.gw) -notcontains $g) { try { [void](Invoke-FsNetFix 'addroute' @{ ifIndex = $ix; gw = $g }); Fs-LogLine ('this PC''s router ' + $g + ' put back') } catch { $problems += ('the router route ' + $g + ' could not be put back: ' + $_.Exception.Message) } } }
         }
-        if ($script:FsCoexistChanged) { $okc = $false; try { $okc = [bool](Invoke-FsNetOp 'coexist' @{ ifIndex = $ix; on = $false }) } catch {}; if ($okc) { $script:FsCoexistChanged = $false } else { $problems += 'the DHCP+static coexistence setting could not be put back' } }
+        if ($script:FsCoexistChanged) { $okc = $false; try { $okc = [bool](Invoke-FsNetFix 'coexist' @{ ifIndex = $ix; on = $false }) } catch { Fs-LogLine ('coexistence not put back: ' + $_.Exception.Message) }; if (-not $okc) { $problems += 'the DHCP+static coexistence setting could not be put back' } }
         # check it again: DHCP on (when it was), own addresses back (when fixed)
         # 2.2.2 (re-review H4): a read that fails is a problem (not a pass); a DHCP adapter must have a real address again and every
         # router it had (default route) must be back - for DHCP too. DHCP can take a few seconds to hand the address back: asked again.
+        # 2.2.19: the temporary addresses must still be gone, the coexistence setting (when it was changed) must READ BACK as it was
         $chk = $null; $vp = @()
         for ($try = 0; $try -lt [math]::Max(1, [int]$script:FsRestoreChecks); $try++) {
-          if ($try -gt 0) { if ($b.dhcp -and $try -eq 1) { try { [void](Invoke-FsNetOp 'renew' @{ ifIndex = $ix; name = [string]$b.name }) } catch {} }; Fs-NetWait }
+          if ($try -gt 0) { if ($b.dhcp -and $try -eq 1) { try { [void](Invoke-FsNetFix 'renew' @{ ifIndex = $ix; name = [string]$b.name }) } catch {} }; Fs-NetWait }
           $chk = $null; try { $chk = Invoke-FsNetOp 'state' @{ ifIndex = $ix } } catch { $chk = $null }
-          $vp = @(Get-FsNetVerifyProblems $b $chk @($left))
+          $vp = @(Get-FsNetVerifyProblems $b $chk @($left) $coexistAtStart)
           if (-not $vp.Count) { break }
         }
         $problems += $vp
+        if (-not $vp.Count) { $script:FsCoexistChanged = $false }
       }
     }
-  } else { $script:FsTemps.Clear() }
+  }
   $problems = @($problems | Select-Object -Unique)
   if (-not $problems.Count) {
     $script:FsPcBefore = $null; $script:FsCoexistChanged = $false; $script:FsTemps.Clear()
-    if ($stateFile -and (Test-Path -LiteralPath $stateFile)) { Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue }
+    if ($stateFile -and (Test-Path -LiteralPath $stateFile)) { try { Remove-Item -LiteralPath $stateFile -Force -ErrorAction Stop } catch { Fs-LogLine ('this PC''s network is back, but its finished record could not be removed (' + $_.Exception.Message + '); the next start checks it again') } }
   } else {
     foreach ($pb in $problems) { Fs-LogLine ('NETWORK NOT BACK TO NORMAL: ' + $pb) }
-    try { Save-FsNetState $stateFile } catch {}
+    # an older record without the adapter (2.2.0 list) is left exactly as it is; a 2.2.10+ record is updated with what is left
+    if ($b) { try { Save-FsNetState $stateFile } catch { Fs-LogLine ('the record could not be updated (' + $_.Exception.Message + '); the older copy is kept') } }
   }
   $script:FsLastRestore = [pscustomobject]@{ ok = (-not $problems.Count); problems = @($problems) }
   return $script:FsLastRestore
@@ -1024,19 +1176,29 @@ function Restore-FsPcNet([string]$stateFile) {
 # 2.2.2 (re-review H4): what is still not as it was ($b = saved before, $chk = read now, $temps = temporary addresses still on).
 $script:FsRestoreChecks = 5     # reads of the adapter before it counts as "not back" (about 2 s apart)
 function Fs-NetWait { if ($script:FsNetOps -and $script:FsNetOps.ContainsKey('wait')) { [void](& $script:FsNetOps['wait'] @{}); return }; Start-Sleep -Seconds 2 }
-function Get-FsNetVerifyProblems($b, $chk, $temps = @()) {
-  if (-not $chk) { return @('this PC''s network settings could not be read back, so it is not known whether they are back') }
+function Get-FsNetVerifyProblems($b, $chk, $temps = @(), [bool]$coexist = $false) {
+  # 2.2.19 (F08): an incomplete read is "not known", never "back"
+  $rp = Get-FsNetReadProblem $chk
+  if ($rp) { return @($rp + ', so it is not known whether they are back') }
   $p = @()
   $tempIps = @(@($temps) + @($script:FsTemps) | Where-Object { $_ } | ForEach-Object { [string]$_.ip })
+  foreach ($ti in @($tempIps | Select-Object -Unique)) { if (@(@($chk.addrs) | Where-Object { $_ -and [string]$_.ip -eq $ti }).Count) { $p += ('the temporary address ' + $ti + ' is still on the adapter') } }
   $own = @(@($chk.addrs) | Where-Object { $_ -and $_.ip -and -not $_.skip -and [string]$_.ip -notlike '169.254.*' -and $tempIps -notcontains [string]$_.ip })
   if ($b.dhcp) {
     if (-not $chk.dhcp) { $p += 'DHCP is still off on this PC' }
     $hadAddr = @(@($b.addrs) | Where-Object { $_ -and [string]$_.ip -notlike '169.254.*' }).Count -gt 0
     if ($hadAddr -and -not $own.Count) { $p += 'this PC has no address from DHCP yet' }
   } else {
-    foreach ($ad in @($b.addrs)) { if ($ad -and -not @($chk.addrs | Where-Object { $_.ip -eq $ad.ip }).Count) { $p += ('this PC''s address ' + $ad.ip + ' is still missing') } }
+    foreach ($ad in @($b.addrs)) { if ($ad -and -not @(@($chk.addrs) | Where-Object { $_ -and $_.ip -eq $ad.ip }).Count) { $p += ('this PC''s address ' + $ad.ip + ' is still missing') } }
   }
   foreach ($g in @($b.gw)) { if ($g -and @($chk.gw) -notcontains $g) { $p += ('this PC''s router ' + $g + ' (default route) is not back') } }
+  # 2.2.19 (Codex 2.2.18 F18 twin): a coexistence setting this run changed must read back as it was; unreadable = not known
+  if ($coexist) {
+    $want = $(if ([string]$b.coexist -eq 'enabled') { 'enabled' } else { 'disabled' })
+    $got = $(if ($chk.PSObject.Properties['coexist']) { ([string]$chk.coexist).ToLower() } else { '' })
+    if ($got -notin @('enabled', 'disabled')) { $p += ('the DHCP+static coexistence setting could not be read back (it should be ' + $want + '), so it is not known whether it is back') }
+    elseif ($got -ne $want) { $p += ('the DHCP+static coexistence setting is ' + $got + ', it should be ' + $want) }
+  }
   return $p
 }
 function Remove-FsTempIps([string]$stateFile) {
@@ -1073,6 +1235,10 @@ function Set-FsNetRecoveryMarker([string]$stateFile, [string]$kept, [datetime]$w
   return $mk
 }
 # '' = the recovery is verified now, else what is still missing (plain words)
+# 2.2.19 (decision, Codex 2.2.18 F05/F08/F09): a restart alone never clears it. Cleared only by a POSITIVE check of the actual state,
+# with every query readable: this PC restarted since the problem was written down (a temporary address lives only in memory), AND
+# no adapter has a "skip as source" address (the kind the Toolkit adds), AND every connected adapter reads completely and is
+# normal: DHCP on with coexistence off, or its own fixed address. Anything unreadable or not normal = still blocked.
 function Test-FsNetRecoveryVerified($createdUtc) {
   if (-not $createdUtc) { return 'it is not known when the problem was written down' }
   $boot = $null; try { $boot = Invoke-FsNetOp 'boottime' @{} } catch { $boot = $null }
@@ -1081,6 +1247,20 @@ function Test-FsNetRecoveryVerified($createdUtc) {
   $sk = $null; try { $sk = Invoke-FsNetOp 'skipaddrs' @{} } catch { $sk = $null }
   if (-not $sk -or -not $sk.PSObject.Properties['ips']) { return 'this PC''s network addresses could not be read' }
   if (@($sk.ips | Where-Object { $_ }).Count) { return ('a temporary address is still on this PC (' + (@($sk.ips | Where-Object { $_ }) -join ', ') + ')') }
+  $all = $null; try { $all = Invoke-FsNetOp 'allstate' @{} } catch { $all = $null }
+  if (-not $all -or -not $all.PSObject.Properties['adapters']) { return 'this PC''s network adapters could not be read' }
+  foreach ($x in @($all.adapters | Where-Object { $_ })) {
+    $st = $x.state; $nm = [string]$x.name
+    $rp = Get-FsNetReadProblem $st
+    if ($rp) { return ('the settings of adapter "' + $nm + '" could not be fully read') }
+    if (@(@($st.addrs) | Where-Object { $_ -and $_.skip -and [string]$_.ip -notlike '169.254.*' }).Count) { return ('a temporary address is still on adapter "' + $nm + '"') }
+    $own = @(@($st.addrs) | Where-Object { $_ -and $_.ip -and -not $_.skip -and [string]$_.ip -notlike '169.254.*' })
+    if ($st.dhcp) {
+      $co = $(if ($st.PSObject.Properties['coexist']) { ([string]$st.coexist).ToLower() } else { '' })
+      if ($co -notin @('enabled', 'disabled')) { return ('the DHCP+static coexistence setting of adapter "' + $nm + '" could not be read') }
+      if ($co -eq 'enabled') { return ('adapter "' + $nm + '" still has DHCP+static coexistence on (the Toolkit turns it on while it works) - run Restore Network') }
+    } elseif (-not $own.Count) { return ('adapter "' + $nm + '" has DHCP off and no address of its own - run Restore Network') }
+  }
   return ''
 }
 # '' = no unresolved recovery (or it was just verified and cleared); otherwise the block, in plain words
@@ -1109,6 +1289,50 @@ function Test-FsNetRecoveryMarker([string]$stateFile) {
   }
   return ('an earlier run left this PC''s network changed and its record could not be read' + $(if ($kept) { ' (kept as ' + $kept + ')' } else { '' }) + '; no change is made to this PC''s network until that is sorted out - ' + $why + '. Restart this PC, then run again')
 }
+# 2.2.19 (Codex 2.2.18 F09): '' when a journal read from disk has a supported shape with every value recovery needs, else what
+# is wrong. Version 2: { version = 2; before = { ifIndex (number); name; dhcp (true/false); coexist; addrs (list); gw (list); guid
+# (2.2.19+, may be missing in older ones) }; coexistChanged (true/false); temps (list of { ip; ifIndex }) }. The 2.2.0 form: a
+# non-empty list of { ip; ifIndex }. Anything else ({} included) is NOT "nothing changed": it is quarantined under the durable block.
+function Test-FsIpv4([string]$s) { $p = [Net.IPAddress]::None; return ($s -match '^\d{1,3}(\.\d{1,3}){3}$' -and [Net.IPAddress]::TryParse($s, [ref]$p)) }
+function Test-FsJsonInt($v) { if ($null -eq $v -or $v -is [bool]) { return $false }; $n = 0; return ([int]::TryParse([string]$v, [ref]$n) -and $n -ge 0) }
+function Test-FsNetTempEntry($t) { return ($t -and $t -is [pscustomobject] -and $t.PSObject.Properties['ip'] -and (Test-FsIpv4 ([string]$t.ip)) -and $t.PSObject.Properties['ifIndex'] -and (Test-FsJsonInt $t.ifIndex)) }
+function Get-FsNetJournalProblem($tj) {
+  if ($null -eq $tj) { return 'it is empty' }
+  if ($tj -is [array]) {
+    $l = @($tj); if (-not $l.Count) { return 'it is an empty list' }
+    foreach ($t in $l) { if (-not (Test-FsNetTempEntry $t)) { return 'an address in it has no valid IP or adapter number' } }
+    return ''
+  }
+  if ($tj -isnot [pscustomobject]) { return 'it is not a record' }
+  if (-not $tj.PSObject.Properties['version']) { if ($tj.PSObject.Properties['ip']) { if (Test-FsNetTempEntry $tj) { return '' }; return 'its address has no valid IP or adapter number' }; return 'it has no version' }
+  if (-not (Test-FsJsonInt $tj.version) -or [int]$tj.version -ne 2) { return ('its version (' + [string]$tj.version + ') is not one this Toolkit knows') }
+  $miss = @()
+  foreach ($k in @('before', 'coexistChanged', 'temps')) { if (-not $tj.PSObject.Properties[$k]) { $miss += $k } }
+  if ($miss.Count) { return ('it is missing ' + ($miss -join ', ')) }
+  if ($tj.coexistChanged -isnot [bool]) { return 'its coexistChanged is not true/false' }
+  $b = $tj.before
+  if ($null -eq $b -or $b -isnot [pscustomobject]) { return 'it does not say how the adapter was before' }
+  foreach ($k in @('ifIndex', 'name', 'dhcp', 'coexist', 'addrs', 'gw')) { if (-not $b.PSObject.Properties[$k]) { $miss += ('before.' + $k) } }
+  if ($miss.Count) { return ('it is missing ' + ($miss -join ', ')) }
+  if (-not (Test-FsJsonInt $b.ifIndex)) { return 'its adapter number is not a number' }
+  if (-not [string]$b.name) { return 'it does not name the adapter' }
+  if ($b.dhcp -isnot [bool]) { return 'its DHCP setting is not true/false' }
+  if ([string]$b.coexist -notin @('enabled', 'disabled', 'unknown')) { return 'its coexistence setting is not readable' }
+  foreach ($ad in @($b.addrs)) { if ($null -ne $ad -and -not ($ad -is [pscustomobject] -and (Test-FsIpv4 ([string]$ad.ip)))) { return 'one of its own addresses is not a valid IP' } }
+  foreach ($g in @($b.gw)) { if ($null -ne $g -and [string]$g -and -not (Test-FsIpv4 ([string]$g))) { return 'one of its routers is not a valid IP' } }
+  if (-not $b.dhcp -and -not @(@($b.addrs) | Where-Object { $_ }).Count) { return 'it says the adapter had a fixed setup but lists no address' }
+  if ($null -ne $tj.temps -and $tj.temps -isnot [array] -and $tj.temps -isnot [pscustomobject]) { return 'its list of temporary addresses is not a list' }
+  foreach ($t in @($tj.temps | Where-Object { $null -ne $_ })) { if (-not (Test-FsNetTempEntry $t)) { return 'a temporary address in it has no valid IP or adapter number' } }
+  return ''
+}
+# an unreadable or damaged journal: kept (renamed .unreadable-<time>.json) + the durable marker; returns the block (plain words)
+function Set-FsNetJournalQuarantine([string]$stateFile, [string]$what) {
+  $keep = $stateFile -replace '\.json$', ('.unreadable-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')
+  try { Move-Item -LiteralPath $stateFile -Destination $keep -Force -ErrorAction Stop } catch { $keep = $stateFile }
+  # 2.2.18 (Codex F5): ...and written down on disk, so the next start is blocked too (see Test-FsNetRecoveryMarker)
+  $mw = ''; try { [void](Set-FsNetRecoveryMarker $stateFile (Split-Path -Leaf $keep) ((Get-Date).ToUniversalTime())) } catch { $mw = ' (the reminder file could not be written: ' + $_.Exception.Message + ')' }
+  return ('the record of an earlier run''s changes to this PC''s network ' + $what + ' (kept as ' + (Split-Path -Leaf $keep) + '); no change is made to this PC''s network until that is sorted out - restart this PC, then run again (it is checked then)' + $mw)
+}
 function Clear-FsLeftoverTemps([string]$stateFile) {
   # a run that crashed or was stopped left this PC changed: put it back at the next start (and from the "Fix this site" task's finally)
   if (($script:FsMockUrl -and -not $script:FsNetOps) -or -not $stateFile) { return $null }
@@ -1120,27 +1344,28 @@ function Clear-FsLeftoverTemps([string]$stateFile) {
     return $script:FsLastRestore
   }
   if (-not (Test-Path -LiteralPath $stateFile)) { return $null }
-  $tj = $null; try { $tj = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json } catch {}
-  if (-not $tj) {
-    # 2.2.10 (Codex R03): an unreadable journal is an unsolved recovery, not "nothing to do". It is kept (renamed, so the PC can be
-    # put back by hand from it), no adapter change happens in this run, and the run ends FAILED - Run again.
-    $keep = $stateFile -replace '\.json$', ('.unreadable-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')
-    try { Move-Item -LiteralPath $stateFile -Destination $keep -Force } catch { $keep = $stateFile }
-    # 2.2.18 (Codex F5): ...and written down on disk, so the next start is blocked too (see Test-FsNetRecoveryMarker)
-    $mw = ''; try { [void](Set-FsNetRecoveryMarker $stateFile (Split-Path -Leaf $keep) ((Get-Date).ToUniversalTime())) } catch { $mw = ' (the reminder file could not be written: ' + $_.Exception.Message + ')' }
-    $script:FsNetBlocked = ('the record of an earlier run''s changes to this PC''s network could not be read (kept as ' + (Split-Path -Leaf $keep) + '); restart this PC to clear any temporary address, then run again' + $mw)
+  $tj = $null; $rdErr = ''
+  try { $raw = [IO.File]::ReadAllText($stateFile); $tj = ConvertFrom-Json -InputObject $raw -ErrorAction Stop } catch { $rdErr = $_.Exception.Message; $tj = $null }
+  # 2.2.10 (Codex R03): an unreadable journal is an unsolved recovery, not "nothing to do". It is kept (renamed, so the PC can be
+  # put back by hand from it), no adapter change happens in this run, and the run ends FAILED - Run again.
+  # 2.2.19 (Codex 2.2.18 F09): the same for a journal that reads but is damaged ({} or a required value missing/invalid)
+  $jp = $(if ($rdErr) { 'could not be read' } else { Get-FsNetJournalProblem $tj })
+  if ($jp) {
+    $what = $(if ($rdErr) { 'could not be read' } else { 'is damaged (' + $jp + ')' })
+    $script:FsNetBlocked = Set-FsNetJournalQuarantine $stateFile $what
     Fs-LogLine ('NETWORK NOT BACK TO NORMAL: ' + $script:FsNetBlocked)
     $script:FsLastRestore = [pscustomobject]@{ ok = $false; problems = @($script:FsNetBlocked) }
     return $script:FsLastRestore
   }
   $script:FsTemps.Clear()
-  if ($tj.PSObject.Properties['version'] -and [int]$tj.version -ge 2) {
+  if ($tj -isnot [array] -and $tj.PSObject.Properties['version']) {
     $script:FsPcBefore = $tj.before; $script:FsCoexistChanged = [bool]$tj.coexistChanged
     foreach ($t in @($tj.temps)) { if ($t) { [void]$script:FsTemps.Add($t) } }
-  } else { foreach ($t in @($tj)) { if ($t -and $t.ip) { [void]$script:FsTemps.Add($t) } } }   # 2.2.0 and older: a plain list of addresses
+  } else { $script:FsPcBefore = $null; foreach ($t in @($tj)) { if ($t -and $t.ip) { [void]$script:FsTemps.Add($t) } } }   # 2.2.0 and older: a plain list of addresses
   Fs-LogLine 'a previous run left this PC''s network changed - putting it back'
   return (Restore-FsPcNet $stateFile)
 }
+
 function Wait-FsDevice([string]$ip, [string]$brand, [string]$pw, [int]$seconds) {
   $end = (Get-Date).AddSeconds($seconds)
   do { $s = Test-FsLogin $ip $brand $pw; if ($s -eq 'ok') { return $true }; if ($s -eq 'refused' -or $s -eq 'locked') { return $false }; Fs-Sleep 5 } while ((Get-Date) -lt $end)

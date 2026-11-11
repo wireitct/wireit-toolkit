@@ -79,6 +79,7 @@ try { Show-HikExtraIpReminder $cam } catch {}
     $script:sim = @{ dhcp = $true; coexist = 'disabled'; addrs = New-Object System.Collections.ArrayList; gw = @('192.168.1.1'); removeWorks = $false; addThrows = $true; calls = New-Object System.Collections.ArrayList; coexistThrows = $false; seenJournal = $null; journal = '' }
     [void]$script:sim.addrs.Add([pscustomobject]@{ ip = '192.168.1.105'; prefix = 24; origin = 'Dhcp'; skip = $false })
     $script:FsNetOps = @{
+      ident = { param($a) [pscustomobject]@{ name = 'Ethernet'; guid = '{6f1c2b9e-0d3a-4c55-9a51-2f0e5d7c1a11}' } }   # 2.2.19 (F05): the stand-in also answers which adapter is at that number
       state = { param($a) [pscustomobject]@{ dhcp = $script:sim.dhcp; coexist = $script:sim.coexist; addrs = @($script:sim.addrs); gw = @($script:sim.gw) } }
       coexist = { param($a) [void]$script:sim.calls.Add('coexist ' + $a.on); if ($a.on -and $script:sim.journal -and (Test-Path -LiteralPath $script:sim.journal)) { $script:sim.seenJournal = (Get-Content -LiteralPath $script:sim.journal -Raw | ConvertFrom-Json) }
         $script:sim.coexist = $(if ($a.on) { 'enabled' } else { 'disabled' }); if ($a.on -and $script:sim.coexistThrows) { throw 'the run was stopped here' }; return $true }

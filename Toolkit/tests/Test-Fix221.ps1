@@ -60,6 +60,7 @@ function New-SimNet([bool]$dhcp) {
   $script:sim = @{ dhcp = $dhcp; coexist = 'disabled'; addrs = New-Object System.Collections.ArrayList; gw = @('192.168.1.1'); failDhcp = $false; failCoexist = $false; calls = New-Object System.Collections.ArrayList }
   [void]$script:sim.addrs.Add([pscustomobject]@{ ip = '192.168.1.105'; prefix = 24; origin = $(if ($dhcp) { 'Dhcp' } else { 'Manual' }); skip = $false; store = 'ActiveStore'; addrState = 'Preferred' })
   $script:FsNetOps = @{
+    ident = { param($a) [pscustomobject]@{ name = 'Ethernet'; guid = '{6f1c2b9e-0d3a-4c55-9a51-2f0e5d7c1a11}' } }   # 2.2.19 (F05): the stand-in also answers which adapter is at that number
     state = { param($a) [void]$script:sim.calls.Add('state'); [pscustomobject]@{ dhcp = $script:sim.dhcp; coexist = $script:sim.coexist; addrs = @($script:sim.addrs); gw = @($script:sim.gw) } }
     coexist = { param($a) [void]$script:sim.calls.Add('coexist ' + $a.on); if ($script:sim.failCoexist) { return $false }; $script:sim.coexist = $(if ($a.on) { 'enabled' } else { 'disabled' }); return $true }
     dhcp = { param($a) [void]$script:sim.calls.Add('dhcp ' + $a.on); if ($script:sim.failDhcp) { throw 'Access is denied' }; $script:sim.dhcp = [bool]$a.on; return $true }
@@ -121,7 +122,11 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $st1) | Out-Null
 [void]$sim.addrs.Add([pscustomobject]@{ ip = '192.168.0.253'; prefix = 24; origin = 'Manual'; skip = $true; store = 'ActiveStore'; addrState = 'Preferred' })
 Set-Content -LiteralPath $st1 -Value '[{"p3":"192.168.0","ip":"192.168.0.253","ifIndex":5}]'
 $r = Clear-FsLeftoverTemps $st1
-Check ($r.ok -and -not @($sim.addrs | Where-Object { $_.ip -eq '192.168.0.253' }).Count -and -not (Test-Path -LiteralPath $st1)) 'a 2.2.0 state file: its address is removed'
+# 2.2.19 (Codex 2.2.18 F05): a 2.2.0 list does not name its adapter, so nothing is changed from it any more (2.2.1-2.2.18 removed the
+# address from whatever adapter had that number); it is checked, kept, and the run says to restart the PC
+Check (-not $r.ok -and @($sim.addrs | Where-Object { $_.ip -eq '192.168.0.253' }).Count -eq 1 -and -not @($sim.calls | Where-Object { $_ -like 'remove*' }).Count -and (Test-Path -LiteralPath $st1) -and (@($r.problems) -join ' ') -match 'restart') 'a 2.2.0 state file (no adapter name): its address is NOT taken off blindly, the record is kept, restart named (2.2.19, F05)'
+$sim.addrs.Clear(); $r = Clear-FsLeftoverTemps $st1
+Check ($r.ok -and -not (Test-Path -LiteralPath $st1)) '...once a complete read shows the address gone (after a restart), the 2.2.0 record is done'
 $script:FsNetOps = $null
 # 2.2.3: no task any more - a run that was killed is cleaned up when Fix this site next starts
 Check ($fs -match 'if \(Test-Path -LiteralPath \$tempState\) \{ try \{ \$nr0 = Remove-FsTempIps \$tempState') 'a killed run''s network is put back when Fix this site starts again (2.2.3: replaces the task''s finally)'

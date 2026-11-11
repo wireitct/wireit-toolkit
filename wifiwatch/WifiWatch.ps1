@@ -61,12 +61,41 @@ function Enable-WwAdapter([string]$name) {
   return $false
 }
 # a run that was stopped half-way left the adapter off: switch it back on before anything else
+# 2.2.19 (Codex 2.2.18 F21): returns $true when nothing is left to recover. A marker that cannot be read (or holds no adapter name)
+# is KEPT - 2.2.11-2.2.18 deleted it and the next run had nothing telling it which adapter to switch back on. It stays the block
+# (this run does nothing else) until a checked recovery: every Wi-Fi adapter on this PC reads as switched on; only then is the
+# marker set aside (renamed adapter-off.resolved-<time>.txt, never deleted).
+function Get-WwWifiOff {
+  # the Wi-Fi adapters that are switched off now: a list of names, or $null when the adapters could not be read
+  if ($script:WwOps) { return (& $script:WwOps 'wifioff' @{}) }
+  try {
+    return @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { ([string]$_.NdisPhysicalMedium -eq '9' -or [string]$_.InterfaceDescription -match '(?i)wi-?fi|wireless|802\.11|wlan') -and ([string]$_.Status -eq 'Disabled' -or [string]$_.AdminStatus -eq 'Down') } | ForEach-Object { [string]$_.Name })
+  } catch { return $null }
+}
+function Set-WwMarkerAside([string]$why) {
+  $to = Join-Path $Dir ('adapter-off.resolved-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.txt')
+  try { Move-Item -LiteralPath $marker -Destination $to -Force -ErrorAction Stop } catch { L ('the recovery marker could not be set aside (' + $_.Exception.Message + ') - kept'); return $false }
+  if (Test-Path -LiteralPath $marker) { L 'the recovery marker is still there after setting it aside - kept'; return $false }
+  L ('the recovery marker is resolved (' + $why + '), kept as ' + (Split-Path -Leaf $to)); return $true
+}
 function Repair-WwAdapter {
-  if (-not (Test-Path -LiteralPath $marker)) { return }
-  $name = ([string](Get-Content -LiteralPath $marker -Raw)).Trim()
-  if (-not $name) { Remove-Item -LiteralPath $marker -Force; return }
+  if (-not (Test-Path -LiteralPath $marker)) { return $true }
+  $name = $null; $rerr = ''
+  try { $name = ([string](Get-Content -LiteralPath $marker -Raw -ErrorAction Stop)).Trim() } catch { $name = $null; $rerr = $_.Exception.Message }
+  if (-not $name) {
+    $why = $(if ($rerr) { 'could not be read (' + $rerr + ')' } else { 'holds no adapter name' })
+    L ('RECOVERY NOT DONE: the marker ' + $marker + ' (an earlier run switched a Wi-Fi adapter off) ' + $why + ' - it is kept, and nothing else is done until it is sorted out')
+    $off = Get-WwWifiOff
+    if ($null -eq $off) { L 'the Wi-Fi adapters could not be read, so it is not known whether one is still off - still blocked'; return $false }
+    if (@($off | Where-Object { $_ }).Count) { L ('Wi-Fi adapter(s) switched off now: ' + (@($off | Where-Object { $_ }) -join ', ') + ' - switch it on (Restore Network, or Settings > Network) - still blocked'); return $false }
+    return (Set-WwMarkerAside 'every Wi-Fi adapter on this PC reads as switched on')
+  }
   L ('adapter "' + $name + '" was left switched off by an earlier run - switching it back on')
-  if (Enable-WwAdapter $name) { Remove-Item -LiteralPath $marker -Force; L ('adapter "' + $name + '" is on again') } else { L ('adapter "' + $name + '" is STILL OFF - will try again next minute') }
+  if (Enable-WwAdapter $name) {
+    try { Remove-Item -LiteralPath $marker -Force -ErrorAction Stop } catch { L ('adapter "' + $name + '" is on again, but the marker could not be removed: ' + $_.Exception.Message); return $false }
+    L ('adapter "' + $name + '" is on again'); return $true
+  }
+  L ('adapter "' + $name + '" is STILL OFF - will try again next minute'); return $false
 }
 # 2.2.15 (Codex 2.2.14 R7): writes the recovery marker and reads it back; $true only when the file holds exactly this adapter name
 function Save-WwMarker([string]$iface) {
@@ -87,7 +116,7 @@ function Invoke-WwAdapterCycle([string]$iface, [string]$prof) {
     [void](Ww-Op 'sleep' @{ s = 6 })
   } catch { L ('disable failed: ' + $_.Exception.Message) }
   finally {
-    if (Enable-WwAdapter $iface) { Remove-Item -LiteralPath $marker -Force; L ('adapter "' + $iface + '" is on again') }
+    if (Enable-WwAdapter $iface) { try { Remove-Item -LiteralPath $marker -Force -ErrorAction Stop; L ('adapter "' + $iface + '" is on again') } catch { L ('adapter "' + $iface + '" is on again, but the marker could not be removed (the next run checks it): ' + $_.Exception.Message) } }
     else { L ('adapter "' + $iface + '" did NOT come back on - next run tries again') }
   }
   [void](Ww-Op 'sleep' @{ s = 12 })
@@ -122,7 +151,8 @@ function Online {
 }
 if ($MyInvocation.InvocationName -eq '.') { return }
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-Repair-WwAdapter
+# 2.2.19 (F21): an unfinished recovery is the block - this run does nothing else (no reconnect, no adapter off/on)
+if (-not (Repair-WwAdapter)) { L 'an earlier run''s adapter recovery is not finished - no other Wi-Fi step this run'; exit 0 }
 # 2.2.12 (Codex P1-7): Restore Network is working on the network - do nothing, count nothing
 if (Test-WwPaused) { L ('paused by Restore Network until ' + $script:WwPausedUntil + ' - doing nothing'); exit 0 }
 $fails = 0; if (Test-Path $state) { $fails = [int](Get-Content $state -Raw) }
