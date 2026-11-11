@@ -140,6 +140,8 @@ class H(BaseHTTPRequestHandler):
             d['net'].update(ip=new, mask=top.group(2), gw=gw.group(1) if gw else n['gw'], dhcp=('dynamic' in body))
             dn = re.search(r'<PrimaryDNS><ipAddress>([^<]*)', body)
             if dn: d['net']['dns1'] = dn.group(1)
+            dn2 = re.search(r'<SecondaryDNS><ipAddress>([^<]*)', body)
+            if dn2: d['net']['dns2'] = dn2.group(1)   # 2.2.20: a real device takes DNS 2 too (the check reads it back now)
             if new != old: S['devices'][new] = S['devices'].pop(old)
             return self.send(200, '<ResponseStatus><statusCode>1</statusCode></ResponseStatus>', X)
         if path == '/ISAPI/Security/users/1' and method == 'PUT':
@@ -224,6 +226,8 @@ class H(BaseHTTPRequestHandler):
                     elif k.endswith('eth0.SubnetMask'): n['mask'] = v
                     elif k.endswith('eth0.DefaultGateway'): n['gw'] = v
                     elif k.endswith('eth0.DhcpEnable'): n['dhcp'] = (v == 'true')
+                    elif k.endswith('eth0.DnsServers[0]'): n['dns1'] = v   # 2.2.20: a real device takes both DNS (the check reads them back now)
+                    elif k.endswith('eth0.DnsServers[1]'): n['dns2'] = v
                 if any(k.endswith('eth0.IPAddress') for k in q):
                     old = n['ip']; n['ip'] = q[[k for k in q if k.endswith('eth0.IPAddress')][0]]
                     if n['ip'] != old: S['devices'][n['ip']] = S['devices'].pop(old)

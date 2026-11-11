@@ -65,6 +65,28 @@ function Write-FsFileAtomic([string]$path, [string]$text) {
     [IO.File]::WriteAllText($tmp, $text, (New-Object Text.UTF8Encoding($true)))
     if ([IO.File]::Exists($path)) { [IO.File]::Replace($tmp, $path, [NullString]::Value) } else { [IO.File]::Move($tmp, $path) }
   } finally { if ([IO.File]::Exists($tmp)) { try { [IO.File]::Delete($tmp) } catch {} } }
+  # 2.2.20 (Codex 2.2.19 class A): "saved" only when the file in its place reads back exactly as written
+  $back = $null; try { $back = [IO.File]::ReadAllText($path) } catch { throw ('the file was written but cannot be read back (' + $_.Exception.Message + ')') }
+  if ($back.TrimStart([char]0xFEFF) -cne $text.TrimStart([char]0xFEFF)) { throw 'the file does not read back as it was written' }
+}
+# 2.2.20 (Codex 2.2.19 R01): an authoritative record (this PC's network journal, its recovery marker) is installed in ONE checked step
+# and READ BACK before the change it protects. Every failure THROWS (2.2.19's Move-Item had no -ErrorAction Stop: under the caller's
+# Continue a refused move was only a warning, the catch never ran, and the adapter was changed with no journal on disk). Saved =
+# the final file exists, reads back byte-for-byte as written and parses as JSON. <path>.tmp is the same fixed name every time: one
+# left behind after a stop is EVIDENCE of a change in progress (Resolve-FsNetOrphanTmp), so it is never deleted here.
+function Save-FsRecordVerified([string]$path, [string]$text) {
+  if (-not $path) { throw 'no record file name' }
+  $dir = Split-Path -Parent $path
+  if ($dir) { New-Item -ItemType Directory -Force -Path $dir -ErrorAction Stop | Out-Null }
+  $tmp = $path + '.tmp'
+  try {
+    [IO.File]::WriteAllText($tmp, $text)
+    Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop
+  } catch { throw ('the record could not be put in place: ' + $_.Exception.Message) }
+  $back = $null
+  try { $back = [IO.File]::ReadAllText($path) } catch { throw ('the record cannot be read back: ' + $_.Exception.Message) }
+  if ($back -cne $text) { throw 'the record does not read back as it was saved' }
+  try { [void](ConvertFrom-Json -InputObject $back -ErrorAction Stop) } catch { throw 'the record does not read back as valid JSON' }
 }
 # ---------------- HTTP (digest/basic handled by .NET; passwords never logged) ----------------
 function Fs-Cred([string]$pw, [string]$user = 'admin') { if (-not $pw) { return $null }; return New-Object PSCredential($user, (ConvertTo-SecureString $pw -AsPlainText -Force)) }
@@ -196,7 +218,16 @@ function Fs-XmlDoc([string]$s) { if (-not $s) { return $null }; try { [xml]$x = 
 function Fs-XFind($node, [string]$name) { if (-not $node) { return @() }; return @($node.SelectNodes(".//*[local-name()='" + $name + "']")) }
 function Fs-XText($node, [string]$name) { $n = @(Fs-XFind $node $name); if ($n.Count -and $n[0]) { return ([string]$n[0].InnerText).Trim() }; return '' }
 function Fs-XSet($node, [string]$name, [string]$v) { $n = @(Fs-XFind $node $name); if ($n.Count -and $n[0]) { $n[0].InnerText = $v; return $true }; return $false }
-function Fs-HikOk($r) { if (-not $r -or $r.code -ne 200) { return $false }; $x = Fs-XmlDoc $r.body; if (-not $x) { return $true }; $sc = Fs-XText $x 'statusCode'; return (-not $sc -or $sc -eq '1' -or $sc -eq '7') }
+# 2.2.20 (Codex 2.2.19 class C sweep): an HTTP 200 is an accepted write only when it is not a login / HTML page or other non-XML
+# document; an XML answer must not carry an error status. (An empty 200 body stays accepted: every write's outcome is read back.)
+function Fs-HikOk($r) {
+  if (-not $r -or $r.code -ne 200) { return $false }
+  $b = [string]$r.body; if (-not $b.Trim()) { return $true }
+  if (Test-FsHtmlText $b) { return $false }
+  $x = Fs-XmlDoc $b; if (-not $x -or -not $x.DocumentElement) { return $false }
+  if ($x.DocumentElement.LocalName -ne 'ResponseStatus') { return $true }
+  $sc = Fs-XText $x 'statusCode'; return (-not $sc -or $sc -eq '1' -or $sc -eq '7')
+}
 function Fs-HikNeedsReboot($r) { $x = Fs-XmlDoc $r.body; return ((Fs-XText $x 'statusCode') -eq '7') }
 function Fs-DhLines([string]$body) {
   # Dahua answers "table.Network.eth0.IPAddress=192.168.1.83" lines -> hashtable without the "table." prefix
@@ -280,17 +311,22 @@ function Get-FsLoginBudget([string]$k) {
   return [pscustomobject]@{ fails = $n; until = $until; unknown = '' }
 }
 # writes the result of one try. $prev = the device's entry before the try was reserved ($null = none)
-function Set-FsLoginResult([string]$k, [string]$s, $prev = $null, [int]$reserved = -1) {
-  if ($s -notin @('ok', 'refused', 'locked', 'noanswer', 'notfound')) { return }
+# 2.2.20 (Codex 2.2.19 R13): $notSent = the try failed BEFORE the password left this PC (the connection was refused, there was no
+# route, or the password was held back: Basic over plain HTTP). Only then is the reserved try given back. A try that timed out, was
+# cut off, or got an answer that is not the device's login document is UNKNOWN: the camera may have counted a wrong password, so the
+# reserved try STAYS counted (2.2.19 gave it back, and six uncertain tries went to a camera with a limit of four).
+function Set-FsLoginResult([string]$k, [string]$s, $prev = $null, [int]$reserved = -1, [bool]$notSent = $false) {
+  if ($s -notin @('ok', 'refused', 'locked', 'noanswer', 'notfound', 'unknown')) { return }
   $h = Read-FsLoginLedger
   if ($script:FsLoginLedgerWhy) { $script:FsLoginHold[$k] = $script:FsLoginLedgerWhy; return }
   if ($s -eq 'ok') { $script:FsLoginFails.Remove($k); if ($h.ContainsKey($k)) { $h.Remove($k); if (-not (Save-FsLoginLedger $h)) { $script:FsLoginHold[$k] = 'the wrong-password count for this device could not be saved' } }; return }
-  if ($s -in @('noanswer', 'notfound')) {
-    # nothing was refused: the reserved try is given back (a failed save leaves the higher count = the careful side)
+  if ($s -in @('noanswer', 'notfound', 'unknown') -and $notSent) {
+    # the password never left this PC: the reserved try is given back (a failed save leaves the higher count = the careful side)
     if ($null -ne $prev) { $h[$k] = $prev } else { [void]$h.Remove($k) }
     if (-not (Save-FsLoginLedger $h)) { Fs-LogLine ('the reserved try for ' + $k + ' could not be given back (the count stays one higher)') }
     return
   }
+  if ($s -in @('noanswer', 'notfound', 'unknown')) { Fs-LogLine ('login to ' + $k + ': no clear answer (' + $s + ') - the try stays counted, the camera may have counted it as a wrong password') }
   $n = $(if ($s -eq 'locked') { [int]$script:FsMaxLoginFails } elseif ($reserved -ge 1) { $reserved } else { 1 + [int](Get-FsLoginBudget $k).fails })
   $script:FsLoginFails[$k] = $n
   $h[$k] = [pscustomobject]@{ fails = $n; last = (Get-Date).ToUniversalTime().ToString('o') }
@@ -321,21 +357,35 @@ function Test-FsLogin([string]$ip, [string]$brand, [string]$pw) {
       if (-not (Save-FsLoginLedger $h)) { $script:FsLoginHold[$k] = 'the wrong-password count could not be saved before the try'; Say-FsLoginHold $k $script:FsLoginHold[$k]; return 'locked' }
     }
   }
+  $script:FsLoginNotSent = $false
   $s = Test-FsLoginOnce $ip $brand $pw
-  if ($pw) { Set-FsLoginResult $k $s $prev $res }
+  if ($pw) { Set-FsLoginResult $k $s $prev $res ([bool]$script:FsLoginNotSent) }
   return $s
 }
+# 2.2.20 (Codex 2.2.19 R12): 'ok' only for the device's AUTHENTICATED information document - Hikvision a <DeviceInfo> XML document,
+# Dahua a "type=<model>" answer. An HTTP 200 that is a login / HTML page, an error answer or garbage is 'unknown' (never "logs in").
+# $script:FsLoginNotSent = $true when no request carrying the password reached the device (see Set-FsLoginResult).
+$script:FsLoginNotSent = $false
+function Test-FsLoginSentBefore($r) { if (-not $r -or [int]$r.code -ne 0) { return $false }; return (([string]$r.err) -in @('refused', 'unreachable', 'basic-over-http')) }
 function Test-FsLoginOnce([string]$ip, [string]$brand, [string]$pw) {
-  # 'ok' | 'refused' | 'locked' | 'noanswer' | 'notfound'
+  # 'ok' | 'refused' | 'locked' | 'noanswer' | 'notfound' | 'unknown'
   $cred = Fs-Cred $pw
   if ($brand -eq 'Dahua') {
     $r = Fs-Http -Ip $ip -Path '/cgi-bin/magicBox.cgi?action=getDeviceType' -Cred $cred -Timeout 6
-    if ($r.code -eq 200) { return 'ok' }; if ($r.code -eq 401) { if ($r.body -match '(?i)lock') { return 'locked' }; return 'refused' }; if ($r.code -eq 404) { return 'notfound' }; return 'noanswer'
+    if ($r.code -eq 200) { if ([string]$r.body -match '(?im)^\s*type\s*=\s*\S' -and -not (Test-FsHtmlText ([string]$r.body))) { return 'ok' }; Fs-LogLine ('login to ' + $ip + ': HTTP 200 but not the device''s answer (a login or error page) - not taken as logged in'); return 'unknown' }
+    if ($r.code -eq 401) { if ($r.body -match '(?i)lock') { return 'locked' }; return 'refused' }; if ($r.code -eq 404) { return 'notfound' }
+    if (Test-FsLoginSentBefore $r) { $script:FsLoginNotSent = $true }
+    return 'noanswer'
   }
   $r = Fs-Http -Ip $ip -Path '/ISAPI/System/deviceInfo' -Cred $cred -Timeout 6
-  if ($r.code -eq 200) { return 'ok' }
+  if ($r.code -eq 200) {
+    $x = Fs-XmlDoc ([string]$r.body)
+    if ($x -and $x.DocumentElement -and $x.DocumentElement.LocalName -eq 'DeviceInfo') { return 'ok' }
+    Fs-LogLine ('login to ' + $ip + ': HTTP 200 but not a DeviceInfo document (a login or error page) - not taken as logged in'); return 'unknown'
+  }
   if ($r.code -eq 401 -or $r.code -eq 403) { if ($r.body -match '(?i)lock|unlockTime') { return 'locked' }; return 'refused' }
   if ($r.code -eq 404 -and $brand -ne 'Hikvision') { return (Test-FsLoginOnce $ip 'Dahua' $pw) }
+  if (Test-FsLoginSentBefore $r) { $script:FsLoginNotSent = $true }
   return 'noanswer'
 }
 function Find-FsPassword([string]$ip, [string]$brand, $candidates, [int]$maxTries = 3) {
@@ -346,7 +396,7 @@ function Find-FsPassword([string]$ip, [string]$brand, $candidates, [int]$maxTrie
     $s = Test-FsLogin $ip $brand $c.value
     if ($s -eq 'ok') { return [pscustomobject]@{ state = 'ok'; label = $c.label; value = $c.value; tries = $n } }
     if ($s -eq 'locked') { return [pscustomobject]@{ state = 'locked'; label = ''; value = ''; tries = $n } }
-    if ($s -eq 'noanswer' -or $s -eq 'notfound') { return [pscustomobject]@{ state = 'noanswer'; label = ''; value = ''; tries = $n } }
+    if ($s -eq 'noanswer' -or $s -eq 'notfound' -or $s -eq 'unknown') { return [pscustomobject]@{ state = 'noanswer'; label = ''; value = ''; tries = $n } }
     $last = 'unknown'
   }
   return [pscustomobject]@{ state = $last; label = ''; value = ''; tries = $n }
@@ -440,6 +490,7 @@ function Get-FsMoveTargetState([string]$dest, [string]$brand, [string]$pw, [stri
     if (-not $idw) { return [pscustomobject]@{ state = 'self'; why = '' } }
     return [pscustomobject]@{ state = 'taken'; why = ($dest + ' is already used: ' + $idw) }
   }
+  if ($script:FsIpFreeWhy) { return [pscustomobject]@{ state = 'unknown'; why = $script:FsIpFreeWhy } }   # 2.2.20 (R04): unknown, not free
   return [pscustomobject]@{ state = 'taken'; why = ($dest + ' is already used by another device (it answers there and it is not ' + $What + ')') }
 }
 # 2.2.19 (Codex 2.2.18 F13): a device switched back to DHCP leaves the address it had; it counts as back only when it is FOUND again by
@@ -584,7 +635,8 @@ function Get-FsNet([string]$ip, [string]$brand, $cred) {
     $pre = 'Network.' + $if + '.'
     $dh = ConvertTo-FsDhcpMode ([string]$h[$pre + 'DhcpEnable'])   # 2.2.19 (Codex 2.2.18 D): true/1/dhcp/dynamic = DHCP; false/0/static/manual = fixed
     if (-not $h.ContainsKey($pre + 'IPAddress') -or -not $h.ContainsKey($pre + 'DefaultGateway')) { $script:FsNetWhy = 'the answer has no address/gateway lines'; return $null }
-    $o = [pscustomobject]@{ iface = $if; ip = [string]$h[$pre + 'IPAddress']; mask = [string]$h[$pre + 'SubnetMask']; gw = [string]$h[$pre + 'DefaultGateway']; dhcp = $dh; dns1 = [string]$h[$pre + 'DnsServers[0]']; dns2 = [string]$h[$pre + 'DnsServers[1]']; raw = $null }
+    $o = [pscustomobject]@{ iface = $if; ip = [string]$h[$pre + 'IPAddress']; mask = [string]$h[$pre + 'SubnetMask']; gw = [string]$h[$pre + 'DefaultGateway']; dhcp = $dh; dns1 = [string]$h[$pre + 'DnsServers[0]']; dns2 = [string]$h[$pre + 'DnsServers[1]']; raw = $null
+      has = [pscustomobject]@{ gw = $h.ContainsKey($pre + 'DefaultGateway'); dns1 = $h.ContainsKey($pre + 'DnsServers[0]'); dns2 = $h.ContainsKey($pre + 'DnsServers[1]') } }   # 2.2.20 (R09): present, not only non-empty
     $why = Test-FsNetComplete $o; if ($why) { $script:FsNetWhy = $why; return $null }
     return $o
   }
@@ -609,14 +661,46 @@ function Get-FsNet([string]$ip, [string]$brand, $cred) {
   # the top-level address (not the gateway's / DNS's ipAddress)
   $top = ''; foreach ($n in @($x.DocumentElement.ChildNodes)) { if ($n.LocalName -eq 'ipAddress') { $top = ([string]$n.InnerText).Trim() } }
   $mk = ''; foreach ($n in @($x.DocumentElement.ChildNodes)) { if ($n.LocalName -eq 'subnetMask') { $mk = ([string]$n.InnerText).Trim() } }
-  $o = [pscustomobject]@{ iface = $id; ip = $top; mask = $mk; gw = $gw; dhcp = $dh; dns1 = $(if ($d1.Count) { Fs-XText $d1[0] 'ipAddress' } else { '' }); dns2 = $(if ($d2.Count) { Fs-XText $d2[0] 'ipAddress' } else { '' }); raw = $r.body }
+  # 2.2.20 (Codex 2.2.19 R09): WHETHER the router / DNS fields are in the answer is kept apart from their value: a missing node is
+  # "not known", an explicit empty <ipAddress/> inside the node is a real empty setting
+  $hasN = { param($nodes) [bool](@($nodes).Count -and @(Fs-XFind $nodes[0] 'ipAddress').Count) }
+  $o = [pscustomobject]@{ iface = $id; ip = $top; mask = $mk; gw = $gw; dhcp = $dh; dns1 = $(if ($d1.Count) { Fs-XText $d1[0] 'ipAddress' } else { '' }); dns2 = $(if ($d2.Count) { Fs-XText $d2[0] 'ipAddress' } else { '' }); raw = $r.body
+    has = [pscustomobject]@{ gw = (& $hasN $gwn); dns1 = (& $hasN $d1); dns2 = (& $hasN $d2) } }
   $why = Test-FsNetComplete $o; if ($why) { $script:FsNetWhy = $why; return $null }
   return $o
 }
+# 2.2.20 (Codex 2.2.19 R09): '' when a network reading holds every value a later Undo needs to put it back (mask, mode, router, DNS 1,
+# DNS 2 - each PRESENT in the answer, empty allowed), else which ones are not known. A reading without the presence record (older
+# callers / stand-ins) counts its non-empty values as present.
+function Get-FsNetUndoGap($n) {
+  if (-not $n) { return 'its network settings could not be read' }
+  $miss = @()
+  if (-not (Test-FsIPv4 ([string]$n.mask))) { $miss += 'subnet mask' }
+  if ($n.dhcp -isnot [bool]) { $miss += 'fixed / DHCP' }
+  $has = $(if ($n.PSObject.Properties['has']) { $n.has } else { $null })
+  foreach ($f in @(@('gw', 'router (gateway)'), @('dns1', 'DNS 1'), @('dns2', 'DNS 2'))) {
+    $p = $(if ($has -and $has.PSObject.Properties[$f[0]]) { [bool]$has.($f[0]) } else { [bool][string]$n.($f[0]) })
+    if (-not $p) { $miss += $f[1] }
+  }
+  if ($miss.Count) { return ('its answer does not include its ' + ($miss -join ', ') + ', so it could not be put back as it was') }
+  return ''
+}
 function Set-FsNet([string]$ip, [string]$brand, $cred, $net, [string]$newIp, [string]$mask, [string]$gw, [string]$dns1 = '8.8.8.8', [string]$dns2 = '1.1.1.1', [switch]$Dhcp) {
-  # returns { ok; reboot } . The device answers on the NEW address afterwards (or after its own restart).
+  # returns { ok; reboot; why } . The device answers on the NEW address afterwards (or after its own restart).
   # 2.2.1 (review H8): -Dhcp = undo of a device that got its address from the router: it goes back to DHCP (address fields as saved).
   if (-not $mask) { $mask = '255.255.255.0' }
+  # 2.2.20 (Codex 2.2.19 R09): a value asked for must be IN the document that is written. 2.2.19 skipped DNS / router silently when
+  # the device's answer had no such node, sent the PUT without them and reported success. Now nothing is written then.
+  if ($brand -ne 'Dahua' -and $net) {
+    $x0 = Fs-XmlDoc ([string]$net.raw)
+    if ($x0) {
+      $lack = @()
+      if ($gw -and -not @(Fs-XFind $x0 'DefaultGateway').Count) { $lack += 'router (gateway)' }
+      if ($dns1 -and -not @(Fs-XFind $x0 'PrimaryDNS').Count) { $lack += 'DNS 1' }
+      if ($dns2 -and -not @(Fs-XFind $x0 'SecondaryDNS').Count) { $lack += 'DNS 2' }
+      if ($lack.Count) { $w = ('its network settings have no ' + ($lack -join ', ') + ' field, so they could not be set - nothing was written'); Fs-LogLine ($ip + ': ' + $w); return [pscustomobject]@{ ok = $false; reboot = $false; why = $w } }
+    }
+  }
   if ($brand -eq 'Dahua') {
     $pre = 'Network.' + $net.iface + '.'
     $ok = Fs-DhSet $ip $cred @{ ($pre + 'IPAddress') = $newIp; ($pre + 'SubnetMask') = $mask; ($pre + 'DefaultGateway') = $gw; ($pre + 'DhcpEnable') = $(if ($Dhcp) { 'true' } else { 'false' }); ($pre + 'DnsServers[0]') = $dns1; ($pre + 'DnsServers[1]') = $dns2 }
@@ -649,19 +733,42 @@ function Get-FsNetMismatch([string]$ip, [string]$brand, $cred, $before, [string]
   if ($rd.dhcp -ne $false) { $bad += 'it is still on DHCP (not a fixed address)' }
   if ([string]$rd.ip -ne $wantIp) { $bad += ('address is ' + $rd.ip + ', not ' + $wantIp) }
   if ([string]$rd.mask -ne $mask) { $bad += ('mask is ' + $rd.mask + ', not ' + $mask) }
-  if ([string]$rd.gw -ne $gw) { $bad += ('router (gateway) is ' + $(if ($rd.gw) { $rd.gw } else { 'empty' }) + ', not ' + $(if ($gw) { $gw } else { 'empty' })) }
+  if ($rh -and $gw -and -not [bool]$rh.gw) { $bad += ('router (gateway) is missing from its settings, not ' + $gw) }
+  elseif ([string]$rd.gw -ne $gw) { $bad += ('router (gateway) is ' + $(if ($rd.gw) { $rd.gw } else { 'empty' }) + ', not ' + $(if ($gw) { $gw } else { 'empty' })) }
+  # 2.2.20 (Codex 2.2.19 R09): a DNS asked for is ALWAYS checked (2.2.19 skipped the check when neither reading had one, so a write that
+  # left DNS out "verified"); a DNS missing from the answer is "missing", never equal to an empty one
   $b1 = ''; $b2 = ''; if ($before) { $b1 = [string]$before.dns1; $b2 = [string]$before.dns2 }
-  if (($b1 -or [string]$rd.dns1) -and [string]$rd.dns1 -ne $dns1) { $bad += ('DNS 1 is ' + $(if ($rd.dns1) { $rd.dns1 } else { 'empty' }) + ', not ' + $(if ($dns1) { $dns1 } else { 'empty' })) }
-  if (($b2 -or [string]$rd.dns2) -and [string]$rd.dns2 -ne $dns2) { $bad += ('DNS 2 is ' + $(if ($rd.dns2) { $rd.dns2 } else { 'empty' }) + ', not ' + $(if ($dns2) { $dns2 } else { 'empty' })) }
+  $rh = $(if ($rd.PSObject.Properties['has']) { $rd.has } else { $null })
+  if ($rh -and ($dns1 -or $b1) -and -not [bool]$rh.dns1) { $bad += ('DNS 1 is missing from its settings, not ' + $(if ($dns1) { $dns1 } else { 'empty' })) }
+  elseif (($dns1 -or $b1 -or [string]$rd.dns1) -and [string]$rd.dns1 -ne $dns1) { $bad += ('DNS 1 is ' + $(if ($rd.dns1) { $rd.dns1 } else { 'empty' }) + ', not ' + $(if ($dns1) { $dns1 } else { 'empty' })) }
+  if ($rh -and ($dns2 -or $b2) -and -not [bool]$rh.dns2) { $bad += ('DNS 2 is missing from its settings, not ' + $(if ($dns2) { $dns2 } else { 'empty' })) }
+  elseif (($dns2 -or $b2 -or [string]$rd.dns2) -and [string]$rd.dns2 -ne $dns2) { $bad += ('DNS 2 is ' + $(if ($rd.dns2) { $rd.dns2 } else { 'empty' }) + ', not ' + $(if ($dns2) { $dns2 } else { 'empty' })) }
   return ($bad -join '; ')
 }
 
 # ---------------- password ----------------
-function Resolve-FsPwChange([string]$ip, [string]$brand, [string]$newPw, [string]$oldPw) {
+# 2.2.20 (Codex 2.2.19 R12): a password that logs in proves the outcome of a password write ONLY on the saved device: 'ok' = the
+# authenticated information document came back (Test-FsLoginOnce) AND, when a MAC / serial was saved, the device answering is that
+# device (fresh read, Get-FsUndoIdentityBlock). Otherwise 'other' (another / unidentified device: $script:FsLoginIsWhy) or the
+# login's own state. Used in the accepted-write AND the lost-answer branches (Resolve-FsPwChange, "old password back" checks).
+$script:FsLoginIsWhy = ''
+function Test-FsLoginIs([string]$ip, [string]$brand, [string]$pw, [string]$mac = '', [string]$serial = '', [string]$What = 'this camera') {
+  $script:FsLoginIsWhy = ''
+  $s = Test-FsLogin $ip $brand $pw
+  if ($s -ne 'ok') { return $s }
+  if (-not (ConvertTo-FsMac $mac) -and -not ([string]$serial).Trim()) { return 'ok' }
+  $idw = Get-FsUndoIdentityBlock $ip $brand (Fs-Cred $pw) $mac $serial $What 'the record'
+  if ($idw) { $script:FsLoginIsWhy = $idw; Fs-LogLine ('login to ' + $ip + ' works, but not certified: ' + $idw); return 'other' }
+  return 'ok'
+}
+function Resolve-FsPwChange([string]$ip, [string]$brand, [string]$newPw, [string]$oldPw, [string]$mac = '', [string]$serial = '') {
   # 2.2.3 (Codex #19): after a password write, what the device REALLY has: 'changed' (new logs in), 'unchanged' (old still logs in)
   # or 'unknown' (neither answers now: the write may have taken). One login try each; 'unknown' is bookkept as maybe-changed.
-  if ((Test-FsLogin $ip $brand $newPw) -eq 'ok') { return 'changed' }
-  if ($oldPw -and (Test-FsLogin $ip $brand $oldPw) -eq 'ok') { return 'unchanged' }
+  # 2.2.20 (R12): "logs in" = the authenticated DeviceInfo / type answer of the SAVED device (MAC / serial when given), never HTTP 200 alone
+  $sn = Test-FsLoginIs $ip $brand $newPw $mac $serial
+  if ($sn -eq 'ok') { return 'changed' }
+  if ($sn -eq 'other') { return 'unknown' }
+  if ($oldPw -and (Test-FsLoginIs $ip $brand $oldPw $mac $serial) -eq 'ok') { return 'unchanged' }
   return 'unknown'
 }
 function Set-FsPassword([string]$ip, [string]$brand, $oldCred, [string]$newPw) {
@@ -1084,18 +1191,36 @@ function Select-FsPcNet($nets, [string]$answer) {
   if ($a -match '^\d+$' -and [int]$a -ge 1 -and [int]$a -le $nets.Count) { return $nets[[int]$a - 1] }
   return $null
 }
+# 2.2.20 (Codex 2.2.19 R04): $true ONLY from a readable "nobody there": no ping answer AND a neighbour-table read that worked and has
+# no live entry (Windows' "no matching MSFT_NetNeighbor" = no entry = readable empty). A neighbour read that fails any other way is
+# UNKNOWN = not free ($script:FsIpFreeWhy says why), the same as the classic Test-IpFree since 2.2.19. 2.2.19 read every neighbour
+# error as "free", so a camera / NVR could be moved onto an occupied address that does not answer ping (forward and Undo gates).
+$script:FsIpFreeWhy = ''
 function Test-FsIpFree([string]$ip) {
+  $script:FsIpFreeWhy = ''
   if ($script:FsNetOps -and $script:FsNetOps.ContainsKey('free')) { return [bool](& $script:FsNetOps['free'] @{ ip = $ip }) }
-  if ($script:FsMockUrl) { $r = Fs-Http -Ip '_pc' -Path ('/free?ip=' + $ip); return ($r.body -match 'true') }
-  try { if ((New-Object Net.NetworkInformation.Ping).Send($ip, 700).Status -eq 'Success') { return $false } } catch {}
-  $n = Get-NetNeighbor -IPAddress $ip -ErrorAction SilentlyContinue | Where-Object { $_.State -in @('Reachable', 'Stale', 'Permanent') -and $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' }
-  return (-not $n)
+  if ($script:FsMockUrl) {
+    $r = Fs-Http -Ip '_pc' -Path ('/free?ip=' + $ip)
+    if (-not $r -or [int]$r.code -ne 200 -or [string]$r.body -notmatch '(?i)\b(true|false)\b') { $script:FsIpFreeWhy = 'the check whether ' + $ip + ' is free got no answer'; return $false }
+    return ([string]$r.body -match '(?i)\btrue\b')
+  }
+  for ($k = 0; $k -lt 2; $k++) { try { if ((New-Object Net.NetworkInformation.Ping).Send($ip, 700).Status -eq 'Success') { return $false } } catch {} }
+  $n = $null
+  try { $n = @(Get-NetNeighbor -IPAddress $ip -ErrorAction Stop | Where-Object { $_.State -in @('Reachable', 'Stale', 'Permanent') -and $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' }) }
+  catch {
+    if ([string]$_.CategoryInfo.Category -ne 'ObjectNotFound' -and $_.Exception.Message -notmatch '(?i)No matching MSFT_NetNeighbor') {
+      $script:FsIpFreeWhy = ('this PC''s neighbour table could not be read for ' + $ip + ' (' + $_.Exception.Message + '), so it is not known whether a device uses that address')
+      Fs-LogLine $script:FsIpFreeWhy; return $false
+    }
+    $n = @()
+  }
+  return (-not @($n).Count)
 }
 function Save-FsNetState([string]$stateFile) {
   if (-not $stateFile) { return }
   $o = [ordered]@{ version = 2; written = (Get-Date -Format 's'); before = $script:FsPcBefore; coexistChanged = [bool]$script:FsCoexistChanged; temps = @($script:FsTemps) }
-  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stateFile) | Out-Null
-  $tmp = $stateFile + '.tmp'; [IO.File]::WriteAllText($tmp, ($o | ConvertTo-Json -Depth 6)); Move-Item -LiteralPath $tmp -Destination $stateFile -Force
+  # 2.2.20 (Codex 2.2.19 R01): terminating + read back; the callers stop before ANY adapter change when this throws
+  Save-FsRecordVerified $stateFile ($o | ConvertTo-Json -Depth 6)
 }
 # 2.2.19 (Codex 2.2.18 F05/F08): '' when this state read is complete, else what could not be read (plain words).
 # $null (the "nothing came back" answer) is a failed read too. A read that lists what it could not read ('unread') is incomplete.
@@ -1257,6 +1382,8 @@ function Restore-FsPcNet([string]$stateFile) {
   if (-not $problems.Count) {
     $script:FsPcBefore = $null; $script:FsCoexistChanged = $false; $script:FsTemps.Clear()
     if ($stateFile -and (Test-Path -LiteralPath $stateFile)) { try { Remove-Item -LiteralPath $stateFile -Force -ErrorAction Stop } catch { Fs-LogLine ('this PC''s network is back, but its finished record could not be removed (' + $_.Exception.Message + '); the next start checks it again') } }
+    # 2.2.20 (R01): every part was checked back, so an unfinished copy of the record is stale now (a copy that stays is merged and checked again next start)
+    if ($stateFile -and (Test-Path -LiteralPath ($stateFile + '.tmp'))) { try { Remove-Item -LiteralPath ($stateFile + '.tmp') -Force -ErrorAction Stop } catch { Fs-LogLine ('an unfinished copy of the network record could not be removed (' + $_.Exception.Message + '); the next start checks it again') } }
   } else {
     foreach ($pb in $problems) { Fs-LogLine ('NETWORK NOT BACK TO NORMAL: ' + $pb) }
     # an older record without the adapter (2.2.0 list) is left exactly as it is; a 2.2.10+ record is updated with what is left
@@ -1322,8 +1449,7 @@ function Set-FsNetRecoveryMarker([string]$stateFile, [string]$kept, [datetime]$w
   $mk = Get-FsNetMarkerPath $stateFile
   if (Test-Path -LiteralPath $mk) { return $mk }   # the FIRST marker's time stands: the restart must come after the first problem
   $o = [ordered]@{ version = 1; created = $whenUtc.ToLocalTime().ToString('s'); createdUtcTicks = [int64]$whenUtc.Ticks; kept = $kept; why = 'the record of an earlier run''s changes to this PC''s network could not be read' }
-  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $mk) | Out-Null
-  $tmp = $mk + '.tmp'; [IO.File]::WriteAllText($tmp, ($o | ConvertTo-Json)); Move-Item -LiteralPath $tmp -Destination $mk -Force
+  Save-FsRecordVerified $mk ($o | ConvertTo-Json)   # 2.2.20 (Codex 2.2.19 R01 twin): the durable block is read back too
   return $mk
 }
 # '' = the recovery is verified now, else what is still missing (plain words)
@@ -1425,6 +1551,46 @@ function Set-FsNetJournalQuarantine([string]$stateFile, [string]$what) {
   $mw = ''; try { [void](Set-FsNetRecoveryMarker $stateFile (Split-Path -Leaf $keep) ((Get-Date).ToUniversalTime())) } catch { $mw = ' (the reminder file could not be written: ' + $_.Exception.Message + ')' }
   return ('the record of an earlier run''s changes to this PC''s network ' + $what + ' (kept as ' + (Split-Path -Leaf $keep) + '); no change is made to this PC''s network until that is sorted out - restart this PC, then run again (it is checked then)' + $mw)
 }
+# 2.2.20 (Codex 2.2.19 R01): <journal>.tmp is written right before the journal is put in place. One that is still there at the next
+# start means a run stopped (or its save failed) in between: what it lists may have been changed on this PC. It is EVIDENCE:
+# - it cannot be read or is damaged: kept as <journal>.unreadable-<time>-tmp.json under the durable block (Test-FsNetRecoveryMarker);
+# - it is a whole record: its temporary addresses (and a coexistence change) are added to the journal (or it becomes the journal
+#   when there is none), the result is saved and READ BACK, and the normal recovery then takes everything it lists off;
+# - a record that names another adapter than the journal, or a save that does not read back: the durable block.
+# '' = nothing left over or it was taken in; otherwise the block in plain words (no change to this PC's network this run).
+function Resolve-FsNetOrphanTmp([string]$stateFile) {
+  if (-not $stateFile) { return '' }
+  $tmp = $stateFile + '.tmp'
+  $there = $false; try { $there = Test-Path -LiteralPath $tmp -ErrorAction Stop } catch { return ('it could not be checked whether an earlier run left an unfinished network record (' + $_.Exception.Message + '); no change is made to this PC''s network') }
+  if (-not $there) { return '' }
+  $quar = {
+    param([string]$what)
+    $keep = $stateFile -replace '\.json$', ('.unreadable-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-tmp.json')
+    try { Move-Item -LiteralPath $tmp -Destination $keep -Force -ErrorAction Stop } catch { $keep = $tmp }
+    $mw = ''; try { [void](Set-FsNetRecoveryMarker $stateFile (Split-Path -Leaf $keep) ((Get-Date).ToUniversalTime())) } catch { $mw = ' (the reminder file could not be written: ' + $_.Exception.Message + ')' }
+    return ('an earlier run stopped while saving the record of its changes to this PC''s network, and that unfinished record ' + $what + ' (kept as ' + (Split-Path -Leaf $keep) + '); no change is made to this PC''s network until that is sorted out - restart this PC, then run again (it is checked then)' + $mw)
+  }
+  $raw = ''; $t = $null
+  try { $raw = [IO.File]::ReadAllText($tmp); $t = ConvertFrom-Json -InputObject $raw -ErrorAction Stop } catch { return (& $quar 'could not be read') }
+  $tp = Get-FsNetJournalProblem $t
+  if ($tp) { return (& $quar ('is damaged (' + $tp + ')')) }
+  if ($t -is [array] -or -not $t.PSObject.Properties['version']) { return (& $quar 'is in an old form that cannot be merged') }
+  $final = $null; $fThere = $false
+  try { $fThere = Test-Path -LiteralPath $stateFile -ErrorAction Stop } catch { return (& $quar 'could not be compared with the journal') }
+  if ($fThere) {
+    try { $final = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($stateFile)) -ErrorAction Stop } catch { $final = $null }
+    # a damaged journal is quarantined by the normal start check; the unfinished record is kept as evidence beside it
+    if (-not $final -or (Get-FsNetJournalProblem $final) -or $final -is [array]) { return (& $quar 'sits beside a journal that cannot be read') }
+    if ([int]$final.before.ifIndex -ne [int]$t.before.ifIndex -or [string]$final.before.name -ne [string]$t.before.name -or [string](Get-FsProp $final.before 'guid' '') -ne [string](Get-FsProp $t.before 'guid' '')) { return (& $quar 'names another adapter than the journal') }
+    $temps = New-Object System.Collections.ArrayList
+    foreach ($x in @(@($final.temps) + @($t.temps))) { if ($x -and -not @($temps | Where-Object { [string]$_.ip -eq [string]$x.ip -and [int]$_.ifIndex -eq [int]$x.ifIndex }).Count) { [void]$temps.Add($x) } }
+    $o = [ordered]@{ version = 2; written = (Get-Date -Format 's'); before = $final.before; coexistChanged = ([bool]$final.coexistChanged -or [bool]$t.coexistChanged); temps = @($temps) }
+    $text = ($o | ConvertTo-Json -Depth 6)
+  } else { $text = $raw }
+  try { Save-FsRecordVerified $stateFile $text } catch { return (& $quar ('could not be taken into the journal (' + $_.Exception.Message + ')')) }
+  Fs-LogLine ('an unfinished network record of an earlier run was found (' + (Split-Path -Leaf $tmp) + ') and taken into the journal - everything it lists is put back')
+  return ''
+}
 function Clear-FsLeftoverTemps([string]$stateFile) {
   # a run that crashed or was stopped left this PC changed: put it back at the next start (and from the "Fix this site" task's finally)
   if (($script:FsMockUrl -and -not $script:FsNetOps) -or -not $stateFile) { return $null }
@@ -1433,6 +1599,13 @@ function Clear-FsLeftoverTemps([string]$stateFile) {
   if ($mb) {
     $script:FsNetBlocked = $mb; Fs-LogLine ('NETWORK NOT BACK TO NORMAL: ' + $mb)
     $script:FsLastRestore = [pscustomobject]@{ ok = $false; problems = @($mb) }
+    return $script:FsLastRestore
+  }
+  # 2.2.20 (Codex 2.2.19 R01): a record left half-installed (<journal>.tmp) is evidence, never ignored
+  $ob = Resolve-FsNetOrphanTmp $stateFile
+  if ($ob) {
+    $script:FsNetBlocked = $ob; Fs-LogLine ('NETWORK NOT BACK TO NORMAL: ' + $ob)
+    $script:FsLastRestore = [pscustomobject]@{ ok = $false; problems = @($ob) }
     return $script:FsLastRestore
   }
   if (-not (Test-Path -LiteralPath $stateFile)) { return $null }
@@ -1460,7 +1633,13 @@ function Clear-FsLeftoverTemps([string]$stateFile) {
 
 function Wait-FsDevice([string]$ip, [string]$brand, [string]$pw, [int]$seconds) {
   $end = (Get-Date).AddSeconds($seconds)
-  do { $s = Test-FsLogin $ip $brand $pw; if ($s -eq 'ok') { return $true }; if ($s -eq 'refused' -or $s -eq 'locked') { return $false }; Fs-Sleep 5 } while ((Get-Date) -lt $end)
+  # 2.2.20 (Codex 2.2.19 R13): while it restarts, it is asked WITHOUT a password until it answers at all, so a reboot's timeouts do not
+  # spend wrong-password tries (each uncertain try with a password now stays counted); then ONE login with the password per round
+  do {
+    $s0 = Test-FsLogin $ip $brand ''
+    if ($s0 -ne 'noanswer') { $s = Test-FsLogin $ip $brand $pw; if ($s -eq 'ok') { return $true }; if ($s -eq 'refused' -or $s -eq 'locked') { return $false } }
+    Fs-Sleep 5
+  } while ((Get-Date) -lt $end)
   return $false
 }
 function Fs-Sleep([int]$s) { if ($script:FsMockUrl) { Start-Sleep -Milliseconds ([math]::Min(200, $s * 20)) } else { Start-Sleep -Seconds $s } }
@@ -1574,8 +1753,12 @@ function Save-FsSecrets([string]$dir, $sec) {
   Initialize-FsSecretDirectory $dir
   $keep = [ordered]@{ site = $sec.site; password = $sec.password; known = @($sec.known); nvr = $sec.nvr; cams = $(if ($sec.PSObject.Properties['cams'] -and $sec.cams) { $sec.cams } else { @{} }); rollback = $sec.rollback; bitwardenSaved = [bool]$sec.bitwardenSaved; shownOnce = [bool]$sec.shownOnce; updated = (Get-Date -Format 's') }
   $p = Get-FsSecretPath $dir $sec.site; $tmp = $p + '.tmp'
-  [IO.File]::WriteAllText($tmp, (Protect-FsText ($keep | ConvertTo-Json -Depth 6 -Compress)))
-  Move-Item -LiteralPath $tmp -Destination $p -Force
+  $enc = Protect-FsText ($keep | ConvertTo-Json -Depth 6 -Compress)
+  [IO.File]::WriteAllText($tmp, $enc)
+  Move-Item -LiteralPath $tmp -Destination $p -Force -ErrorAction Stop
+  # 2.2.20 (Codex 2.2.19 class A sweep): the site's passwords (and the old ones Undo needs) count as saved only when the file in
+  # place reads back exactly as written; otherwise this throws and the change it protects is not made
+  if ([IO.File]::ReadAllText($p) -cne $enc) { throw ('the site secret store does not read back as it was saved (' + $p + ')') }
 }
 # 2.0.3 (Moshe, Nov 4 2026: "There are no usual passwords. Every single password is specific to that site."): ONE password per site,
 # made as <his word> + 4 random digits, different for every site. The word is NOT in this public code: it comes from config.json
