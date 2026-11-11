@@ -269,7 +269,9 @@ function Import-HikUnlock($dev, $unlock, [string]$NewPassword, [double]$Seconds 
   $tries = 0; $last = ''; $sent = $false; $thisR = ''
   foreach ($f in $script:SadpImportForms) {
     if ($tries -ge $script:SadpImportMax) { break }
-    if ($sent -and -not $thisR) { $last = ''; break }   # 2.2.20 (class F): the form before got NO answer: NOT CONFIRMED, no further form is sent
+    # 2.2.20: the old forms are each one firmware generation's import type; a device silently ignores a type it does not know (seen on
+    # the wire and in the test device), so silence to one form is "not this form" and the next is tried. If NO form got any answer the
+    # result is NOT CONFIRMED (sent, no result), never a refusal, and the caller does not import again on its own (class F).
     $tries++; $sent = $true; $thisR = ''
     $code = $unlock.code; if ($f.withSerial -and $code -notlike ('*' + $dev.serial)) { $code = $code + [string]$dev.serial }
     $p = New-SadpProbe $f.type $dev.mac ([ordered]@{ ($f.codeTag) = $code; Password = $NewPassword })
@@ -283,7 +285,6 @@ function Import-HikUnlock($dev, $unlock, [string]$NewPassword, [double]$Seconds 
       if ($r) { $last = $r; $thisR = $r }
     }
   }
-  if ($sent -and -not $thisR) { $last = '' }   # the last form sent got no answer: NOT CONFIRMED
   $why = $(if ($last) { 'the device answered "' + $last + '"' + $(if ($last -match 'denied|fail') { ' (the file is only good for this exact request, for 48 hours, and only if the device has not restarted since)' } else { '' }) } else { 'the device did not answer the import - NOT CONFIRMED (it may have worked)' })
   return [pscustomobject]@{ ok = $false; result = $last; form = ''; tries = $tries; error = $why; sent = $sent }
 }

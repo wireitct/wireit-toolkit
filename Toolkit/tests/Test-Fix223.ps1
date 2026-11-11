@@ -398,7 +398,7 @@ Check ((Read-Src 'Toolkit/HikMail.ps1') -notmatch 'Expand-Archive') 'nothing is 
 Write-Host '#57 an old verified reset is checked again'
 $hf = Read-Src 'Toolkit/HikResetFlow.ps1'
 $i57 = $hf.IndexOf('Codex #57'); $blk = $hf.Substring($i57, 900)
-Check ($blk -match '& \$VerifyLogin \$ipNow \$SitePassword' -and $blk -match "'status' 'stale'") 'reproduction: a device verified in an earlier run is logged into again; a failure sends it back through the reset (2.2.2 trusted it forever)'
+Check ($blk -match '(& |Test-HikLoginOk )\$VerifyLogin \$ipNow \$SitePassword' -and $blk -match "'status' 'stale'") 'reproduction: a device verified in an earlier run is logged into again; a failure sends it back through the reset (2.2.2 trusted it forever)'
 Check ($hf.IndexOf('Codex #57') -lt $hf.IndexOf('$todo = @($devs | Where-Object { $_.activated -and $fixed -notcontains')) 'the check runs before the to-do list is made'
 Write-Host '#59 a busy answer keeps the scan for later'
 $su = Read-Src 'Toolkit/ScanUpload.ps1'

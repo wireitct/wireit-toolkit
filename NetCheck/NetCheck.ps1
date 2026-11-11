@@ -159,7 +159,7 @@ function Get-NcChannelSummary($code, [string]$body) {
   $off = New-Object System.Collections.Generic.List[string]; $unk = New-Object System.Collections.Generic.List[string]
   if ([int]$code -ne 200) { return [pscustomobject]@{ note = ('NVR: channel status NOT CHECKED (the channel list could not be read' + $(if ([int]$code) { ', HTTP ' + $code } else { '' }) + ')'); off = $off; unknown = $unk; read = $false } }
   $chs = [regex]::Matches([string]$body, '(?s)<InputProxyChannelStatus[^>]*>(.*?)</InputProxyChannelStatus>')
-  if (-not $chs.Count) { $cw = ''; $esc = ([regex]::Match([string]$body, '(?is)<ResponseStatus[\s>].*?<statusCode>\s*([^<]*?)\s*</statusCode>')).Groups[1].Value; if ($esc -and $esc -ne '1') { $cw = 'the device answered an error, statusCode ' + $esc } elseif ([string]$body -match '(?is)<html[\s>]') { $cw = 'a web page, not a device answer' }; return [pscustomobject]@{ note = ('NVR: channel status NOT CHECKED (the answer had no channel in it' + $(if ($cw) { ': ' + $cw } else { '' }) + ')'); off = $off; unknown = $unk; read = $false } }
+  if (-not $chs.Count) { $cw = ''; $esc = ([regex]::Match([string]$body, '(?s)<ResponseStatus[\s>].*?<statusCode>\s*([^<]*?)\s*</statusCode>')).Groups[1].Value; if ($esc -and $esc -ne '1') { $cw = 'the device answered an error, statusCode ' + $esc } elseif ([string]$body -match '(?is)<html[\s>]') { $cw = 'a web page, not a device answer' }; return [pscustomobject]@{ note = ('NVR: channel status NOT CHECKED (the answer had no channel in it' + $(if ($cw) { ': ' + $cw } else { '' }) + ')'); off = $off; unknown = $unk; read = $false } }
   $on = 0
   foreach ($ch in $chs) { $b = $ch.Groups[1].Value; $cid = Tag $b 'id'; $cip = Tag $b 'ipAddress'; $o = ([string](Tag $b 'online')).Trim().ToLower(); $det = Tag $b 'chanDetectResult'
     if ($o -eq 'true') { $on++ } elseif ($o -eq 'false') { $off.Add('D' + $cid + ' ' + $cip + ' ' + $det) } else { $unk.Add('D' + $cid + ' ' + $cip) } }
@@ -174,7 +174,7 @@ function Get-NcIsapiProblem($r, [string[]]$Roots) {
   if ($code -ne 200) { return $(if ($code) { 'HTTP ' + $code } elseif ($r.err) { [string]$r.err } else { 'no answer' }) }
   $b = [string]$r.body
   if (-not $b.Trim()) { return 'HTTP 200 with an empty answer' }
-  if ($b -match '(?is)<ResponseStatus[\s>]') {
+  if ($b -cmatch '(?s)<ResponseStatus[\s>]') {   # the ISAPI error root (case as the device writes it; a search result's own <responseStatus> is not it)
     $sc = ([regex]::Match($b, '(?is)<statusCode>\s*([^<]*?)\s*</statusCode>')).Groups[1].Value
     $ss = ([regex]::Match($b, '(?is)<statusString>\s*([^<]*?)\s*</statusString>')).Groups[1].Value
     $sub = ([regex]::Match($b, '(?is)<subStatusCode>\s*([^<]*?)\s*</subStatusCode>')).Groups[1].Value
@@ -195,7 +195,7 @@ function Get-NcStreamsText($ss) {
     if ($code -ne 200) { return $(if ($code) { 'HTTP ' + $code } elseif ($r.err) { [string]$r.err } else { 'no answer' }) }
     $b = [string]$r.body
     if (-not $b.Trim()) { return 'HTTP 200 with an empty answer' }
-    if ($b -match '(?is)<ResponseStatus[\s>]') {
+    if ($b -cmatch '(?s)<ResponseStatus[\s>]') {   # the ISAPI error root (case as the device writes it; a search result's own <responseStatus> is not it)
       $sc = ([regex]::Match($b, '(?is)<statusCode>\s*([^<]*?)\s*</statusCode>')).Groups[1].Value
       $ss = ([regex]::Match($b, '(?is)<statusString>\s*([^<]*?)\s*</statusString>')).Groups[1].Value
       $sub = ([regex]::Match($b, '(?is)<subStatusCode>\s*([^<]*?)\s*</subStatusCode>')).Groups[1].Value
@@ -226,7 +226,7 @@ function Read-Logs($base, $ip) {
     if ($code -ne 200) { return $(if ($code) { 'HTTP ' + $code } elseif ($r.err) { [string]$r.err } else { 'no answer' }) }
     $b = [string]$r.body
     if (-not $b.Trim()) { return 'HTTP 200 with an empty answer' }
-    if ($b -match '(?is)<ResponseStatus[\s>]') {
+    if ($b -cmatch '(?s)<ResponseStatus[\s>]') {   # the ISAPI error root (case as the device writes it; a search result's own <responseStatus> is not it)
       $sc = ([regex]::Match($b, '(?is)<statusCode>\s*([^<]*?)\s*</statusCode>')).Groups[1].Value
       $ss = ([regex]::Match($b, '(?is)<statusString>\s*([^<]*?)\s*</statusString>')).Groups[1].Value
       $sub = ([regex]::Match($b, '(?is)<subStatusCode>\s*([^<]*?)\s*</subStatusCode>')).Groups[1].Value

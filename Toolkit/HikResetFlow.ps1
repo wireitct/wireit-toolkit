@@ -909,7 +909,7 @@ function Invoke-HikResetStage {
     $live = Find-HikLiveDevice $d $devs; $ipNow = $(if ($live) { [string]$live.ip } else { [string]$d.ip })
     $okv = $false; if ($live) { $okv = Test-HikLoginOk $VerifyLogin $ipNow $SitePassword $d }   # 2.2.20 (class C): only a real $true
     if ($okv) { $fixed += $mv }
-    elseif ($live) { Set-HikStateField $d 'status' 'stale'; Save-HikState $statePath $state; Hk-Say ('  ' + $d.model + ' ' + $ipNow + ': was reset before, but the site password no longer logs in - it is reset again.') 'Yellow' }
+    elseif ($live) { Set-HikStateField $d 'status' 'stale'; if (-not (Save-HikStateOk $statePath $state)) { Hk-Say ('  The reset record could not be saved (' + $script:HkStateSaveWhy + ').') 'Red' }; Hk-Say ('  ' + $d.model + ' ' + $ipNow + ': was reset before, but the site password no longer logs in - it is reset again.') 'Yellow' }
   }
   # a device that is already done is never asked for a new request file
   $todo = @($devs | Where-Object { $_.activated -and $fixed -notcontains (ConvertTo-SadpMac ([string]$_.mac)) })
