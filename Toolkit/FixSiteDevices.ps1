@@ -321,41 +321,94 @@ function Get-FsIdentity([string]$ip, [string]$brand, $cred) {
 }
 # 2.2.15 (Codex 2.2.14 R2): is the device that answers at $ip the camera the undo file names? '' = yes (same MAC; with no MAC in the
 # file, the same serial). Otherwise the plain reason: another device, or its identity could not be read / the file has none.
-function Get-FsUndoIdentityBlock([string]$ip, [string]$brand, $cred, [string]$wantMac, [string]$wantSerial, [string]$What = 'this camera') {
+# 2.2.19: $Src names where the wanted MAC / serial comes from ('the undo file', 'the scan'); read FRESH on every call (no cache).
+function Get-FsUndoIdentityBlock([string]$ip, [string]$brand, $cred, [string]$wantMac, [string]$wantSerial, [string]$What = 'this camera', [string]$Src = 'the undo file') {
   $wm = ConvertTo-FsMac $wantMac; $ws = ([string]$wantSerial).Trim()
-  if (-not $wm -and -not $ws) { return ('the undo file has no MAC or serial for it, so it cannot be checked that the device at ' + $ip + ' is ' + $What) }
+  if (-not $wm -and -not $ws) { return ($Src + ' has no MAC or serial for it, so it cannot be checked that the device at ' + $ip + ' is ' + $What) }
   $id = Get-FsIdentity $ip $brand $cred
   if ($wm) {
     if (-not $id.mac) { return ('the device at ' + $ip + ' did not tell its MAC, so it is not certain it is ' + $What) }
-    if ($id.mac -ne $wm) { return ('the device at ' + $ip + ' is ANOTHER device (MAC ' + $id.mac + $(if ($id.serial) { ', serial ' + $id.serial } else { '' }) + '; the undo file has MAC ' + $wm + ')') }
+    if ($id.mac -ne $wm) { return ('the device at ' + $ip + ' is ANOTHER device (MAC ' + $id.mac + $(if ($id.serial) { ', serial ' + $id.serial } else { '' }) + '; ' + $Src + ' has MAC ' + $wm + ')') }
     return ''
   }
   if (-not $id.serial) { return ('the device at ' + $ip + ' did not tell its serial, so it is not certain it is ' + $What) }
-  if ($id.serial.ToUpperInvariant() -ne $ws.ToUpperInvariant()) { return ('the device at ' + $ip + ' is ANOTHER device (serial ' + $id.serial + '; the undo file has ' + $ws + ')') }
+  if ($id.serial.ToUpperInvariant() -ne $ws.ToUpperInvariant()) { return ('the device at ' + $ip + ' is ANOTHER device (serial ' + $id.serial + '; ' + $Src + ' has ' + $ws + ')') }
   return ''
 }
-# 2.2.16 (Codex 2.2.15 F3): the NVR's own MAC / serial, read once per address in a run, for the undo file. A site password that logs in
-# is not identity (another NVR on the same password can take the address). mac/serial '' = could not be read.
+# 2.2.16 (Codex 2.2.15 F3): the NVR's own MAC / serial, for the undo file. A site password that logs in is not identity (another NVR
+# on the same password can take the address). mac/serial '' = could not be read.
+# 2.2.19 (Codex 2.2.18 F03): read FRESH on every call. 2.2.16-2.2.18 kept the first answer per address for the whole run, so a
+# recorder swapped in later in the run was taken for the first one.
 function Get-FsNvrIdRecord([string]$ip, $cred) {
-  if (-not $script:FsNvrIds) { $script:FsNvrIds = @{} }
-  if ($script:FsNvrIds.ContainsKey($ip)) { return $script:FsNvrIds[$ip] }
-  $i = Get-FsIdentity $ip 'Hikvision' $cred
-  if ($i.mac -or $i.serial) { $script:FsNvrIds[$ip] = $i }
-  return $i
+  return (Get-FsIdentity $ip 'Hikvision' $cred)
+}
+# 2.2.19 (Codex 2.2.18 F03): before a forward write to an NVR: is the recorder answering at $ip NOW the one the scan found (its MAC;
+# serial only when the scan has no MAC)? '' = yes, else the plain reason. Fresh read every time; $id = an identity just read (optional).
+function Get-FsFwdNvrBlock([string]$ip, $cred, [string]$scanMac, [string]$scanSerial, $id = $null) {
+  $wm = ConvertTo-FsMac $scanMac; $ws = ([string]$scanSerial).Trim()
+  if (-not $wm -and -not $ws) { return ('the scan did not record the MAC or serial of NVR ' + $ip + ', so it cannot be checked that the recorder answering there now is that NVR') }
+  if (-not $id) { $id = Get-FsIdentity $ip 'Hikvision' $cred }
+  if ($wm) {
+    if (-not $id.mac) { return ('NVR ' + $ip + ' did not tell its MAC now, so it is not certain it is the NVR the scan found') }
+    if ($id.mac -ne $wm) { return ('the recorder at ' + $ip + ' is now ANOTHER device (MAC ' + $id.mac + $(if ($id.serial) { ', serial ' + $id.serial } else { '' }) + '; the scan found MAC ' + $wm + ')') }
+    return ''
+  }
+  if (-not $id.serial) { return ('NVR ' + $ip + ' did not tell its serial now, so it is not certain it is the NVR the scan found') }
+  if ($id.serial.ToUpperInvariant() -ne $ws.ToUpperInvariant()) { return ('the recorder at ' + $ip + ' is now ANOTHER device (serial ' + $id.serial + '; the scan found ' + $ws + ')') }
+  return ''
 }
 # 2.2.16 (Codex 2.2.15 F3): before Undo writes ANYTHING to an NVR (network, password, channel): is the device answering at $ip the NVR
 # the undo file names? '' = yes. An undo file without its MAC / serial (older Toolkit) can never be confirmed = the reason, no write.
+# 2.2.19 (Codex 2.2.18 F03): checked FRESH every time (2.2.16-2.2.18 remembered a first "yes" per address for the rest of the run).
 function Get-FsUndoNvrBlock([string]$ip, $cred, $entry, [string]$macField = 'mac', [string]$serField = 'serial') {
   $m = ''; $s = ''
   if ($entry -is [System.Collections.IDictionary]) { $m = [string]$entry[$macField]; $s = [string]$entry[$serField] }
   elseif ($entry) { if ($entry.PSObject.Properties[$macField]) { $m = [string]$entry.$macField }; if ($entry.PSObject.Properties[$serField]) { $s = [string]$entry.$serField } }
   if (-not $m -and -not $s) { return ('the undo file has no MAC or serial for this NVR (made by an older Toolkit), so it cannot be checked that the device at ' + $ip + ' is that NVR') }
-  if (-not $script:FsNvrIdOk) { $script:FsNvrIdOk = @{} }
-  $k = $ip + '|' + (ConvertTo-FsMac $m) + '|' + $s
-  if ($script:FsNvrIdOk.ContainsKey($k)) { return '' }
-  $why = Get-FsUndoIdentityBlock $ip 'Hikvision' $cred $m $s 'that NVR'
-  if (-not $why) { $script:FsNvrIdOk[$k] = $true }
-  return $why
+  return (Get-FsUndoIdentityBlock $ip 'Hikvision' $cred $m $s 'that NVR')
+}
+# 2.2.19 (Codex 2.2.18 F02): before a device is MOVED to $dest (forward or Undo): is that address free right now? Returns
+# { state ('free'|'self'|'taken'|'unknown'); why }. 'self' = the device answering there IS the saved device (its MAC / serial, read
+# fresh; an earlier Undo already put it there). Anything else answering there = 'taken' (another device, or one that cannot be
+# identified): nothing is moved onto it. $pw / $mac / $serial = the saved device's login and identity ('' = do not try to identify).
+function Get-FsMoveTargetState([string]$dest, [string]$brand, [string]$pw, [string]$mac, [string]$serial, [string]$What = 'this camera') {
+  if (-not (Test-FsIPv4 $dest)) { return [pscustomobject]@{ state = 'unknown'; why = ('the address to move to (' + $dest + ') is not a valid address') } }
+  $free = $false; try { $free = [bool](Test-FsIpFree $dest) } catch { $free = $false }
+  if ($free) { return [pscustomobject]@{ state = 'free'; why = '' } }
+  if ($pw -and ($mac -or $serial) -and (Test-FsLogin $dest $brand $pw) -eq 'ok') {
+    $idw = Get-FsUndoIdentityBlock $dest $brand (Fs-Cred $pw) $mac $serial $What
+    if (-not $idw) { return [pscustomobject]@{ state = 'self'; why = '' } }
+    return [pscustomobject]@{ state = 'taken'; why = ($dest + ' is already used: ' + $idw) }
+  }
+  return [pscustomobject]@{ state = 'taken'; why = ($dest + ' is already used by another device (it answers there and it is not ' + $What + ')') }
+}
+# 2.2.19 (Codex 2.2.18 F13): a device switched back to DHCP leaves the address it had; it counts as back only when it is FOUND again by
+# its MAC and reads back DHCP on. The addresses where that MAC answers now ($first is tried first: the address it had before the run).
+function Find-FsAddrByMac([string]$mac, [string]$first = '') {
+  $m = ConvertTo-FsMac $mac; $out = @(); if ($first) { $out += $first }
+  if (-not $m) { return $out }
+  $hits = @()
+  try {
+    if ($script:FsNetOps -and $script:FsNetOps.ContainsKey('findmac')) { $hits = @(& $script:FsNetOps['findmac'] @{ mac = $m }) }
+    elseif ($script:FsMockUrl) { $fj = (Fs-Http -Ip '_pc' -Path '/scan').body | ConvertFrom-Json; foreach ($d in @($fj)) { if ((ConvertTo-FsMac ([string]$d.mac)) -eq $m) { $hits += [string]$d.ip } } }
+    else { foreach ($n in @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue)) { if ($n.State -in @('Reachable', 'Stale', 'Permanent', 'Delay', 'Probe') -and (ConvertTo-FsMac (([string]$n.LinkLayerAddress) -replace '-', ':')) -eq $m) { $hits += [string]$n.IPAddress } } }
+  } catch { }
+  foreach ($h in $hits) { if ($h -and $out -notcontains $h) { $out += $h } }
+  return $out
+}
+# 2.2.19 (Codex 2.2.18 F13): after a DHCP restore: find the device by its MAC and read DHCP back. Returns { ok; ip; why }.
+# ok = $true only when a device that logs in is THIS one (MAC / serial) and reads back DHCP on. Anything else = NOT CHECKED.
+function Test-FsDhcpBack([string]$mac, [string]$serial, [string]$brand, [string]$pw, [string]$first, [string]$What = 'this camera') {
+  $seen = @()
+  foreach ($a in @(Find-FsAddrByMac $mac $first)) {
+    if ((Test-FsLogin $a $brand $pw) -ne 'ok') { continue }
+    $idw = Get-FsUndoIdentityBlock $a $brand (Fs-Cred $pw) $mac $serial $What
+    if ($idw) { $seen += $idw; continue }
+    $nm = Get-FsNetMismatch $a $brand (Fs-Cred $pw) $null '' '' '' -Dhcp
+    if ($nm) { return [pscustomobject]@{ ok = $false; ip = $a; why = ('found at ' + $a + ' by its MAC, but ' + $nm) } }
+    return [pscustomobject]@{ ok = $true; ip = $a; why = '' }
+  }
+  return [pscustomobject]@{ ok = $false; ip = ''; why = ('it was not found again by its MAC' + $(if ($seen.Count) { ' (' + ($seen -join '; ') + ')' } else { '' })) }
 }
 # 2.2.4 (Codex re-review): a backup file counts only when its CONTENT is what the device exports: a login or HTML page, an
 # error answer, or a file too small to be a config export is FAILED (2.2.3 counted any non-empty file, so a login page was "backup saved").
@@ -451,6 +504,16 @@ function Test-FsNetComplete($n) {
   if ($n.dhcp -isnot [bool]) { return 'the answer does not say whether it uses DHCP' }
   return $null
 }
+# 2.2.19 (Codex 2.2.18 class D): one reading of an addressing mode everywhere it is compared or restored.
+# $true = DHCP (dynamic / dhcp / DHCP / true / 1 / on / enabled), $false = fixed (static / manual / fixed / false / 0 / off / disabled),
+# $null = unknown (missing or anything else: never taken as either).
+function ConvertTo-FsDhcpMode($v) {
+  if ($v -is [bool]) { return $v }
+  $s = ([string]$v).Trim().ToLowerInvariant()
+  if ($s -in @('dynamic', 'dhcp', 'true', '1', 'on', 'enabled', 'enable', 'yes', 'auto')) { return $true }
+  if ($s -in @('static', 'manual', 'fixed', 'false', '0', 'off', 'disabled', 'disable', 'no')) { return $false }
+  return $null
+}
 function Get-FsNet([string]$ip, [string]$brand, $cred) {
   $script:FsNetWhy = ''
   if ($brand -eq 'Dahua') {
@@ -459,7 +522,7 @@ function Get-FsNet([string]$ip, [string]$brand, $cred) {
     $h = Fs-DhLines $rd.body
     $if = [string]$h['Network.DefaultInterface']; if (-not $if) { $if = 'eth0' }
     $pre = 'Network.' + $if + '.'
-    $dv = ([string]$h[$pre + 'DhcpEnable']).ToLower(); $dh = $null; if ($dv -eq 'true') { $dh = $true } elseif ($dv -eq 'false') { $dh = $false }
+    $dh = ConvertTo-FsDhcpMode ([string]$h[$pre + 'DhcpEnable'])   # 2.2.19 (Codex 2.2.18 D): true/1/dhcp/dynamic = DHCP; false/0/static/manual = fixed
     if (-not $h.ContainsKey($pre + 'IPAddress') -or -not $h.ContainsKey($pre + 'DefaultGateway')) { $script:FsNetWhy = 'the answer has no address/gateway lines'; return $null }
     $o = [pscustomobject]@{ iface = $if; ip = [string]$h[$pre + 'IPAddress']; mask = [string]$h[$pre + 'SubnetMask']; gw = [string]$h[$pre + 'DefaultGateway']; dhcp = $dh; dns1 = [string]$h[$pre + 'DnsServers[0]']; dns2 = [string]$h[$pre + 'DnsServers[1]']; raw = $null }
     $why = Test-FsNetComplete $o; if ($why) { $script:FsNetWhy = $why; return $null }
@@ -482,7 +545,7 @@ function Get-FsNet([string]$ip, [string]$brand, $cred) {
   if (-not $x) { $script:FsNetWhy = $(if ($lastWhy) { $lastWhy } else { 'no interface carries ' + $want }); return $null }
   $gwn = @(Fs-XFind $x 'DefaultGateway'); $gw = ''; if ($gwn.Count) { $gw = Fs-XText $gwn[0] 'ipAddress' }
   $d1 = @(Fs-XFind $x 'PrimaryDNS'); $d2 = @(Fs-XFind $x 'SecondaryDNS')
-  $at = (Fs-XText $x 'addressingType').ToLower(); $dh = $null; if ($at -eq 'dynamic') { $dh = $true } elseif ($at -eq 'static') { $dh = $false }
+  $dh = ConvertTo-FsDhcpMode (Fs-XText $x 'addressingType')   # 2.2.19 (Codex 2.2.18 D): dynamic / dhcp / DHCP = DHCP; static / manual / fixed = fixed
   # the top-level address (not the gateway's / DNS's ipAddress)
   $top = ''; foreach ($n in @($x.DocumentElement.ChildNodes)) { if ($n.LocalName -eq 'ipAddress') { $top = ([string]$n.InnerText).Trim() } }
   $mk = ''; foreach ($n in @($x.DocumentElement.ChildNodes)) { if ($n.LocalName -eq 'subnetMask') { $mk = ([string]$n.InnerText).Trim() } }
@@ -558,21 +621,33 @@ function Get-FsStream([string]$ip, [string]$brand, $cred) {
     $h = Fs-DhLines (Fs-Http -Ip $ip -Path '/cgi-bin/configManager.cgi?action=getConfig&name=Encode' -Cred $cred).body
     if (-not $h.Count) { return $null }
     $p = 'Encode[0].MainFormat[0].Video.'
-    $sc = Fs-DhLines (Fs-Http -Ip $ip -Path '/cgi-bin/configManager.cgi?action=getConfig&name=SmartEncode' -Cred $cred).body
-    $scv = ''; foreach ($k in $sc.Keys) { if ($k -match 'SmartEncode\[0\]\.Enable$') { $scv = $(if ($sc[$k] -eq 'true') { 'on' } else { 'off' }) } }
+    # 2.2.19 (F19): Smart Codec on / off only from an explicit true / false; a 200 answer without the setting = the camera has none
+    $scR = Fs-Http -Ip $ip -Path '/cgi-bin/configManager.cgi?action=getConfig&name=SmartEncode' -Cred $cred
+    $sc = $(if ($scR -and [int]$scR.code -eq 200) { Fs-DhLines $scR.body } else { @{} })
+    $scv = ''; $scSeen = $false; foreach ($k in $sc.Keys) { if ($k -match 'SmartEncode\[0\]\.Enable$') { $scSeen = $true; $vv = ([string]$sc[$k]).ToLowerInvariant(); if ($vv -eq 'true') { $scv = 'on' } elseif ($vv -eq 'false') { $scv = 'off' } } }
+    if (-not $scSeen -and $scR -and [int]$scR.code -eq 200 -and $sc.Count) { $scv = 'none' }
     return [pscustomobject]@{ codec = ([string]$h[$p + 'Compression'] -replace 'H\.?26', 'H.26'); fps = [int][double]$h[$p + 'FPS']; width = [int]$h[$p + 'Width']; height = [int]$h[$p + 'Height']; bitrate = [int]$h[$p + 'BitRate']; gop = [int]$h[$p + 'GOP']; smartCodec = $scv; maxWidth = 0; maxHeight = 0; raw = $null }
   }
-  $r = Fs-Http -Ip $ip -Path '/ISAPI/Streaming/channels/101' -Cred $cred; $x = Fs-XmlDoc $r.body; if (-not $x) { return $null }
+  # 2.2.19 (Codex 2.2.18 F19): only a 200 answer that IS a stream document counts; a field missing from it stays empty / 0 (unknown),
+  # and Smart Codec is 'none' only when the camera's capabilities were read and list no Smart Codec (a missing or garbled answer = unknown)
+  $r = Fs-Http -Ip $ip -Path '/ISAPI/Streaming/channels/101' -Cred $cred
+  if (-not $r -or [int]$r.code -ne 200) { return $null }
+  $x = Fs-XmlDoc $r.body; if (-not $x -or -not $x.DocumentElement -or $x.DocumentElement.LocalName -ne 'StreamingChannel') { return $null }
   $q = Fs-XText $x 'videoQualityControlType'; $br = $(if ($q -eq 'VBR') { Fs-XText $x 'vbrUpperCap' } else { Fs-XText $x 'constantBitRate' })
-  $scn = @(Fs-XFind $x 'SmartCodec'); $sc = ''; if ($scn.Count) { $sc = $(if ((Fs-XText $scn[0] 'enabled') -eq 'true') { 'on' } else { 'off' }) }
+  $scn = @(Fs-XFind $x 'SmartCodec'); $sc = ''
+  if ($scn.Count) { $sev = ([string](Fs-XText $scn[0] 'enabled')).ToLowerInvariant(); if ($sev -eq 'true') { $sc = 'on' } elseif ($sev -eq 'false') { $sc = 'off' } }
   $mw = 0; $mh = 0
-  $cap = Fs-XmlDoc (Fs-Http -Ip $ip -Path '/ISAPI/Streaming/channels/101/capabilities' -Cred $cred).body
+  $capR = Fs-Http -Ip $ip -Path '/ISAPI/Streaming/channels/101/capabilities' -Cred $cred
+  $cap = $(if ($capR -and [int]$capR.code -eq 200) { Fs-XmlDoc $capR.body } else { $null })
+  if (-not $scn.Count -and $cap -and @(Fs-XFind $cap 'Video').Count -and -not @(Fs-XFind $cap 'SmartCodec').Count) { $sc = 'none' }
   if ($cap) { $wn = @(Fs-XFind $cap 'videoResolutionWidth'); if ($wn.Count -and $wn[0].opt) { $mw = [int](@($wn[0].opt -split ',' | ForEach-Object { [int]$_ } | Sort-Object -Descending)[0]) }; $hn = @(Fs-XFind $cap 'videoResolutionHeight'); if ($hn.Count -and $hn[0].opt) { $mh = [int](@($hn[0].opt -split ',' | ForEach-Object { [int]$_ } | Sort-Object -Descending)[0]) } }
   return [pscustomobject]@{ codec = ((Fs-XText $x 'videoCodecType') -replace '^H\.?26', 'H.26'); fps = [int]([int](Fs-XText $x 'maxFrameRate') / 100); width = [int](Fs-XText $x 'videoResolutionWidth'); height = [int](Fs-XText $x 'videoResolutionHeight'); bitrate = [int]$br; gop = [int](Fs-XText $x 'GovLength'); smartCodec = $sc; maxWidth = $mw; maxHeight = $mh; raw = $r.body }
 }
 function Set-FsStream([string]$ip, [string]$brand, $cred, $current, $diff) {
   # applies ONLY the fields in $diff (from Get-FsSettingsDiff). Returns { ok; reboot }
-  if (-not @($diff).Count) { return [pscustomobject]@{ ok = $true; reboot = $false } }
+  # 2.2.19 (F19): a field the camera did not report (unknown) is never written; with nothing known to write, nothing is sent
+  $diff = @(@($diff) | Where-Object { $_ -and -not ($_.PSObject.Properties['unknown'] -and $_.unknown) })
+  if (-not @($diff).Count) { return [pscustomobject]@{ ok = $true; reboot = $false; sent = $false } }
   if ($brand -eq 'Dahua') {
     $p = 'Encode[0].MainFormat[0].Video.'; $kv = @{}; $smart = $null
     foreach ($d in @($diff)) {
@@ -780,13 +855,19 @@ function Remove-FsNvrChannel([string]$nvrIp, $nvrCred, [int]$ch) {
   return (Fs-HikOk $w)
 }
 # 2.2.18 (Codex F2): before Undo deletes or puts back an NVR channel: WHICH camera is on that channel NOW? Read fresh, just before the
-# write. Undo may only touch it while it still points at THIS camera (an address this run gave it: $OwnIps) or, for a saved channel,
-# at the camera the saved copy names ($AlsoOk: an earlier Undo already put it back). Another camera on it, a channel set up by name /
-# IPv6, or an answer that cannot be read = Undo leaves it alone (the other camera keeps recording). When the channel's address is not
-# where Undo just checked this camera's MAC ($VerifiedIp) and a device answers there on this camera's password, its MAC / serial must
-# be this camera's (another camera may have taken the address since the run). Returns { state ('mine'|'gone'|'other'|'unread'); ip; why }.
-# 'gone' = the NVR says there is no such channel (HTTP 404).
-function Get-FsUndoChannelOwner([string]$nvrIp, $nvrCred, [int]$ch, [string[]]$OwnIps, [string[]]$AlsoOk = @(), [string]$VerifiedIp = '', [string]$Brand = 'Hikvision', [string]$Pw = '', [string]$Mac = '', [string]$Serial = '') {
+# write. Undo may only touch it while it still points at THIS camera (an address this run gave it: $OwnIps). Another camera on it, a
+# channel set up by name / IPv6, or an answer that cannot be read = Undo leaves it alone (the other camera keeps recording).
+# 2.2.19 (Codex 2.2.18 F01): "points at one of this camera's addresses" is not ownership: another camera may have taken that address
+# since the run. 'mine' now needs PROOF, read fresh: the device answering at the channel's address logs in on this camera's password
+# and tells this camera's MAC (serial only when the undo file has no MAC). A login that is refused, locked, times out or cannot be
+# read, an identity that cannot be read, or no saved MAC / serial = 'unread' (NOT checked, nothing written). The one other proof:
+# nothing at all answers at that address (checked live) AND this camera was just identified by its MAC at $CamIp, a different
+# address = the channel holds this camera's old address and no other device uses it.
+# 2.2.19 (Codex 2.2.18 F01): a channel already showing the address the saved copy names ($AlsoOk, not one of this camera's own) is
+# 'saved' - Undo writes nothing to it (that camera's identity is not known here); the caller only checks its video.
+# -ReadBack: only for reading a channel back right AFTER Undo wrote it (no write follows): 'mine' = it points at one of $OwnIps.
+# Returns { state ('mine'|'gone'|'other'|'unread'|'saved'); ip; why }. 'gone' = the NVR says there is no such channel (HTTP 404).
+function Get-FsUndoChannelOwner([string]$nvrIp, $nvrCred, [int]$ch, [string[]]$OwnIps, [string[]]$AlsoOk = @(), [string]$CamIp = '', [string]$Brand = 'Hikvision', [string]$Pw = '', [string]$Mac = '', [string]$Serial = '', [switch]$ReadBack) {
   $r = $null; try { $r = Fs-Http -Ip $nvrIp -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $ch) -Cred $nvrCred } catch { $r = $null }
   if ($r -and [int]$r.code -eq 404) { return [pscustomobject]@{ state = 'gone'; ip = ''; why = ('NVR ' + $nvrIp + ' has no ch ' + $ch + ' now') } }
   if (-not $r -or [int]$r.code -ne 200) { return [pscustomobject]@{ state = 'unread'; ip = ''; why = ('NVR ' + $nvrIp + ' ch ' + $ch + ' could not be read now (answer ' + $(if ($r -and [int]$r.code) { [string]$r.code } else { 'none' }) + '), so it is NOT known which camera is on it') } }
@@ -796,16 +877,27 @@ function Get-FsUndoChannelOwner([string]$nvrIp, $nvrCred, [int]$ch, [string[]]$O
   if (-not $ad.isIp) { return [pscustomobject]@{ state = 'other'; ip = ''; why = ('NVR ' + $nvrIp + ' ch ' + $ch + ' is now set up ' + $ad.how + ', not with this camera''s address') } }
   $own = @($OwnIps | Where-Object { $_ } | ForEach-Object { ([string]$_) -replace ':\d+$', '' })
   $also = @($AlsoOk | Where-Object { $_ } | ForEach-Object { ([string]$_) -replace ':\d+$', '' })
-  if (-not ($own -contains $ad.ip) -and -not ($also -contains $ad.ip)) {
+  if (-not ($own -contains $ad.ip)) {
+    if ($also -contains $ad.ip) { return [pscustomobject]@{ state = 'saved'; ip = $ad.ip; why = ('NVR ' + $nvrIp + ' ch ' + $ch + ' already shows ' + $ad.ip + ', the camera its saved copy names') } }
     return [pscustomobject]@{ state = 'other'; ip = $ad.ip; why = ('NVR ' + $nvrIp + ' ch ' + $ch + ' now shows ANOTHER camera (' + $ad.ip + '), not this one (' + (($own | Select-Object -Unique) -join ' / ') + ')') }
   }
-  if (($own -contains $ad.ip) -and $Pw -and ($Mac -or $Serial) -and $ad.ip -ne (([string]$VerifiedIp) -replace ':\d+$', '')) {
-    if ((Test-FsLogin $ad.ip $Brand $Pw) -eq 'ok') {
-      $idw = Get-FsUndoIdentityBlock $ad.ip $Brand (Fs-Cred $Pw) $Mac $Serial
-      if ($idw) { return [pscustomobject]@{ state = 'other'; ip = $ad.ip; why = ('NVR ' + $nvrIp + ' ch ' + $ch + ' points at ' + $ad.ip + ', and ' + $idw) } }
-    }
+  if ($ReadBack) { return [pscustomobject]@{ state = 'mine'; ip = $ad.ip; why = '' } }
+  $pre = 'NVR ' + $nvrIp + ' ch ' + $ch + ' points at ' + $ad.ip + ', but it is NOT confirmed that this camera is there: '
+  if (-not $Mac -and -not $Serial) { return [pscustomobject]@{ state = 'unread'; ip = $ad.ip; why = ($pre + 'the undo file has no MAC or serial for this camera') } }
+  $st = $(if ($Pw) { Test-FsLogin $ad.ip $Brand $Pw } else { 'nopw' })
+  if ($st -eq 'ok') {
+    $idw = Get-FsUndoIdentityBlock $ad.ip $Brand (Fs-Cred $Pw) $Mac $Serial
+    if (-not $idw) { return [pscustomobject]@{ state = 'mine'; ip = $ad.ip; why = '' } }
+    if ($idw -like '*ANOTHER device*') { return [pscustomobject]@{ state = 'other'; ip = $ad.ip; why = ('NVR ' + $nvrIp + ' ch ' + $ch + ' points at ' + $ad.ip + ', and ' + $idw) } }
+    return [pscustomobject]@{ state = 'unread'; ip = $ad.ip; why = ($pre + $idw) }
   }
-  return [pscustomobject]@{ state = 'mine'; ip = $ad.ip; why = '' }
+  $camIpN = ([string]$CamIp) -replace ':\d+$', ''
+  if ($st -eq 'noanswer' -and $camIpN -and $camIpN -ne $ad.ip -and $Pw) {
+    $free = $false; try { $free = [bool](Test-FsIpFree $ad.ip) } catch { $free = $false }
+    if ($free -and (Test-FsLogin $camIpN $Brand $Pw) -eq 'ok' -and -not (Get-FsUndoIdentityBlock $camIpN $Brand (Fs-Cred $Pw) $Mac $Serial)) { return [pscustomobject]@{ state = 'mine'; ip = $ad.ip; why = '' } }
+  }
+  $how = $(switch ($st) { 'nopw' { 'no working password for this camera is known here' } 'noanswer' { 'nothing answers there and this camera was not found on another address' } 'refused' { 'the device there does not take this camera''s password - it may be ANOTHER camera' } 'locked' { 'the device there is locked after wrong passwords' } default { 'the device there could not be signed in to (' + $st + ')' } })
+  return [pscustomobject]@{ state = 'unread'; ip = $ad.ip; why = ($pre + $how) }
 }
 function Test-FsVideo([string]$nvrIp, $nvrCred, [int]$ch, [string]$camIp, [string]$camBrand, $camCred) {
   # video is back = NVR says the channel is online AND hands out a picture of it (or, with no NVR, the camera itself does)

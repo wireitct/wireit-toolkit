@@ -43,6 +43,7 @@ function Fs-Sleep { param($s) }
 $script:FsMockUrl = 'http://127.0.0.1:1'
 $script:Dev = @{ mac = 'c4:2f:90:00:00:19'; serial = 'NVRSER19' }
 function Fs-Http { param($Ip, $Method = 'GET', $Path, $Cred, $Body, $Timeout, $OutFile)
+  if ($Path -eq '/ISAPI/System/deviceInfo' -and $Ip -eq '192.168.1.50') { return @{ code = 200; body = '<DeviceInfo><model>DS-2CD</model><serialNumber>CAMSER150</serialNumber><macAddress>c4:2f:90:00:01:50</macAddress></DeviceInfo>' } }   # 2.2.19: the camera itself (Undo-CamPassword now checks the camera's MAC too)
   if ($Path -eq '/ISAPI/System/deviceInfo') { return @{ code = 200; body = ('<DeviceInfo><model>DS-7608</model>' + $(if ($script:Dev.serial) { '<serialNumber>' + $script:Dev.serial + '</serialNumber>' } else { '' }) + $(if ($script:Dev.mac) { '<macAddress>' + $script:Dev.mac + '</macAddress>' } else { '' }) + '</DeviceInfo>') } }
   return @{ code = 404; body = '' } }
 $script:W = @()
