@@ -1,14 +1,14 @@
 {
   "version": "2.2.19",
   "released": "2026-11-11",
-  "commit": "fa4bd3308a2f7bab3dc5d96d712974975b870dbc",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/fa4bd3308a2f7bab3dc5d96d712974975b870dbc/",
+  "commit": "11aa4af8d6db134cdf46f9c79782479411c709a2",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/11aa4af8d6db134cdf46f9c79782479411c709a2/",
   "notes": "2.2.19: fixes for the Codex review of 2.2.18 (27 findings), by pattern across the whole repo: every device or adapter write needs a fresh identity match (MAC, or the saved serial when only a serial was saved) right before it, and a move needs a free destination; anything read before a YES is read again after it; a value that could not be read is NOT CHECKED, never ok / already right / none / done; DHCP modes are normalized and empty saved values are written back; recovery records, limits, login counts, reset steps and queued uploads are saved and checked before the risky step, and damaged ones are kept and block instead of being deleted; Go back and updates refuse to work over a half-finished update.",
   "files": [
     {
       "path": "CamReset/Find Cameras.cmd",
-      "sha256": "8d72512d20a55e892b96765e26c2ee43da1320f509ae4a1db4932bad8cb8f297",
-      "size": 125
+      "sha256": "a1ae74adc537267b2eb8083e5088c07ae4f8dee22432b1586e9f5eade30c6e49",
+      "size": 300
     },
     {
       "path": "CamReset/Find-Cameras.ps1",
@@ -32,23 +32,23 @@
     },
     {
       "path": "FixNVR/Check NVR.cmd",
-      "sha256": "cca4e7bc4959f9c4bced996570fde73bfa783422fdaaf8a0d1c4d7eb6cce4a1a",
-      "size": 357
+      "sha256": "4bb3f3c4a0a222ad331b2fbc2fc35a3937e26957fcbd1c24c9d0d9724e6be712",
+      "size": 920
     },
     {
       "path": "FixNVR/Fix NVR.cmd",
-      "sha256": "c0992e3e524600fe6dc0f411a5a270c8fd64d3295471cfc161df363bb8b11c66",
-      "size": 353
+      "sha256": "cd1bd66ade56a34d1bc3e229f1e3d1b286dbc96bcf7418cfe27f3d26e28b79db",
+      "size": 916
     },
     {
       "path": "FixNVR/FixNVR.ps1",
-      "sha256": "cc7ee297afe8b3e0e8b4454345959d67b5c598bcb6be7055e0eeb4cc4206e141",
-      "size": 169196
+      "sha256": "caec71fa09ce5cdf7ad4ada01e4e3195862e453bc84f68d530a527882dd1a0ee",
+      "size": 169732
     },
     {
       "path": "FixNVR/NVR Snapshot.cmd",
-      "sha256": "378646da694552e2025ed69b6dd56fd16e8b03b176c3225f1cc09cc66c5543e1",
-      "size": 752
+      "sha256": "81680bd6bd31f111efcec1b63196830dc5d4f9c48ebf572fed5891734bb89fa0",
+      "size": 1198
     },
     {
       "path": "FixNVR/README.txt",
@@ -57,13 +57,13 @@
     },
     {
       "path": "NetCheck/NetCheck.ps1",
-      "sha256": "27b999995e0a2448af70a5176d4742f91495630d2ebbed70e8806ed7230724eb",
-      "size": 20587
+      "sha256": "12511274facd108b36d4a0dc79fa6523e5765f4e2e542c6db3b6f478721e3100",
+      "size": 22853
     },
     {
       "path": "NetCheck/Network Check.cmd",
-      "sha256": "f6818feed516bfc141769f4db6fb4ed98589853f5200ee30cf44f45b6f92ed10",
-      "size": 196
+      "sha256": "49b9784ee7b54511c0eb2a5193d95b832a00fb777ca8cd42e266072eeb99b8b9",
+      "size": 376
     },
     {
       "path": "NetCheck/README.txt",
@@ -77,8 +77,8 @@
     },
     {
       "path": "Toolkit/FixIt.ps1",
-      "sha256": "f24d2e4f80a5e9d9a028f8b646af6a045831c4859ac8ec473f89ef5c3639a8a2",
-      "size": 6336
+      "sha256": "e0efd6108ecbc57cd0201214d2eb03c5ddd517534b83e1e380142d3b20a60c15",
+      "size": 6503
     },
     {
       "path": "Toolkit/FixSite.ps1",
@@ -147,8 +147,8 @@
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrFix.ps1",
-      "sha256": "4cbb132c660cd28e48e12b62294264d4999c13d8d7ddd751954bbb93d2dd5b6d",
-      "size": 63415
+      "sha256": "98477d6901db254e2676949c4e3c4ec6fd14fb38fb9f9fe947c3c3bba1beae1b",
+      "size": 65656
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrHealth.psm1",
@@ -177,8 +177,8 @@
     },
     {
       "path": "Toolkit/Restore Network.cmd",
-      "sha256": "314c08429a45c706a0b80813ee3fe334af8cb7ab048635b9d03dfa5a2b59e296",
-      "size": 360
+      "sha256": "42ddcea60b57170c8d1cad9b993dab57794a323865d721e00a7708466288812d",
+      "size": 540
     },
     {
       "path": "Toolkit/RestoreNetwork.ps1",
@@ -192,8 +192,8 @@
     },
     {
       "path": "Toolkit/Set upload key.cmd",
-      "sha256": "35822aaba2b4f76b6293c4fdc3bc79a89067fc321f49882dc7eeae80ab739b44",
-      "size": 225
+      "sha256": "31d7f33a514ee72f51c226f778d9b5e9d339b2ceac3d29586f65559cc6f256c3",
+      "size": 405
     },
     {
       "path": "Toolkit/tests/fix2212site/scenarios.py",
@@ -562,8 +562,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2216Nvr.ps1",
-      "sha256": "216b0743a1335bf3cb90c501cfcf0904619bdf803932370bf6f456df94ec1e3c",
-      "size": 21690
+      "sha256": "b1394a14928860c4c6421841af6386bcf7bc2a9b049561883f66539b7a53d6d5",
+      "size": 21868
     },
     {
       "path": "Toolkit/tests/Test-Fix2216Site.ps1",
@@ -602,13 +602,13 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2219Classic.ps1",
-      "sha256": "29b374b8974a976f93a5e19d28858ab38165165e629cec556882cb7bafe1d8af",
-      "size": 36727
+      "sha256": "460e3ec4a1e1d3ff176a3bdbe728434486c41f68cc91ec775b4fa9d7150ce717",
+      "size": 54916
     },
     {
       "path": "Toolkit/tests/Test-Fix2219Nvr.ps1",
-      "sha256": "0723dae6541f75abf135ce9d5f44d80fc57b90c5b2aa6a002c83c25d8b4ae3e6",
-      "size": 42027
+      "sha256": "0015661ece3a364e1219db0f2a27a635bc6ac4f940dd8f23a0bee14b6c40bce4",
+      "size": 44407
     },
     {
       "path": "Toolkit/tests/Test-Fix2219PcNet.ps1",
@@ -624,6 +624,11 @@
       "path": "Toolkit/tests/Test-Fix2219Sweep.ps1",
       "sha256": "ef6e5ec7aef9fbcc9021cbe1e4fd75e17463f21d31b3bd5fd8668d0f9112d7ec",
       "size": 46474
+    },
+    {
+      "path": "Toolkit/tests/Test-Fix2219Sweep2.ps1",
+      "sha256": "03ef940b48c8bff6acc73eaff06a22aadb91c65ffc80f3f69fdcb8e1b4ca28f4",
+      "size": 27784
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
@@ -737,8 +742,8 @@
     },
     {
       "path": "Toolkit/WireItToolkit.ps1",
-      "sha256": "0d7b600e538f744b55b432f7a490f235c5ef8ec0aaee8e467af4aa89045e687a",
-      "size": 123658
+      "sha256": "cd4e6f20fed11a456b8dcac7c29a0b43037b0238744b0697bb0c53bb6e9b9b73",
+      "size": 130451
     }
   ]
 }
