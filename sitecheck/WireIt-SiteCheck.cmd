@@ -177,8 +177,9 @@ function Invoke-ScPingRounds([string[]]$ips, [int]$rounds, [int]$timeoutMs = 100
     foreach ($i in $ips) { $p = New-Object System.Net.NetworkInformation.Ping; $pingers += $p; try { $tasks[$i] = $p.SendPingAsync($i, $timeoutMs) } catch {} }
     try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($tasks.Values), $timeoutMs + 3000) } catch {}
     foreach ($i in $ips) {
-      $res[$i].Sent++
       $t = $tasks[$i]
+      if (-not $t) { continue }   # 2.2.20 (class C): a ping that could not even be sent is not a ping that was lost (not counted as Sent)
+      $res[$i].Sent++
       if ($t -and $t.Status -eq 'RanToCompletion' -and $t.Result.Status -eq 'Success') { $res[$i].Ok++; $res[$i].Rtt.Add([int]$t.Result.RoundtripTime) }
     }
     foreach ($p in $pingers) { try { $p.Dispose() } catch {} }
@@ -527,7 +528,9 @@ function Send-ScReport($R, $D, [string]$siteCode, [string]$uploadCode) {
   $json = $body | ConvertTo-Json -Depth 5 -Compress
   try {
     $r = Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($json)) -TimeoutSec 20 -UseBasicParsing
-    if ($r.ok) { return 'Results posted to the site page.' } else { return ('Not posted: ' + $r.msg) }
+    # 2.2.20 (class C): only the page's own ok = true is "posted" (2.2.19 took any truthy ok, e.g. the text "false")
+    $okv = $null; $msg = ''; if ($r -is [Collections.IDictionary]) { $okv = $r['ok']; $msg = [string]$r['msg'] } elseif ($r) { $okv = $r.ok; $msg = [string]$r.msg }
+    if ($okv -is [bool] -and $okv) { return 'Results posted to the site page.' } else { return ('Not posted: ' + $(if ($msg) { $msg } else { 'the site page did not say it took them' })) }
   } catch { return ('Not posted (no internet or the site page did not answer): ' + $_.Exception.Message) }
 }
 $script:SC_UPLOAD_URL = 'https://wireit-api.wireitct.workers.dev/'   # the WireIt service log (Cloudflare); op siteCheckPush + per-site upload code

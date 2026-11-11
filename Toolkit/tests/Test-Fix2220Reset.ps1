@@ -363,6 +363,19 @@ Run-Safe 'sitecheck arp' {
   Check (@($D.Findings | Where-Object { $_.Level -eq 'ok' }).Count -eq 1) 'control: a clean scan with the ARP table read gives the all-clear'
   $R['arpRead'] = $false; $D = Get-ScDiagnosis $R
   Check (@($D.Findings | Where-Object { $_.Level -eq 'ok' }).Count -eq 0 -and @($D.Findings | Where-Object { $_.Level -eq 'warn' -and $_.Text -match 'ARP' }).Count -eq 1) 'SiteCheck: the same scan with the ARP table NOT read gives no all-clear, one amber NOT CHECKED' (($D.Findings | ForEach-Object { $_.Level + ':' + $_.Text }) -join ' | ')
+  # the report upload: only ok = true (a boolean) is "posted"
+  $script:SC_UPLOAD_URL = 'https://example.invalid/'
+  $global:scAns = $null
+  function global:Invoke-RestMethod { param($Uri, $Method, $ContentType, $Body, $TimeoutSec, [switch]$UseBasicParsing) return $global:scAns }
+  $global:scAns = [pscustomobject]@{ ok = 'false'; msg = '' }
+  $m1 = [string](Send-ScReport $R $D 'WI-100' 'ABCD1234')
+  Check ($m1 -notmatch 'Results posted') 'SiteCheck upload: an answer whose ok is the text "false" is NOT "Results posted" (2.2.19: any truthy ok)' $m1
+  $global:scAns = [pscustomobject]@{ ok = $true }
+  $m2 = [string](Send-ScReport $R $D 'WI-100' 'ABCD1234')
+  Check ($m2 -eq 'Results posted to the site page.') 'control: ok = true is posted' $m2
+  Remove-Item function:\Invoke-RestMethod -ErrorAction SilentlyContinue
+  $src2 = Read-Src 'sitecheck/SiteCheck.ps1'
+  Check ($src2 -match 'if \(-not \$t\) \{ continue \}') 'SiteCheck (code shape): a ping that could not be sent is not counted as a lost ping'
   $cmd = [IO.File]::ReadAllText((Join-Path $repo 'sitecheck/WireIt-SiteCheck.cmd')); $i = $cmd.IndexOf('##' + 'PSSTART')
   Check ($i -gt 0 -and $cmd.Substring($i + 11).Trim() -eq ([IO.File]::ReadAllText((Join-Path $repo 'sitecheck/SiteCheck.ps1'))).Trim()) 'SiteCheck: the .cmd launcher carries the same script'
 }
