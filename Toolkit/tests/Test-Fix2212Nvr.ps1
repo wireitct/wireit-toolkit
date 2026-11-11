@@ -38,7 +38,7 @@ try {
 $Mock = $null; $oui = @{}; $Version = 'test'; $Site = ''; $SniffSeconds = 0; $OldSubnet = @(); $Nvr = ''; $NoLogin = $false; $MoveUnlisted = $false; $AllowUnverifiedUniview = $false
 $ConfirmWith = 'YES'; $snap = $null; $rb = $null; $script:routerStepShown = $false
 $cfg = [pscustomobject]@{ arp_sniff_seconds = 0; max_old_subnets = 2; nvr_hosts = @(20, 19, 18); camera_block_start = 21; camera_block_end = 99; camera_channel_base = 20; camera_ip_mode = 'keep_last_octet'; router_dhcp_start = 100; dns1 = '8.8.8.8'; dns2 = '1.1.1.1'; verify_wait_seconds = 0; camera_wait_seconds = 0; poe_internal_subnets = @('192.168.254'); uniview = [pscustomobject]@{ cloud_path = '/x' } }
-$pc = [pscustomobject]@{ ifIndex = 5; alias = 'Ethernet'; dhcp = $true; ip = '192.168.1.105'; prefix = 24; gw = '192.168.1.1' }; $script:pcNet = $pc
+$pc = [pscustomobject]@{ ifIndex = 5; alias = 'Ethernet'; guid = '{0f1c2b9e-0d3a-4c55-9a51-2f0e5d7c1a11}'; dhcp = $true; ip = '192.168.1.105'; prefix = 24; gw = '192.168.1.1' }; $script:pcNet = $pc
 $newP3 = '192.168.1'; $newMask = '255.255.255.0'
 $plan = New-Object System.Collections.Generic.List[object]; $applied = New-Object System.Collections.Generic.List[object]
 $script:devs = New-Object System.Collections.Generic.List[object]
@@ -176,14 +176,15 @@ function Get-NetRoute { param($DestinationPrefix, $InterfaceIndex, $AddressFamil
 function Get-NetIPInterface { param($InterfaceIndex, $AddressFamily, $ErrorAction) return [pscustomobject]@{ Dhcp = $script:sim.dhcp } }
 function Set-NetIPInterface { param($InterfaceIndex, $AddressFamily, $Dhcp, $ErrorAction) [void]$script:sim.calls.Add('dhcp ' + $Dhcp); $script:sim.dhcp = $Dhcp }
 # 2.2.19 (Codex 2.2.18 F05): the clean-up checks the adapter number still belongs to the recorded adapter (name) before any change
-function Get-NetAdapter { param($InterfaceIndex, $ErrorAction) return [pscustomobject]@{ Name = 'Ethernet'; InterfaceIndex = 5; InterfaceGuid = '' } }
+# 2.2.20 (Codex 2.2.19 R02): every adapter change checks the saved name AND InterfaceGuid, so the stand-in adapter has its ID too
+function Get-NetAdapter { param($InterfaceIndex, $ErrorAction) return [pscustomobject]@{ Name = 'Ethernet'; InterfaceIndex = 5; InterfaceGuid = '{0f1c2b9e-0d3a-4c55-9a51-2f0e5d7c1a11}' } }
 function netsh { [void]$script:sim.calls.Add('netsh ' + ($args -join ' ')); if (($args -join ' ') -match 'coexistence=(\w+)') { $script:sim.coexist = $Matches[1] }; $global:LASTEXITCODE = 0; if (($args -join ' ') -match 'show interface') { if ($script:sim.netshGarbage) { return @('Schnittstelle 5 Parameter', 'DHCP/Statische IP-Koexistenz : deaktiviert') }; return @('DHCP/Static IP coexistence     : ' + $script:sim.coexist) } }
 function Register-ScheduledTask { $script:sim.task = $true }
 function Unregister-ScheduledTask { [void]$script:sim.calls.Add('unregister'); $script:sim.task = $false }
 function New-ScheduledTaskAction { 1 }; function New-ScheduledTaskTrigger { 1 }; function New-ScheduledTaskPrincipal { 1 }
 function Remove-NetFirewallRule { }
 function Start-Sleep { $script:sim.sleeps++ }
-$pc = [pscustomobject]@{ ifIndex = 5; alias = 'Ethernet'; dhcp = $true; ip = '192.168.1.105'; prefix = 24; gw = '192.168.1.1' }
+$pc = [pscustomobject]@{ ifIndex = 5; alias = 'Ethernet'; guid = '{0f1c2b9e-0d3a-4c55-9a51-2f0e5d7c1a11}'; dhcp = $true; ip = '192.168.1.105'; prefix = 24; gw = '192.168.1.1' }
 $script:pcNet = $pc
 function Reset-Run { $script:temps.Clear(); $script:pcChanges = [ordered]@{ coexistence_before = $null; firewall_rule = $false; cleanup_task = $false; ifIndex = $null; alias = $null; dhcp = $null; ip = $null; gw = $null }; $script:sim.calls.Clear(); $script:sim.reads = 0; $script:sim.sleeps = 0 }
 $out = [ordered]@{}
@@ -237,7 +238,7 @@ Reset-Run; $ip = Add-TempIp '192.168.0' $pc @(); $script:sim.routeIf = 9
 $out.D_ok = [bool](Remove-AllTemp); $out.D_journal = (Test-Path -LiteralPath $tempFile)
 $script:sim.routeIf = 5; $out.D2_ok = [bool](Invoke-LeftoverCleanup); $out.D2_journal = (Test-Path -LiteralPath $tempFile)
 # E. a fixed-address PC (static 192.168.1.50): its own address must be back, an address from somewhere else does not count
-Reset-Run; $pcS = [pscustomobject]@{ ifIndex = 5; alias = 'Ethernet'; dhcp = $false; ip = '192.168.1.50'; prefix = 24; gw = '192.168.1.1' }; $script:pcNet = $pcS
+Reset-Run; $pcS = [pscustomobject]@{ ifIndex = 5; alias = 'Ethernet'; guid = '{0f1c2b9e-0d3a-4c55-9a51-2f0e5d7c1a11}'; dhcp = $false; ip = '192.168.1.50'; prefix = 24; gw = '192.168.1.1' }; $script:pcNet = $pcS
 $ip = Add-TempIp '192.168.0' $pcS @(); $out.E_ip = [string]$ip
 $out.E_ok = [bool](Remove-AllTemp); $out.E_journal = (Test-Path -LiteralPath $tempFile)
 $j0 = Get-Content -LiteralPath $tempFile -Raw | ConvertFrom-Json; $out.E_savedIp = [string]$j0.pc.ip

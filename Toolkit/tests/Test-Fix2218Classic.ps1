@@ -103,8 +103,8 @@ function Http([string]$ip, [string]$method, [string]$path, [string]$body = '', [
   if ($path -eq '/onvif/device_service' -and $d.onvif) {
     if ($body -match 'GetNetworkInterfaces') { return @{ code = 200; body = ('<tds:GetNetworkInterfacesResponse><tds:NetworkInterfaces token="eth0"><tt:Info><tt:HwAddress>' + $d.mac + '</tt:HwAddress></tt:Info><tt:IPv4><tt:Config><tt:Manual><tt:Address>' + $ip + '</tt:Address><tt:PrefixLength>24</tt:PrefixLength></tt:Manual></tt:Config></tt:IPv4></tds:NetworkInterfaces></tds:GetNetworkInterfacesResponse>'); err = '' } }
     if ($body -match 'SetNetworkInterfaces') { [void]$script:sim.writes.Add('onvif-net ' + $ip); return @{ code = 200; body = '<tds:SetNetworkInterfacesResponse><tds:RebootNeeded>false</tds:RebootNeeded></tds:SetNetworkInterfacesResponse>'; err = '' } }
-    if ($body -match 'SetNetworkDefaultGateway') { [void]$script:sim.writes.Add('onvif-gw ' + $ip + ' (' + $d.mac + ')'); return @{ code = 200; body = '<ok/>'; err = '' } }
-    if ($body -match 'SetDNS') { [void]$script:sim.writes.Add('onvif-dns ' + $ip + ' (' + $d.mac + ')'); return @{ code = 200; body = '<ok/>'; err = '' } }
+    if ($body -match 'SetNetworkDefaultGateway') { [void]$script:sim.writes.Add('onvif-gw ' + $ip + ' (' + $d.mac + ')'); return @{ code = 200; body = '<tds:SetNetworkDefaultGatewayResponse/>'; err = '' } }   # 2.2.20: the real reply document (a bare 200 no longer counts)
+    if ($body -match 'SetDNS') { [void]$script:sim.writes.Add('onvif-dns ' + $ip + ' (' + $d.mac + ')'); return @{ code = 200; body = '<tds:SetDNSResponse/>'; err = '' } }
   }
   return @{ code = 404; body = ''; err = 'not found' }
 }
@@ -149,17 +149,18 @@ $res.E = Run-Main 'Rollback' (New-Rb @($camStep2))
 $script:sim.devs = @{ '192.168.1.64' = (New-SimDev 'IPCamera' $A) }
 $res.E2 = Run-Main 'Rollback' (New-Rb @($camStep2))
 # F. NVR camera-list Undo: channel D1 was pointed at .50 by this run; it now points at a different camera .51 -> left alone
-$chStep = @{ type = 'nvr-channel'; how = 'isapi'; kind = 'nvr'; brand = 'hik'; dev_mac = $A; nvr_ip = '192.168.1.20'; channel = '1'; old_ip = '192.168.1.64'; new_ip = '192.168.1.50'; done = $true; attempted = $true; result = 'done' }
+# 2.2.20 (Codex 2.2.19 R06): the channel step also saves the camera it belongs to (cam_mac), and that camera must answer at .50
+$chStep = @{ type = 'nvr-channel'; how = 'isapi'; kind = 'nvr'; brand = 'hik'; dev_mac = $A; nvr_ip = '192.168.1.20'; channel = '1'; old_ip = '192.168.1.64'; new_ip = '192.168.1.50'; cam_mac = 'C0-56-E3-00-00-50'; done = $true; attempted = $true; result = 'done' }
 $nf = New-SimDev 'NVR' $A; $nf.channels = @(@{ id = '1'; ip = '192.168.1.51' }); $script:sim.devs = @{ '192.168.1.20' = $nf; '192.168.1.51' = (New-SimDev 'IPCamera' 'C0-56-E3-00-00-51') }
 $res.F = Run-Main 'Rollback' (New-Rb @($chStep)); $res.F | Add-Member -NotePropertyName ch -NotePropertyValue ([string]$nf.channels[0].ip)
 # G. control: D1 still points at .50 -> put back to .64, read back, Done
-$ng = New-SimDev 'NVR' $A; $ng.channels = @(@{ id = '1'; ip = '192.168.1.50' }); $script:sim.devs = @{ '192.168.1.20' = $ng }
+$ng = New-SimDev 'NVR' $A; $ng.channels = @(@{ id = '1'; ip = '192.168.1.50' }); $script:sim.devs = @{ '192.168.1.20' = $ng; '192.168.1.50' = (New-SimDev 'IPCamera' 'C0-56-E3-00-00-50') }
 $res.G = Run-Main 'Rollback' (New-Rb @($chStep)); $res.G | Add-Member -NotePropertyName ch -NotePropertyValue ([string]$ng.channels[0].ip)
 # H. channel Undo where the recorder at the NVR's address is a DIFFERENT one -> nothing written
 $nh = New-SimDev 'NVR' $B; $nh.channels = @(@{ id = '1'; ip = '192.168.1.50' }); $script:sim.devs = @{ '192.168.1.20' = $nh }
 $res.H = Run-Main 'Rollback' (New-Rb @($chStep)); $res.H | Add-Member -NotePropertyName ch -NotePropertyValue ([string]$nh.channels[0].ip)
 # I. the NVR accepts the channel PUT but the channel reads back unchanged -> not confirmed
-$ni = New-SimDev 'NVR' $A; $ni.channels = @(@{ id = '1'; ip = '192.168.1.50' }); $ni.ignoreChannel = $true; $script:sim.devs = @{ '192.168.1.20' = $ni }
+$ni = New-SimDev 'NVR' $A; $ni.channels = @(@{ id = '1'; ip = '192.168.1.50' }); $ni.ignoreChannel = $true; $script:sim.devs = @{ '192.168.1.20' = $ni; '192.168.1.50' = (New-SimDev 'IPCamera' 'C0-56-E3-00-00-50') }
 $res.I = Run-Main 'Rollback' (New-Rb @($chStep))
 # J. the saved recorder (...01) is at .20, but its old address .18 is now used by another device -> no move (no address conflict)
 $script:sim.devs = @{ '192.168.1.20' = (New-SimDev 'NVR' $A); '192.168.1.18' = (New-SimDev 'IPCamera' 'C0-56-E3-00-00-18') }
