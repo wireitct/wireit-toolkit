@@ -130,17 +130,54 @@ if ($cfgWhy -and $Mode -ne 'Cleanup') {   # 2.2.11 (Codex R14 / F16)
 }
 # 2.2.7 (Codex file-by-file F04): written to a temporary file and swapped in whole; a write that fails THROWS (2.2.6 wrote with
 # Set-Content under 'Continue': a failed rollback save was only a warning and the run went on changing devices)
+# 2.2.20 (Codex 2.2.19 class A sweep): a save counts only when the FINAL file reads back: it exists, it is the exact text written and
+# it parses. Anything else THROWS, so every caller stops before the change the record protects.
 function Save-Json($obj, [string]$path) {
   $tmp = $path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+  $json = ($obj | ConvertTo-Json -Depth 12)
   try {
-    [IO.File]::WriteAllText($tmp, ($obj | ConvertTo-Json -Depth 12), (New-Object Text.UTF8Encoding($true)))
+    [IO.File]::WriteAllText($tmp, $json, (New-Object Text.UTF8Encoding($true)))
     if ([IO.File]::Exists($path)) { [IO.File]::Replace($tmp, $path, [NullString]::Value) } else { [IO.File]::Move($tmp, $path) }
   } finally { if ([IO.File]::Exists($tmp)) { try { [IO.File]::Delete($tmp) } catch {} } }
+  if (-not [IO.File]::Exists($path)) { throw ('the saved file ' + $path + ' is not there after the save') }
+  $back = [IO.File]::ReadAllText($path)
+  if ($back.Length -gt 0 -and [int][char]$back[0] -eq 0xFEFF) { $back = $back.Substring(1) }
+  if ($back -cne $json) { throw ('the saved file ' + $path + ' does not read back as written') }
+  try { [void]($back | ConvertFrom-Json -ErrorAction Stop) } catch { throw ('the saved file ' + $path + ' does not read back as JSON') }
 }
 # 2.2.7 (F05): Undo takes back every step that was SENT (done, or sent and not confirmed: a timeout, a stopped run), newest first
 function Get-FnRollbackSteps($rb) {
   $tmp = @($rb.steps | Where-Object { $_ -and ($_.done -or ($_.PSObject.Properties['attempted'] -and $_.attempted)) -and $_.type -ne 'nvr-platform' })
   [array]::Reverse($tmp); return $tmp
+}
+# 2.2.20 (Codex 2.2.19 class E sweep): '' = the undo file has the structure and the field types the Fix run writes; else why not
+function Get-FnRollbackWhy($rb) {
+  if (-not ($rb -is [pscustomobject])) { return 'is damaged (not an undo file this tool writes)' }
+  if (-not $rb.PSObject.Properties['steps'] -or -not ($rb.steps -is [array])) { return 'is damaged (it has no list of steps)' }
+  $i = 0
+  foreach ($st in @($rb.steps)) {
+    $i++; $w = 'is damaged (step ' + $i
+    if (-not ($st -is [pscustomobject])) { return ($w + ' is not a step)') }
+    $nm = @($st.PSObject.Properties | ForEach-Object { $_.Name })
+    foreach ($k in 'type', 'how', 'done') { if ($nm -notcontains $k) { return ($w + ' has no "' + $k + '")') } }
+    if (-not ($st.type -is [string]) -or [string]$st.type -notmatch '^(cam-net|nvr-net|nvr-channel|nvr-platform)$') { return ($w + ' has an unknown kind "' + [string]$st.type + '")') }
+    if (-not ($st.how -is [string]) -or [string]$st.how -notmatch '^(isapi|onvif|lapi|manual)$') { return ($w + ' has an unknown method "' + [string]$st.how + '")') }
+    if (-not ($st.done -is [bool])) { return ($w + ': "done" is not true/false)') }
+    if ($nm -contains 'attempted' -and -not ($st.attempted -is [bool])) { return ($w + ': "attempted" is not true/false)') }
+    foreach ($k in 'dev_mac', 'dev_serial', 'cam_mac', 'cam_serial', 'brand', 'old_addressing', 'old_mask', 'old_gw', 'old_dns1', 'old_dns2', 'nvr_ip') { if ($nm -contains $k -and $null -ne $st.$k -and -not ($st.$k -is [string])) { return ($w + ': "' + $k + '" is not text)') } }
+    if (-not [string]$st.dev_mac -and -not [string]$st.dev_serial) { return ($w + ' does not say which device it changed)') }
+    if ([string]$st.type -ne 'nvr-platform') {
+      foreach ($k in 'old_ip', 'new_ip') { if ($nm -notcontains $k -or -not (Test-FnIpv4 $st.$k)) { return ($w + ': "' + $k + '" is not an address)') } }
+    }
+    if ([string]$st.type -match '^(cam|nvr)-net$') {
+      foreach ($k in 'old_mask', 'old_gw', 'old_dns1', 'old_dns2', 'old_addressing') { if ($nm -notcontains $k) { return ($w + ' has no "' + $k + '")') } }
+      if ([string]$st.old_mask -and -not (Test-FnMask $st.old_mask)) { return ($w + ': its old mask "' + [string]$st.old_mask + '" is not a mask)') }
+      foreach ($k in 'old_gw', 'old_dns1', 'old_dns2') { if ([string]$st.$k -and [string]$st.$k -ne '0.0.0.0' -and -not (Test-FnIpv4 $st.$k)) { return ($w + ': "' + $k + '" is not an address)') } }
+      if ([string]$st.old_addressing -and -not (Get-FnAddrMode $st.old_addressing)) { return ($w + ': its old addressing "' + [string]$st.old_addressing + '" is not one the tool knows)') }
+    }
+    if ([string]$st.type -eq 'nvr-channel' -and ($nm -notcontains 'channel' -or [string]$st.channel -notmatch '^\d+$')) { return ($w + ': its channel number is not readable)') }
+  }
+  return ''
 }
 # 2.2.7 (F05): an NVR channel is not pointed at a camera's new address when that camera's move failed
 function Test-FnSkipDependent($st, [hashtable]$failedTo) { return ([string]$st.type -eq 'nvr-channel' -and $failedTo.ContainsKey([string]$st.new_ip)) }
@@ -217,13 +254,41 @@ function Test-TempGone([string]$ip, $ifIndex) {
     Log ('could not check whether temp ip ' + $ip + ' is gone: ' + $_.Exception.Message); return $false
   }
 }
+# 2.2.20 (Codex 2.2.19 R02, class B): ONE gate for every change this run makes on a network adapter (adding or removing a temporary
+# address, the DHCP+static coexistence setting, DHCP) and for every read that certifies one: right before it, the adapter at the
+# number is read again and must positively be the one this run saved (its name AND its InterfaceGuid, both as saved). A different
+# adapter, an unreadable one, or a record without both = '' is NOT returned and nothing is changed (Moshe's decision: unreadable =
+# refuse). 2.2.19 checked the identity only in the final restore, after the addresses had already been added and removed by number.
+function Get-FnRunAdapterWhy($ifIndex) {
+  if ($null -eq $script:pcChanges.ifIndex) { return 'the record does not say which network adapter this run uses' }
+  if ([string]$ifIndex -ne [string]$script:pcChanges.ifIndex) { return ('network adapter number ' + $ifIndex + ' is not the one this run recorded (number ' + $script:pcChanges.ifIndex + ')') }
+  if (-not [string]$script:pcChanges.alias -or -not [string]$script:pcChanges.guid) { return 'the record does not have both the name and the ID of the network adapter this run uses' }
+  return (Get-FnAdapterIdWhy ([pscustomobject]@{ alias = [string]$script:pcChanges.alias; guid = [string]$script:pcChanges.guid }) $ifIndex)
+}
+# 2.2.20 (R02): the adapter a JOURNAL from disk names, checked the same way for each change (never cached across addresses)
+function Get-FnRecordAdapterWhy($pcc, $ifIndex) {
+  if ($null -eq $ifIndex -or [string]$ifIndex -ne [string]$pcc.ifIndex) { return ('the record does not say which adapter number ' + $ifIndex + ' was') }
+  return (Get-FnAdapterIdWhy $pcc $ifIndex)
+}
+# 2.2.20 (R02): a refused first change leaves no "this run changed the adapter" record behind when nothing was changed on it
+function Reset-FnUnusedAdapterRecord {
+  if ($script:temps.Count -or $null -ne $script:pcChanges.coexistence_before) { return }
+  foreach ($k in 'ifIndex', 'alias', 'guid', 'dhcp', 'ip', 'gw') { $script:pcChanges[$k] = $null }
+  [void](Write-TempState)
+}
 function Add-TempIp([string]$p3, $pc, $avoid) {
   if ($script:coexNotConfirmed) { return $null }   # 2.2.19: once the DHCP+static setting did not take, no temporary address this run
   foreach ($h in $cfg.temp_ip_hosts) {
     $ip = $p3 + '.' + $h
     if ($avoid -contains $ip) { continue }
     if ($Mock) { $script:temps.Add([pscustomobject]@{ ip = $ip; ifIndex = $pc.ifIndex }); Log ('MOCK temp ip ' + $ip); return $ip }
-    if ($null -eq $script:pcChanges.ifIndex) { $script:pcChanges.ifIndex = [int]$pc.ifIndex; $script:pcChanges.alias = [string]$pc.alias; $script:pcChanges.guid = [string]$pc.guid; $script:pcChanges.dhcp = [bool]$pc.dhcp; $script:pcChanges.ip = [string]$pc.ip; $script:pcChanges.gw = [string]$pc.gw }
+    if ($null -eq $script:pcChanges.ifIndex) {
+      # 2.2.20 (R02): the identity saved is the adapter's name AND its InterfaceGuid; without both nothing is changed (unreadable = refuse)
+      if (-not [string]$pc.alias -or -not [string]$pc.guid) { Log 'temp ip refused: the adapter name or ID could not be read'; Say 'Old scheme: no temporary address was added. Windows did not give both the name and the ID of this PC''s network adapter, so the tool could not check it changes the right one. Nothing on this PC was changed.' 'Yellow'; return $null }
+      $script:pcChanges.ifIndex = [int]$pc.ifIndex; $script:pcChanges.alias = [string]$pc.alias; $script:pcChanges.guid = [string]$pc.guid; $script:pcChanges.dhcp = [bool]$pc.dhcp; $script:pcChanges.ip = [string]$pc.ip; $script:pcChanges.gw = [string]$pc.gw
+    }
+    $aw0 = Get-FnRunAdapterWhy $pc.ifIndex
+    if ($aw0) { Log ('temp ip refused: ' + $aw0); Reset-FnUnusedAdapterRecord; Say ('Old scheme: no temporary address was added: ' + $aw0 + '. Nothing more on this PC was changed.') 'Yellow'; return $null }
     if ($script:pcChanges.coexistence_before -eq $null -and $pc.dhcp) {
       $t = (netsh interface ipv4 show interface ([string]$pc.ifIndex)) -join "`n"
       $m = [regex]::Match($t, '(?i)DHCP/Static IP coexistence\s*:\s*(\w+)')
@@ -234,6 +299,8 @@ function Add-TempIp([string]$p3, $pc, $avoid) {
       # the before-state is on disk BEFORE coexistence is switched on (2.2.9 switched first)
       if (-not (Write-TempState)) { $script:pcChanges.coexistence_before = $null; Say 'FAILED - Run again. The record of this PC''s network could not be saved, so no temporary address was added (nothing on this PC was changed).' 'Red'; return $null }
       if ($script:pcChanges.coexistence_before -notmatch 'enabled') {
+        $aw1 = Get-FnRunAdapterWhy $pc.ifIndex   # 2.2.20 (R02): fresh, right before this change
+        if ($aw1) { Log ('coexistence change refused: ' + $aw1); $script:pcChanges.coexistence_before = $null; Reset-FnUnusedAdapterRecord; Say ('Old scheme: no temporary address was added: ' + $aw1 + '. Nothing more on this PC was changed.') 'Yellow'; return $null }
         netsh interface ipv4 set interface ([string]$pc.ifIndex) dhcpstaticipcoexistence=enabled | Out-Null
         # 2.2.19 (class F): the setting is read back before a temporary address is added. Without it, Windows can turn this PC's DHCP
         # off when the address is added, so a setting that did not take = no temporary address (the before-state is already on disk).
@@ -245,6 +312,8 @@ function Add-TempIp([string]$p3, $pc, $avoid) {
     $script:temps.Add([pscustomobject]@{ ip = $ip; ifIndex = $pc.ifIndex })
     if (-not (Write-TempState)) { [void]$script:temps.RemoveAt($script:temps.Count - 1); Say 'FAILED - Run again. The record of this PC''s network could not be saved, so no temporary address was added.' 'Red'; return $null }
     Set-SafetyTask
+    $aw2 = Get-FnRunAdapterWhy $pc.ifIndex   # 2.2.20 (R02): fresh, right before the address is added
+    if ($aw2) { Log ('temp ip ' + $ip + ' refused: ' + $aw2); [void]$script:temps.RemoveAt($script:temps.Count - 1); [void](Write-TempState); Reset-FnUnusedAdapterRecord; Say ('Old scheme: no temporary address was added: ' + $aw2 + '. Nothing more on this PC was changed (run "Fix NVR.cmd" again so it can clean up if this PC was changed before).') 'Yellow'; return $null }
     try {
       New-NetIPAddress -InterfaceIndex $pc.ifIndex -IPAddress $ip -PrefixLength 24 -SkipAsSource $true -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
     } catch { Log ('add ' + $ip + ' failed: ' + $_.Exception.Message); if (-not (Remove-OneTemp $ip $pc.ifIndex)) { return $null }; continue }
@@ -258,8 +327,13 @@ function Add-TempIp([string]$p3, $pc, $avoid) {
 # returns $true only when the address is checked gone; otherwise it stays tracked and journaled
 function Remove-OneTemp([string]$ip, $ifIndex) {
   if (-not $Mock) {
+    # 2.2.20 (R02): removed only from the adapter this run saved, checked right before the removal and again before "gone" is believed
+    $aw = Get-FnRunAdapterWhy $ifIndex
+    if ($aw) { Log ('temp ip ' + $ip + ' NOT removed: ' + $aw + ' (kept in the journal)'); [void](Write-TempState); return $false }
     Remove-NetIPAddress -IPAddress $ip -InterfaceIndex $ifIndex -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
     if (-not (Test-TempGone $ip $ifIndex)) { Log ('temp ip ' + $ip + ' is still on the adapter (kept in the journal)'); [void](Write-TempState); return $false }
+    $aw = Get-FnRunAdapterWhy $ifIndex
+    if ($aw) { Log ('temp ip ' + $ip + ' reads gone, but ' + $aw + ' (kept in the journal)'); [void](Write-TempState); return $false }
   }
   $x = @($script:temps | Where-Object { $_.ip -eq $ip }); foreach ($e in $x) { [void]$script:temps.Remove($e) }
   if (-not $Mock) { [void](Write-TempState) }
@@ -291,23 +365,32 @@ function Restore-PcSettings($pcc, $ifIndex, [ref]$problems) {
   if ($null -eq $ifIndex) { return }
   # 2.2.19 (Codex 2.2.18 F05): before ANY change on the saved adapter number (and before a journal can be closed as "back to normal"),
   # the adapter there must be positively the saved one. 2.2.18 went ahead when the name could not be read.
+  # 2.2.20 (Codex 2.2.19 R08, class E): the saved values are used only with the types this tool writes. A DHCP value that is not a
+  # real true/false (for example the text "false", which PowerShell takes as TRUE) or a coexistence value outside the known words
+  # = nothing is changed and the record is kept (2.2.19 would have switched DHCP ON for "false").
+  if ($null -ne $pcc.dhcp -and -not ($pcc.dhcp -is [bool])) { $problems.Value += 'the record''s DHCP value is damaged (not true/false), so this PC''s settings were NOT put back automatically (the record is kept)'; return }
+  if ($null -ne $pcc.coexistence_before -and -not (Test-FnCoexWord $pcc.coexistence_before)) { $problems.Value += 'the record''s DHCP+static coexistence value is damaged, so this PC''s settings were NOT put back automatically (the record is kept)'; return }
+  $wasDhcp = ($pcc.dhcp -eq $true)
   $touched0 = $true; if ($pcc.PSObject.Properties['changed'] -and -not $pcc.changed) { $touched0 = $false }
   $coNeed = ($pcc.coexistence_before -ne $null -and [string]$pcc.coexistence_before -notmatch 'enabled')
   $dhcpNeed = $false
-  if ($pcc.dhcp) { $ipi0 = Get-NetIPInterface -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue; $dhcpNeed = (-not $ipi0 -or $ipi0.Dhcp -ne 'Enabled') }
+  if ($wasDhcp) { $ipi0 = Get-NetIPInterface -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue; $dhcpNeed = (-not $ipi0 -or $ipi0.Dhcp -ne 'Enabled') }
   if ($touched0 -or $coNeed -or $dhcpNeed) {
     $aw = Get-FnAdapterIdWhy $pcc $ifIndex
     if ($aw) { $problems.Value += ($aw + ', so its settings were NOT put back automatically (the record is kept)'); return }
   }
   if ($pcc.coexistence_before -ne $null -and [string]$pcc.coexistence_before -notmatch 'enabled') {
+    $aw = Get-FnAdapterIdWhy $pcc $ifIndex   # 2.2.20 (R02): fresh, right before this change
+    if ($aw) { $problems.Value += ($aw + ', so its settings were NOT put back automatically (the record is kept)'); return }
     netsh interface ipv4 set interface ([string]$ifIndex) dhcpstaticipcoexistence=disabled | Out-Null
     $co = ((netsh interface ipv4 show interface ([string]$ifIndex)) -join "`n"); $m = [regex]::Match($co, '(?i)DHCP/Static IP coexistence\s*:\s*(\w+)')
     # 2.2.12 (Codex P1-9): an answer that cannot be read is NOT "restored" (2.2.11 logged "coexistence restored" for it)
     if (-not $m.Success) { Log ('coexistence read-back not understood: ' + $co); $problems.Value += 'the DHCP+static coexistence setting could not be read back (Windows gave an answer the tool does not understand)' }
     elseif ($m.Groups[1].Value -match 'enabled') { $problems.Value += 'the DHCP+static coexistence setting could not be put back' } else { Log 'coexistence restored (read back)' }
   }
-  if ($pcc.dhcp) {
+  if ($wasDhcp) {
     $ipi = Get-NetIPInterface -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+    if ($ipi -and $ipi.Dhcp -ne 'Enabled') { $aw = Get-FnAdapterIdWhy $pcc $ifIndex; if ($aw) { $problems.Value += ($aw + ', so DHCP was NOT put back automatically (the record is kept)'); return } }   # 2.2.20 (R02)
     if ($ipi -and $ipi.Dhcp -ne 'Enabled') { try { Set-NetIPInterface -InterfaceIndex $ifIndex -AddressFamily IPv4 -Dhcp Enabled -ErrorAction Stop; Log 'DHCP re-enabled on PC NIC' } catch {} }
     $ipi = Get-NetIPInterface -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
     if (-not $ipi -or $ipi.Dhcp -ne 'Enabled') { $problems.Value += 'DHCP is not back on' }
@@ -317,7 +400,11 @@ function Restore-PcSettings($pcc, $ifIndex, [ref]$problems) {
   # router. Windows gets time to renew the lease. Until this checks, the journal (and the safety clean-up) stay.
   $touched = $true; if ($pcc.PSObject.Properties['changed'] -and -not $pcc.changed) { $touched = $false }   # a journal from disk always counts as touched
   if ($touched -and -not $problems.Value.Count) { $why = Wait-PcRecovered $pcc $ifIndex; if ($why) { $problems.Value += $why } }
+  # 2.2.20 (R02): a "back to normal" read counts only when it was read from the saved adapter: its identity is checked again after it
+  if ($touched -and -not $problems.Value.Count) { $aw = Get-FnAdapterIdWhy $pcc $ifIndex; if ($aw) { $problems.Value += ($aw + ', so the tool cannot say this PC''s network is back (the record is kept)') } }
 }
+# 2.2.20 (R08): the words netsh gives for the DHCP+static coexistence setting (the only values this tool saves)
+function Test-FnCoexWord($v) { return (($v -is [string]) -and ([string]$v -match '^(?i)(enabled|disabled)$')) }
 function Get-PcRecoveredWhy($pcc, $ifIndex) {
   # this tool's temporary addresses are SkipAsSource, so they never count as the PC's own address
   $addrs = @(Get-NetIPAddress -InterfaceIndex $ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_ -and [string]$_.IPAddress -and [string]$_.IPAddress -notlike '169.254.*' -and [string]$_.IPAddress -notlike '127.*' -and -not $_.SkipAsSource -and ([string]$_.AddressState -eq '' -or [string]$_.AddressState -eq 'Preferred') } | ForEach-Object { [string]$_.IPAddress })
@@ -363,7 +450,7 @@ function Remove-AllTemp {
   if ($problems.Count) { [void](Write-TempState); Say-CleanupFailed $problems; return $false }
   if ($script:pcChanges.cleanup_task) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue }
   $script:pcChanges.coexistence_before = $null; $script:pcChanges.firewall_rule = $false; $script:pcChanges.cleanup_task = $false
-  Remove-Item $tempFile -ErrorAction SilentlyContinue
+  if (-not (Remove-FnRecordChecked $tempFile)) { Say-CleanupFailed @('this PC''s network is back, but the clean-up record could not be removed (' + $tempFile + ')'); return $false }
   $left = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.SkipAsSource -and $_.PolicyStore -eq 'ActiveStore' -and ($cfg.temp_ip_hosts -contains (Last $_.IPAddress)) })
   if ($left.Count) { Log ('WARNING possible leftover temp addresses: ' + (($left | ForEach-Object { $_.IPAddress }) -join ', ')) }
   return $true
@@ -399,12 +486,38 @@ function Get-FnUnreadableClearWhy($file) {
   if (-not $boot) { return 'the tool could not read when this PC last started' }
   if ($boot -le (Get-FnUnreadableStamp $file)) { return 'this PC has not been restarted since then' }
   $all = $null; try { $all = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop) } catch { return ('the tool could not read this PC''s addresses (' + $_.Exception.Message + ')') }
-  $left = @($all | Where-Object { $_ -and $_.SkipAsSource -and ($cfg.temp_ip_hosts -contains (Last ([string]$_.IPAddress))) } | ForEach-Object { [string]$_.IPAddress })
-  if ($left.Count) { return ('a temporary address is still on this PC (' + ($left -join ', ') + ')') }
+  # 2.2.20 (Codex 2.2.19 R07; Moshe's decision: a COMPLETE positive check). The record could not be read, so the tool does not know
+  # which addresses it added: EVERY SkipAsSource address on any adapter (whatever its last number) blocks the clear (2.2.19 looked
+  # only at the last numbers in today's temp_ip_hosts).
+  $left = @($all | Where-Object { $_ -and $_.SkipAsSource } | ForEach-Object { [string]$_.IPAddress })
+  if ($left.Count) { return ('an address of the kind this tool adds (not used for sending) is still on this PC (' + ($left -join ', ') + ')') }
   $cw = Get-FnCoexistenceOnWhy; if ($cw) { return $cw }
+  $aw = Get-FnConnectedAdaptersWhy $all; if ($aw) { return $aw }
   $pcn = Get-PcNet
   if (-not $pcn -or -not $pcn.ip -or -not $pcn.gw) { return 'this PC has no working network connection with a router yet' }
   return ''
+}
+# 2.2.20 (Codex 2.2.19 R07): every CONNECTED adapter is read completely: its DHCP setting must be readable (on or off), and it must
+# have its own working address (not 169.254, not a temporary SkipAsSource one, a valid prefix), whether it uses DHCP or a fixed
+# address. An adapter that cannot be read, or a connected one with no working address of its own, = '' is NOT returned.
+function Get-FnConnectedAdaptersWhy($all) {
+  $ifs = $null; try { $ifs = @(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_ -and [string]$_.ConnectionState -eq 'Connected' -and [string]$_.InterfaceAlias -notmatch '(?i)loopback' }) } catch { return ('the tool could not list this PC''s network adapters (' + $_.Exception.Message + ')') }
+  if (-not $ifs.Count) { return 'the tool could not find a connected network adapter on this PC' }
+  foreach ($i in $ifs) {
+    $nm = '"' + [string]$i.InterfaceAlias + '"'
+    if ($null -eq $i.ifIndex -or [string]$i.ifIndex -notmatch '^\d+$') { return ('the tool could not read the number of the network adapter ' + $nm) }
+    if ([string]$i.Dhcp -notmatch '^(?i)(enabled|disabled)$') { return ('the tool could not read whether ' + $nm + ' uses DHCP or a fixed address') }
+    $own = @($all | Where-Object { $_ -and [string]$_.ifIndex -eq [string]$i.ifIndex -and -not $_.SkipAsSource -and [string]$_.IPAddress -and [string]$_.IPAddress -notlike '169.254.*' -and ([string]$_.AddressState -eq '' -or [string]$_.AddressState -eq 'Preferred') })
+    $good = @($own | Where-Object { (Test-FnIpv4 ([string]$_.IPAddress)) -and ($null -eq $_.PrefixLength -or ([string]$_.PrefixLength -match '^\d+$' -and [int]$_.PrefixLength -ge 1 -and [int]$_.PrefixLength -le 32)) })
+    if (-not $good.Count) { return ('the connected network adapter ' + $nm + ' has no working address of its own (' + $(if ([string]$i.Dhcp -match '(?i)enabled') { 'no lease from the router' } else { 'its fixed address is not there or not working' }) + '), so the tool cannot say an earlier run put it back') }
+  }
+  return ''
+}
+# 2.2.20 (R08 / R07): a real dotted IPv4 address (four numbers 0-255)
+function Test-FnIpv4($v) {
+  if (-not ($v -is [string]) -or [string]$v -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { return $false }
+  foreach ($p in ([string]$v -split '\.')) { if ([int]$p -gt 255) { return $false } }
+  return $true
 }
 function Get-FnUnreadableRecords {
   $dir = Split-Path -Parent $tempFile; $leaf = [IO.Path]::GetFileNameWithoutExtension($tempFile)
@@ -417,24 +530,35 @@ function Get-FnJournalWhy($o) {
   if (-not ($o -is [pscustomobject])) { return 'is damaged (not a record this tool writes)' }
   $names = @($o.PSObject.Properties | ForEach-Object { $_.Name })
   foreach ($k in 'version', 'temps', 'pc') { if ($names -notcontains $k) { return ('is damaged (it has no "' + $k + '")') } }
-  if ([string]$o.version -ne '2') { return ('is damaged or from an unknown version ("' + [string]$o.version + '")') }
+  if (-not (Test-FnJsonInt $o.version) -or [long]$o.version -ne 2) { return ('is damaged or from an unknown version ("' + [string]$o.version + '")') }
   if (-not ($o.pc -is [pscustomobject])) { return 'is damaged (its PC part is missing)' }
   $pn = @($o.pc.PSObject.Properties | ForEach-Object { $_.Name })
   foreach ($k in 'coexistence_before', 'firewall_rule', 'cleanup_task', 'ifIndex', 'alias', 'dhcp', 'ip', 'gw') { if ($pn -notcontains $k) { return ('is damaged (its PC part has no "' + $k + '")') } }
-  $pix = $o.pc.ifIndex; $pixOk = ($null -ne $pix -and [string]$pix -match '^\d+$')
+  # 2.2.20 (Codex 2.2.19 R08, class E): every field must also have the TYPE Write-TempState writes. 2.2.19 checked only that the
+  # names were there, so "dhcp":"false" (text, which PowerShell takes as TRUE) passed and recovery would have switched DHCP on.
+  foreach ($k in 'firewall_rule', 'cleanup_task') { if (-not ($o.pc.$k -is [bool])) { return ('is damaged (its "' + $k + '" is not true/false)') } }
+  if ($null -ne $o.pc.dhcp -and -not ($o.pc.dhcp -is [bool])) { return 'is damaged (its "dhcp" is not true/false)' }
+  if ($null -ne $o.pc.coexistence_before -and -not (Test-FnCoexWord $o.pc.coexistence_before)) { return ('is damaged (its DHCP+static coexistence value "' + [string]$o.pc.coexistence_before + '" is not one Windows gives)') }
+  foreach ($k in 'alias', 'guid') { if ($pn -contains $k -and $null -ne $o.pc.$k -and -not ($o.pc.$k -is [string])) { return ('is damaged (its adapter "' + $k + '" is not text)') } }
+  foreach ($k in 'ip', 'gw') { if ($null -ne $o.pc.$k -and (-not ($o.pc.$k -is [string]) -or ([string]$o.pc.$k -and -not (Test-FnIpv4 $o.pc.$k)))) { return ('is damaged (its "' + $k + '" is not an address)') } }
+  $pix = $o.pc.ifIndex; $pixOk = (Test-FnJsonInt $pix)
   if ($null -ne $pix -and -not $pixOk) { return ('is damaged (adapter number "' + [string]$pix + '")') }
+  # the writer saves the adapter and its DHCP state together, the moment it first changes the adapter
+  if ($pixOk -and -not ($o.pc.dhcp -is [bool])) { return 'is damaged (it names an adapter but not whether it used DHCP)' }
   if ($null -ne $o.temps -and -not ($o.temps -is [array])) { return 'is damaged (its address list is not a list)' }
   $tl = @($o.temps | Where-Object { $null -ne $_ })
   foreach ($t in $tl) {
-    if (-not ($t -is [pscustomobject]) -or -not $t.PSObject.Properties['ip'] -or [string]$t.ip -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { return 'is damaged (an address in it is not readable)' }
+    if (-not ($t -is [pscustomobject]) -or -not $t.PSObject.Properties['ip'] -or -not (Test-FnIpv4 $t.ip)) { return 'is damaged (an address in it is not readable)' }
     $tix = $(if ($t.PSObject.Properties['ifIndex']) { $t.ifIndex } else { $null })
-    if ($null -ne $tix -and [string]$tix -notmatch '^\d+$') { return ('is damaged (adapter number "' + [string]$tix + '" for ' + [string]$t.ip + ')') }
+    if ($null -ne $tix -and -not (Test-FnJsonInt $tix)) { return ('is damaged (adapter number "' + [string]$tix + '" for ' + [string]$t.ip + ')') }
     if ($null -eq $tix -and -not $pixOk) { return ('is damaged (no adapter number for ' + [string]$t.ip + ')') }
   }
   if (($tl.Count -or $null -ne $o.pc.coexistence_before) -and -not $pixOk) { return 'is damaged (it changed this PC but does not say which adapter)' }
   if ($tl.Count -and -not $o.pc.alias -and -not ($o.pc.PSObject.Properties['guid'] -and $o.pc.guid)) { return 'is damaged (it does not say which adapter it changed)' }
   return ''
 }
+# 2.2.20 (R08): a JSON whole number (never text such as "5")
+function Test-FnJsonInt($v) { return (($v -is [int] -or $v -is [long] -or $v -is [int16] -or $v -is [uint32]) -and [long]$v -ge 0) }
 function Invoke-LeftoverCleanup {
   if ($Mock) { return $true }
   foreach ($ev in @(Get-FnUnreadableRecords)) {
@@ -445,6 +569,8 @@ function Invoke-LeftoverCleanup {
     }
     $done = $ev.FullName -replace '\.unreadable-', '.resolved-'
     try { Move-Item -LiteralPath $ev.FullName -Destination $done -Force -ErrorAction Stop } catch { Say-CleanupFailed @('the unreadable record ' + $ev.Name + ' could not be marked as cleared (' + $_.Exception.Message + ')'); return $false }
+    # 2.2.20 (class A sweep): the durable block counts as cleared only when a fresh look shows the marker gone and the cleared copy there
+    if ((Test-Path -LiteralPath $ev.FullName) -or -not (Test-Path -LiteralPath $done)) { Say-CleanupFailed @('the unreadable record ' + $ev.Name + ' could not be marked as cleared (it did not read back as moved)'); return $false }
     Log ('unreadable record ' + $ev.Name + ' cleared: PC restarted since, address list read with no temporary address left, coexistence read as off on every connected adapter, connection working')
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     Write-Host ('An earlier unreadable record was cleared after a check of this PC as it is now: restarted since, no temporary address on any adapter, DHCP+static coexistence off, and the connection works.') -ForegroundColor Yellow
@@ -463,17 +589,17 @@ function Invoke-LeftoverCleanup {
   }
   $problems = @(); $still = New-Object System.Collections.Generic.List[object]
   $sx = $o.pc.ifIndex
-  $idChecked = @{}
   foreach ($t in @($o.temps)) {
     if (-not $t) { continue }
     $ix = $(if ($null -ne $t.ifIndex) { $t.ifIndex } else { $sx })
     # 2.2.19 (Codex 2.2.18 F05, class A): an address still there is removed only from the adapter the record saved (GUID / name read
     # back the same). An address already gone needs no change; one on an adapter that is not positively the saved one stays journaled.
+    # 2.2.20 (Codex 2.2.19 R02): the identity is read again for EACH address, right before its removal (2.2.19 cached it per number)
     if (-not (Test-TempGone $t.ip $ix)) {
-      $k = [string]$ix
-      if (-not $idChecked.ContainsKey($k)) { $idChecked[$k] = $(if ([string]$ix -eq [string]$o.pc.ifIndex) { Get-FnAdapterIdWhy $o.pc $ix } else { 'the record does not say which adapter number ' + $ix + ' was' }) }
-      if ($idChecked[$k]) { $still.Add($t); $problems += ('the temporary address ' + $t.ip + ' a previous run left is still on adapter number ' + $ix + ', but ' + $idChecked[$k] + ', so it was NOT removed automatically'); if ($null -eq $sx) { $sx = $ix }; continue }
+      $aw = Get-FnRecordAdapterWhy $o.pc $ix
+      if ($aw) { $still.Add($t); $problems += ('the temporary address ' + $t.ip + ' a previous run left is still on adapter number ' + $ix + ', but ' + $aw + ', so it was NOT removed automatically'); if ($null -eq $sx) { $sx = $ix }; continue }
       Remove-NetIPAddress -IPAddress $t.ip -InterfaceIndex $ix -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+      if (Test-TempGone $t.ip $ix) { $aw = Get-FnRecordAdapterWhy $o.pc $ix; if ($aw) { $still.Add($t); $problems += ('the temporary address ' + $t.ip + ' reads gone, but ' + $aw + ', so the tool cannot say it was removed from the right adapter'); if ($null -eq $sx) { $sx = $ix }; continue } }
     }
     if (Test-TempGone $t.ip $ix) { Write-Host ('Removed a temporary address a previous run left behind: ' + $t.ip); Log ('leftover temp ip ' + $t.ip + ' removed') } else { $still.Add($t); $problems += ('the temporary address ' + $t.ip + ' a previous run left is still on the adapter') }
     if ($null -eq $sx) { $sx = $ix }
@@ -485,7 +611,13 @@ function Invoke-LeftoverCleanup {
     Say-CleanupFailed $problems; return $false
   }
   Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-  Remove-Item $tempFile -ErrorAction SilentlyContinue
+  if (-not (Remove-FnRecordChecked $tempFile)) { Say-CleanupFailed @('the earlier run''s changes are put back, but its clean-up record could not be removed (' + $tempFile + ')'); return $false }
+  return $true
+}
+# 2.2.20 (Codex 2.2.19 class A sweep): a recovery record is "removed" only when a fresh look shows it gone (2.2.19 ignored a failed delete)
+function Remove-FnRecordChecked([string]$path) {
+  try { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction Stop } } catch { Log ('record not removed: ' + $_.Exception.Message); return $false }
+  if (Test-Path -LiteralPath $path) { Log ('record still there after removal: ' + $path); return $false }
   return $true
 }
 
@@ -699,7 +831,9 @@ function Http([string]$ip, [string]$method, [string]$path, [string]$body = '', [
   return @{ code = 0; body = ''; err = 'no answer' }
 }
 function Hik-Status([string]$body) { return [pscustomobject]@{ code = (XVal $body 'statusCode'); text = (XVal $body 'statusString'); sub = (XVal $body 'subStatusCode') } }
-function Hik-Ok($r) { if ($r.code -ne 200) { return $false }; $s = Hik-Status $r.body; return (-not $s.code -or $s.code -eq '1' -or $s.code -eq '7') }
+# 2.2.20 (Codex 2.2.19 R12, class C twin): an accepted write is a ResponseStatus document saying OK (1) or "reboot needed" (7). An HTTP
+# 200 with a login page, an empty body or another document is NOT accepted (2.2.19 took a 200 with no statusCode as OK).
+function Hik-Ok($r) { if ($r.code -ne 200) { return $false }; if ([string]$r.body -notmatch '<(\w+:)?ResponseStatus[\s>/]') { return $false }; $s = Hik-Status $r.body; return ($s.code -eq '1' -or $s.code -eq '7') }
 function Hik-Reboot($r) { $s = Hik-Status $r.body; return ($s.code -eq '7' -or $s.sub -match '(?i)reboot') }
 
 # XML edit helpers (namespace-agnostic, keep everything the device sent)
@@ -739,6 +873,8 @@ function Hik-Read($dev) {
   $cred = Cred-For $dev
   $d = Http $dev.ip 'GET' '/ISAPI/System/deviceInfo' '' 'application/xml' $cred
   if ($d.code -ne 200) { $dev.login = $(if ($d.code -eq 401) { 'REFUSED (wrong password? not retried)' } else { 'no answer (' + $d.code + ')' }); return $false }
+  # 2.2.20 (Codex 2.2.19 R12, class C twin): logged in = the device's own DeviceInfo document, not any HTTP 200 (a login page is not)
+  if ([string]$d.body -notmatch '<(\w+:)?DeviceInfo[\s>/]') { $dev.login = 'no answer (the answer was not its device information)'; return $false }
   # 2.2.18 (Codex 2.2.17 #1): the MAC this device reports is checked against the MAC on record. A different MAC is a DIFFERENT
   # device at this address: it is rejected (not read, never written to), and the record keeps the MAC it had (2.2.17 overwrote it).
   $m = NormMac (XVal $d.body 'macAddress'); SetP $dev 'id_mac' ''
@@ -761,6 +897,9 @@ function Hik-Read($dev) {
       # 2.2.19 (Codex 2.2.18 F10): ISAPI says "dynamic" for DHCP; the record keeps one meaning ('dhcp' / 'static' / '' = not known)
       SetP $dev 'addressing_raw' (XGet $doc 'addressingType'); $dev.addressing = Get-FnAddrMode $dev.addressing_raw; $dev.mask = XGet $doc 'subnetMask'; $dev.gw = XGet $doc 'DefaultGateway/ipAddress'; SetP $dev 'net_ip' (XGet $doc 'ipAddress')
       $dev.dns1 = XGet $doc 'PrimaryDNS/ipAddress'; $dev.dns2 = XGet $doc 'SecondaryDNS/ipAddress'
+      # 2.2.20 (Codex 2.2.19 R09, class C): which fields the device's answer CARRIES is kept apart from their values, so a missing mask
+      # or gateway is "not read", never an empty setting Undo would put back
+      SetP $dev 'net_has' @{ mask = [bool](XNode $doc.DocumentElement 'subnetMask'); gw = [bool](XNode $doc.DocumentElement 'DefaultGateway/ipAddress'); dns1 = [bool](XNode $doc.DocumentElement 'PrimaryDNS/ipAddress'); dns2 = [bool](XNode $doc.DocumentElement 'SecondaryDNS/ipAddress') }
       SetP $dev 'net_read' $true
     }
   }
@@ -804,7 +943,13 @@ function Hik-EnablePlatform($dev) {
 # 2.2.18 (Codex 2.2.17 #1/#2 twin): the channel is read right before the write and changed only while it still points at the camera
 # this step expects ($expectIp: the old address going forward, the address this run wrote going back). A channel that now points at
 # another camera is left alone. After the write the channel is read back: it must point at $newIp.
-function Hik-SetChannel($nvr, [string]$id, [string]$newIp, [string]$expectIp = '') {
+# 2.2.20 (Codex 2.2.19 R06, class B): the channel is changed only for the camera this step saved. Right before the write the camera is
+# read at $camIp (where it is now) on a fresh record and must positively be the saved one (MAC; an exact serial only when only a
+# serial was saved). A step with no camera saved, a camera that is gone, moved or unreadable, or a different camera = the channel is
+# LEFT ALONE (refused, NOT CHECKED). 2.2.19 recognised the camera by the channel's address alone, so another live camera that had taken
+# the address would have had its channel and password replaced.
+function Hik-SetChannel($nvr, [string]$id, [string]$newIp, [string]$expectIp = '', [string]$camIp = '', [string]$camMac = '', [string]$camSerial = '') {
+  if (-not $camMac -and -not $camSerial) { return @{ ok = $false; refused = $true; note = ('channel D' + $id + ': the tool has no MAC or serial saved for the camera on this channel, so it cannot check the channel still belongs to it - LEFT ALONE, NOT CHECKED') } }
   $g = Http $nvr.ip 'GET' ('/ISAPI/ContentMgmt/InputProxy/channels/' + $id) '' 'application/xml' $script:credNvr
   if ($g.code -ne 200) { return @{ ok = $false; note = 'could not read channel ' + $id + ' (left alone)' } }
   $doc = $null; try { $doc = [xml]$g.body } catch { $doc = $null }
@@ -812,6 +957,9 @@ function Hik-SetChannel($nvr, [string]$id, [string]$newIp, [string]$expectIp = '
   $cur = XGet $doc 'sourceInputPortDescriptor/ipAddress'
   if ($cur -eq $newIp) { return @{ ok = $true; note = 'channel D' + $id + ' already points at ' + $newIp + ' (read now)' } }
   if ($expectIp -and $cur -ne $expectIp) { return @{ ok = $false; refused = $true; note = ('channel D' + $id + ' now points at ' + $(if ($cur) { $cur } else { 'nothing' }) + ', not ' + $expectIp + ': it belongs to another camera now, so it was LEFT ALONE') } }
+  if (-not $camIp) { return @{ ok = $false; refused = $true; note = ('channel D' + $id + ': the tool does not know where its camera is now, so it cannot check it - LEFT ALONE, NOT CHECKED') } }
+  $cid = Read-FnIdentity $camIp $camMac 'camera' '' $camSerial
+  if ($cid.why) { return @{ ok = $false; refused = $true; note = ('channel D' + $id + ' was LEFT ALONE - NOT CHECKED: its camera (' + $(if ($camMac) { $camMac } else { 'serial ' + $camSerial }) + ') could not be confirmed on ' + $camIp + ': ' + $cid.why) } }
   $sd = XNode $doc.DocumentElement 'sourceInputPortDescriptor'
   XSet $doc 'sourceInputPortDescriptor/ipAddress' $newIp
   $pw = XNode $sd 'password'
@@ -835,7 +983,8 @@ function Unv-Read($dev) {
   $cred = Cred-For $dev
   $d = Http $dev.ip 'GET' '/LAPI/V1.0/System/DeviceBasicInfo' '' 'application/json' $cred
   if ($d.code -ne 200) { if ($d.code -eq 401) { $dev.login = 'REFUSED (wrong password? not retried)' }; return $false }
-  $x = Unv-Data $d.body; if (-not $x) { return $false }
+  # 2.2.20 (R12 class C twin): only a LAPI answer that says success (ResponseCode 0) with its data counts as read
+  $x = $(if (Unv-Ok $d.body) { Unv-Data $d.body } else { $null }); if (-not $x) { if (-not $dev.login) { $dev.login = 'no answer (the answer was not a successful device information reply)' }; return $false }
   $um = NormMac ([string]$x.MAC); SetP $dev 'id_mac' ''
   if (Test-FnMacConflict $dev $um) { Set-FnDifferentDevice $dev $um; return $false }   # 2.2.18 (Codex 2.2.17 #1), as Hik-Read
   $dev.login = 'ok'; $dev.brand = 'unv'; $dev.model = $x.DeviceModel; $dev.serial = $x.SerialNumber; if ($um) { $dev.mac = $um; $dev.id_mac = $um }
@@ -844,13 +993,13 @@ function Unv-Read($dev) {
   if ($dev.kind -eq 'nvr') {
     # 2.2.14 (Codex F4): network, DNS and EZCloud reads are each tracked; a failed read leaves the field unknown, not the old value
     SetP $dev 'net_read' $false; SetP $dev 'dns_read' $false; SetP $dev 'platform_read' $false
-    $n = Http $dev.ip 'GET' $cfg.uniview.net_path '' 'application/json' $cred; if ($n.code -eq 200 -and (Unv-Data $n.body)) { $dev.net_json = $n.body; SetP $dev 'net_read' $true; $nd = Unv-Data $n.body; $dev.addressing = Get-FnUnvMode $nd; $ia = @(Find-JsonVals $nd '(?i)^(IPv4)?(IP)?Address$'); SetP $dev 'net_ip' $(if ($ia.Count) { [string]$ia[0] } else { '' }) }
-    $dn = Http $dev.ip 'GET' $cfg.uniview.dns_path '' 'application/json' $cred; if ($dn.code -eq 200) { $dd = Unv-Data $dn.body; if ($dd) { $dev.dns_json = $dn.body; $vals = @(Find-JsonVals $dd '(?i)dns'); if ($vals.Count) { $dev.dns1 = $vals[0]; if ($vals.Count -gt 1) { $dev.dns2 = $vals[1] }; SetP $dev 'dns_read' $true } } }
-    if ($cfg.uniview.cloud_path) { $cl = Http $dev.ip 'GET' $cfg.uniview.cloud_path '' 'application/json' $cred; if ($cl.code -eq 200) { $cd = Unv-Data $cl.body; $en = @(Find-JsonVals $cd '(?i)^enable'); if ($cd -and $en.Count) { $dev.platform_json = $cl.body; $dev.platform_enabled = ([string]$en[0] -match '^(1|true)$'); SetP $dev 'platform_read' $true } } }
+    $n = Http $dev.ip 'GET' $cfg.uniview.net_path '' 'application/json' $cred; if ($n.code -eq 200 -and (Unv-Ok $n.body) -and (Unv-Data $n.body)) { $dev.net_json = $n.body; SetP $dev 'net_read' $true; $nd = Unv-Data $n.body; $dev.addressing = Get-FnUnvMode $nd; $ia = @(Find-JsonVals $nd '(?i)^(IPv4)?(IP)?Address$'); SetP $dev 'net_ip' $(if ($ia.Count) { [string]$ia[0] } else { '' }) }
+    $dn = Http $dev.ip 'GET' $cfg.uniview.dns_path '' 'application/json' $cred; if ($dn.code -eq 200 -and (Unv-Ok $dn.body)) { $dd = Unv-Data $dn.body; if ($dd) { $dev.dns_json = $dn.body; $vals = @(Find-JsonVals $dd '(?i)dns'); if ($vals.Count) { $dev.dns1 = $vals[0]; if ($vals.Count -gt 1) { $dev.dns2 = $vals[1] }; SetP $dev 'dns_read' $true } } }
+    if ($cfg.uniview.cloud_path) { $cl = Http $dev.ip 'GET' $cfg.uniview.cloud_path '' 'application/json' $cred; if ($cl.code -eq 200 -and (Unv-Ok $cl.body)) { $cd = Unv-Data $cl.body; $en = @(Find-JsonVals $cd '(?i)^enable'); if ($cd -and $en.Count) { $dev.platform_json = $cl.body; $dev.platform_enabled = ([string]$en[0] -match '^(1|true)$'); SetP $dev 'platform_read' $true } } }
     $c = Http $dev.ip 'GET' $cfg.uniview.channels_path '' 'application/json' $cred
     $list = New-Object System.Collections.Generic.List[object]
     $dev.channels_read = $false
-    if ($c.code -eq 200) {
+    if ($c.code -eq 200 -and (Unv-Ok $c.body)) {
       $cd = Unv-Data $c.body; $arr = @(); foreach ($p in $cd.PSObject.Properties) { if ($p.Value -is [array]) { $arr = $p.Value } }
       $dev.channels_read = ($cd -ne $null)
       foreach ($ch in $arr) { $ip = @(Find-JsonVals $ch '(?i)^(IPAddress|Address|IP)$'); $st = @(Find-JsonVals $ch '(?i)^(Status|Online|OnlineStatus)$'); $list.Add([pscustomobject]@{ id = [string]$ch.ID; ip = $(if ($ip.Count) { [string]$ip[0] } else { '' }); port = ''; protocol = 'unv'; online = $(if ($st.Count) { [string]$st[0] -match '^(1|true|online)$' } else { $null }); poe = $false }) }
@@ -922,6 +1071,8 @@ function Onvif([string]$ip, [string]$inner, $cred) {
 function Onvif-Read($dev) {
   $r = Onvif $dev.ip '<tds:GetNetworkInterfaces/>' (Cred-For $dev)
   if ($r.code -ne 200) { if (-not $dev.login) { $dev.login = 'ONVIF no answer/refused (' + $r.code + ')' }; return $false }
+  # 2.2.20 (R12 class C twin): the answer must be the interface list, not a SOAP Fault or another page
+  if ([string]$r.body -notmatch 'GetNetworkInterfacesResponse' -or [string]$r.body -match '<(\w+:)?Fault[\s>]') { if (-not $dev.login) { $dev.login = 'ONVIF no answer/refused (the answer was not its network interfaces)' }; return $false }
   $m = [regex]::Match($r.body, '<(?:\w+:)?NetworkInterfaces[^>]*token="([^"]+)"'); $dev.onvif_token = $(if ($m.Success) { $m.Groups[1].Value } else { 'eth0' })
   $pl = XVal $r.body 'PrefixLength'; if ($pl) { $dev.mask = PrefixToMask ([int]$pl) }
   $hw = NormMac (XVal $r.body 'HwAddress'); SetP $dev 'id_mac' ''
@@ -947,6 +1098,8 @@ function Onvif-SetNet($dev, [string]$ip, [int]$prefix, [string]$gw, [string]$d1,
   $r = Onvif $dev.ip ('<tds:SetNetworkInterfaces><tds:InterfaceToken>' + $dev.onvif_token + '</tds:InterfaceToken><tds:NetworkInterface><tt:Enabled>true</tt:Enabled><tt:IPv4><tt:Enabled>true</tt:Enabled><tt:Manual><tt:Address>' + $ip + '</tt:Address><tt:PrefixLength>' + $prefix + '</tt:PrefixLength></tt:Manual><tt:DHCP>false</tt:DHCP></tt:IPv4></tds:NetworkInterface></tds:SetNetworkInterfaces>') $c
   $dropped = ($r.code -eq 0 -and $r.err -match '(?i)timed out|closed|aborted')
   if ($r.code -ne 200 -and -not $dropped) { return @{ ok = $false; note = 'SetNetworkInterfaces ' + $r.code + ' ' + $r.err } }
+  # 2.2.20 (R12 class C twin): an HTTP 200 that is not the SetNetworkInterfaces answer (a SOAP Fault, a login page) is not accepted
+  if (-not $dropped -and ([string]$r.body -notmatch 'SetNetworkInterfacesResponse' -or [string]$r.body -match '<(\w+:)?Fault[\s>]')) { return @{ ok = $false; note = 'SetNetworkInterfaces was not accepted (the answer was not its SetNetworkInterfaces reply)' } }
   $reboot = ((XVal $r.body 'RebootNeeded') -eq 'true')
   if ($reboot) { [void](Onvif $dev.ip '<tds:SystemReboot/>' $c) }
   # gateway + DNS are set on the NEW address (the old gateway setting would be off-subnet)
@@ -963,14 +1116,17 @@ function Onvif-SetNet($dev, [string]$ip, [int]$prefix, [string]$gw, [string]$d1,
     if ($hwm -ne $myMac) { return @{ ok = $false; reboot = $reboot; note = ('a DIFFERENT device (MAC ' + $hwm + ') answers on ' + $ip + ': gateway / DNS NOT set') } }
     # an empty saved gateway is a real value (2.2.19, class D): the request then carries no gateway address
     $g = Onvif $ip ('<tds:SetNetworkDefaultGateway>' + $(if ($gw) { '<tds:IPv4Address>' + $gw + '</tds:IPv4Address>' } else { '' }) + '</tds:SetNetworkDefaultGateway>') $c
-    if ($g.code -eq 200) { $ok2 = $true; break }
+    if ($g.code -eq 200 -and [string]$g.body -match 'SetNetworkDefaultGatewayResponse' -and [string]$g.body -notmatch '<(\w+:)?Fault[\s>]') { $ok2 = $true; break }   # 2.2.20 (R12 twin): the expected reply, not any 200
   }
   if ($ok2) {
     # 2.2.19 (Codex 2.2.18 F11, class D): only the DNS servers that are set are sent; none = an empty fixed list (2.2.18 sent empty
     # entries). The answer must be accepted, and the caller reads the whole setting back afterwards.
     $dl = ''; foreach ($x in @($d1, $d2)) { if ($x) { $dl += '<tds:DNSManual><tt:Type>IPv4</tt:Type><tt:IPv4Address>' + $x + '</tt:IPv4Address></tds:DNSManual>' } }
+    # 2.2.20 (Codex 2.2.19 class B sweep): the DNS change is its own write, so the device at the new address is identified again first
+    $hw2 = Onvif $ip '<tds:GetNetworkInterfaces/>' $c; $hwm2 = $(if ($hw2.code -eq 200) { NormMac (XVal $hw2.body 'HwAddress') } else { '' })
+    if ($hwm2 -ne $myMac) { return @{ ok = $false; reboot = $reboot; note = ('moved and gateway set, but the DNS change was NOT sent: the device on ' + $ip + ' could not be confirmed as this camera again' + $(if ($hwm2) { ' (it says MAC ' + $hwm2 + ')' } else { '' }) + ' - NOT CHECKED') } }
     $dr = Onvif $ip ('<tds:SetDNS><tds:FromDHCP>false</tds:FromDHCP>' + $dl + '</tds:SetDNS>') $c
-    if ($dr.code -ne 200) { return @{ ok = $false; reboot = $reboot; note = ('moved and gateway set, but the DNS change was not accepted (' + $dr.code + ' ' + $dr.err + ')').Trim() } }
+    if ($dr.code -ne 200 -or [string]$dr.body -notmatch 'SetDNSResponse' -or [string]$dr.body -match '<(\w+:)?Fault[\s>]') { return @{ ok = $false; reboot = $reboot; note = ('moved and gateway set, but the DNS change was not accepted (' + $dr.code + ' ' + $dr.err + ')').Trim() } }
   }
   return @{ ok = $ok2; reboot = $reboot; note = $(if ($ok2) { '' } elseif ($seen) { 'moved, but the gateway change was not accepted on the new address' } else { 'moved, but did not answer on the new address in time' }) }
 }
@@ -1089,7 +1245,9 @@ function Onvif-ReadNet($dev) {
   $dn = Onvif $dev.ip '<tds:GetDNS/>' $c
   if ($dn.code -eq 200) { $o.dns = @([regex]::Matches($dn.body, '(?s)<(?:\w+:)?DNSManual>.*?<(?:\w+:)?IPv4Address>([^<]*)<') | ForEach-Object { $_.Groups[1].Value.Trim() } | Where-Object { $_ }) }
   if ($o.dns.Count -ge 1) { $o.dns1 = [string]$o.dns[0] }; if ($o.dns.Count -ge 2) { $o.dns2 = [string]$o.dns[1] }; $o.dns_extra = [math]::Max(0, $o.dns.Count - 2)
-  $o.read = [bool]($o.ip -and $o.mode -and $g.code -eq 200 -and $g.body -match 'GetNetworkDefaultGatewayResponse' -and $dn.code -eq 200 -and $dn.body -match 'GetDNSResponse')
+  # 2.2.20 (Codex 2.2.19 R09 / R12 class C twin): each answer must be the expected ONVIF document carrying the part it is read for
+  # (the interface list, a NetworkGateway element, a DNSInformation element) and no SOAP Fault; HTTP 200 alone proves nothing
+  $o.read = [bool]($o.ip -and $o.mode -and $r.body -match 'GetNetworkInterfacesResponse' -and $r.body -notmatch '<(\w+:)?Fault[\s>]' -and $g.code -eq 200 -and $g.body -match 'GetNetworkDefaultGatewayResponse' -and $g.body -match '<(\w+:)?NetworkGateway[\s>/]' -and $g.body -notmatch '<(\w+:)?Fault[\s>]' -and $dn.code -eq 200 -and $dn.body -match 'GetDNSResponse' -and $dn.body -match '<(\w+:)?DNSInformation[\s>/]' -and $dn.body -notmatch '<(\w+:)?Fault[\s>]')
   return $o
 }
 
@@ -1101,6 +1259,11 @@ function Get-FnNetNow($d) {
   if ($d.brand -eq 'hik') {
     if ($d.net_read -ne $true) { $o.why = 'its network settings could not be read'; return $o }
     $o.ip = [string]$d.net_ip; $o.mode = Get-FnAddrMode $d.addressing; $o.mask = [string]$d.mask; $o.gw = [string]$d.gw; $o.dns1 = NormDns $d.dns1; $o.dns2 = NormDns $d.dns2
+    # 2.2.20 (Codex 2.2.19 R09): the answer must CARRY a gateway field (an empty one is a real "none"); a record that does not say
+    # which fields the answer carried counts a field as carried only when it has a value
+    $has = $(if ($d.PSObject.Properties['net_has'] -and $d.net_has -is [hashtable]) { $d.net_has } else { @{ mask = [bool]$o.mask; gw = [bool]$o.gw } })
+    if (-not $has.mask -or -not $o.mask) { $o.why = 'its network answer did not give its subnet mask'; return $o }
+    if (-not $has.gw) { $o.why = 'its network answer has no gateway field'; return $o }
   } elseif ($d.brand -eq 'unv' -and [string]$d.login -eq 'ok' -and $d.kind -eq 'nvr') {
     if ($d.net_read -ne $true -or $d.dns_read -ne $true) { $o.why = 'its network settings could not be read'; return $o }
     $nd = Unv-Data $d.net_json
@@ -1115,7 +1278,17 @@ function Get-FnNetNow($d) {
   } else { $o.why = 'its network settings could not be read'; return $o }
   if (-not $o.ip) { $o.why = 'its network answer did not give its address'; return $o }
   if (-not $o.mode) { $o.why = 'its network answer did not say whether it uses DHCP or a fixed address'; return $o }
+  # 2.2.20 (Codex 2.2.19 R09, class C, every brand): a mask is always part of a device's address setting. A missing, empty or invalid
+  # one = not read (2.2.19 returned read=True and the backup kept no real old mask for Undo).
+  if (-not (Test-FnMask $o.mask)) { $o.why = $(if ($o.mask) { 'its network answer gives a subnet mask the tool cannot read ("' + $o.mask + '")' } else { 'its network answer did not give its subnet mask' }); return $o }
+  if ($o.gw -and $o.gw -ne '0.0.0.0' -and -not (Test-FnIpv4 $o.gw)) { $o.why = ('its network answer gives a gateway the tool cannot read ("' + $o.gw + '")'); return $o }
   $o.read = $true; return $o
+}
+# 2.2.20 (R09): a real dotted subnet mask (contiguous, /1 to /32)
+function Test-FnMask($m) {
+  if (-not (Test-FnIpv4 ([string]$m))) { return $false }
+  $n = IpToInt ([string]$m); if ($n -eq 0) { return $false }
+  $inv = ([uint32]4294967295 - [uint32]$n); return ((([uint64]$inv + 1) -band [uint64]$inv) -eq 0)
 }
 # '' = every field below matches; otherwise the list of differences. $want: ip, mode, mask, gw, dns1, dns2 (all compared, '' included)
 function Get-FnNetDiff($now, $want, [string]$w = 'set') {
@@ -1272,7 +1445,14 @@ if (-not $pc -or -not $pc.ip -or -not $pc.gw) { Say 'This PC has no working netw
 $newP3 = P3 $pc.gw; $newMask = PrefixToMask $pc.prefix
 Say ('This PC: ' + $pc.ip + '/' + $pc.prefix + ' on "' + $pc.alias + '", router (gateway) ' + $pc.gw + $(if ($pc.wifi) { '  [Wi-Fi: works, a cable is better]' } else { '' }))
 Say ('Current IP scheme: ' + $newP3 + '.x  (mask ' + $newMask + ')')
-$rb = $null; if ($Mode -eq 'Rollback') { if (-not $RollbackFile -or -not (Test-Path $RollbackFile)) { Say 'Rollback needs -RollbackFile <path to rollback.json from the Fix run>.' 'Red'; exit 2 }; $rb = Get-Content $RollbackFile -Raw | ConvertFrom-Json }
+$rb = $null; if ($Mode -eq 'Rollback') {
+  if (-not $RollbackFile -or -not (Test-Path $RollbackFile)) { Say 'Rollback needs -RollbackFile <path to rollback.json from the Fix run>.' 'Red'; exit 2 }
+  # 2.2.20 (Codex 2.2.19 class E sweep, the R08 twin for the undo file): the undo file is a recovery journal. It is read with errors
+  # stopping, and its whole structure and every field TYPE are checked before Undo sends anything; a damaged file = NOTHING is sent.
+  try { $rb = Get-Content -LiteralPath $RollbackFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { $rb = $null }
+  $rbWhy = $(if (-not $rb) { 'could not be read (not valid JSON)' } else { Get-FnRollbackWhy $rb })
+  if ($rbWhy) { Say ('Undo did NOT start: the undo file ' + $RollbackFile + ' ' + $rbWhy + '. Nothing was sent to any device. Undo the changes by hand from the run''s plan.json / summary.txt.') 'Red'; Log ('rollback file refused: ' + $rbWhy); exit 2 }
+}
 $snap = $null; if ($Mode -ne 'Rollback') { $snap = Load-Snapshot }
 $script:routerStepShown = $false
 if ($Mode -ne 'Rollback') {
@@ -1472,13 +1652,16 @@ function Invoke-Main {
       foreach ($ch in $n.channels) {
         if ($ch.poe -or -not $ch.ip) { continue }
         $newIp = $camMap[$ch.ip]
+        $camDev = $(if ($newIp) { Dev-ByIp $ch.ip } else { $null })
         if (-not $newIp -and -not $ch.online -and $snap) {
           $s = @($snap.cameras) | Where-Object { [string]$_.channel -eq [string]$ch.id } | Select-Object -First 1
-          if ($s) { $d = Dev-ByMac $s.mac; if ($d -and $d.ip -ne $ch.ip -and (InNet $d.ip $pc.ip $pc.prefix)) { $newIp = $d.ip } }
+          if ($s) { $d = Dev-ByMac $s.mac; if ($d -and $d.ip -ne $ch.ip -and (InNet $d.ip $pc.ip $pc.prefix)) { $newIp = $d.ip; $camDev = $d } }
         }
         if ($newIp -and $newIp -ne $ch.ip) {
           $how = $(if ($n.brand -eq 'hik') { 'isapi' } else { 'manual' })
-          $plan.Add([pscustomobject]@{ type = 'nvr-channel'; how = $how; kind = 'nvr'; brand = $n.brand; dev_mac = $n.mac; dev_serial = $n.serial; nvr_ip = $n.ip; channel = $ch.id; old_ip = $ch.ip; new_ip = $newIp; done = $false; result = '' })
+          # 2.2.20 (Codex 2.2.19 R06): the step also saves WHICH camera the channel is for (its MAC / serial), so the channel is changed
+          # (forward and Undo) only while that camera is confirmed
+          $plan.Add([pscustomobject]@{ type = 'nvr-channel'; how = $how; kind = 'nvr'; brand = $n.brand; dev_mac = $n.mac; dev_serial = $n.serial; nvr_ip = $n.ip; channel = $ch.id; old_ip = $ch.ip; new_ip = $newIp; cam_mac = $(if ($camDev) { [string]$camDev.mac } else { '' }); cam_serial = $(if ($camDev) { [string]$camDev.serial } else { '' }); done = $false; result = '' })
         }
       }
     }
@@ -1593,6 +1776,9 @@ function Invoke-Main {
         $id = Read-FnIdentity $from $stMac 'camera' ([string]$st.brand) $stSer; $d = $id.dev
         if ($id.why) { $res = @{ ok = $false; refused = $true; note = ($word + ': ' + $id.why + '. Nothing was sent to ' + $from + '.') }; break }
         $toDhcp = ($rev -and $stOldMode -eq 'dhcp')
+        # 2.2.20 (Codex 2.2.19 R09): Undo with an unknown saved addressing mode is refused BEFORE anything is written (2.2.19 wrote a
+        # fixed address first and only then said NOT CHECKED)
+        if ($rev -and -not $stOldMode) { $res = @{ ok = $false; refused = $true; note = ($word + ': the Fix run did not record whether it used DHCP or a fixed address before, so the tool cannot put it back safely. Nothing was sent to ' + $from + '. Set its network back by hand (see the list below).') }; break }
         # 2.2.19 (class B): forward, the settings read now (after YES) must still be the ones the plan showed and the undo file holds
         if (-not $rev) { $bw = Get-FnBackupWhy $st $d; if ($bw) { $res = @{ ok = $false; refused = $true; note = ($word + ': ' + $bw + '. Nothing was sent to ' + $from + '.') }; break } }
         # 2.2.18 / 2.2.19 (sweep A, class A): a device is moved only onto a FREE address, checked right before the write, in BOTH
@@ -1603,7 +1789,7 @@ function Invoke-Main {
         if ($d.brand -eq 'hik' -and $d.net_xml) {
           Write-Host ('Moving camera ' + $st.channel + ' ' + $from + ' -> ' + $to + ' ...')
           $res = Hik-SetNet $d $to $mask $gw $d1 $d2 -Dhcp:$toDhcp
-          if ($res.ok -and $res.reboot) { [void](Hik-RebootNow $d) }
+          if ($res.ok -and $res.reboot) { $rid = Read-FnIdentity $from $stMac 'camera' ([string]$st.brand) $stSer; if ($rid.why) { $res.ok = $false; $res.note = ('accepted (restart needed), but the restart was NOT sent: ' + $rid.why + ' - NOT CHECKED') } else { [void](Hik-RebootNow $rid.dev) } }   # 2.2.20 (class B sweep): identity fresh before the restart too
         } elseif ($d.onvif -or (Onvif-Read $d)) {
           # 2.2.19 (Codex 2.2.18 F10 twin): ONVIF Undo of a camera that was on DHCP is NOT done as a fixed address (2.2.18 did that)
           if ($toDhcp) { $res = @{ ok = $false; refused = $true; note = ($word + ': it was on DHCP before; set DHCP back in its own menu (the tool does not do that over ONVIF). Nothing was sent.') }; break }
@@ -1632,7 +1818,10 @@ function Invoke-Main {
         if (-not $nAt) { $res = @{ ok = $false; refused = $true; note = ($word + ': the NVR for this channel (' + $(if ($stMac) { $stMac } else { 'serial ' + $stSer }) + ') was not found. Nothing was sent.') }; break }
         $id = Read-FnIdentity $nAt $stMac 'nvr' ([string]$st.brand) $stSer
         if ($id.why) { $res = @{ ok = $false; refused = $true; note = ($word + ': ' + $id.why + '. Nothing was sent to the NVR.') }; break }
-        $res = Hik-SetChannel $id.dev $st.channel $to $from
+        # 2.2.20 (R06): the camera this channel is for is at the step's NEW address in both directions (forward: it has just moved
+        # there; Undo: channels are put back before the camera moves back). An older undo file with no camera saved = refused.
+        $cm = $(if ($st.PSObject.Properties['cam_mac']) { [string]$st.cam_mac } else { '' }); $cs = $(if ($st.PSObject.Properties['cam_serial']) { [string]$st.cam_serial } else { '' })
+        $res = Hik-SetChannel $id.dev $st.channel $to $from ([string]$st.new_ip) $cm $cs
         if (-not $res.ok -and $res.refused) { $res.note = $word + ': ' + $res.note }
       }
       'nvr-platform' {
@@ -1653,6 +1842,7 @@ function Invoke-Main {
         $id = Read-FnIdentity $from $stMac 'nvr' ([string]$st.brand) $stSer; $n = $id.dev
         if ($id.why) { $res = @{ ok = $false; refused = $true; note = ($word + ': ' + $id.why + '. Nothing was sent to ' + $from + '.') }; break }
         $toDhcpN = ($rev -and $stOldMode -eq 'dhcp')
+        if ($rev -and -not $stOldMode) { $res = @{ ok = $false; refused = $true; note = ($word + ': the Fix run did not record whether it used DHCP or a fixed address before, so the tool cannot put it back safely. Nothing was sent to ' + $from + '. Set its network back by hand (see the list below).') }; break }   # 2.2.20 (R09)
         if (-not $rev) { $bw = Get-FnBackupWhy $st $n; if ($bw) { $res = @{ ok = $false; refused = $true; note = ($word + ': ' + $bw + '. Nothing was sent to ' + $from + '.') }; break } }
         # 2.2.19 (Codex 2.2.18 F10 twin): a Uniview recorder that was on DHCP is not given a fixed address by Undo (2.2.18 wrote the
         # fixed address first and only then said "set DHCP by hand"): nothing is sent, and the step is left to a person
@@ -1661,8 +1851,21 @@ function Invoke-Main {
         $mask = $(if ($rev -and $st.old_mask) { $st.old_mask } else { $newMask }); $gw = $(if ($rev) { [string]$st.old_gw } else { $pc.gw })
         $d1 = $(if ($rev) { [string]$st.old_dns1 } else { $cfg.dns1 }); $d2 = $(if ($rev) { [string]$st.old_dns2 } else { $cfg.dns2 })
         Write-Host ('Moving the NVR ' + $from + ' -> ' + $to + ' (DNS ' + $d1 + ' / ' + $d2 + ') ...')
-        if ($st.how -eq 'isapi') { $res = Hik-SetNet $n $to $mask $gw $d1 $d2 -Dhcp:$toDhcpN; if ($res.ok -and $res.reboot) { Write-Host '  NVR asked for a restart; restarting it now (about 2 min).'; [void](Hik-RebootNow $n) } }
-        else { $r1 = Unv-Put $n $cfg.uniview.dns_path (Unv-PlanDns $n $d1 $d2); $r2 = Unv-Put $n $cfg.uniview.net_path (Unv-PlanNet $n $to $mask $gw); $res = @{ ok = ($r1.ok -and $r2.ok); note = ($r1.note + ' ' + $r2.note).Trim() } }
+        if ($st.how -eq 'isapi') {
+          $res = Hik-SetNet $n $to $mask $gw $d1 $d2 -Dhcp:$toDhcpN
+          if ($res.ok -and $res.reboot) {
+            # 2.2.20 (class B sweep): the restart is a second write; the NVR is identified again right before it
+            $rid = Read-FnIdentity $from $stMac 'nvr' ([string]$st.brand) $stSer
+            if ($rid.why) { $res.ok = $false; $res.note = ('accepted (restart needed), but the restart was NOT sent: ' + $rid.why + ' - NOT CHECKED') } else { Write-Host '  NVR asked for a restart; restarting it now (about 2 min).'; [void](Hik-RebootNow $rid.dev) }
+          }
+        }
+        else {
+          $r1 = Unv-Put $n $cfg.uniview.dns_path (Unv-PlanDns $n $d1 $d2)
+          # 2.2.20 (class B sweep): the network write is a second write; the recorder is identified again right before it
+          $r2 = @{ ok = $false; note = '' }
+          if ($r1.ok) { $rid = Read-FnIdentity $from $stMac 'nvr' ([string]$st.brand) $stSer; if ($rid.why) { $r2.note = ('the DNS change was sent, but the address change was NOT sent: ' + $rid.why + ' - NOT CHECKED') } else { $r2 = Unv-Put $rid.dev $cfg.uniview.net_path (Unv-PlanNet $rid.dev $to $mask $gw) } }
+          $res = @{ ok = ($r1.ok -and $r2.ok); note = ($r1.note + ' ' + $r2.note).Trim() }
+        }
         if ($res.ok -and $toDhcpN) {
           # 2.2.19 (Moshe's decision): DHCP Undo is NOT CHECKED unless the NVR is found again by its MAC and reads back DHCP
           $fb = Find-FnDhcpBack $stMac $stSer 'nvr' ([string]$n.brand) ([int]$cfg.verify_wait_seconds)
