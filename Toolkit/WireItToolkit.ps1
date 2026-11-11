@@ -921,6 +921,9 @@ function Do-FixFailed([string]$key) {
     'dwpassword' { $a = Ask-Fields $TK.fixNames[$key] 'Gives DW the camera''s right password so DW stops locking it. Type the DW login and the camera password in the tool window.' @(@('ip', 'DW server IP address:', (Get-LastNvrIp)), @('cam', 'Camera IP address:', $camIp)); if (-not $a -or $a.ip -notmatch $rx -or $a.cam -notmatch $rx) { return }; $e = @('-Ip ' + $a.ip, '-CameraIp ' + $a.cam) }
     default { return }
   }
+  # 2.2.19 (class A, sweep2's open row): the device the technician picked is checked against the MAC the last scan saved for that
+  # address (when the scan has one); FixIt refuses before any change if another device (or one that hides its MAC) answers there
+  $fixMac = Get-TkSavedMac ([string]$a.ip); if ($fixMac) { $e += '-Mac ' + $fixMac }
   if ($TK.site.Text) { $e += '-Site ' + (Q $TK.site.Text) }
   Start-Nvr $TK.fixNames[$key] $key $e { param($code) Show-FixDone $code } $false 'FixIt.ps1'
 }

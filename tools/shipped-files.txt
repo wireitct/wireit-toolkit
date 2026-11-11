@@ -74,6 +74,7 @@ Toolkit/tests/Test-Fix2219Nvr.ps1
 Toolkit/tests/Test-Fix2219PcNet.ps1
 Toolkit/tests/Test-Fix2219Site.ps1
 Toolkit/tests/Test-Fix2219Sweep.ps1
+Toolkit/tests/Test-Fix2219Sweep2.ps1
 Toolkit/tests/Test-Fix222.ps1
 Toolkit/tests/Test-Fix223.ps1
 Toolkit/tests/Test-Fix224.ps1

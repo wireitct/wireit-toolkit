@@ -415,6 +415,25 @@ Check ($r.writes.Count -eq 0 -and -not $r.ok) 'F22 twin (class E): a restart rec
 $hl = InMod { param($p) $a = Fix-LimitReserve $p '10.0.0.21' (Get-Date); $b = Fix-LimitOk $p '10.0.0.21' (Get-Date); return @{ reserved = [bool]$a.ok; next = [bool]$b.ok } } @((Join-Path $blocker 'x.json'))
 Check ($hl -is [hashtable] -and $hl.ContainsKey('reserved') -and -not $hl.reserved) 'F22 (Codex helper repro): reserving on an unwritable record says NO (so the caller does not restart)' (J $hl)
 
+# 2.2.19 (lead, class A: the device the technician picked): the window passes the MAC the last scan saved for that address
+Write-Host 'Expected MAC (FixIt -Mac / Invoke-NvrFix -ExpectMac): the device answering must be the one the scan saw'
+$xm = {
+  param($cred, $stub, [string]$state, [string]$dir, [string]$devMac, [string]$expect)
+  . ([scriptblock]::Create([string]$stub))
+  $script:Dev = @{ sn = 'CAM1'; mac = $devMac; ver = 'V5.5'; date = 'build 240101' }; $script:Writes = @(); $script:Reads = 0; $script:PutAnswer = $null; $script:Hook = $null
+  $threw = ''; $r = $null
+  try { $r = Invoke-NvrFix -Fix restart -Ip '10.0.0.21' -Vendor Hikvision -Credential $cred -StateFile $state -BackupDir $dir -Confirm { 'YES' } -WaitSec 1 -ExpectMac $expect } catch { $threw = $_.Exception.Message }
+  return @{ ok = [bool]($r -and $r.ok); msg = $(if ($r) { [string]$r.msg } else { '' }); writes = @($script:Writes); threw = $threw }
+}
+$r = InMod $xm @($cred, $hikStub, (Join-Path $tmp 'xm1.json'), (Join-Path $tmp 'xm1'), 'AA:BB:CC:00:00:99', 'aa-bb-cc-00-00-21')
+Check (-not $r.threw -and $r.writes.Count -eq 0 -and -not $r.ok -and $r.msg -match 'DIFFERENT device') 'class A (lead): another camera (other MAC) now answers at the address the technician picked -> NOT restarted, says so (2.2.18: no way to pass the scanned MAC)' (J $r)
+$r = InMod $xm @($cred, $hikStub, (Join-Path $tmp 'xm2.json'), (Join-Path $tmp 'xm2'), '', 'AA:BB:CC:00:00:21')
+Check (-not $r.threw -and $r.writes.Count -eq 0 -and -not $r.ok -and $r.msg -match 'did not say its MAC') 'class A (lead): the device does not report a MAC while the scan saved one -> NOT restarted (cannot be checked)' (J $r)
+$r = InMod $xm @($cred, $hikStub, (Join-Path $tmp 'xm3.json'), (Join-Path $tmp 'xm3'), 'AA:BB:CC:00:00:21', 'aa-bb-cc-00-00-21')
+Check (-not $r.threw -and $r.writes.Count -eq 1) 'control: the same camera (same MAC, other spelling) -> restarted once' (J $r)
+$wsrc = Get-Content -LiteralPath (Join-Path $tkDir 'WireItToolkit.ps1') -Raw; $fsrc = Get-Content -LiteralPath (Join-Path $tkDir 'FixIt.ps1') -Raw
+Check ($wsrc -match "fixMac = Get-TkSavedMac \(\[string\]\`$a\.ip\); if \(\`$fixMac\) \{ \`$e \+= '-Mac '" -and $fsrc -match 'if \(\$Mac\) \{ \$p\.ExpectMac = \$Mac \}') 'class A (lead, source check): the window passes the scanned MAC to FixIt for the fix buttons, and FixIt passes it on as -ExpectMac' ''
+
 # FixIt.ps1 (class F): the fix-history line is the record of a device change; a failed save is said, not dropped
 $fxs = Get-Content -LiteralPath (Join-Path $tkDir 'FixIt.ps1') -Raw
 Check ($fxs -match '\$histSaved = \[bool\]\(Add-TkLine' -and $fxs -match 'if \(-not \$histSaved\) \{ Say2' -and $fxs -match 'historySaved = \$histSaved') 'FixIt (class F, static check): a fix-history save that failed is warned on screen and recorded as historySaved=false in result.json (2.2.18: [void] - silent)' ''

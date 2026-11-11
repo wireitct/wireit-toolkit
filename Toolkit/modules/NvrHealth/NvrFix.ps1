@@ -136,6 +136,19 @@ function Get-NhChannelXml($doc, [int]$ch) {
   return ''
 }
 
+# 2.2.19 (lead, sweep2's open class-A row): the device the technician picked carries the MAC the last scan saved for that address
+# (-ExpectMac, from the window). When one is given, the device answering must report that MAC, non-empty and the same, before
+# anything is planned or written; a device that does not say its MAC cannot be checked against it and is refused too.
+function ConvertTo-FixMacKey([string]$m) { return (([string]$m).ToUpper() -replace '[^0-9A-F]', '') }
+function Get-FixExpectWhy($id, [string]$expect, [string]$ip) {
+  $want = ConvertTo-FixMacKey $expect
+  if (-not $want) { return '' }
+  if ($want.Length -ne 12) { return ('the MAC saved for ' + $ip + ' (' + $expect + ') is not a MAC address, so the device cannot be checked against it') }
+  $have = ConvertTo-FixMacKey ([string]$id.mac)
+  if (-not $have) { return ('the device at ' + $ip + ' did not say its MAC, so it cannot be checked against the MAC the last scan saved (' + $expect + ')') }
+  if ($have -ne $want) { return ('a DIFFERENT device answers at ' + $ip + ' (MAC ' + [string]$id.mac + '; the last scan saved ' + $expect + ')') }
+  return ''
+}
 function Invoke-NvrFix {
   <#
   .SYNOPSIS One fix, after a check failed. Plan -> backup -> typed YES -> change -> verify. UNTESTED ON REAL GEAR.
@@ -150,7 +163,8 @@ function Invoke-NvrFix {
   param([Parameter(Mandatory)][ValidateSet('recording', 'restart', 'readd', 'firmware', 'password', 'dwpassword')][string]$Fix,
         [Parameter(Mandatory)][string]$Ip, [ValidateSet('Auto', 'Hikvision', 'Uniview', 'DW', 'Onvif')][string]$Vendor = 'Auto',
         [pscredential]$Credential, [int]$Port = 0, [int]$Channel = 0, [string]$CameraIp = '', [pscredential]$NewCredential,
-        [string]$File = '', [string]$Sha256 = '', [string]$BackupDir = '', [string]$StateFile = '', [scriptblock]$Confirm = $null, [int]$WaitSec = 180)
+        [string]$File = '', [string]$Sha256 = '', [string]$BackupDir = '', [string]$StateFile = '', [scriptblock]$Confirm = $null, [int]$WaitSec = 180,
+        [string]$ExpectMac = '')
   Start-Log ('fix-' + $Fix)
   $res = [ordered]@{ fix = $Fix; ip = $Ip; ran = $false; ok = $false; changed = @(); backup = ''; history = ''; msg = '' }
   $done = { param($ok, $msg) $res.ok = $ok; $res.msg = $msg; Say ''; Say ('RESULT: ' + $msg) $(if ($ok) { 'Green' } else { 'Red' }); return [pscustomobject]$res }
@@ -174,6 +188,7 @@ function Invoke-NvrFix {
         # "already on for every camera". 2.2.12 read it twice and an error on the 2nd read became an empty list = all on.
         $id0 = Get-NhDeviceId $t   # 2.2.19 (class A): which recorder this is, read again right before the writes
         if (-not $id0.ok) { return (& $done $false ('The recorder at ' + $Ip + ' did not say which recorder it is (' + $id0.why + '), so recording was NOT changed. Nothing changed.')) }
+        $xw = Get-FixExpectWhy $id0 $ExpectMac $Ip; if ($xw) { return (& $done $false ('NOT changed: ' + $xw + '. Nothing changed. Run the scan again, or check which device has this address.')) }   # 2.2.19 (class A)
         $rt = Hik-ReadTracks $t
         if (-not $rt.ok) { return (& $done $false ('Could not read the recording settings (' + $rt.why + '). Recording NOT CHECKED, nothing changed. Run it again.')) }
         if (-not $rt.map.Count) { return (& $done $false 'The recorder lists no recording settings at all, so recording could NOT be checked. Nothing changed. Look at Storage > Recording schedule on the recorder.') }
@@ -310,6 +325,7 @@ function Invoke-NvrFix {
       # 2.2.19 (class A): which camera this is (serial / MAC), read now and again right before the restart
       $id0 = Get-NhDeviceId $t
       if (-not $id0.ok) { return (& $done $false ('The camera at ' + $Ip + ' did not say which camera it is (' + $id0.why + '), so it was NOT restarted. Nothing changed.')) }
+      $xw = Get-FixExpectWhy $id0 $ExpectMac $Ip; if ($xw) { return (& $done $false ('NOT changed: ' + $xw + '. Nothing changed. Run the scan again, or check which device has this address.')) }   # 2.2.19 (class A)
       $upPre = $null; if ($v -eq 'Hikvision') { $u0 = Hik-UpTime $t 8; if ($u0.code -eq 200) { $upPre = $u0.up } }   # 2.2.13: boot marker before (null = camera does not give it)
       if (-not (& $ask @('Restart (reboot) the camera at ' + $Ip + $(if ($id0.serial) { ' (serial ' + $id0.serial + ')' } else { '' }) + '. It is offline for about 2 minutes.', 'Allowed: 1 restart per hour, 2 per day for this camera.'))) { return (& $done $true 'Not confirmed - nothing changed.') }
       # 2.2.19 (class B): after YES - the same camera?
@@ -376,6 +392,7 @@ function Invoke-NvrFix {
       # 2.2.19 (class A): which NVR this is (serial / MAC), read now and again right before the write
       $id0 = Get-NhDeviceId $t
       if (-not $id0.ok) { return (& $done $false ('The NVR at ' + $Ip + ' did not say which NVR it is (' + $id0.why + '), so no channel was changed. Nothing changed.')) }
+      $xw = Get-FixExpectWhy $id0 $ExpectMac $Ip; if ($xw) { return (& $done $false ('NOT changed: ' + $xw + '. Nothing changed. Run the scan again, or check which device has this address.')) }   # 2.2.19 (class A)
       $all = Http -Ip $Ip -Path '/ISAPI/ContentMgmt/InputProxy/channels' -Credential $t.cred -Port $t.port
       if ($all.code -ne 200) { return (& $done $false ('Could not read the NVR channel list (answer ' + $all.code + '). Nothing changed.')) }
       $ax = Xml $all.body
@@ -471,6 +488,7 @@ function Invoke-NvrFix {
       if (-not $fw0) { return (& $done $false ('The device did not say which firmware version it has now' + $(if ($di.released) { ' (only its release date, ' + $di.released + ')' } else { '' }) + ', so the update could not be checked afterwards. Nothing changed. Look at its version in its web page (Maintenance) first.')) }
       $id0 = Get-NhDeviceId $t
       if (-not $id0.ok) { return (& $done $false ('The device did not say which device it is (' + $id0.why + '), so it was NOT updated. Nothing changed.')) }
+      $xw = Get-FixExpectWhy $id0 $ExpectMac $Ip; if ($xw) { return (& $done $false ('NOT changed: ' + $xw + '. Nothing changed. Run the scan again, or check which device has this address.')) }   # 2.2.19 (class A)
       # 2.2.3 (Codex #21): the export is the device's own binary file: saved byte for byte as .bin (2.2.2 turned it into text)
       if (-not $BackupDir) { $BackupDir = Join-Path $env:TEMP 'WireIt-backup' }; New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
       $cfgFile = Join-Path $BackupDir ('config-' + ($di.serial -replace '[^A-Za-z0-9_-]', '_') + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.bin')
@@ -527,6 +545,7 @@ function Invoke-NvrFix {
       $di = Hik-DeviceInfo $t; if ($di.login -ne 'ok') { return (& $done $false 'Could not log in with the current password (one try). Nothing changed.') }
       $id0 = Get-NhDeviceId $t
       if (-not $id0.ok) { return (& $done $false ('The device did not say which device it is (' + $id0.why + '), so its password was NOT changed. Nothing changed.')) }
+      $xw = Get-FixExpectWhy $id0 $ExpectMac $Ip; if ($xw) { return (& $done $false ('NOT changed: ' + $xw + '. Nothing changed. Run the scan again, or check which device has this address.')) }   # 2.2.19 (class A)
       if (-not (& $ask @('Set the site password on ' + $di.model + ' at ' + $Ip + $(if ($id0.serial) { ' (serial ' + $id0.serial + ')' } else { '' }) + ' (user admin). It is not saved anywhere.', 'Write the new password into the site''s password manager now.'))) { return (& $done $true 'Not confirmed - nothing changed.') }
       $same = Test-NhSameDevice $t $id0   # 2.2.19 (classes A + B): the same device, read again after YES
       if (-not $same.ok) { return (& $done $false ('Password NOT changed: ' + $same.why + '. Nothing changed.')) }

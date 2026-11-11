@@ -15,7 +15,8 @@ param(
   [Parameter(Mandatory)][ValidateSet('recording', 'restart', 'readd', 'firmware', 'password', 'dwpassword')][string]$Fix,
   [Parameter(Mandatory)][string]$Ip, [ValidateSet('Auto', 'Hikvision', 'Uniview', 'DW', 'Onvif')][string]$Vendor = 'Auto', [int]$Port = 0,
   [int]$Channel = 0, [string]$CameraIp = '', [string]$File = '', [string]$Sha256 = '', [string]$Site = '',
-  [string]$RunsDir = '', [string]$MockUrl = '', [string]$TestAnswer = '', [int]$CloseAfter = 8, [int]$WaitSec = 180, [string]$LogsDir = ''
+  [string]$RunsDir = '', [string]$MockUrl = '', [string]$TestAnswer = '', [int]$CloseAfter = 8, [int]$WaitSec = 180, [string]$LogsDir = '',
+  [string]$Mac = ''   # 2.2.19: the MAC the last scan saved for -Ip (from the window); the device must report it before any change
 )
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -51,7 +52,7 @@ try {
   if ($Fix -eq 'password') { $new = Ask-New 'site password' -Twice }
   elseif ($Fix -in @('readd', 'dwpassword')) { $new = Ask-New ('camera password for ' + $CameraIp) }
   $p = @{ Fix = $Fix; Ip = $Ip; Vendor = $Vendor; Credential = $cred; Port = $Port; BackupDir = (Join-Path $run 'backup'); StateFile = (Join-Path $LogsDir 'fix-limits.json'); WaitSec = $WaitSec }
-  if ($new) { $p.NewCredential = $new }; if ($Channel) { $p.Channel = $Channel }; if ($CameraIp) { $p.CameraIp = $CameraIp }; if ($File) { $p.File = $File }; if ($Sha256) { $p.Sha256 = $Sha256 }
+  if ($new) { $p.NewCredential = $new }; if ($Channel) { $p.Channel = $Channel }; if ($CameraIp) { $p.CameraIp = $CameraIp }; if ($File) { $p.File = $File }; if ($Sha256) { $p.Sha256 = $Sha256 }; if ($Mac) { $p.ExpectMac = $Mac }
   $p.Confirm = $(if ($test) { [scriptblock]::Create('param($plan) return ' + "'" + $TestAnswer.Replace("'", "''") + "'") } else { { param($plan) Write-Host ''; Read-Host 'Type YES (capital letters) to do this now, anything else = no change' } })
   $r = Invoke-NvrFix @p
   if (-not $r.ok) { $code = 4 }
