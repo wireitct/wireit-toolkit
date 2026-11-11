@@ -152,7 +152,7 @@ Out-Result @{ c1 = $r1.code; s1 = $r1.said; e = @{ dhcp = $e.dhcp; act = @($e.ac
   $o = Rn-Driver 'rn3' @'
 $script:sim.ads = @((New-SimAdapter 'Ethernet' 12 $false))
 $e = $script:sim.ads[0]; $e.coexist = 'enabled'; Sim-Ext '192.168.250.250' 'both'
-'{"version":2,"temps":[{"ip":"192.168.250.250","ifIndex":12}],"pc":{"coexistence_before":"disabled"}}' | Set-Content (Join-Path $D 'FixNVR\state\temp-ips.json')
+'{"version":2,"temps":[{"ip":"192.168.250.250","ifIndex":12}],"pc":{"coexistence_before":"disabled","firewall_rule":false,"cleanup_task":false,"ifIndex":12,"alias":"Ethernet","dhcp":true,"ip":null,"gw":null}}' | Set-Content (Join-Path $D 'FixNVR\state\temp-ips.json')
 $script:sim.fail['removeaddr:PersistentStore'] = $true
 $r1 = Run-Rn
 $t1 = $script:sim.task; $j1 = Test-Path (Join-Path $D 'FixNVR\state\temp-ips.json'); $per1 = @($e.persistent).Count
@@ -182,7 +182,7 @@ Sim-Ext '192.168.250.250' 'both'
 $script:Adapter = 'Ethernet 9'
 $r1 = Run-Rn; $calls1 = @($script:sim.calls); $per1 = @($script:sim.ads[0].persistent).Count
 $script:Adapter = 'Wi-Fi 2'
-'{"version":2,"before":{"ifIndex":12,"coexist":"disabled","dhcp":true},"coexistChanged":true,"temps":[{"ip":"192.168.250.250","ifIndex":12}]}' | Set-Content (Join-Path $D 'Toolkit\fixsite-runs\_state\fixsite-temp-ips.json')
+'{"version":2,"before":{"ifIndex":12,"name":"Ethernet","coexist":"disabled","dhcp":true,"addrs":[],"gw":[]},"coexistChanged":true,"temps":[{"ip":"192.168.250.250","ifIndex":12}]}' | Set-Content (Join-Path $D 'Toolkit\fixsite-runs\_state\fixsite-temp-ips.json')
 $script:sim.calls.Clear(); $r2 = Run-Rn
 Out-Result @{ c1 = $r1.code; s1 = $r1.said; calls1 = $calls1; per1 = $per1; c2 = $r2.code; s2 = $r2.said; calls2 = @($script:sim.calls); per2 = @($script:sim.ads[0].persistent).Count; j2 = (Test-Path (Join-Path $D 'Toolkit\fixsite-runs\_state\fixsite-temp-ips.json')) }
 '@

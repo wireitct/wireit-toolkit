@@ -182,15 +182,16 @@ function RnRun([string]$n, [hashtable]$o) {
     }
   }
   $code = @(Invoke-RestoreNetwork)[-1]
-  return [ordered]@{ code = $code; said = (@($script:RnLines) -join "`n"); pending = (Test-Path -LiteralPath $script:RnFixSiteState); writes = @($script:t.ops | Where-Object { $_ -in @('dhcp', 'coexist', 'removeaddr', 'removeroute', 'dnsreset', 'enable') }) }
+  return [ordered]@{ code = $code; said = (@($script:RnLines) -join "`n"); pending = (Test-Path -LiteralPath $script:RnFixSiteState); keptAside = [bool]@(Get-ChildItem -LiteralPath (Split-Path -Parent $script:RnFixSiteState) -Filter 'fixsite-temp-ips.unreadable-*.json').Count; writes = @($script:t.ops | Where-Object { $_ -in @('dhcp', 'coexist', 'removeaddr', 'removeroute', 'dnsreset', 'enable') }) }
 }
-$j2 = '{"version":2,"before":{"ifIndex":5,"name":"Ethernet","dhcp":true,"coexist":"disabled"},"temps":[]}'
+# 2.2.20: the fixtures carry every field Fix this site writes (coexistChanged, before.addrs/gw); a record without them is damaged (R08 twin)
+$j2 = '{"version":2,"before":{"ifIndex":5,"name":"Ethernet","dhcp":true,"coexist":"disabled","addrs":[],"gw":[]},"coexistChanged":false,"temps":[]}'
 Run 'rn_codex' { RnRun 'a' @{ dhcp = $true; coexist = 'unknown'; journal = $j2 } }
 Run 'rn_unread' { RnRun 'b' @{ dhcp = $false; coexist = 'disabled'; unread = @('the live addresses') } }
 Run 'rn_damaged' { RnRun 'c' @{ dhcp = $true; coexist = 'disabled'; journal = '{}' } }
 Run 'rn_control' { RnRun 'd' @{ dhcp = $true; coexist = 'disabled'; journal = $j2 } }
 Run 'rn_unknown_norecord' { RnRun 'e' @{ dhcp = $true; coexist = 'unknown' } }
-Run 'rn_other_adapter' { RnRun 'f' @{ dhcp = $true; coexist = 'disabled'; journal = '{"version":2,"before":{"ifIndex":5,"name":"Old USB Ethernet","dhcp":true,"coexist":"enabled"},"temps":[]}' } }
+Run 'rn_other_adapter' { RnRun 'f' @{ dhcp = $true; coexist = 'disabled'; journal = '{"version":2,"before":{"ifIndex":5,"name":"Old USB Ethernet","dhcp":true,"coexist":"enabled","addrs":[],"gw":[]},"coexistChanged":true,"temps":[]}' } }
 Run 'rn_classic_noadapter' { $script:t0 = 1; $cj = Join-Path $D 'classic-temp-ips.json'; [IO.File]::WriteAllText($cj, '{"version":2,"temps":[],"pc":{"coexistence_before":null,"firewall_rule":false,"cleanup_task":true,"ifIndex":null,"alias":null,"dhcp":null,"ip":null,"gw":null}}'); Set-Variable -Name FixNvrState -Value $cj -Scope Script; $x = RnRun 'h' @{ dhcp = $true; coexist = 'disabled' }; Set-Variable -Name FixNvrState -Value '' -Scope Script; $x }
 Run 'rn_swap' { RnRun 'g' @{ dhcp = $false; coexist = 'disabled'; listSwap = $true } }
 # the production state reader, stand-ins only for the Windows commands
@@ -335,7 +336,7 @@ try {
   $r = P $j 'rn_unread'
   Check ($r -and [int]$r.code -eq 6 -and $r.said -notmatch 'DONE' -and -not @($r.writes).Count) 'F18 twin: the adapter''s settings cannot be fully read -> nothing is changed (a failed read is not "DHCP off"), FAILED' $r
   $r = P $j 'rn_damaged'
-  Check ($r -and [int]$r.code -ne 0 -and $r.said -notmatch 'DONE' -and $r.said -match 'NOT CHECKED' -and $r.pending) 'F09/F18 twin: a damaged Toolkit record ({}) is NOT CHECKED, never DONE; it is not renamed as done' $r
+  Check ($r -and [int]$r.code -ne 0 -and $r.said -notmatch 'DONE' -and $r.said -match 'NOT CHECKED' -and ($r.pending -or $r.keptAside) -and -not @($r.writes).Count) 'F09/F18 twin: a damaged Toolkit record ({}) is NOT CHECKED, never DONE; it is not renamed as done (2.2.20: kept aside as .unreadable-, the durable block Fix this site reads; nothing changed)' $r
   $r = P $j 'rn_control'
   Check ($r -and [int]$r.code -eq 0 -and $r.said -match 'DONE' -and -not $r.pending) 'control: coexistence reads off as the record says: DONE, the record is done' $r
   $r = P $j 'rn_unknown_norecord'

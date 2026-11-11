@@ -453,9 +453,9 @@ function Get-RnClassicJournalProblem($o) {
 }
 function Get-RnSiteJournalProblem($tj) {
   if ($null -eq $tj) { return 'it is empty' }
-  if ($tj -is [array]) { return 'it is the old 2.2.0 list form, which does not name the adapter it changed' }
+  if ($tj -is [array]) { $l0 = @($tj); if ($l0.Count -and -not @($l0 | Where-Object { -not ($_ -is [pscustomobject] -and (Test-RnIpv4 ([string]$_.ip)) -and (Test-RnJsonInt $_.ifIndex)) }).Count) { return 'it is the old 2.2.0 form, which does not name the adapter it changed' }; return 'it is a list that is not the old 2.2.0 form' }
   if ($tj -isnot [pscustomobject]) { return 'it is not a record Fix this site writes' }
-  if (-not $tj.PSObject.Properties['version']) { return 'it has no version (an old form that does not name the adapter it changed)' }
+  if (-not $tj.PSObject.Properties['version']) { if ($tj.PSObject.Properties['ip'] -and $tj.PSObject.Properties['ifIndex'] -and (Test-RnIpv4 ([string]$tj.ip)) -and (Test-RnJsonInt $tj.ifIndex)) { return 'it is the old 2.2.0 form, which does not name the adapter it changed' }; return 'it has no version (an old form that does not name the adapter it changed)' }
   if (-not (Test-RnJsonInt $tj.version) -or [int]$tj.version -ne 2) { return ('its version (' + [string]$tj.version + ') is not one this Toolkit knows') }
   foreach ($k in @('before', 'coexistChanged', 'temps')) { if (-not $tj.PSObject.Properties[$k]) { return ('it is missing ' + $k) } }
   if ($tj.coexistChanged -isnot [bool]) { return 'its coexistChanged is not true/false' }
@@ -533,6 +533,9 @@ function Get-RnJournalBlock($journals) {
   $why = @()
   foreach ($jr in @($journals | Where-Object { -not $_.readable })) {
     $kept = Split-Path -Leaf $jr.file
+    # a well-formed 2.2.0 record is one Fix this site still reads and puts back itself: left where it is (not kept aside as unreadable),
+    # but Restore Network cannot tell which adapter it changed, so it changes nothing either
+    if ([string]$jr.bad -like '*old 2.2.0 form*') { $why += ('the Toolkit''s record ' + $kept + ' ' + $jr.bad + ' (left in place: Fix this site puts it back at its next start)'); continue }
     $to = $jr.file -replace '\.json$', ('.unreadable-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')
     try { Move-Item -LiteralPath $jr.file -Destination $to -Force -ErrorAction Stop; if ((Test-Path -LiteralPath $to) -and -not (Test-Path -LiteralPath $jr.file)) { $kept = Split-Path -Leaf $to } } catch {}
     $why += ('the Toolkit''s record ' + (Split-Path -Leaf $jr.file) + ' ' + $jr.bad + ' (kept as ' + $kept + ')')

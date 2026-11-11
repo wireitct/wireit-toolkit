@@ -19,6 +19,17 @@ function Invoke-TkStartupRecovery([string]$toolkitDir) {
   if (-not $j -or -not $j.prev -or -not (Test-Path -LiteralPath ([string]$j.prev))) { throw 'An earlier update stopped half-way and its saved copy is missing. Run the Toolkit installer again.' }
   $prev = [string]$j.prev; $bad = @()
   $isUndo = ($j.PSObject.Properties['kind'] -and [string]$j.kind -eq 'undo')
+  # 2.2.20 (Codex 2.2.19 R17, startup twin, class D): the version put back is the update's from (a Go back's back; a 2.2.15 Go back
+  # journal, with no back field, had to = the version put back). The saved version record must name EXACTLY that version, checked
+  # BEFORE any file is put back: anything else keeps the journal (the block), changes nothing and the start says so.
+  $backV = [string]$j.from
+  if ($isUndo) { if ($j.PSObject.Properties['back'] -and [string]$j.back) { $backV = [string]$j.back } else { $backV = [string]$j.to } }
+  $vp = Join-Path $prev 'version.json.prev'
+  if (-not ($backV -match '^\d+(\.\d+){1,3}$')) { throw ('An earlier ' + $(if ($isUndo) { 'Go back' } else { 'update' }) + ' stopped half-way and its record does not name the version to put back. Nothing was changed. Run the Toolkit installer again.') }
+  if (Test-Path -LiteralPath $vp) {
+    $pvr = $null; try { $pvr = [IO.File]::ReadAllText($vp) | ConvertFrom-Json -ErrorAction Stop } catch {}
+    if (-not $pvr -or [string]$pvr.version -ne $backV) { throw ('An earlier ' + $(if ($isUndo) { 'Go back' } else { 'update' }) + ' stopped half-way, but the saved version record (' + $vp + ') says ' + $(if ($pvr) { 'version ' + [string]$pvr.version } else { 'nothing readable' }) + ', not ' + $backV + '. Nothing was changed. Run the installer of version ' + $backV + ' again.') }
+  }
   # 2.2.16 (Codex 2.2.15 F2): the "do not re-install" marker of a Go back is saved BEFORE any file is put back (Undo-TkUpdate saved it
   # first too), so it can not be lost if this start is stopped as well
   if ($isUndo -and $j.PSObject.Properties['skip'] -and [string]$j.skip) {
@@ -41,23 +52,15 @@ function Invoke-TkStartupRecovery([string]$toolkitDir) {
     $dst = Join-Path $root ([string]$a)
     try { if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force -ErrorAction Stop } } catch { $bad += [string]$a }
   }
-  $vp = Join-Path $prev 'version.json.prev'
   # 2.2.19 (Codex 2.2.18 F26, startup twin): the version record must match the files put back. 2.2.18 skipped it when the saved copy
   # had none, so version.json kept naming the newer version. Now: the saved record is put back and read back; with no saved record, a
   # record is written from the journal's own version (from = the version put back, checked to look like a version) and read back;
   # anything else = NOT finished (the journal stays and the start says so).
   $vjPath = Join-Path $toolkitDir 'version.json'
-  $backV = [string]$j.from
   $vRebuilt = $false
   try {
-    # 2.2.20 (Codex 2.2.19 R17, startup twin, class D): the saved record must name EXACTLY the version put back (the journal's from),
-    # checked BEFORE it is copied and again after; anything else keeps the journal (the block) and the start says so
-    if (-not ($backV -match '^\d+(\.\d+){1,3}$')) { throw 'the update record does not name the version to put back' }
-    if (Test-Path -LiteralPath $vp) {
-      $pvr = $null; try { $pvr = [IO.File]::ReadAllText($vp) | ConvertFrom-Json -ErrorAction Stop } catch {}
-      if (-not $pvr -or [string]$pvr.version -ne $backV) { throw ('the saved version record is not version ' + $backV) }
-      Copy-TkAtomicFile $vp $vjPath
-    }
+    # 2.2.20 (R17): checked again after the copy - exactly the version put back
+    if (Test-Path -LiteralPath $vp) { Copy-TkAtomicFile $vp $vjPath }
     elseif ($backV -match '^\d+(\.\d+){1,3}$') {
       $vt = $vjPath + '.' + [guid]::NewGuid().ToString('N') + '.vtmp'
       try { [IO.File]::WriteAllText($vt, ('{ "version": "' + $backV + '", "previous": "", "note": "rebuilt from the update record at start-up (the saved version record was missing)" }')); Copy-TkAtomicFile $vt $vjPath } finally { Remove-Item -LiteralPath $vt -Force -ErrorAction SilentlyContinue }

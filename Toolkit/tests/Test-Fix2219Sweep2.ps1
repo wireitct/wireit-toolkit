@@ -79,8 +79,8 @@ Run-Safe 'run result' {
   (Get-Item -LiteralPath $f).LastWriteTime = (Get-Date).AddMinutes(-30)
   $has = [bool](Get-Command Read-TkRunResult -ErrorAction SilentlyContinue)
   Check ($has -and $null -eq (Read-TkRunResult $f (Get-Date).AddMinutes(-1))) 'reproduction (sweep2 W2): a result file from BEFORE this run started is not this run''s result ($null)'
-  '{"ok":true,"msg":"new"}' | Set-Content -LiteralPath $f -Encoding UTF8
-  Check ($has -and [string](Read-TkRunResult $f (Get-Date).AddMinutes(-1)).msg -eq 'new') 'control: the file this run wrote is read'
+  '{"ok":true,"msg":"new","runId":"sw2-run"}' | Set-Content -LiteralPath $f -Encoding UTF8   # 2.2.20 (R16): a result names its run
+  Check ($has -and [string](Read-TkRunResult $f (Get-Date).AddMinutes(-1) 'sw2-run').msg -eq 'new') 'control: the file this run wrote is read'
   '{"ok":tr' | Set-Content -LiteralPath $f -Encoding UTF8
   Check ($has -and $null -eq (Read-TkRunResult $f (Get-Date).AddMinutes(-1))) '...a damaged result file is $null (NOT CHECKED), and a missing one too' 
 }
@@ -106,12 +106,12 @@ Run-Safe 'show site/fix/doctor' {
   function global:Add-Out($t, $c) { }
   $global:cOk = 'green'; $global:cWarn = 'amber'; $global:cRed = 'red'; $global:cBlue = 'blue'
   $root = Join-Path $tmp 'tkwin'; New-Item -ItemType Directory -Force -Path (Join-Path $root 'logs') | Out-Null
-  $global:TK = @{ P = @{ Toolkit = $root }; lastRunStarted = (Get-Date).AddMinutes(-1) }
+  $global:TK = @{ P = @{ Toolkit = $root }; lastRunStarted = (Get-Date).AddMinutes(-1); lastRunId = 'sw2-run' }   # 2.2.20 (R16): the run id
   $cs = Join-Path $root 'logs/check-site-last.json'; '{"ok":true,"lines":[],"fixes":[]}' | Set-Content -LiteralPath $cs -Encoding UTF8
   (Get-Item -LiteralPath $cs).LastWriteTime = (Get-Date).AddHours(-3)
   $global:sw2Top.Clear(); Show-SiteCheck 4
   Check (-not ($global:sw2Top -match 'all OK') -and ($global:sw2Top -match 'NOT CHECKED')) 'reproduction (sweep2 W5): "Check this site" that stopped (code 4, no new result) never shows the PREVIOUS check''s "all OK"' ($global:sw2Top -join ' / ')
-  '{"ok":true,"lines":[],"fixes":[]}' | Set-Content -LiteralPath $cs -Encoding UTF8
+  '{"ok":true,"lines":[],"fixes":[],"runId":"sw2-run"}' | Set-Content -LiteralPath $cs -Encoding UTF8
   $global:sw2Top.Clear(); Show-SiteCheck 4
   Check (-not ($global:sw2Top -match 'all OK')) 'sweep2 W5: a fresh check that says ok while the tool ended with code 4 is not "all OK"' ($global:sw2Top -join ' / ')
   $global:sw2Top.Clear(); Show-SiteCheck 0

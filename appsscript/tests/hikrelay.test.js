@@ -221,5 +221,11 @@ g._now(g._t() + 31 * 86400000);
 soft(!r.err && !!g._props.HIKR_o1, 'sweep2 relay: an old record whose Drive copy could not be put in the bin is KEPT (tried again), not deleted');
 r = tryRun(() => g.scanHikReplies());
 soft(!r.err && !g._props.HIKR_o1, 'sweep2 relay: once the Drive copy does go to the bin, the old record is removed');
+// 2.2.20 (class C): an unreadable request time is refused, never widened to the 48-hour window
+g = fresh();
+g._mail('t1', 'Hikvision <noreply@hikvision.com>', 'Password reset for device ' + SER, 'Your verification code: NE12WW34', []);
+g.scanHikReplies();
+r = tryRun(() => g._post({ op: 'hikReplyGet', key: KEY, serial: SER, shortSerial: SS, exportedAt: 'yesterday-ish' }));
+soft(!r.err && r.v.ok === false && !r.v.found && /NOT CHECKED/.test(String(r.v.msg)) && !JSON.parse(g._props.HIKR_t1).servedAt, '2.2.20 relay: an unreadable exportedAt is refused (NOT CHECKED) and the reply is not marked used', JSON.stringify(r));
 if (softFail) { console.log('hikrelay sweep2: ' + softFail + ' FAILED'); process.exitCode = 1; }
 console.log('hikrelay total: ' + pass + ' ok' + (softFail ? ' (' + softFail + ' failed)' : ''));
