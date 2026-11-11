@@ -60,8 +60,12 @@ finally { try { [void](Close-NvrSessions) } catch {} }   # 1.4: always log out o
 $hist = ''
 if ($r -and $r.ran -and $r.history) {
   $hist = (Get-Date -Format 'yyyy-MM-dd HH:mm') + ' | ' + $env:COMPUTERNAME + ' | ' + $(if ($Site) { $Site } else { '-' }) + ' | ' + $r.history
-  [void](Add-TkLine (Join-Path $LogsDir 'fix-history.txt') $hist)
+  # 2.2.19: the history line is the record of a device change - a save that failed is said, never silent
+  $histSaved = [bool](Add-TkLine (Join-Path $LogsDir 'fix-history.txt') $hist)
+  if (-not $histSaved) { Say2 ('WARNING: the fix history could not be saved on this PC (' + (Join-Path $LogsDir 'fix-history.txt') + '). Write this down: ' + $hist) 'Yellow' }
+} else { $histSaved = $true }
+$out = [ordered]@{ fix = $Fix; ip = $Ip; site = $Site; code = $code; ran = [bool]($r -and $r.ran); ok = [bool]($r -and $r.ok); msg = $(if ($r) { $r.msg } else { '' }); history = $hist; historySaved = $histSaved; backup = $(if ($r) { $r.backup } else { '' }) }
+foreach ($rp in @((Join-Path $run 'result.json'), (Join-Path $LogsDir 'fix-last.json'))) {
+  try { Save-TkJson ([pscustomobject]$out) $rp } catch { Say2 ('WARNING: the result file could not be saved (' + $rp + '): ' + $_.Exception.Message) 'Yellow' }
 }
-$out = [ordered]@{ fix = $Fix; ip = $Ip; site = $Site; code = $code; ran = [bool]($r -and $r.ran); ok = [bool]($r -and $r.ok); msg = $(if ($r) { $r.msg } else { '' }); history = $hist; backup = $(if ($r) { $r.backup } else { '' }) }
-Save-TkJson ([pscustomobject]$out) (Join-Path $run 'result.json'); Save-TkJson ([pscustomobject]$out) (Join-Path $LogsDir 'fix-last.json')
 Done $code

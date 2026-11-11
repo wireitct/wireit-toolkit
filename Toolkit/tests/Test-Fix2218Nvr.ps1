@@ -148,6 +148,7 @@ $dwRec = {
   function script:Dw-Login { return $true }
   function script:Http {
     param([string]$Ip, [string]$Method = 'GET', [string]$Path, [string]$Body = '', [string]$ContentType = '', $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0, [byte[]]$BodyBytes = $null, [string]$OutFile = '', [switch]$SecretTransport)
+    if ($Path -eq '/ISAPI/System/deviceInfo') { return @{ code = 200; body = '<DeviceInfo><model>DS-7608NI-K2</model><serialNumber>TESTDEV0001</serialNumber><macAddress>AA:BB:CC:00:00:01</macAddress><firmwareVersion>V4.1</firmwareVersion><firmwareReleasedDate>build 240101</firmwareReleasedDate></DeviceInfo>' } }   # 2.2.19: the device says who it is (NvrFix re-identifies it before every write)
     $m = $script:Mode
     if ($Path -like '/rest/v3/devices*') { if ($m -eq 'dev500') { return @{ code = 500; body = '' } }; if ($m -eq 'dev-empty') { return @{ code = 200; body = '[]' } }; return @{ code = 200; body = '[{"id":"c1","name":"Lobby","url":"http://10.0.0.41","status":"Online","schedule":{"isEnabled":true}}]' } }
     if ($Path -like '/ec2/recordedTimePeriods*') {

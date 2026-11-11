@@ -119,6 +119,7 @@ $ra = {
     $script:Ch4 = @{ ip = $startIp; online = $startOnline }; $script:Mode = $mode; $script:Puts = 0; $script:ListReads = 0
     function script:Http {
       param([string]$Ip, [string]$Method = 'GET', [string]$Path, [string]$Body = '', [string]$ContentType = '', $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0, [byte[]]$BodyBytes = $null, [string]$OutFile = '')
+    if ($Path -eq '/ISAPI/System/deviceInfo') { return @{ code = 200; body = '<DeviceInfo><model>DS-7608NI-K2</model><serialNumber>TESTDEV0001</serialNumber><macAddress>AA:BB:CC:00:00:01</macAddress><firmwareVersion>V4.1</firmwareVersion><firmwareReleasedDate>build 240101</firmwareReleasedDate></DeviceInfo>' } }   # 2.2.19: the device says who it is (NvrFix re-identifies it before every write)
       $r = { param($c, $b) [pscustomobject]@{ code = $c; body = $b; err = '' } }
       if ($Method -eq 'PUT' -and $Path -eq '/ISAPI/ContentMgmt/InputProxy/channels/4') {
         $script:Puts++
@@ -181,6 +182,7 @@ $rr = {
     $script:En = @{ 101 = 'false'; 201 = 'true' }; $script:Mode = $mode; $script:Reads = 0; $script:Puts = 0
     function script:Http {
       param([string]$Ip, [string]$Method = 'GET', [string]$Path, [string]$Body = '', [string]$ContentType = '', $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0, [byte[]]$BodyBytes = $null, [string]$OutFile = '')
+    if ($Path -eq '/ISAPI/System/deviceInfo') { return @{ code = 200; body = '<DeviceInfo><model>DS-7608NI-K2</model><serialNumber>TESTDEV0001</serialNumber><macAddress>AA:BB:CC:00:00:01</macAddress><firmwareVersion>V4.1</firmwareVersion><firmwareReleasedDate>build 240101</firmwareReleasedDate></DeviceInfo>' } }   # 2.2.19: the device says who it is (NvrFix re-identifies it before every write)
       $r = { param($c, $b) [pscustomobject]@{ code = $c; body = $b; err = '' } }
       # 2.2.14 (Codex 2.2.13 F9): a track now needs its schedule entries to count as known (a track without them is UNKNOWN), so the
       # stand-in carries a real schedule like a real recorder does

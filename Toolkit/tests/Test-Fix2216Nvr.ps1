@@ -43,6 +43,7 @@ $hik = {
   $script:Mode = $mode; $script:Writes = 0; $script:Put1 = $false
   function script:Http {
     param([string]$Ip, [string]$Method = 'GET', [string]$Path, [string]$Body = '', [string]$ContentType = '', $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0, [byte[]]$BodyBytes = $null, [string]$OutFile = '')
+    if ($Path -eq '/ISAPI/System/deviceInfo') { return @{ code = 200; body = '<DeviceInfo><model>DS-7608NI-K2</model><serialNumber>TESTDEV0001</serialNumber><macAddress>AA:BB:CC:00:00:01</macAddress><firmwareVersion>V4.1</firmwareVersion><firmwareReleasedDate>build 240101</firmwareReleasedDate></DeviceInfo>' } }   # 2.2.19: the device says who it is (NvrFix re-identifies it before every write)
     if ($Method -eq 'PUT') {
       $script:Writes++
       if ($script:Mode -eq 'put-refused') { return @{ code = 403; body = '<ResponseStatus><statusCode>4</statusCode></ResponseStatus>' } }
@@ -112,6 +113,7 @@ $dw = {
   function script:Dw-Send { $script:Writes++; if ($script:Mode -eq 'put-refused') { return @{ code = 403; body = '{}' } }; $script:Put1 = $true; return @{ code = 200; body = '{}' } }
   function script:Http {
     param([string]$Ip, [string]$Method = 'GET', [string]$Path, [string]$Body = '', [string]$ContentType = '', $Credential = $null, [hashtable]$Headers = $null, [int]$Port = 0, [string]$Scheme = '', [switch]$NoLogBody, [int]$Timeout = 0, [byte[]]$BodyBytes = $null, [string]$OutFile = '')
+    if ($Path -eq '/ISAPI/System/deviceInfo') { return @{ code = 200; body = '<DeviceInfo><model>DS-7608NI-K2</model><serialNumber>TESTDEV0001</serialNumber><macAddress>AA:BB:CC:00:00:01</macAddress><firmwareVersion>V4.1</firmwareVersion><firmwareReleasedDate>build 240101</firmwareReleasedDate></DeviceInfo>' } }   # 2.2.19: the device says who it is (NvrFix re-identifies it before every write)
     if ($Path -like '/rest/v3/devices*') {
       $one = '{"id":"c1","name":"One","url":"http://10.0.0.41","schedule":{"isEnabled":' + $(if ($script:Put1) { 'true' } else { 'false' }) + '}}'
       $twoUnknown = '{"id":"c2","name":"Two","url":"http://10.0.0.42","schedule":{}}'

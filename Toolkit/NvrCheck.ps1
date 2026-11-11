@@ -147,7 +147,10 @@ try {
         $ans = $(if ($TestAnswer) { $TestAnswer } else { Read-Host 'Change them now?' })
         if ($ans -ceq 'YES') {
           Say2 ''; Say2 'You typed YES. Changing the time settings now...'
-          $r = Set-NtpTime @common -IncludeCameras:$Cameras -WhatIf:$false -Confirm:$false
+          # 2.2.19 (Codex 2.2.18 F04 twin): only the devices, and exactly the changes, shown above are written - each device is
+          # read again (same device by serial / MAC, same plan) right before its write; anything that changed is NOT changed
+          $exp = @{}; foreach ($d in $todo) { $exp[[string]$d.target] = @{ id = $(if ($d.PSObject.Properties['id']) { [string]$d.id } else { '' }); changes = (@($d.changes) -join '; ') } }
+          $r = Set-NtpTime @common -IncludeCameras:$Cameras -WhatIf:$false -Confirm:$false -Expect $exp
         } else {
           Say2 ''; Say2 'Not confirmed (you did not type YES). Nothing was changed.'
           $r = $plan; $code = 0

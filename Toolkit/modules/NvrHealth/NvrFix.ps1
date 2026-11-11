@@ -27,27 +27,90 @@ function Fix-Save([string]$dir, [string]$name, [string]$text) {
   } catch { $script:FixSaveWhy = [string]$_.Exception.Message; return '' }
 }
 function Fix-SaveFailed([string]$what) { return ('The backup of ' + $what + ' could not be saved (' + $script:FixSaveWhy + '), so nothing was changed. Free some disk space or pick another backup folder, then run it again.') }
+function Read-FixLimits([string]$stateFile) {
+  # 2.2.19 (Codex 2.2.18 F22, class E): @{ ok; map; why }. The restart record must be READ to know the budget: no file yet = an
+  # empty record (ok); a file that is there but cannot be read, is not a JSON object, or holds a value that is not a list of
+  # times = the budget is UNKNOWN (ok = $false) - no restart until it is fixed. Never "no restarts yet" from a broken record.
+  $h = @{}
+  if (-not (Test-Path -LiteralPath $stateFile)) { return @{ ok = $true; map = $h; why = '' } }
+  $leaf = Split-Path -Leaf $stateFile
+  $raw = $null; try { $raw = Get-Content -LiteralPath $stateFile -Raw -ErrorAction Stop } catch { return @{ ok = $false; map = $h; why = ('its restart record (' + $leaf + ') could not be read') } }
+  if (-not ([string]$raw).Trim()) { return @{ ok = $false; map = $h; why = ('its restart record (' + $leaf + ') is empty') } }
+  $o = $null; try { $o = ([string]$raw | ConvertFrom-Json -ErrorAction Stop) } catch { return @{ ok = $false; map = $h; why = ('its restart record (' + $leaf + ') is damaged (not readable)') } }
+  if ($null -eq $o -or $o -is [array] -or -not ($o -is [psobject]) -or $o -is [string] -or $o -is [ValueType]) { return @{ ok = $false; map = $h; why = ('its restart record (' + $leaf + ') is not a restart record') } }
+  foreach ($p in $o.PSObject.Properties) {
+    $ts = @()
+    foreach ($v in @($p.Value)) {
+      $d = [datetime]::MinValue
+      if ($null -eq $v -or -not [datetime]::TryParse([string]$v, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$d)) { return @{ ok = $false; map = @{}; why = ('its restart record (' + $leaf + ') has an entry that is not a time') } }
+      $ts += $d
+    }
+    $h[$p.Name] = $ts
+  }
+  return @{ ok = $true; map = $h; why = '' }
+}
 function Fix-LimitOk([string]$stateFile, [string]$key, [datetime]$now) {
   # restart limits per camera: 1 per hour, 2 per day (then one alert line, no more restarts)
-  if (-not $stateFile -or -not (Test-Path -LiteralPath $stateFile)) { return @{ ok = $true; why = '' } }
-  # 2.2.18 (sweep, class C): a restart-limit file that is there but cannot be read is NOT "no restarts yet" - refuse
-  $all = $null; try { $all = Get-Content -LiteralPath $stateFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { return @{ ok = $false; why = 'its restart record (' + (Split-Path -Leaf $stateFile) + ') could not be read, so the 1-per-hour / 2-per-day limit cannot be checked - fix or delete that file first' } }
-  if ($null -eq $all) { return @{ ok = $false; why = 'its restart record (' + (Split-Path -Leaf $stateFile) + ') is empty or unreadable, so the restart limit cannot be checked - fix or delete that file first' } }
-  $times = @(); if ($all -and $all.PSObject.Properties[$key]) { $times = @($all.$key | ForEach-Object { [datetime]$_ }) }
+  if (-not $stateFile) { return @{ ok = $true; why = '' } }
+  # 2.2.18 (sweep, class C) + 2.2.19 (F22): a restart-limit file that is there but cannot be read is NOT "no restarts yet" - refuse
+  $rl = Read-FixLimits $stateFile
+  if (-not $rl.ok) { return @{ ok = $false; why = ($rl.why + ', so the 1-per-hour / 2-per-day limit cannot be checked - fix or delete that file first') } }
+  $times = @(); if ($rl.map.ContainsKey($key)) { $times = @($rl.map[$key]) }
   if (@($times | Where-Object { ($now - $_).TotalHours -lt 1 }).Count -ge $script:FixLimitPerHour) { return @{ ok = $false; why = 'it was already restarted in the last hour' } }
   if (@($times | Where-Object { ($now - $_).TotalHours -lt 24 }).Count -ge $script:FixLimitPerDay) { return @{ ok = $false; why = 'it was already restarted twice today - something else is wrong, go look at it' } }
   return @{ ok = $true; why = '' }
 }
-function Fix-LimitAdd([string]$stateFile, [string]$key, [datetime]$now) {
-  # 2.2.18 (sweep, class D): the restart limit lives on disk; a failed save is reported ($false), never silently lost
-  if (-not $stateFile) { return $true }
+function Write-FixLimits([string]$stateFile, [hashtable]$h) {
+  # write to a side file, move it over the record, then READ IT BACK: $true only when the saved record is the one meant
   $ErrorActionPreference = 'Stop'
+  $out = [ordered]@{}; foreach ($k in ($h.Keys | Sort-Object)) { $out[$k] = @(@($h[$k]) | ForEach-Object { ([datetime]$_).ToString('s') }) }
+  $tmp = $stateFile + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
   try {
-    $h = @{}; if (Test-Path -LiteralPath $stateFile) { $o = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json; foreach ($p in $o.PSObject.Properties) { $h[$p.Name] = @($p.Value) } }
-    $keep = @(@($h[$key]) | Where-Object { $_ -and ($now - [datetime]$_).TotalDays -lt 2 }); $h[$key] = @($keep + $now.ToString('s'))
-    ($h | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $stateFile -Encoding UTF8 -WhatIf:$false -Confirm:$false
-    return $true
-  } catch { Log ('restart limit NOT saved: ' + $_.Exception.Message); return $false }
+    $dir = Split-Path -Parent $stateFile
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir -WhatIf:$false -Confirm:$false | Out-Null }
+    (([pscustomobject]$out) | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $tmp -Encoding UTF8 -WhatIf:$false -Confirm:$false
+    Move-Item -LiteralPath $tmp -Destination $stateFile -Force -WhatIf:$false -Confirm:$false
+  } catch { Log ('restart limit NOT saved: ' + $_.Exception.Message); Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; return $false }
+  $back = Read-FixLimits $stateFile
+  if (-not $back.ok) { Log ('restart limit saved but does not read back: ' + $back.why); return $false }
+  foreach ($k in $h.Keys) {
+    $want = @(@($h[$k]) | ForEach-Object { ([datetime]$_).ToString('s') }); $got = @(@($back.map[$k]) | ForEach-Object { ([datetime]$_).ToString('s') })
+    if (($want -join ',') -ne ($got -join ',')) { Log ('restart limit saved but reads back different for ' + $k); return $false }
+  }
+  return $true
+}
+function Fix-LimitReserve([string]$stateFile, [string]$key, [datetime]$now) {
+  # 2.2.19 (Codex 2.2.18 F22, class E): the restart is RESERVED on disk BEFORE the restart is sent. The record is read again (a
+  # restart made by another window in the meantime counts), the limit is checked on that fresh read, this restart is added, the
+  # record is saved and read back. @{ ok; why }: ok = $false (unreadable record, limit reached, save failed) = NO restart.
+  # The reservation stays when the outcome is unknown (no answer / restart not confirmed): it is the durable uncertain attempt.
+  if (-not $stateFile) { return @{ ok = $false; why = 'no restart record file was given, so the limit could not be kept' } }
+  $rl = Read-FixLimits $stateFile
+  if (-not $rl.ok) { return @{ ok = $false; why = ($rl.why + ', so the restart limit cannot be kept') } }
+  $lim = Fix-LimitOk $stateFile $key $now; if (-not $lim.ok) { return $lim }
+  $h = $rl.map
+  $keep = @(@($h[$key]) | Where-Object { $_ -and ($now - [datetime]$_).TotalDays -lt 2 }); $h[$key] = @($keep + $now)
+  if (-not (Write-FixLimits $stateFile $h)) { return @{ ok = $false; why = 'the restart limit could not be saved on this PC (' + (Split-Path -Leaf $stateFile) + ')' } }
+  return @{ ok = $true; why = '' }
+}
+function Fix-LimitRelease([string]$stateFile, [string]$key, [datetime]$now) {
+  # 2.2.19: the camera said NO (an explicit refusal): nothing restarted, so the reservation is taken back. If that fails the
+  # reservation stays (the safe side: one restart counted that did not happen).
+  if (-not $stateFile) { return $false }
+  $rl = Read-FixLimits $stateFile; if (-not $rl.ok) { return $false }
+  $h = $rl.map; $mine = $now.ToString('s')
+  $left = @(@($h[$key]) | Where-Object { ([datetime]$_).ToString('s') -ne $mine })
+  if ($left.Count) { $h[$key] = $left } else { [void]$h.Remove($key) }
+  $ok = Write-FixLimits $stateFile $h
+  if ($ok -and (Read-FixLimits $stateFile).map.ContainsKey($key) -and -not $left.Count) { return $false }
+  return $ok
+}
+function Fix-LimitAdd([string]$stateFile, [string]$key, [datetime]$now) {
+  # kept for older callers: the same reservation (read, check, save, read back); $true only when it was really saved
+  if (-not $stateFile) { return $false }
+  $rl = Read-FixLimits $stateFile; if (-not $rl.ok) { return $false }
+  $h = $rl.map; $keep = @(@($h[$key]) | Where-Object { $_ -and ($now - [datetime]$_).TotalDays -lt 2 }); $h[$key] = @($keep + $now)
+  return (Write-FixLimits $stateFile $h)
 }
 function Dw-Send($t, [string]$method, [string]$path, $obj, [switch]$Secret) {
   return Http -Ip $t.ip -Method $method -Path $path -Body ($obj | ConvertTo-Json -Compress -Depth 5) -ContentType 'application/json' -Headers @{ Authorization = ('Bearer ' + $t.token) } -Port (Dw-Port $t) -Scheme (Dw-Scheme) -NoLogBody:$Secret
@@ -66,6 +129,12 @@ function Test-NhBackupFile([string]$path) {
   return ''
 }
 function Fix-Xml([string]$s) { return [Security.SecurityElement]::Escape($s) }
+# 2.2.19 (Codex 2.2.18 F04): the exact XML of one NVR channel entry ('' = the channel is not in the list) - compared before and
+# after the YES, so a channel that changed while the technician was reading the plan is never written over
+function Get-NhChannelXml($doc, [int]$ch) {
+  foreach ($c in (XFind $doc 'InputProxyChannel')) { if ([string](XText $c 'id') -eq [string]$ch) { return ([string]$c.OuterXml).Trim() } }
+  return ''
+}
 
 function Invoke-NvrFix {
   <#
@@ -103,6 +172,8 @@ function Invoke-NvrFix {
       if ($v -eq 'Hikvision') {
         # 2.2.13 (Codex 2.2.12 #7): ONE read of the track list, checked: a failed / unreadable answer is "could not read", never
         # "already on for every camera". 2.2.12 read it twice and an error on the 2nd read became an empty list = all on.
+        $id0 = Get-NhDeviceId $t   # 2.2.19 (class A): which recorder this is, read again right before the writes
+        if (-not $id0.ok) { return (& $done $false ('The recorder at ' + $Ip + ' did not say which recorder it is (' + $id0.why + '), so recording was NOT changed. Nothing changed.')) }
         $rt = Hik-ReadTracks $t
         if (-not $rt.ok) { return (& $done $false ('Could not read the recording settings (' + $rt.why + '). Recording NOT CHECKED, nothing changed. Run it again.')) }
         if (-not $rt.map.Count) { return (& $done $false 'The recorder lists no recording settings at all, so recording could NOT be checked. Nothing changed. Look at Storage > Recording schedule on the recorder.') }
@@ -119,14 +190,20 @@ function Invoke-NvrFix {
         $res.backup = Fix-Save $BackupDir 'record-tracks-before.xml' $rt.body
         if (-not $res.backup) { return (& $done $false (Fix-SaveFailed 'the recording settings')) }   # 2.2.18 (Codex F7)
         if (-not (& $ask @('Turn recording back ON for: ' + (@($off | ForEach-Object { & $offWhy $_ }) -join ', ') + ' on ' + $Ip + '. A switched-off camera keeps its schedule as it is; a schedule with no recording time gets every one of its time slots set to record.', 'Backup of the recording settings saved: ' + $res.backup))) { return (& $done $true 'Not confirmed - nothing changed.') }
+        $same = Test-NhSameDevice $t $id0
+        if (-not $same.ok) { return (& $done $false ('Recording NOT changed: ' + $same.why + '. Nothing changed.')) }
         $res.ran = $true
+        $skipped = @()
         foreach ($o in $off) {
           $one = Http -Ip $Ip -Path ('/ISAPI/ContentMgmt/record/tracks/' + $o.id) -Credential $t.cred -Port $t.port
           # 2.2.13: never PUT back an answer that is not this camera's own track (an error page / another track)
           # 2.2.15: and only when it still shows the same off state that was read in the list (else: not written, reported)
           $oneMap = $(if ($one.code -eq 200) { Hik-ParseTracks ([string]$one.body) } else { $null })
           $cur = $(if ($oneMap -and $oneMap.ContainsKey($o.id)) { $oneMap[$o.id] } else { $null })
-          if (-not $cur -or $cur.enabled -ne $o.enabled -or $cur.hasSchedule -ne $o.hasSchedule) { Log ('track ' + $o.id + ': could not read it, or it changed (answer ' + $one.code + ') - not written'); continue }
+          if (-not $cur -or $cur.enabled -ne $o.enabled -or $cur.hasSchedule -ne $o.hasSchedule) { Log ('track ' + $o.id + ': could not read it, or it changed (answer ' + $one.code + ') - not written'); $skipped += $o; continue }
+          # 2.2.19 (class B): back up the EXACT track that is about to be replaced (read after YES); not saved = not written
+          $bkT = Fix-Save $BackupDir ('record-track-' + $o.id + '-at-write.xml') ([string]$one.body)
+          if (-not $bkT) { Log ('track ' + $o.id + ': its backup could not be saved (' + $script:FixSaveWhy + ') - not written'); $skipped += $o; continue }
           $xml = [string]$one.body
           if ($o.enabled -eq $false) { $xml = $xml -replace '<Enable>\s*(?i:false)\s*</Enable>', '<Enable>true</Enable>' }
           if ($o.hasSchedule -eq $false) { $xml = $xml -replace '<Record>\s*(?i:false)\s*</Record>', '<Record>true</Record>' }
@@ -173,8 +250,19 @@ function Invoke-NvrFix {
         $res.backup = Fix-Save $BackupDir 'dw-cameras-before.json' ($devs | ConvertTo-Json -Depth 4)
         if (-not $res.backup) { return (& $done $false (Fix-SaveFailed 'DW''s camera list')) }   # 2.2.18 (Codex F7)
         if (-not (& $ask @('Turn recording back ON in DW for: ' + (($off | ForEach-Object { $_.name + ' (' + $_.ip + ')' }) -join ', ') + '.', 'Backup of the camera list saved: ' + $res.backup))) { return (& $done $true 'Not confirmed - nothing changed.') }
+        # 2.2.19 (Codex 2.2.18 F04 twin, class B): read DW's camera list again after YES; only a camera that is still the same one
+        # (same id and address) and still reads recording OFF is changed; the list read now is the backup of what is replaced
+        $rd2 = Dw-ReadDevices $t
+        if (-not $rd2.ok) { return (& $done $false ('After your YES, DW''s camera list could not be read again (' + $rd2.why + '). Nothing changed. Run it again.')) }
+        $bk2 = Fix-Save $BackupDir 'dw-cameras-at-write.json' (@($rd2.devs) | ConvertTo-Json -Depth 4)
+        if (-not $bk2) { return (& $done $false (Fix-SaveFailed 'DW''s camera list (read again after your YES)')) }
+        $res.backup = $bk2
         $res.ran = $true
-        foreach ($o in $off) { $w = Dw-Send $t 'PATCH' ('/rest/v3/devices/' + [uri]::EscapeDataString($o.id)) @{ schedule = @{ isEnabled = $true } }; if ($w.code -eq 200) { $res.changed += $o.name } }
+        foreach ($o in $off) {
+          $c2 = @($rd2.devs | Where-Object { $_.id -eq $o.id }) | Select-Object -First 1
+          if (-not $c2 -or $c2.ip -ne $o.ip -or $c2.scheduled -ne $false) { Log ('DW camera ' + $o.name + ': changed while waiting for YES (or gone) - not written'); continue }
+          $w = Dw-Send $t 'PATCH' ('/rest/v3/devices/' + [uri]::EscapeDataString($o.id)) @{ schedule = @{ isEnabled = $true } }; if ($w.code -eq 200) { $res.changed += $o.name }
+        }
         $ra = Dw-ReadDevices $t
         if (-not $ra.ok) {
           $res.history = 'Recording turn-on sent in DW for: ' + ($res.changed -join ', ') + ' (' + $Ip + ') - NOT confirmed (read-back failed)'
@@ -219,8 +307,19 @@ function Invoke-NvrFix {
       if ($info.code -ne 200) { return (& $done $false ('The camera did not accept the login (answer ' + $info.code + '), so it was not restarted. If it does not answer at all, restart its switch port (PoE) by hand.')) }
       $res.backup = Fix-Save $BackupDir 'device-before.txt' $info.body
       if (-not $res.backup) { return (& $done $false (Fix-SaveFailed 'the camera''s device information')) }   # 2.2.18 (Codex F7)
+      # 2.2.19 (class A): which camera this is (serial / MAC), read now and again right before the restart
+      $id0 = Get-NhDeviceId $t
+      if (-not $id0.ok) { return (& $done $false ('The camera at ' + $Ip + ' did not say which camera it is (' + $id0.why + '), so it was NOT restarted. Nothing changed.')) }
       $upPre = $null; if ($v -eq 'Hikvision') { $u0 = Hik-UpTime $t 8; if ($u0.code -eq 200) { $upPre = $u0.up } }   # 2.2.13: boot marker before (null = camera does not give it)
-      if (-not (& $ask @('Restart (reboot) the camera at ' + $Ip + '. It is offline for about 2 minutes.', 'Allowed: 1 restart per hour, 2 per day for this camera.'))) { return (& $done $true 'Not confirmed - nothing changed.') }
+      if (-not (& $ask @('Restart (reboot) the camera at ' + $Ip + $(if ($id0.serial) { ' (serial ' + $id0.serial + ')' } else { '' }) + '. It is offline for about 2 minutes.', 'Allowed: 1 restart per hour, 2 per day for this camera.'))) { return (& $done $true 'Not confirmed - nothing changed.') }
+      # 2.2.19 (class B): after YES - the same camera?
+      $same = Test-NhSameDevice $t $id0
+      if (-not $same.ok) { return (& $done $false ('Not restarted: ' + $same.why + '. Nothing changed. Check the address and run it again.')) }
+      # 2.2.19 (Codex 2.2.18 F22, class E): the restart is reserved in the restart record (read again, limit checked, saved, read
+      # back) BEFORE it is sent. Not saved = NOT restarted - 2.2.18 restarted first and only warned when the record failed.
+      $now = Get-Date
+      $rsv = Fix-LimitReserve $StateFile $Ip $now
+      if (-not $rsv.ok) { return (& $done $false ('Not restarted: ' + $rsv.why + '. Nothing changed.')) }
       $res.ran = $true
       $w = Http -Ip $Ip -Method 'PUT' -Path $path -Body $(if ($v -eq 'Uniview') { '{}' } else { '' }) -ContentType $(if ($v -eq 'Uniview') { 'application/json' } else { 'application/xml' }) -Credential $t.cred -Port $t.port -Timeout 8
       # 2.2.12 (Codex P1-10): an HTTP 200 is not a yes. Hikvision answers <statusCode> (1 = OK, 7 = reboot needed), Uniview
@@ -232,9 +331,14 @@ function Invoke-NvrFix {
           if ($null -eq $rc) { $refused = 'the camera''s answer could not be read' } elseif ($rc -ne '0') { $refused = 'camera answer code ' + $rc }
         } elseif (-not (Hik-Ok $w)) { $refused = 'camera answer ' + (XText (Xml $w.body) 'statusCode') + ' ' + (XText (Xml $w.body) 'statusString') }
       } elseif ($w.code -gt 0) { $refused = 'answer ' + $w.code }
-      if ($refused) { $res.history = 'Restart asked of camera ' + $Ip + ' - refused (' + $refused.Trim() + ')'; return (& $done $false ('The camera refused the restart (' + $refused.Trim() + '). It was NOT restarted.')) }
-      $limSaved = Fix-LimitAdd $StateFile $Ip $now
-      if (-not $limSaved) { Say 'WARNING: the restart limit could NOT be saved on this PC. Do not restart this camera again within the hour.' 'Yellow' }
+      if ($refused) {
+        # an explicit NO: nothing restarted, so the reservation is taken back (if that fails it stays - one restart counted too many)
+        $rel = Fix-LimitRelease $StateFile $Ip $now
+        if (-not $rel) { Log 'restart refused, but its reservation could not be taken back - it stays counted' }
+        $res.history = 'Restart asked of camera ' + $Ip + ' - refused (' + $refused.Trim() + ')'; return (& $done $false ('The camera refused the restart (' + $refused.Trim() + '). It was NOT restarted.'))
+      }
+      # no answer at all (code 0) or an accepted request: the reservation stays - the outcome is checked below and, if unknown,
+      # the record still counts it, so no other window restarts this camera again within the hour
       $res.changed += 'restart asked'; Say ('Restart accepted by the camera... waiting up to ' + $WaitSec + ' s: it must go offline and come back.')
       # 2.2.12 (Codex P1-10): an accepted request is not proof. "Restarted" needs the camera to go away and answer again.
       # 2.2.13 (Codex 2.2.12 #8): an HTTP error answer (500, 401, ...) means the camera is UP and answering - it is not "went down".
@@ -269,6 +373,9 @@ function Invoke-NvrFix {
     'readd' {
       if ($v -ne 'Hikvision') { return (& $done $false 'Putting a camera back on a channel is built for Hikvision NVRs only. Nothing changed.') }
       if ($Channel -lt 1 -or $CameraIp -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { return (& $done $false 'Need the channel number and the camera IP. Nothing changed.') }
+      # 2.2.19 (class A): which NVR this is (serial / MAC), read now and again right before the write
+      $id0 = Get-NhDeviceId $t
+      if (-not $id0.ok) { return (& $done $false ('The NVR at ' + $Ip + ' did not say which NVR it is (' + $id0.why + '), so no channel was changed. Nothing changed.')) }
       $all = Http -Ip $Ip -Path '/ISAPI/ContentMgmt/InputProxy/channels' -Credential $t.cred -Port $t.port
       if ($all.code -ne 200) { return (& $done $false ('Could not read the NVR channel list (answer ' + $all.code + '). Nothing changed.')) }
       $ax = Xml $all.body
@@ -276,6 +383,7 @@ function Invoke-NvrFix {
       $res.backup = Fix-Save $BackupDir 'nvr-channels-before.xml' $all.body
       if (-not $res.backup) { return (& $done $false (Fix-SaveFailed 'the NVR channel list')) }   # 2.2.18 (Codex F7)
       $used = $null; $listed = @(); $slot = $null
+      $slotXml = Get-NhChannelXml $ax $Channel   # 2.2.19 (F04): the exact channel entry the plan is based on
       foreach ($c in (XFind $ax 'InputProxyChannel')) {
         $cidS = XText $c 'id'; $cid = 0; [void][int]::TryParse($cidS, [ref]$cid)
         # 2.2.15 (Codex 2.2.14 R4): keep "this channel is set up" AND how it is addressed. Only a plain IP address can be checked
@@ -305,7 +413,30 @@ function Invoke-NvrFix {
         if ($pre.online) { return (& $done $false ('Channel ' + $Channel + ' is in use by ' + $used + ' and that camera is online. Nothing changed.')) }
         Log ('readd: channel ' + $Channel + ' holds ' + $used + ', which the NVR reports offline - it may be replaced')
       }
-      if (-not (& $ask @('Put camera ' + $CameraIp + ' on channel ' + $Channel + ' of the NVR ' + $Ip + ' (login admin + the camera password you typed; it is not saved).', 'Backup of the channel list saved: ' + $res.backup))) { return (& $done $true 'Not confirmed - nothing changed.') }
+      if (-not (& $ask @('Put camera ' + $CameraIp + ' on channel ' + $Channel + ' of the NVR ' + $Ip + $(if ($used) { ' (replacing ' + $used + ', which the NVR reports offline)' } else { '' }) + ' (login admin + the camera password you typed; it is not saved).', 'Backup of the channel list saved: ' + $res.backup))) { return (& $done $true 'Not confirmed - nothing changed.') }
+      # 2.2.19 (Codex 2.2.18 F04, class B): everything above was read BEFORE the YES. Read it all again now, right before the write:
+      # the same NVR, the channel entry exactly as it was shown (else: it changed while waiting - stop), the camera still not on
+      # another channel, and a replaced camera still positively offline. The backup is taken again from THIS read, so it holds the
+      # exact state that is about to be replaced.
+      $same = Test-NhSameDevice $t $id0
+      if (-not $same.ok) { $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - NOT done (' + $same.why + ')'; return (& $done $false ('Nothing changed: ' + $same.why + '. Check the NVR address and run it again.')) }
+      $all2 = Http -Ip $Ip -Path '/ISAPI/ContentMgmt/InputProxy/channels' -Credential $t.cred -Port $t.port
+      $ax2 = $(if ($all2.code -eq 200) { Xml $all2.body } else { $null })
+      if (-not $ax2 -or -not $ax2.DocumentElement -or $ax2.DocumentElement.LocalName -notmatch '(?i)^InputProxyChannelList$') { $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - NOT done (channel list not readable after YES)'; return (& $done $false ('After you typed YES the NVR''s channel list could not be read again (answer ' + $all2.code + '), so it is NOT known that channel ' + $Channel + ' is still as shown. Nothing changed. Run it again.')) }
+      $slotXml2 = Get-NhChannelXml $ax2 $Channel
+      if ($slotXml2 -cne $slotXml) {
+        $nowIp = ''; foreach ($c2 in (XFind $ax2 'InputProxyChannel')) { if ([string](XText $c2 'id') -eq [string]$Channel) { $nowIp = XText $c2 'ipAddress' } }
+        $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - NOT done (channel changed while waiting for YES)'
+        return (& $done $false ('Channel ' + $Channel + ' changed while waiting for your YES (it now shows ' + $(if ($nowIp) { $nowIp } elseif ($slotXml2) { 'a different setting' } else { 'nothing' }) + '). Nothing changed - a working camera could lose its recording. Run it again.'))
+      }
+      foreach ($c2 in (XFind $ax2 'InputProxyChannel')) { $cid2 = XText $c2 'id'; if ((XText $c2 'ipAddress') -eq $CameraIp -and $cid2 -ne [string]$Channel) { return (& $done $false ($CameraIp + ' is now on channel ' + $cid2 + ' (it changed while waiting for your YES). Nothing changed.')) } }
+      if ($used -and $used -ne $CameraIp) {
+        $pre2 = Hik-ReadChannel $t $Channel
+        if (-not $pre2.ok -or -not $pre2.found -or $pre2.ip -ne $used -or -not $pre2.statusFound -or $pre2.online) { $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - NOT done (' + $used + ' not confirmed offline after YES)'; return (& $done $false ('After your YES, ' + $used + ' on channel ' + $Channel + ' is ' + $(if (-not $pre2.ok) { 'not readable (' + $pre2.why + ')' } elseif ($pre2.online) { 'ONLINE again' } else { 'not confirmed offline' }) + '. Nothing changed - a working camera could lose its recording.')) }
+      }
+      $bk2 = Fix-Save $BackupDir 'nvr-channels-at-write.xml' $all2.body
+      if (-not $bk2) { return (& $done $false (Fix-SaveFailed 'the NVR channel list (read again after your YES)')) }
+      $res.backup = $bk2
       $res.ran = $true
       $xml = '<?xml version="1.0" encoding="UTF-8"?><InputProxyChannel version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema"><id>' + $Channel + '</id><sourceInputPortDescriptor><proxyProtocol>HIKVISION</proxyProtocol><addressingFormatType>ipaddress</addressingFormatType><ipAddress>' + $CameraIp + '</ipAddress><managePortNo>8000</managePortNo><srcInputPort>1</srcInputPort><userName>' + (Fix-Xml $NewCredential.UserName) + '</userName><password>' + (Fix-Xml (Plain $NewCredential)) + '</password><streamType>auto</streamType></sourceInputPortDescriptor></InputProxyChannel>'
       $w = Http -Ip $Ip -Method 'PUT' -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $Channel) -Body $xml -Credential $t.cred -Port $t.port -NoLogBody
@@ -334,8 +465,12 @@ function Invoke-NvrFix {
       $hash = (Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash
       if ($hash -ne $Sha256.ToUpper()) { return (& $done $false 'The file does not match the SHA-256 you typed - wrong or damaged file. Nothing changed.') }
       $di = Hik-DeviceInfo $t; if ($di.login -ne 'ok') { return (& $done $false 'Could not read the device (login?). Nothing changed.') }
-      # 2.2.18 (Codex F4 twin): without the version it has NOW, a later read-back cannot prove the update ran - refuse first
-      if (-not ([string]$di.firmware).Trim()) { return (& $done $false 'The device did not say which firmware it has now, so the update could not be checked afterwards. Nothing changed. Look at its version in its web page (Maintenance) first.') }
+      # 2.2.18 (Codex F4 twin) + 2.2.19 (Codex 2.2.18 F07): without the firmware VERSION it has NOW (the version field itself - a
+      # release date alone is not a version), a later read-back cannot prove the update ran - refuse first
+      $fw0 = ([string]$di.version).Trim()
+      if (-not $fw0) { return (& $done $false ('The device did not say which firmware version it has now' + $(if ($di.released) { ' (only its release date, ' + $di.released + ')' } else { '' }) + ', so the update could not be checked afterwards. Nothing changed. Look at its version in its web page (Maintenance) first.')) }
+      $id0 = Get-NhDeviceId $t
+      if (-not $id0.ok) { return (& $done $false ('The device did not say which device it is (' + $id0.why + '), so it was NOT updated. Nothing changed.')) }
       # 2.2.3 (Codex #21): the export is the device's own binary file: saved byte for byte as .bin (2.2.2 turned it into text)
       if (-not $BackupDir) { $BackupDir = Join-Path $env:TEMP 'WireIt-backup' }; New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
       $cfgFile = Join-Path $BackupDir ('config-' + ($di.serial -replace '[^A-Za-z0-9_-]', '_') + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.bin')
@@ -344,6 +479,11 @@ function Invoke-NvrFix {
       $bw = Test-NhBackupFile $cfgFile; if ($bw) { Log ('backup FAILED: ' + $bw); Remove-Item -LiteralPath $cfgFile -Force -ErrorAction SilentlyContinue; return (& $done $false ('The settings export FAILED (' + $bw + '), so no update. Nothing changed.')) }   # 2.2.4
       $res.backup = $cfgFile
       if (-not (& $ask @('Update ' + $di.model + ' at ' + $Ip + ' from ' + $di.firmware + ' with ' + (Split-Path -Leaf $File) + ' (SHA-256 matches). It reboots; do not unplug it for 10 minutes.', 'Settings exported first: ' + $res.backup, 'To go back: upload the old firmware file the same way, then import the exported settings in the camera''s web page (Maintenance).'))) { return (& $done $true 'Not confirmed - nothing changed.') }
+      # 2.2.19 (class B): after YES - the same device, still on the version the plan was made for
+      $same = Test-NhSameDevice $t $id0
+      if (-not $same.ok) { return (& $done $false ('Not updated: ' + $same.why + '. Nothing changed.')) }
+      $di2 = Hik-DeviceInfo $t
+      if ($di2.login -ne 'ok' -or ([string]$di2.version).Trim() -cne $fw0) { return (& $done $false ('Not updated: after your YES the device reports ' + $(if ($di2.login -ne 'ok') { 'nothing (it could not be read)' } elseif ($di2.version) { 'version ' + $di2.version } else { 'no version' }) + ', not ' + $fw0 + ' as in the plan. Nothing changed. Run it again.')) }
       $res.ran = $true
       $w = Http -Ip $Ip -Method 'PUT' -Path '/ISAPI/System/updateFirmware' -BodyBytes ([IO.File]::ReadAllBytes($File)) -ContentType 'application/octet-stream' -Credential $t.cred -Port $t.port -Timeout 600
       # 2.2.15 (Codex 2.2.14 R10): NO answer (connection dropped / timed out, code 0) is not a refusal: the device may have taken
@@ -351,27 +491,33 @@ function Invoke-NvrFix {
       if ([int]$w.code -le 0) {
         $res.changed += 'firmware sent (answer lost)'
         $lost = Hik-DeviceInfo $t
-        if ($lost.login -eq 'ok' -and $lost.firmware -and $lost.firmware -ne $di.firmware) {
-          $res.changed = @($di.firmware + ' -> ' + $lost.firmware)
-          $res.history = 'Firmware ' + $Ip + ' ' + $di.firmware + ' -> ' + $lost.firmware + ' (its answer was lost; the new version was read back)'
-          return (& $done $true ('Updated: ' + $di.firmware + ' -> ' + $lost.firmware + '. The device''s answer was lost, but it now reports the new version (read back).'))
+        # 2.2.19 (Codex 2.2.18 F07): the VERSION field, non-empty and different, on the SAME device - a date alone proves nothing
+        $lostV = $(if ($lost.login -eq 'ok') { ([string]$lost.version).Trim() } else { '' })
+        $lostSame = $(if ($lost.login -eq 'ok') { (-not $id0.serial -or [string]$lost.serial -ceq $id0.serial) } else { $false })
+        if ($lostV -and $lostV -ne $fw0 -and $lostSame) {
+          $res.changed = @($fw0 + ' -> ' + $lostV)
+          $res.history = 'Firmware ' + $Ip + ' ' + $fw0 + ' -> ' + $lostV + ' (its answer was lost; the new version was read back)'
+          return (& $done $true ('Updated: ' + $fw0 + ' -> ' + $lostV + '. The device''s answer was lost, but it now reports the new version (read back).'))
         }
-        $seen = $(if ($lost.login -eq 'ok') { 'right now it reports ' + $(if ($lost.firmware) { $lost.firmware } else { 'no version' }) + ', which is normal while it installs' } else { 'it could not be read back (it may be rebooting)' })
-        $res.history = 'Firmware update of ' + $Ip + ' sent - NOT confirmed (the answer was lost; ' + $(if ($lost.login -eq 'ok') { 'read back: ' + $lost.firmware } else { 'read-back failed' }) + ')'
-        return (& $done $false ('Sent, but the device''s answer was lost, so it is NOT confirmed whether the update ran (' + $seen + '). Do NOT send it again yet: wait 10 minutes, then run the Firmware check. Only if that still shows ' + $di.firmware + ' try the update again. Settings export kept: ' + $res.backup))
+        $seen = $(if ($lost.login -eq 'ok') { 'right now it reports ' + $(if ($lostV) { 'version ' + $lostV } else { 'no version' }) + ', which is normal while it installs' } else { 'it could not be read back (it may be rebooting)' })
+        $res.history = 'Firmware update of ' + $Ip + ' sent - NOT confirmed (the answer was lost; ' + $(if ($lost.login -eq 'ok') { 'read back: ' + $(if ($lostV) { $lostV } else { 'no version' }) } else { 'read-back failed' }) + ')'
+        return (& $done $false ('Sent, but the device''s answer was lost, so it is NOT confirmed whether the update ran (' + $seen + '). Do NOT send it again yet: wait 10 minutes, then run the Firmware check. Only if that still shows ' + $fw0 + ' try the update again. Settings export kept: ' + $res.backup))
       }
       if (-not (Hik-Ok $w)) { $res.history = 'Firmware update of ' + $Ip + ' refused (' + $w.code + ')'; return (& $done $false ('The device refused the file (answer ' + $w.code + '), so the update did not start. Settings export kept: ' + $res.backup)) }
       $after = Hik-DeviceInfo $t
       # 2.2.18 (Codex F4): like the lost-answer branch, "updated" needs a NON-EMPTY version read back that differs from the
       # original. A read-back with no version (or a failed one) is sent, NOT confirmed - and its history line says so.
-      $newFw = $(if ($after.login -eq 'ok') { ([string]$after.firmware).Trim() } else { '' })
-      $ok = [bool]($after.login -eq 'ok' -and $newFw -and $newFw -ne $di.firmware)
+      # 2.2.19 (Codex 2.2.18 F07): the VERSION field alone (not version + release date), non-empty and different from the version
+      # before, on the same device (same serial). 2.2.18 compared "version + date", so an empty version with the old date passed.
+      $newFw = $(if ($after.login -eq 'ok') { ([string]$after.version).Trim() } else { '' })
+      $afterSame = $(if ($after.login -eq 'ok') { (-not $id0.serial -or [string]$after.serial -ceq $id0.serial) } else { $false })
+      $ok = [bool]($after.login -eq 'ok' -and $newFw -and $newFw -ne $fw0 -and $afterSame)
       if ($ok) {
-        $res.changed += ($di.firmware + ' -> ' + $newFw)
-        $res.history = 'Firmware ' + $Ip + ' ' + $di.firmware + ' -> ' + $newFw + ' (new version read back)'
-        return (& $done $true ('Updated: ' + $di.firmware + ' -> ' + $newFw + '.'))
+        $res.changed += ($fw0 + ' -> ' + $newFw)
+        $res.history = 'Firmware ' + $Ip + ' ' + $fw0 + ' -> ' + $newFw + ' (new version read back)'
+        return (& $done $true ('Updated: ' + $fw0 + ' -> ' + $newFw + '.'))
       }
-      $seenFw = $(if ($after.login -ne 'ok') { 'read-back failed' } elseif (-not $newFw) { 'read back: no version' } else { 'read back: ' + $newFw + ', unchanged' })
+      $seenFw = $(if ($after.login -ne 'ok') { 'read-back failed' } elseif (-not $afterSame) { 'read back from a device with a different serial' } elseif (-not $newFw) { 'read back: no version' + $(if ($after.released) { ' (only the release date ' + $after.released + ')' } else { '' }) } else { 'read back: ' + $newFw + ', unchanged' })
       $res.changed += 'firmware sent (not confirmed)'
       $res.history = 'Firmware update of ' + $Ip + ' sent - NOT confirmed (' + $seenFw + ')'
       return (& $done $false ('Sent, but the new version is NOT confirmed (' + $seenFw + '). Wait 10 minutes and run the Firmware check. Settings export kept: ' + $res.backup))
@@ -379,7 +525,11 @@ function Invoke-NvrFix {
     'password' {
       if ($v -ne 'Hikvision') { return (& $done $false 'Setting the site password is built for Hikvision only. Nothing changed.') }
       $di = Hik-DeviceInfo $t; if ($di.login -ne 'ok') { return (& $done $false 'Could not log in with the current password (one try). Nothing changed.') }
-      if (-not (& $ask @('Set the site password on ' + $di.model + ' at ' + $Ip + ' (user admin). It is not saved anywhere.', 'Write the new password into the site''s password manager now.'))) { return (& $done $true 'Not confirmed - nothing changed.') }
+      $id0 = Get-NhDeviceId $t
+      if (-not $id0.ok) { return (& $done $false ('The device did not say which device it is (' + $id0.why + '), so its password was NOT changed. Nothing changed.')) }
+      if (-not (& $ask @('Set the site password on ' + $di.model + ' at ' + $Ip + $(if ($id0.serial) { ' (serial ' + $id0.serial + ')' } else { '' }) + ' (user admin). It is not saved anywhere.', 'Write the new password into the site''s password manager now.'))) { return (& $done $true 'Not confirmed - nothing changed.') }
+      $same = Test-NhSameDevice $t $id0   # 2.2.19 (classes A + B): the same device, read again after YES
+      if (-not $same.ok) { return (& $done $false ('Password NOT changed: ' + $same.why + '. Nothing changed.')) }
       $res.ran = $true
       $xml = '<?xml version="1.0" encoding="UTF-8"?><User version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema"><id>1</id><userName>admin</userName><password>' + (Fix-Xml (Plain $NewCredential)) + '</password><loginPassword>' + (Fix-Xml (Plain $t.cred)) + '</loginPassword></User>'
       $w = Http -Ip $Ip -Method 'PUT' -Path '/ISAPI/Security/users/1' -Body $xml -Credential $t.cred -Port $t.port -NoLogBody
@@ -414,6 +564,10 @@ function Invoke-NvrFix {
       $res.backup = Fix-Save $BackupDir 'dw-cameras-before.json' ($devs | ConvertTo-Json -Depth 4)
       if (-not $res.backup) { return (& $done $false (Fix-SaveFailed 'DW''s camera list')) }   # 2.2.18 (Codex F7)
       if (-not (& $ask @('Give DW the camera password for ' + $d.name + ' (' + $CameraIp + '), so DW stops logging in with the wrong one.', 'If the camera is LOCKED, wait until it unlocks first (Camera doctor shows the minutes).'))) { return (& $done $true 'Not confirmed - nothing changed.') }
+      # 2.2.19 (classes A + B): after YES - the same camera (same DW id, same address, same MAC when DW gave one) still in the list
+      $rd2 = Dw-ReadDevices $t
+      $d2 = $(if ($rd2.ok) { @($rd2.devs | Where-Object { $_.id -eq $d.id }) | Select-Object -First 1 } else { $null })
+      if (-not $d2 -or $d2.ip -ne $CameraIp -or ($d.mac -and $d2.mac -ne $d.mac)) { return (& $done $false ('After your YES, ' + $CameraIp + ' is ' + $(if (-not $rd2.ok) { 'not readable in DW (' + $rd2.why + ')' } else { 'no longer the same camera in DW''s list' }) + '. Nothing changed.')) }
       $res.ran = $true
       $w = Dw-Send $t 'PATCH' ('/rest/v3/devices/' + [uri]::EscapeDataString($d.id)) @{ credentials = @{ user = $NewCredential.UserName; password = (Plain $NewCredential) } } -Secret
       if ($w.code -ne 200) { $res.history = 'DW password for ' + $d.name + ' - refused (' + $w.code + ')'; return (& $done $false ('DW refused it (answer ' + $w.code + ').')) }

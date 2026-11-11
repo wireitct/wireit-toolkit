@@ -123,7 +123,7 @@ $rs = {
         }
       }
       if ($script:FkDown -gt 0) { $script:FkDown--; return (& $r 0 '') }
-      if ($Path -match 'DeviceInfo') { return (& $r 200 '{"Response":{"ResponseCode":0,"Data":{"DeviceModel":"IPC2124","SerialNumber":"U1"}}}') }
+      if ($Path -cmatch 'DeviceInfo') { return (& $r 200 '{"Response":{"ResponseCode":0,"Data":{"DeviceModel":"IPC2124","SerialNumber":"U1"}}}') }   # 2.2.19: case-sensitive - the Hik /ISAPI/System/deviceInfo gets the Hik answer below
       if ($Path -match 'deviceInfo') { return (& $r 200 '<DeviceInfo><model>DS-2CD2143G2-I</model><serialNumber>S1</serialNumber><firmwareVersion>V5.7</firmwareVersion></DeviceInfo>') }
       return (& $r 404 '')
     }

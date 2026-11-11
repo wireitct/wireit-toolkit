@@ -15,6 +15,7 @@ $rows = & $m {
   $script:Case = ''; $script:put = $false; $script:Writes = 0
   function script:Http {
     param($Ip, $Method = 'GET', $Path, $Body, $ContentType, $Credential, $Headers, $Port, $Scheme, $NoLogBody, $Timeout, $BodyBytes, $OutFile)
+    if ($Path -eq '/ISAPI/System/deviceInfo') { return @{ code = 200; body = '<DeviceInfo><model>DS-7608NI-K2</model><serialNumber>TESTDEV0001</serialNumber><macAddress>AA:BB:CC:00:00:01</macAddress><firmwareVersion>V4.1</firmwareVersion><firmwareReleasedDate>build 240101</firmwareReleasedDate></DeviceInfo>' } }   # 2.2.19: the device says who it is (NvrFix re-identifies it before every write)
     # camera 1 (track 101) is switched off; camera 2 (track 201) is enabled with no readable schedule.
     if ($Method -eq 'PUT') { $script:put = $true; $script:Writes++; return @{ code = 200; body = '<ResponseStatus><statusCode>1</statusCode></ResponseStatus>' } }
     $one = '<Track><id>101</id><Enable>' + $(if ($script:put) { 'true' } else { 'false' }) + '</Enable><TrackSchedule><Record>true</Record></TrackSchedule></Track>'

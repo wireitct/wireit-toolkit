@@ -19,6 +19,7 @@ $out = & $m {
     $script:Writes = 0; $script:StatusBeforeWrite = 0; $script:Case = $case
     function script:Http {
       param($Ip, $Method = 'GET', $Path, $Body, $ContentType, $Credential, $Headers, $Port, $Scheme, [switch]$NoLogBody, $Timeout, $BodyBytes, $OutFile)
+    if ($Path -eq '/ISAPI/System/deviceInfo') { return @{ code = 200; body = '<DeviceInfo><model>DS-7608NI-K2</model><serialNumber>TESTDEV0001</serialNumber><macAddress>AA:BB:CC:00:00:01</macAddress><firmwareVersion>V4.1</firmwareVersion><firmwareReleasedDate>build 240101</firmwareReleasedDate></DeviceInfo>' } }   # 2.2.19: the device says who it is (NvrFix re-identifies it before every write)
       if ($Method -eq 'PUT') { $script:Writes++; return @{ code = 200; body = '<ResponseStatus><statusCode>1</statusCode></ResponseStatus>' } }
       if ($Path -like '*/status') { if (-not $script:Writes) { $script:StatusBeforeWrite++ }; return @{ code = 200; body = '<InputProxyChannelStatusList><InputProxyChannelStatus><id>1</id><online>true</online></InputProxyChannelStatus></InputProxyChannelStatusList>' } }
       $address = $(if ($script:Writes) { '<addressingFormatType>ipaddress</addressingFormatType><ipAddress>10.0.0.41</ipAddress>' }
