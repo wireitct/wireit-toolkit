@@ -1,5 +1,6 @@
 # Codex 2.2.19 review reproduction reproduce-extra.ps1 (copied verbatim from the review evidence, Nov 11 2026). Only adaptation: the
 # reviewer's output folder '/workspace/review-2219' is $env:REPRO2219_OUT (a fresh temp folder per run). Run by Test-Repro2219.ps1.
+# Second adaptation (2.2.20): Undo-TkUpdate's refusal (a throw) is caught and printed as returned=REFUSED(...), so the state after it is still measured.
 param([string]$Repo='/workspace/wireit-toolkit')
 $ErrorActionPreference='Continue'
 $out=($env:REPRO2219_OUT + '')
@@ -56,6 +57,6 @@ New-Item -ItemType Directory -Force $prev | Out-Null
 [IO.File]::WriteAllText("$prev/version.json.prev",'{"version":"9.9.7"}')
 [IO.File]::WriteAllText("$prev/undo.json",'{"from":"9.9.8","to":"9.9.9","added":[]}')
 [IO.File]::WriteAllText("$prev/tool.txt",'old 9.9.8 code')
-$r=Undo-TkUpdate $tk
+$r=try { Undo-TkUpdate $tk } catch { 'REFUSED(' + ($_.Exception.Message -replace '\s+',' ') + ')' }   # Tab 2.2.20 adaptation: a refusal (throw) is caught so the REPRO line still prints the state after it
 $v=Read-TkJson "$tk/version.json"
 "REPRO undo-version-mismatch returned=$r installedVersion=$($v.version) journalExists=$(Test-Path "$tk/previous/update-pending.json")"

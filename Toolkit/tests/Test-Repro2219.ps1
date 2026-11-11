@@ -33,7 +33,7 @@ $expect = @(
   @{ f = 'reproduce-extra.ps1'; k = 'classic-damaged-dhcp'; r = 'R08'; unsafe = "journalWhy=''"; why = 'a journal with "dhcp":"false" (a string) is refused as damaged' },
   @{ f = 'reproduce-extra.ps1'; k = 'classic-channel-no-camera-identity'; r = 'R06'; safe = '\bwrites=0\b'; why = 'channel Undo does not rewrite a channel whose camera was not identified' },
   @{ f = 'reproduce-extra.ps1'; k = 'malformed-reboot-answer'; r = 'R10'; safe = '\bnextBudgetOk=False\b'; why = 'an unreadable reboot answer keeps the restart allowance used' },
-  @{ f = 'reproduce-extra.ps1'; k = 'undo-version-mismatch'; r = 'R17'; safe = '\bjournalExists=True\b'; why = 'a saved version record for the wrong release keeps the recovery block' },
+  @{ f = 'reproduce-extra.ps1'; k = 'undo-version-mismatch'; r = 'R17'; safe = 'returned=REFUSED\(.*installedVersion=9\.9\.9 |\bjournalExists=True\b'; unsafe = 'installedVersion=9\.9\.7'; why = 'a saved version record for the wrong release is refused (9.9.9 stays installed) or keeps the recovery block; never installs 9.9.7' },
   @{ f = 'reproduce-recording-swap.ps1'; k = 'recording-recorder-swapped'; r = 'R21'; unsafe = 'OTHER track|\bok=True\b'; why = 'no track write to, and no OK from, a replacement recorder' },
   @{ f = 'reproduce-restore.ps1'; k = 'RN-classic-journal'; r = 'R03'; unsafe = 'matchesReplacement=True|planned=[^ ]*(dhcp|removeaddr)'; why = 'a classic journal keeps its adapter identity and does not match a replacement adapter' },
   @{ f = 'reproduce-restore.ps1'; k = 'RN-known-guid-now-missing'; r = 'R03'; safe = '\baccepted=False\b'; why = 'a known saved GUID with no current GUID is a mismatch' },
@@ -41,7 +41,7 @@ $expect = @(
   @{ f = 'reproduce-safety.ps1'; k = 'lost-login-answer'; r = 'R13'; test = { param($l) $m = [regex]::Match($l, 'attempts=(\d+) .*max=(\d+)'); $m.Success -and [int]$m.Groups[1].Value -le [int]$m.Groups[2].Value }; why = 'lost login answers stay counted: attempts never exceed the maximum' },
   @{ f = 'reproduce-safety.ps1'; k = 'reset-retry-reservation'; r = 'R14'; safe = '\bexports=1\b'; why = 'the reset retry is reserved before the export, so the same boot is not exported twice' },
   @{ f = 'reproduce-safety.ps1'; k = 'DW-modern-storage-invalid-number'; r = 'R15'; unsafe = '\bstatus=ok\b|\bread=True\b'; why = 'an unreadable DW storage number is not a healthy disk' },
-  @{ f = 'reproduce-update-journal.ps1'; k = 'update-returns-success'; r = 'R19'; unsafe = 'journalExists=True .*returned=\S+$'; why = 'the update is not reported finished while its pending journal remains' },
+  @{ f = 'reproduce-update-journal.ps1'; k = 'update-returns-success'; r = 'R19'; test = { param($l) ($l -match 'returned=REFUSED\(') -and (($l -match 'installed=9\.9\.8 content=OLD ') -or ($l -match 'journalExists=False installed=9\.9\.9 content=NEW ')) }; why = 'the update is not reported finished while its pending journal remains (refused, and the files match the version record)' },
   @{ f = 'reproduce-diagnostics.ps1'; k = 'stream-error-document'; r = 'R18'; unsafe = '\bresult=nobody\b'; why = 'an HTTP 200 error document is not "nobody streaming"' },
   @{ f = 'reproduce-diagnostics.ps1'; k = 'task-registration-error'; r = 'R20'; absent = $true; why = 'the WifiWatch installer stops before "Installed" when registration fails' }
 )
