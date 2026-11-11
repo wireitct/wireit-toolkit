@@ -16,6 +16,7 @@ Invoke-Expression $f.Extent.Text
 $TK = @{ P = @{ Toolkit = $tmp } }; $cOk = 'green'; $cWarn = 'amber'; $cRed = 'red'
 $script:Top = @()
 function Read-TkJson { return $script:check }
+function Read-TkRunResult { return $script:check }   # 2.2.19: Show-SiteCheck reads this run's result through Read-TkRunResult (freshness is tested in Test-Fix2219Sweep2)
 function Add-OutTop($lines, $colour) { $script:Top += [pscustomobject]@{ text = (@($lines) -join ' | '); colour = $colour } }
 function Show-Fixes {}
 $scan = [pscustomobject]@{ answer = @{ ok = $true; total = 1; missing = @(); stillMissing = @(); added = @(); changedIp = @() } }
