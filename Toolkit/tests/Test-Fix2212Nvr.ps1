@@ -175,6 +175,8 @@ function Get-NetRoute { param($DestinationPrefix, $InterfaceIndex, $AddressFamil
   return @([pscustomobject]@{ DestinationPrefix = '0.0.0.0/0'; NextHop = '192.168.1.1'; ifIndex = $script:sim.routeIf; InterfaceIndex = $script:sim.routeIf } | Where-Object { -not $InterfaceIndex -or $_.InterfaceIndex -eq $InterfaceIndex }) }
 function Get-NetIPInterface { param($InterfaceIndex, $AddressFamily, $ErrorAction) return [pscustomobject]@{ Dhcp = $script:sim.dhcp } }
 function Set-NetIPInterface { param($InterfaceIndex, $AddressFamily, $Dhcp, $ErrorAction) [void]$script:sim.calls.Add('dhcp ' + $Dhcp); $script:sim.dhcp = $Dhcp }
+# 2.2.19 (Codex 2.2.18 F05): the clean-up checks the adapter number still belongs to the recorded adapter (name) before any change
+function Get-NetAdapter { param($InterfaceIndex, $ErrorAction) return [pscustomobject]@{ Name = 'Ethernet'; InterfaceIndex = 5; InterfaceGuid = '' } }
 function netsh { [void]$script:sim.calls.Add('netsh ' + ($args -join ' ')); if (($args -join ' ') -match 'coexistence=(\w+)') { $script:sim.coexist = $Matches[1] }; $global:LASTEXITCODE = 0; if (($args -join ' ') -match 'show interface') { if ($script:sim.netshGarbage) { return @('Schnittstelle 5 Parameter', 'DHCP/Statische IP-Koexistenz : deaktiviert') }; return @('DHCP/Static IP coexistence     : ' + $script:sim.coexist) } }
 function Register-ScheduledTask { $script:sim.task = $true }
 function Unregister-ScheduledTask { [void]$script:sim.calls.Add('unregister'); $script:sim.task = $false }
