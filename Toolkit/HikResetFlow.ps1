@@ -46,11 +46,14 @@ function Save-HikState([string]$Path, $State) {
   $tmp = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
   try {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) -ErrorAction Stop | Out-Null
-    [IO.File]::WriteAllText($tmp, [string]($State | ConvertTo-Json -Depth 8))
+    $json = [string]($State | ConvertTo-Json -Depth 8)
+    [IO.File]::WriteAllText($tmp, $json)
     $fs = [IO.File]::Open($tmp, 'Open', 'Write', 'None'); try { $fs.Flush($true) } finally { $fs.Dispose() }
     $chk = [IO.File]::ReadAllText($tmp) | ConvertFrom-Json -ErrorAction Stop
     if (-not $chk -or -not $chk.PSObject.Properties['devices']) { throw 'the saved copy did not read back' }
     if ([IO.File]::Exists($Path)) { [IO.File]::Replace($tmp, $Path, [System.Management.Automation.Language.NullString]::Value) } else { [IO.File]::Move($tmp, $Path) }
+    # 2.2.20 (class A): the FINAL file is read back too (2.2.19 read back only the temp copy): it must hold exactly what was written
+    if ([IO.File]::ReadAllText($Path) -ne $json) { throw 'the saved record did not read back as written' }
     $script:HkStateSaved = $true
   } catch {
     $script:HkStateSaveWhy = [string]$_.Exception.Message
@@ -314,13 +317,79 @@ function Get-HikSupportLine($D) {
 function Get-HikRetryReadiness($D, $Live) {
   $n = 0; try { $n = [int]$D.rebootRetries } catch {}
   $who = ([string]$D.model + ' ' + [string]$D.ip).Trim()
+  # 2.2.20 (R14): an export whose result was never recorded is settled by Export-HikRequests (its file is registered, or it waits for a
+  # reboot); it is never repeated blindly. Seen + Active is all that is needed to get there.
+  if ([string]$D.status -eq 'exporting') {
+    if (-not $Live) { return [pscustomobject]@{ ok = $false; why = ('  ' + $who + ' is not seen right now. Wait until SADP shows it Active, then press Retry.') } }
+    return [pscustomobject]@{ ok = $true; why = '' }
+  }
   if ($D.PSObject.Properties['refusedChecksOk'] -and $D.refusedChecksOk -and $n -ge $script:HkMaxRebootRetries) { return [pscustomobject]@{ ok = $false; why = ('  ' + $who + ': refused again after ' + $n + ' reboot-retries. No more retries from the Toolkit.' + "`n" + (Get-HikSupportLine $D)) } }
   if (-not $Live) { return [pscustomobject]@{ ok = $false; why = ('  ' + $who + ' is not seen right now. Wait until SADP shows it Active, then press Retry.') } }
   if ($Live.PSObject.Properties['activated'] -and -not $Live.activated) { return [pscustomobject]@{ ok = $false; why = ('  ' + $who + ' does not show as Active yet. Wait until SADP shows it Active, then press Retry.') } }
   if ($D.PSObject.Properties['refusedChecksOk'] -and $D.refusedChecksOk -and [string]$D.bootTime -and [string]$Live.bootTime -and [string]$Live.bootTime -eq [string]$D.bootTime) {
     return [pscustomobject]@{ ok = $false; why = ('  ' + $who + ' has not restarted since it refused the file. Reboot the camera: unplug it or its PoE port for 10 seconds. Wait until SADP shows it Active, then press Retry.') }
   }
+  # 2.2.20 (Codex 2.2.19 R14, class A/F): a reboot-retry is used up the moment it is RESERVED (saved before the device is asked), for the
+  # boot it was reserved on. The same boot never gets a second retry, whatever happened to the first one's answer.
+  if ($D.PSObject.Properties['retryBootTime'] -and [string]$D.retryBootTime -and [string]$Live.bootTime -and [string]$Live.bootTime -eq [string]$D.retryBootTime) {
+    return [pscustomobject]@{ ok = $false; why = ('  ' + $who + ' already had reboot-retry ' + $n + ' on this start-up of the camera. Reboot the camera again (unplug it or its PoE port for 10 seconds), wait until SADP shows it Active, then press Retry.') }
+  }
   return [pscustomobject]@{ ok = $true; why = '' }
+}
+# 2.2.20 (Codex 2.2.19 R14): an export that was RESERVED (status "exporting", saved before the device was asked) but whose result was never
+# recorded - the run stopped, or the save after the export failed. It is settled, never repeated blindly:
+#   - the request file the record names is there, was written after the export started, ends with this serial, and the camera has not
+#     restarted: that file is registered as the one in force (no new export);
+#   - otherwise, while the camera is on the same start-up: NOT CONFIRMED, nothing is sent (a second export would void the first);
+#   - after a reboot: it goes on like the state before ($go), and the reboot-retry reserved for the earlier start-up stays used.
+# Returns { made; go; lines }
+function Resolve-HikUnfinishedExport($State, $Cur, $Dev, [string]$StatePath) {
+  $who = ([string]$Cur.model + ' ' + [string]$Dev.ip + ' (serial ' + [string]$Cur.serial + ')').Trim()
+  $started = $null; try { $started = [datetime]([string]$Cur.exportStartedAt) } catch {}
+  $boot = $(if ($Cur.PSObject.Properties['exportBootTime']) { [string]$Cur.exportBootTime } else { '' })
+  $sameBoot = (-not $boot -or -not [string]$Dev.bootTime -or [string]$Dev.bootTime -eq $boot)
+  $file = $(if ($Cur.PSObject.Properties['exportFile']) { [string]$Cur.exportFile } else { '' })
+  if ($sameBoot -and $file -and $started -and (Test-Path -LiteralPath $file)) {
+    $fi = Get-Item -LiteralPath $file; $txt = ''; try { $txt = [IO.File]::ReadAllText($file).Trim() } catch {}
+    $code = $(if ($txt.EndsWith([string]$Cur.serial)) { $txt.Substring(0, $txt.Length - ([string]$Cur.serial).Length) } else { '' })
+    if ($code -and (Test-HikSafeCode $code) -and $fi.LastWriteTime -ge $started.AddSeconds(-2)) {
+      $d = Add-HikStateDevice $State $Dev $file $boot $fi.LastWriteTime
+      Set-HikStateField $d 'refusedChecksOk' $false; Set-HikStateField $d 'exportPrevStatus' ''
+      if (-not (Save-HikStateOk $StatePath $State)) { return [pscustomobject]@{ made = $false; go = $false; lines = @((Get-HikNotSavedStop ('Registering the request file of ' + $who))) } }
+      return [pscustomobject]@{ made = $true; go = $false; lines = @(('  ' + $who + ': the export started ' + $started.ToString('h:mm tt') + ' was not recorded, but its request file ' + (Split-Path -Leaf $file) + ' (made ' + $fi.LastWriteTime.ToString('h:mm tt') + ') is there: it is registered as the one in force. NOT exported again.')) }
+    }
+  }
+  if ($sameBoot) {
+    return [pscustomobject]@{ made = $false; go = $false; lines = @(
+        ('  NOT CONFIRMED: ' + $who + ' was asked for a request file' + $(if ($started) { ' at ' + $started.ToString('h:mm tt') } else { '' }) + ', but the result was not recorded. It is NOT asked again (a second export would void the first).'),
+        '  If you have that request file (SADP export folder or Downloads), register it: HikReset -RegisterDir <that folder>. Otherwise reboot the camera (unplug it or its PoE port for 10 seconds), wait until SADP shows it Active, then press Retry.') }
+  }
+  # rebooted since: the unfinished export is void; carry on from the state before it (its reboot-retry stays used)
+  $prev = $(if ($Cur.PSObject.Properties['exportPrevStatus']) { [string]$Cur.exportPrevStatus } else { '' })
+  Set-HikStateField $Cur 'status' $(if ($prev) { $prev } else { 'expired' })
+  Set-HikStateField $Cur 'note' 'an export was started but not recorded; the camera restarted since'
+  return [pscustomobject]@{ made = $false; go = $true; lines = @() }
+}
+# 2.2.20 (R14): a reservation saved before the device is asked: the export intent, the reboot-retry (when it is one), the boot it is for
+# and the file it will write. $Cur may be $null (a device the record does not have yet): a row is made for it.
+function Set-HikExportReservation($State, $Cur, $Dev, [string]$OutDir, [int]$RetryN) {
+  $row = $Cur
+  if (-not $row) {
+    $row = [pscustomobject]@{ serial = [string]$Dev.serial; shortSerial = [string]$Dev.shortSerial; model = [string]$Dev.model; mac = [string]$Dev.mac; ip = [string]$Dev.ip; kind = [string]$Dev.kind; status = ''; requestFile = ''; bootTime = [string]$Dev.bootTime; note = '' }
+    $State.devices = @($State.devices) + @($row)
+  }
+  $undo = [ordered]@{}; foreach ($k in 'status', 'exportStartedAt', 'exportPrevStatus', 'exportBootTime', 'exportFile', 'rebootRetries', 'retryBootTime') { $undo[$k] = $(if ($row.PSObject.Properties[$k]) { $row.$k } else { $null }) }
+  Set-HikStateField $row 'exportPrevStatus' ([string]$row.status)
+  Set-HikStateField $row 'status' 'exporting'
+  Set-HikStateField $row 'exportStartedAt' (Get-Date -Format 's')
+  Set-HikStateField $row 'exportBootTime' ([string]$Dev.bootTime)
+  Set-HikStateField $row 'exportFile' (Get-HikResetFilePath $Dev $OutDir)
+  if ($RetryN) { Set-HikStateField $row 'rebootRetries' $RetryN; Set-HikStateField $row 'retryBootTime' ([string]$Dev.bootTime) }
+  return [pscustomobject]@{ row = $row; isNew = (-not $Cur); undo = $undo }
+}
+function Undo-HikExportReservation($State, $Res) {
+  if ($Res.isNew) { $State.devices = @(@($State.devices) | Where-Object { -not [object]::ReferenceEquals($_, $Res.row) }); return }
+  foreach ($k in $Res.undo.Keys) { if ($null -eq $Res.undo[$k]) { if ($Res.row.PSObject.Properties[$k]) { $Res.row.PSObject.Properties.Remove($k) } } else { Set-HikStateField $Res.row $k $Res.undo[$k] } }
 }
 
 # ---------------- 1. find + export ----------------
@@ -329,7 +398,14 @@ function Export-HikRequests($Devices, [string]$OutDir, $State, [string]$StatePat
   $made = @(); $newOnes = 0
   foreach ($dev in @($Devices | Where-Object { $_.activated })) {
     $cur = Get-HikStateDevice $State $dev.serial
-    if ($cur -and -not $Redo -and $cur.status -in @('exported', 'submitted', 'replied') -and (Test-Path -LiteralPath $cur.requestFile) -and ([datetime]$cur.validUntil) -gt (Get-Date) -and $cur.bootTime -eq $dev.bootTime) {
+    # 2.2.20 (Codex 2.2.19 R14): an export reserved earlier whose result was never recorded is settled first, never repeated blindly
+    if ($cur -and [string]$cur.status -eq 'exporting') {
+      $rc = Resolve-HikUnfinishedExport $State $cur $dev $StatePath
+      foreach ($l in @($rc.lines)) { Hk-Say $l $(if ($rc.made) { 'Green' } else { 'Yellow' }) }
+      if ($rc.made) { $made += $cur; continue }
+      if (-not $rc.go) { continue }
+    }
+    if ($cur -and -not $Redo -and $cur.status -in @('exported', 'submitted', 'replied') -and [string]$cur.requestFile -and (Test-Path -LiteralPath $cur.requestFile) -and ([datetime]$cur.validUntil) -gt (Get-Date) -and $cur.bootTime -eq $dev.bootTime) {
       Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': request file from ' + ([datetime]$cur.exportedAt).ToString('h:mm tt') + ' is still good - not asking the device again (a new one would cancel it).'); $made += $cur; continue
     }
     # 2.2.9: a camera on no network of this PC: stop BEFORE exporting (an export from here cannot be finished; it would only void)
@@ -344,18 +420,29 @@ function Export-HikRequests($Devices, [string]$OutDir, $State, [string]$StatePat
     $vw = Get-HikVoidWarning $cur $dev; if ($vw) { Hk-Say $vw $(if ($vw -match 'WARNING') { 'Red' } else { 'Yellow' }) }
     # 2.2.19 (Codex 2.2.18 F17, class E): a new export voids every earlier reply of this device. That is written down BEFORE the device
     # is asked (exportStartedAt), so a run that stops (or cannot save) after the export never imports an older reply as if it still fit.
-    # No save = no export.
+    # 2.2.20 (Codex 2.2.19 R14, class A/F): the same save now RESERVES the reboot-retry (count + the boot it is for), the "exporting" state
+    # and the file it will write, and is read back from disk, all BEFORE the device is asked. A result that is lost after that (no
+    # answer, a failed save, a stop) never gives the retry back and never lets the same boot pass again. No save = no export.
     [void](Add-HikExportIntent $State $dev)
-    if (-not (Save-HikStateOk $StatePath $State)) { Hk-Say (Get-HikNotSavedStop ('Asking ' + $dev.model + ' ' + $dev.ip + ' for a request file')) 'Red'; break }
+    $res = Set-HikExportReservation $State $cur $dev $OutDir $retryN
+    if (-not (Save-HikStateOk $StatePath $State)) { Undo-HikExportReservation $State $res; Hk-Say (Get-HikNotSavedStop ('Asking ' + $dev.model + ' ' + $dev.ip + ' for a request file')) 'Red'; break }
+    $row = $res.row
     $e = Request-HikResetExport $dev
-    if (-not $e.ok) { Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': could not read its request code - ' + $e.error) 'Yellow'; if ($cur) { Set-HikStateField $cur 'note' $e.error }; continue }
-    $f = Save-HikResetFile $dev $e $OutDir
-    if (-not $f) { Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': its answer had no request code - no file saved') 'Yellow'; continue }
+    $f = $null; $why = ''
+    if (-not $e.ok) { $why = $e.error } else { $f = Save-HikResetFile $dev $e $OutDir; if (-not $f) { $why = 'its answer had no request code - no file saved' } }
+    if (-not $f) {
+      Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': could not read its request code - ' + $why) 'Yellow'
+      # no file: the state before stands (an earlier reply is still void: the intent says an export was started); a reserved
+      # reboot-retry stays used for this start-up of the camera (the device may have made a code whose answer was lost)
+      if ($res.isNew) { Undo-HikExportReservation $State $res } else { Set-HikStateField $row 'status' ([string]$row.exportPrevStatus); Set-HikStateField $row 'note' ('export: ' + $why) }
+      if (-not (Save-HikStateOk $StatePath $State)) { Hk-Say (Get-HikNotSavedStop 'Asking the next device for a request file') 'Red'; break }
+      continue
+    }
     $d = Add-HikStateDevice $State $dev $f $dev.bootTime
-    Set-HikStateField $d 'refusedChecksOk' $false
+    Set-HikStateField $d 'refusedChecksOk' $false; Set-HikStateField $d 'exportPrevStatus' ''
     if ($retryN) { Set-HikStateField $d 'rebootRetries' $retryN }
     if (-not (Save-HikStateOk $StatePath $State)) {
-      Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': a request file WAS made (' + $f + '), but the reset record could not be saved. Do NOT export again. Make the folder writable, then run it again: the file is registered from that folder.') 'Red'
+      Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': a request file WAS made (' + $f + '), but the reset record could not be saved. Do NOT export again. Make the folder writable, then run it again: the record already names that file, and it is registered from there (no new export).') 'Red'
       $made += $d; $newOnes++; break
     }
     Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + '  serial ' + $dev.serial + ': request file saved (' + (Split-Path -Leaf $f) + ', ' + ([datetime]$d.exportedAt).ToString('h:mm tt') + ')') 'Green'
@@ -364,6 +451,35 @@ function Export-HikRequests($Devices, [string]$OutDir, $State, [string]$StatePat
   }
   if ($newOnes) { Show-HikSessionGuard }   # 2.2.9
   return $made
+}
+
+# 2.2.20 (class C, R12/R13 twins in the reset flow): a login check counts as passed ONLY when the checker answers a real $true. 2.2.19 took
+# [bool] of whatever came back, so an answer like "noanswer" or "locked" (any non-empty text) read as "the site password logs in".
+# The saved device record is passed as a third argument, so a checker that reads the device's own information document can also
+# match its identity (MAC / serial). A checker that throws = NOT a pass.
+function Test-HikLoginOk([scriptblock]$VerifyLogin, [string]$Ip, [string]$Password, $D = $null) {
+  if (-not $VerifyLogin) { return $false }
+  $o = $null; try { $o = @(& $VerifyLogin $Ip $Password $D) } catch { return $false }
+  return ($o.Count -eq 1 -and $o[0] -is [bool] -and $o[0])
+}
+# 2.2.20 (class D): the full SHA-256 of a file (lower-case hex), '' when it cannot be read
+function Get-HikFileSha([string]$File) {
+  try { $sha = [Security.Cryptography.SHA256]::Create(); try { $h = $sha.ComputeHash([IO.File]::ReadAllBytes($File)) } finally { $sha.Dispose() }; return (-join ($h | ForEach-Object { $_.ToString('x2') })) } catch { return '' }
+}
+function Get-HikBytesSha([byte[]]$Bytes) {
+  $sha = [Security.Cryptography.SHA256]::Create(); try { $h = $sha.ComputeHash($Bytes) } finally { $sha.Dispose() }; return (-join ($h | ForEach-Object { $_.ToString('x2') }))
+}
+# 2.2.20 (class D): the request file that goes to Hikvision's page must still be the one the record made for THIS device: its export id
+# (first 12 hex of its SHA-256) as recorded, and it ends with this serial. '' = good; otherwise why not.
+function Test-HikRequestFileInForce($D) {
+  $file = [string]$D.requestFile
+  if (-not $file -or -not (Test-Path -LiteralPath $file)) { return 'request file missing' }
+  $txt = ''; try { $txt = [IO.File]::ReadAllText($file).Trim() } catch { return ('the request file could not be read (' + $_.Exception.Message + ')') }
+  if (-not [string]$D.serial -or -not $txt.EndsWith([string]$D.serial)) { return 'the request file does not end with this device''s serial' }
+  $eid = $(if ($D.PSObject.Properties['exportId']) { [string]$D.exportId } else { '' })
+  if (-not $eid) { return '' }   # a record from before 2.2.8 has no export id: nothing to compare (as before)
+  if ((Get-HikExportId $file) -ne $eid) { return ('the request file changed since it was made (it is not export ' + $eid + ' any more): another export or an edit replaced it') }
+  return ''
 }
 
 # ---------------- 2. Hikvision's page ----------------
@@ -376,6 +492,9 @@ function Submit-HikRequests($State, [string]$StatePath, $Form, [int]$PerDeviceTi
   foreach ($d in $todo) {
     $n++
     if (-not (Test-Path -LiteralPath $d.requestFile)) { Set-HikStateField $d 'note' 'request file missing'; continue }
+    # 2.2.20 (class D): the file sent is the one this record made for this device (a replaced file is refused, not submitted)
+    $rq = Test-HikRequestFileInForce $d
+    if ($rq) { Set-HikStateField $d 'note' $rq; Hk-Say ('  ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + '): NOT sent to Hikvision - ' + $rq + '. Export it again (one new request file).') 'Red'; continue }
     if (([datetime]$d.validUntil) -lt (Get-Date)) { Set-HikStateField $d 'status' 'expired'; Set-HikStateField $d 'note' 'older than 48 hours - export again'; Save-HikState $StatePath $State; Hk-Say ($d.model + ' ' + $d.ip + ': the request file is older than 48 hours - it needs a new export.') 'Yellow'; continue }
     Hk-Say ''
     Hk-Say ('[' + $n + '/' + $todo.Count + '] ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ', form serial ' + $d.shortSerial + ')') 'Cyan'
@@ -444,7 +563,8 @@ function Register-HikRequestFiles($State, [string]$Dir, $Devices, [string]$State
     $d2 = Add-HikStateDevice $State $dev $f.FullName $dev.bootTime $f.LastWriteTime
     $added += $d2
   }
-  Save-HikState $StatePath $State
+  # 2.2.20 (class A): "registered" only once the record says so on disk (2.2.19 ignored a failed save and returned them as registered)
+  if (-not (Save-HikStateOk $StatePath $State)) { Hk-Say (Get-HikNotSavedStop 'Registering the request files') 'Red'; return @() }
   return $added
 }
 
@@ -520,6 +640,7 @@ function Receive-HikReplies($State, [string]$StatePath, $Cfg, [string]$ToolkitDi
     if ($saveWhy) { Hk-Say ('  Reply for ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ') could NOT be saved to ' + $dest + ' (' + $saveWhy + '). It was left where it was; nothing was imported.') 'Yellow'; continue }
     Set-HikStateField $d 'status' 'replied'; Set-HikStateField $d 'replyFile' $dest; Set-HikStateField $d 'replyFrom' ([string]$x.mail)
     Set-HikStateField $d 'replyAt' $(if ($at) { $at.ToString('s') } else { '' }); Set-HikStateField $d 'replyForExport' $(if ($d.PSObject.Properties['exportId']) { [string]$d.exportId } else { '' })
+    Set-HikStateField $d 'replySha' (Get-HikBytesSha ([byte[]]$x.bytes))   # 2.2.20 (class D): the import sends exactly these bytes
     $got += $d
     $how = $(if ([string]$x.src -like 'relay:*') { 'the reply mailbox' } elseif (& $isDrop $x.src) { 'the "I got Hik''s email" button' } else { 'the replies folder' })
     Hk-Say ('  Reply for ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ') found in ' + $how + ', matched by ' + $x.how + $(if ($at) { '; it came ' + $at.ToString('h:mm tt') + ', after ' } else { '; it answers ' }) + (Get-HikExportLabel $d) + '.') 'Green'
@@ -631,17 +752,34 @@ function Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [sc
       Hk-Say (Get-HikNotSavedStop ('Importing the unlock file into ' + $d.model + ' ' + $d.ip)) 'Red'
       break
     }
+    # 2.2.20 (class D): the bytes sent are the bytes that were matched to this device's export when the reply came in (replySha); a reply
+    # file replaced on disk since then is NOT imported. A record from before 2.2.20 has no replySha: imported as before.
+    $rsha = $(if ($d.PSObject.Properties['replySha']) { [string]$d.replySha } else { '' })
+    if ($rsha -and (Get-HikFileSha ([string]$d.replyFile)) -ne $rsha) {
+      Set-HikStateField $d 'status' 'replied'; Set-HikStateField $d 'note' 'the saved reply file changed since it was matched - not imported'
+      Hk-Say ('  NOT imported: the saved unlock file ' + [string]$d.replyFile + ' is not the one that was matched to this device''s request (it changed on disk since). Nothing was sent. Get Hikvision''s reply again (relay / "I got Hik''s email").') 'Red'
+      if (-not (Save-HikStateOk $StatePath $State)) { Hk-Say (Get-HikNotSavedStop 'Any further import') 'Red'; break }
+      continue
+    }
     $u = Read-HikUnlock $d.replyFile
     $r = Import-HikUnlock $live $u $NewPassword
-    if ($r.ok) {
-      Set-HikStateField $d 'status' 'imported'; Set-HikStateField $d 'importedAt' (Get-Date -Format 's'); Save-HikState $StatePath $State
+    # 2.2.20 (Codex 2.2.19 R13 twin, class F): an import that was SENT but got no answer is NOT CONFIRMED - it may have worked. It is not
+    # "the reply stays usable" (2.2.19 put it back to "replied", so the next run sent the same file again): the record stays at
+    # "importing" (never imported again on its own) and the site password is checked. Only an import that was never sent (no key
+    # exchange answer, the old unencrypted form refused) leaves the reply usable. A checker answer without "sent" = treated as sent.
+    $ambiguous = (-not $r.ok) -and -not ([string]$r.result -and [string]$r.result -notmatch '^(?i)success') -and -not ($r.PSObject.Properties['sent'] -and $r.sent -eq $false)
+    if ($r.ok -or $ambiguous) {
+      if ($r.ok) { Set-HikStateField $d 'status' 'imported'; Set-HikStateField $d 'importedAt' (Get-Date -Format 's') }
+      else { Set-HikStateField $d 'note' ('import NOT CONFIRMED: ' + [string]$r.error); Hk-Say ('  NOT CONFIRMED: the import was sent but ' + $(if ([string]$r.error) { [string]$r.error } else { 'the device did not answer' }) + '. The file is NOT sent again; checking the site password instead.') 'Yellow' }
+      if (-not (Save-HikStateOk $StatePath $State)) { Hk-Say ('  The import result for ' + $d.model + ' ' + $d.ip + ' could not be saved; the record still says the import was started, so the file is not sent again.') 'Red' }
       Start-Sleep -Seconds 3
       $ip = $live.ip; $chk = $false
       # 2.2.3 (Codex #29): wait for the device to be back (SADP, no login), then at most 2 login tries - a wrong password 6 times
-      # in a row is how Hikvision locks a device
-      $logins = 0; for ($i = 0; $i -lt 8 -and -not $chk -and $logins -lt $script:HkVerifyMaxLogins; $i++) { $now = Find-HikLiveDevice $d @(Find-HikSadp 2); if ($now) { $ip = $now.ip; $logins++; try { $chk = [bool](& $VerifyLogin $ip $NewPassword) } catch {} }; if (-not $chk) { Start-Sleep -Seconds 4 } }
+      # in a row is how Hikvision locks a device. 2.2.20 (class C): only a real $true from the checker counts (Test-HikLoginOk).
+      $logins = 0; for ($i = 0; $i -lt 8 -and -not $chk -and $logins -lt $script:HkVerifyMaxLogins; $i++) { $now = Find-HikLiveDevice $d @(Find-HikSadp 2); if ($now) { $ip = $now.ip; $logins++; $chk = Test-HikLoginOk $VerifyLogin $ip $NewPassword $d }; if (-not $chk) { Start-Sleep -Seconds 4 } }
       if ($chk) { Set-HikStateField $d 'status' 'verified'; Set-HikStateField $d 'verifiedAt' (Get-Date -Format 's'); Hk-Say ('  Reset done. The site password logs in on ' + $ip + '.') 'Green'; $done += $d; Show-HikExtraIpReminder $live }
-      else { Hk-Say ('  The device accepted the file, but the site password does not log in yet on ' + $ip + '. Check it in a minute.') 'Yellow' }
+      elseif ($r.ok) { Hk-Say ('  The device accepted the file, but the site password does not log in yet on ' + $ip + '. Check it in a minute.') 'Yellow' }
+      else { Hk-Say ('  NOT CONFIRMED: the site password does not log in on ' + $ip + ' (yet). The file is not sent again; the next run checks the site password once more. If it still does not log in, it needs a new request.') 'Yellow' }
     } elseif ([string]$r.result -and [string]$r.result -notmatch '^(?i)success') {
       # 2.2.8: the device ANSWERED and said no (SADP shows it as "Resetting the password failed. Device refused to process").
       # Almost always: the file does not belong to the device's latest request (an older reply, or a new export made after it was
@@ -659,7 +797,7 @@ function Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [sc
       foreach ($l in @(Get-HikRefusedMessage $d $probs)) { Hk-Say $l $(if ($l -match '^\s*(Steps were correct|Call Hik support)') { 'Cyan' } else { 'Yellow' }) }
     } else {
       Hk-Say ('  The import did not work (' + $r.error + ').') 'Yellow'
-      # the device did not say yes or no (no answer / the file needs SADP by hand): the reply stays usable, as before
+      # nothing reached the device (no key exchange answer / the file needs SADP by hand): the reply stays usable, as before
       Set-HikStateField $d 'status' 'replied'
       Set-HikStateField $d 'note' ('import: ' + $r.error)
       # last resort, still the official path: SADP's own "Forgot password > Import file" with the file ready
@@ -755,9 +893,10 @@ function Invoke-HikResetStage {
     $live = Find-HikLiveDevice $d $devs
     if (-not $live) { Hk-Say ('  ' + $d.model + ' (serial ' + [string]$d.serial + '): the unlock file was imported earlier, but the device is not seen in this scan - the site password is NOT CHECKED.') 'Yellow'; continue }
     $ipNow = [string]$live.ip
-    $okv = $false; try { $okv = [bool](& $VerifyLogin $ipNow $SitePassword) } catch {}
+    $okv = Test-HikLoginOk $VerifyLogin $ipNow $SitePassword $d   # 2.2.20 (class C): only a real $true
     if ($okv) {
-      Set-HikStateField $d 'status' 'verified'; Set-HikStateField $d 'verifiedAt' (Get-Date -Format 's'); Set-HikStateField $d 'ip' $ipNow; Save-HikState $statePath $state
+      Set-HikStateField $d 'status' 'verified'; Set-HikStateField $d 'verifiedAt' (Get-Date -Format 's'); Set-HikStateField $d 'ip' $ipNow
+      if (-not (Save-HikStateOk $statePath $state)) { Hk-Say ('  (the reset record could not be saved: the next run checks this device''s password once more)') 'Yellow' }
       $fixed += (ConvertTo-SadpMac ([string]$d.mac)); Hk-Say ('  ' + $d.model + ' ' + $ipNow + ': the earlier reset worked - the site password logs in.') 'Green'
     } elseif ([string]$d.status -eq 'importing') {
       Hk-Say ('  ' + $d.model + ' ' + $ipNow + ': an earlier import of Hikvision''s file was started but its result was not saved, and the site password does not log in. That file is NOT sent again. It needs a new request.') 'Yellow'
@@ -768,7 +907,7 @@ function Invoke-HikResetStage {
   foreach ($d in @(& $forMine $state | Where-Object { $_.status -eq 'verified' })) {
     $mv = ConvertTo-SadpMac ([string]$d.mac); if ($fixed -contains $mv) { continue }
     $live = Find-HikLiveDevice $d $devs; $ipNow = $(if ($live) { [string]$live.ip } else { [string]$d.ip })
-    $okv = $false; if ($live) { try { $okv = [bool](& $VerifyLogin $ipNow $SitePassword) } catch {} }
+    $okv = $false; if ($live) { $okv = Test-HikLoginOk $VerifyLogin $ipNow $SitePassword $d }   # 2.2.20 (class C): only a real $true
     if ($okv) { $fixed += $mv }
     elseif ($live) { Set-HikStateField $d 'status' 'stale'; Save-HikState $statePath $state; Hk-Say ('  ' + $d.model + ' ' + $ipNow + ': was reset before, but the site password no longer logs in - it is reset again.') 'Yellow' }
   }
@@ -807,7 +946,7 @@ function Invoke-HikResetStage {
   foreach ($d in @(& $forMine $state)) {
     if ($fixed -contains (ConvertTo-SadpMac ([string]$d.mac))) { continue }
     if ($script:HkSubnetBlocked.ContainsKey([string]$d.serial) -and @($pending | Where-Object { (ConvertTo-SadpMac ([string]$_.mac)) -eq (ConvertTo-SadpMac ([string]$d.mac)) }).Count) { continue }   # 2.2.9: said once
-    $why = switch ($d.status) { 'submitted' { 'sent to Hikvision, waiting for the unlock email (it can take a few hours). When it comes: press "I got Hik''s email" (or, with the reply mailbox set up, just press Fix this site again). The device must NOT restart meanwhile.' } 'exported' { 'request file made, not sent to Hikvision yet' } 'replied' { 'unlock file arrived but the import did not work' + $(if ($d.note) { ' (' + $d.note + ')' } else { '' }) } 'imported' { 'the unlock file was imported, but the site password is NOT CHECKED yet (the device was not seen, or it did not log in yet). Press Fix this site again when SADP shows it.' } 'importing' { 'an import of Hikvision''s file was started but its result was not saved: NOT CHECKED. That file is not sent again; if the site password does not log in, it needs a new request.' } 'expired' { 'the request is no longer valid (' + $d.note + '): it needs a new one' } 'refused' { $(if (-not ($d.PSObject.Properties['refusedChecksOk'] -and $d.refusedChecksOk -and [int]$d.rebootRetries -ge $script:HkMaxRebootRetries)) { 'the device refused Hikvision''s file. Power-cycle it (unplug it or its PoE port for 10 seconds), wait until SADP shows it Active, then press Fix this site again: it makes ONE new request; submit it and import only the reply to it (no export in between)' } else { 'the device refused Hikvision''s file after correct steps and ' + [int]$d.rebootRetries + ' reboot-retries: call Hik support with the serial (' + [string]$d.serial + ') and the SADP log' }) } default { [string]$d.status } }
+    $why = switch ($d.status) { 'submitted' { 'sent to Hikvision, waiting for the unlock email (it can take a few hours). When it comes: press "I got Hik''s email" (or, with the reply mailbox set up, just press Fix this site again). The device must NOT restart meanwhile.' } 'exported' { 'request file made, not sent to Hikvision yet' } 'replied' { 'unlock file arrived but the import did not work' + $(if ($d.note) { ' (' + $d.note + ')' } else { '' }) } 'imported' { 'the unlock file was imported, but the site password is NOT CHECKED yet (the device was not seen, or it did not log in yet). Press Fix this site again when SADP shows it.' } 'exporting' { 'a request file was asked for but the result was not recorded: NOT CONFIRMED. It is not asked again on this start-up of the camera: register that file (HikReset -RegisterDir), or reboot the camera and press Fix this site again' } 'importing' { 'an import of Hikvision''s file was started but its result was not saved: NOT CHECKED. That file is not sent again; if the site password does not log in, it needs a new request.' } 'expired' { 'the request is no longer valid (' + $d.note + '): it needs a new one' } 'refused' { $(if (-not ($d.PSObject.Properties['refusedChecksOk'] -and $d.refusedChecksOk -and [int]$d.rebootRetries -ge $script:HkMaxRebootRetries)) { 'the device refused Hikvision''s file. Power-cycle it (unplug it or its PoE port for 10 seconds), wait until SADP shows it Active, then press Fix this site again: it makes ONE new request; submit it and import only the reply to it (no export in between)' } else { 'the device refused Hikvision''s file after correct steps and ' + [int]$d.rebootRetries + ' reboot-retries: call Hik support with the serial (' + [string]$d.serial + ') and the SADP log' }) } default { [string]$d.status } }
     $pending += [pscustomobject]@{ mac = $d.mac; reason = $why }
   }
   return [pscustomobject]@{ fixed = @($fixed); pending = @($pending) }
