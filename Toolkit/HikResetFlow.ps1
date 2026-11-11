@@ -35,20 +35,50 @@ function Read-HikState([string]$Path) {
   }
   return [pscustomobject]@{ version = 1; site = ''; created = (Get-Date -Format 's'); devices = @(); exports = @() }
 }
+# 2.2.19 (Codex 2.2.18 F17, class E): a save that fails is no longer only a warning. $script:HkStateSaved says whether the LAST save
+# reached the disk (written, read back, swapped in); Save-HikStateOk returns it. Every step that sends something to a device
+# (export, import) saves what it is about to do FIRST and does not go ahead when that save fails.
+$script:HkStateSaved = $true
+$script:HkStateSaveWhy = ''
 function Save-HikState([string]$Path, $State) {
-  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
+  $script:HkStateSaved = $false; $script:HkStateSaveWhy = ''
   # 2.2.18 (sweep D): written to a temp file, read back, then swapped in whole, so a stop half-way never leaves a damaged record
   $tmp = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
   try {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) -ErrorAction Stop | Out-Null
     [IO.File]::WriteAllText($tmp, [string]($State | ConvertTo-Json -Depth 8))
     $fs = [IO.File]::Open($tmp, 'Open', 'Write', 'None'); try { $fs.Flush($true) } finally { $fs.Dispose() }
     $chk = [IO.File]::ReadAllText($tmp) | ConvertFrom-Json -ErrorAction Stop
     if (-not $chk -or -not $chk.PSObject.Properties['devices']) { throw 'the saved copy did not read back' }
     if ([IO.File]::Exists($Path)) { [IO.File]::Replace($tmp, $Path, [System.Management.Automation.Language.NullString]::Value) } else { [IO.File]::Move($tmp, $Path) }
+    $script:HkStateSaved = $true
   } catch {
+    $script:HkStateSaveWhy = [string]$_.Exception.Message
     $w = ('  WARNING: the reset record ' + $Path + ' could not be saved (' + $_.Exception.Message + '). Do not start another reset of these devices until it saves.')
     try { Hk-Say $w 'Red' } catch { Write-Warning $w }
   } finally { if ([IO.File]::Exists($tmp)) { try { [IO.File]::Delete($tmp) } catch {} } }
+}
+function Save-HikStateOk([string]$Path, $State) { Save-HikState $Path $State; return [bool]$script:HkStateSaved }
+# 2.2.19: the plain stop line when the record could not be saved before a device step
+function Get-HikNotSavedStop([string]$What) {
+  return ('  STOPPED: ' + $What + ' was NOT done, because the reset record could not be saved first (see the warning above). The record must say what is being sent to a device before it is sent, so a refused file is never sent twice. Make the folder writable (or free some disk space), then run it again.')
+}
+# 2.2.19 (Codex 2.2.18 F16, class A): the device a saved record names, found in a FRESH SADP scan by its own identity - the MAC; the serial
+# only when the record has no MAC (an exact, non-empty match). A device whose MAC matches but whose serial is different is NOT it.
+# $null = not found / not the same device: nothing is checked or sent to the old address.
+function Find-HikLiveDevice($D, $Seen) {
+  $mac = ConvertTo-SadpMac ([string]$D.mac); $sn = ([string]$D.serial).Trim()
+  foreach ($x in @($Seen)) {
+    if (-not $x) { continue }
+    $xm = ConvertTo-SadpMac ([string]$x.mac); $xs = ([string]$x.serial).Trim()
+    if ($mac) {
+      if ($xm -ne $mac) { continue }
+      if ($sn -and $xs -and $xs -ne $sn) { continue }
+      return $x
+    }
+    elseif ($sn -and $xs -and $xs -eq $sn) { return $x }
+  }
+  return $null
 }
 
 function Get-HikStateDevice($State, [string]$Serial) { foreach ($d in @($State.devices)) { if ($d.serial -eq $Serial) { return $d } }; return $null }
@@ -74,6 +104,23 @@ function Add-HikStateDevice($State, $Dev, [string]$File, [string]$BootTime, $At 
     exportedAt = $now.ToString('s'); validUntil = $now.AddHours($script:HkValidHours).ToString('s'); exportId = $rec.id; status = 'exported'; submittedAt = ''; replyFile = ''; replyFrom = ''; replyAt = ''; replyForExport = ''; importedAt = ''; verifiedAt = ''; note = '' }
   if ($d) { foreach ($k in $row.Keys) { Set-HikStateField $d $k $row[$k] }; return $d }
   $State.devices = @($State.devices) + @([pscustomobject]$row); return (Get-HikStateDevice $State $Dev.serial)
+}
+# 2.2.19 (F17 twin): "an export of this device was started at <time>" - saved before the device is asked. A reply is only good for an
+# export made at or after the newest of these; Test-HikExportVoided says when a later, unrecorded export voided the saved reply.
+function Add-HikExportIntent($State, $Dev) {
+  if (-not $State.PSObject.Properties['intents']) { $State | Add-Member -NotePropertyName intents -NotePropertyValue @() -Force }
+  $rec = [pscustomobject]@{ serial = [string]$Dev.serial; mac = (ConvertTo-SadpMac ([string]$Dev.mac)); action = 'export'; at = (Get-Date -Format 's') }
+  $State.intents = @(@($State.intents | Where-Object { $null -ne $_ }) + @($rec) | Select-Object -Last 100)
+  return $rec
+}
+function Test-HikExportVoided($State, $D) {
+  if (-not $State.PSObject.Properties['intents']) { return $false }
+  $exp = $null; try { $exp = [datetime]([string]$D.exportedAt) } catch { return $false }
+  foreach ($i in @($State.intents | Where-Object { $_ -and [string]$_.action -eq 'export' -and [string]$_.serial -eq [string]$D.serial })) {
+    $at = $null; try { $at = [datetime]([string]$i.at) } catch { continue }
+    if ($at -gt $exp) { return $true }
+  }
+  return $false
 }
 # 2.2.8: the plain warning when a NEW export would void a request that is still waiting at Hikvision ('' = nothing to warn about)
 function Get-HikVoidWarning($Cur, $Dev = $null) {
@@ -295,6 +342,11 @@ function Export-HikRequests($Devices, [string]$OutDir, $State, [string]$StatePat
       if ($cur.PSObject.Properties['refusedChecksOk'] -and $cur.refusedChecksOk) { $retryN = 1; try { $retryN = [int]$cur.rebootRetries + 1 } catch {} }
     }
     $vw = Get-HikVoidWarning $cur $dev; if ($vw) { Hk-Say $vw $(if ($vw -match 'WARNING') { 'Red' } else { 'Yellow' }) }
+    # 2.2.19 (Codex 2.2.18 F17, class E): a new export voids every earlier reply of this device. That is written down BEFORE the device
+    # is asked (exportStartedAt), so a run that stops (or cannot save) after the export never imports an older reply as if it still fit.
+    # No save = no export.
+    Add-HikExportIntent $State $dev
+    if (-not (Save-HikStateOk $StatePath $State)) { Hk-Say (Get-HikNotSavedStop ('Asking ' + $dev.model + ' ' + $dev.ip + ' for a request file')) 'Red'; break }
     $e = Request-HikResetExport $dev
     if (-not $e.ok) { Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': could not read its request code - ' + $e.error) 'Yellow'; if ($cur) { Set-HikStateField $cur 'note' $e.error }; continue }
     $f = Save-HikResetFile $dev $e $OutDir
@@ -302,7 +354,10 @@ function Export-HikRequests($Devices, [string]$OutDir, $State, [string]$StatePat
     $d = Add-HikStateDevice $State $dev $f $dev.bootTime
     Set-HikStateField $d 'refusedChecksOk' $false
     if ($retryN) { Set-HikStateField $d 'rebootRetries' $retryN }
-    Save-HikState $StatePath $State
+    if (-not (Save-HikStateOk $StatePath $State)) {
+      Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': a request file WAS made (' + $f + '), but the reset record could not be saved. Do NOT export again. Make the folder writable, then run it again: the file is registered from that folder.') 'Red'
+      $made += $d; $newOnes++; break
+    }
     Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + '  serial ' + $dev.serial + ': request file saved (' + (Split-Path -Leaf $f) + ', ' + ([datetime]$d.exportedAt).ToString('h:mm tt') + ')') 'Green'
     if ($retryN) { Hk-Say ('  Reboot-retry ' + $retryN + ' of ' + $script:HkMaxRebootRetries + ' after the refusal: this is the ONE new request file. Submit it and import only Hik''s reply to it.') 'Cyan' }
     $made += $d; $newOnes++
@@ -349,7 +404,8 @@ function Submit-HikRequests($State, [string]$StatePath, $Form, [int]$PerDeviceTi
       $a = Hk-Ask '  When Hikvision says it is sent, press Enter (S = skip this one)'
       if ($a -notmatch '^(?i)s') { $ok = $true; Set-HikStateField $d 'status' 'submitted'; Set-HikStateField $d 'submittedAt' (Get-Date -Format 's') }
     }
-    Save-HikState $StatePath $State
+    # 2.2.19 (class E): a "sent to Hikvision" that cannot be saved stops the loop (the next run would not know this file is at Hikvision)
+    if (-not (Save-HikStateOk $StatePath $State)) { if ($ok) { $sent += $d }; Hk-Say (Get-HikNotSavedStop 'Sending the next request file to Hikvision') 'Red'; break }
     if ($ok) { $sent += $d }
   }
   return $sent
@@ -435,7 +491,7 @@ function Receive-HikReplies($State, [string]$StatePath, $Cfg, [string]$ToolkitDi
   $since = (Get-Date).AddDays(-4); try { $since = ([datetime](@($pend | ForEach-Object { $_.exportedAt } | Sort-Object)[0])).AddDays(-2) } catch {}
   $msgs = @(Get-HikReplyMessages $Cfg $ToolkitDir $ReplyDir $since @($pend | Where-Object { $_.status -eq 'submitted' }) $InboxDir -ForceRelay:$ForceRelay)
   $m = Find-HikReplyMatches $pend $msgs @($State.devices)
-  $got = @(); $stale = @()
+  $got = @(); $stale = @(); $usedDrops = @()
   New-Item -ItemType Directory -Force -Path $ReplyDir | Out-Null
   $isDrop = { param($s) [bool]($InboxDir -and [string]$s -and ([string]$s).StartsWith($InboxDir)) }
   foreach ($x in $m.matched) {
@@ -444,7 +500,7 @@ function Receive-HikReplies($State, [string]$StatePath, $Cfg, [string]$ToolkitDi
     $own = ''; try { $own = [IO.File]::ReadAllText($d.requestFile).Trim() } catch {}
     if ($own -and (Hm-Latin1).GetString($x.bytes).Trim() -eq $own) { continue }
     $dest = Join-Path $ReplyDir ('reply-' + ($d.serial -replace '[^A-Za-z0-9\-]', '_') + '.xml')
-    if ($x.src -and $x.src -eq $dest) { continue }   # the file saved by an earlier look
+    if ($x.src -and $x.src -eq $dest -and $d.status -eq 'replied') { continue }   # the file saved by an earlier look (2.2.19: only once the record says so)
     # 2.2.8: only a reply that arrived after the LATEST export of this device
     $at = ConvertTo-HikLocalTime ([string]$x.date); $exp = ConvertTo-HikLocalTime ([string]$d.exportedAt)
     # a file time is this PC's own clock (no slack); a mail's time (relay / .eml Date) is the mail server's, so $script:HkReplySkewSec
@@ -467,10 +523,13 @@ function Receive-HikReplies($State, [string]$StatePath, $Cfg, [string]$ToolkitDi
     $got += $d
     $how = $(if ([string]$x.src -like 'relay:*') { 'the reply mailbox' } elseif (& $isDrop $x.src) { 'the "I got Hik''s email" button' } else { 'the replies folder' })
     Hk-Say ('  Reply for ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ') found in ' + $how + ', matched by ' + $x.how + $(if ($at) { '; it came ' + $at.ToString('h:mm tt') + ', after ' } else { '; it answers ' }) + (Get-HikExportLabel $d) + '.') 'Green'
-    if (& $isDrop $x.src) { Remove-Item -LiteralPath $x.src -Force -ErrorAction SilentlyContinue }
+    if (& $isDrop $x.src) { $usedDrops += [string]$x.src }
   }
   foreach ($s in @($m.skipped)) { if (-not $s.quiet -and (& $isDrop $s.src)) { Move-HikDropNotUsed $InboxDir ([string]$s.src) } }
-  Save-HikState $StatePath $State
+  # 2.2.19 (class E): a dropped reply is removed from inbox\hik only once the record that says "replied" is saved; if the save fails the
+  # drop stays where it is, so the reply is not lost (2.2.18 removed it first, and the saved copy was then skipped as "already saved")
+  if (Save-HikStateOk $StatePath $State) { foreach ($u in @($usedDrops)) { Remove-Item -LiteralPath $u -Force -ErrorAction SilentlyContinue } }
+  elseif (@($usedDrops).Count) { Hk-Say '  The reply files were kept in the inbox folder, because the reset record could not be saved.' 'Yellow' }
   # the replies this Toolkit saved itself (replies\reply-<serial>.xml, from earlier runs) are not news about other devices
   $ownSaved = { param($s) [bool]([string]$s -and (Split-Path -Leaf ([string]$s)) -like 'reply-*.xml' -and (Split-Path -Parent ([string]$s)) -eq $ReplyDir) }
   return [pscustomobject]@{ got = $got; unmatched = @($m.unmatched | Where-Object { -not (& $ownSaved $_.src) }); stale = @($stale); skipped = @($m.skipped | Where-Object { -not (& $ownSaved $_.src) }) }
@@ -553,12 +612,25 @@ function Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [sc
     Hk-Say ''; Hk-Say ('Importing the unlock file ' + $(if ([string]$d.replyFile) { Split-Path -Leaf ([string]$d.replyFile) } else { '' }) + ' into ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ') - Hikvision''s reply to ' + (Get-HikExportLabel $d)) 'Cyan'
     Show-HikSessionGuard
     $seen = @(Find-HikSadp 3)
-    $live = @($seen | Where-Object { $_.mac -eq $d.mac })[0]
+    # 2.2.19 (class A): the device is the one the record names - its MAC (the serial only when no MAC was saved), never "whatever answers"
+    $live = Find-HikLiveDevice $d $seen
     if (-not $live) { Hk-Say '  The device does not answer on the network right now.' 'Yellow'; Set-HikStateField $d 'note' 'not answering'; continue }
     # 2.2.9: the reset needs the camera on a network of this PC; the reply is kept for when it is (not marked refused)
-    if (-not (Test-HikOnLocalSubnet $live $seen)) { Set-HikStateField $d 'note' 'on another network than this PC'; Save-HikState $StatePath $State; continue }
-    if ($d.bootTime -and $live.bootTime -and $live.bootTime -ne $d.bootTime) { Hk-Say '  This device restarted after the request file was made, so Hikvision''s file no longer fits it. It needs a new request.' 'Red'; Set-HikStateField $d 'status' 'expired'; Set-HikStateField $d 'note' 'restarted since the request'; Save-HikState $StatePath $State; continue }
-    if (([datetime]$d.validUntil) -lt (Get-Date)) { Hk-Say '  The file is older than 48 hours - Hikvision''s files stop working then. It needs a new request.' 'Red'; Set-HikStateField $d 'status' 'expired'; Save-HikState $StatePath $State; continue }
+    if (-not (Test-HikOnLocalSubnet $live $seen)) { Set-HikStateField $d 'note' 'on another network than this PC'; if (-not (Save-HikStateOk $StatePath $State)) { Hk-Say (Get-HikNotSavedStop 'The import') 'Red'; break }; continue }
+    if ($d.bootTime -and $live.bootTime -and $live.bootTime -ne $d.bootTime) { Hk-Say '  This device restarted after the request file was made, so Hikvision''s file no longer fits it. It needs a new request.' 'Red'; Set-HikStateField $d 'status' 'expired'; Set-HikStateField $d 'note' 'restarted since the request'; if (-not (Save-HikStateOk $StatePath $State)) { Hk-Say (Get-HikNotSavedStop 'The import') 'Red'; break }; continue }
+    if (([datetime]$d.validUntil) -lt (Get-Date)) { Hk-Say '  The file is older than 48 hours - Hikvision''s files stop working then. It needs a new request.' 'Red'; Set-HikStateField $d 'status' 'expired'; if (-not (Save-HikStateOk $StatePath $State)) { Hk-Say (Get-HikNotSavedStop 'The import') 'Red'; break }; continue }
+    # 2.2.19 (F17 twin): a request file made after the one this reply answers (its start was recorded, the file itself maybe not) voids it
+    if (Test-HikExportVoided $State $d) { Hk-Say '  A newer request file was started for this device after the one this reply answers, so Hikvision''s file no longer fits it. It was NOT imported. It needs a new request.' 'Red'; Set-HikStateField $d 'status' 'expired'; Set-HikStateField $d 'note' 'a newer export was started after this request'; if (-not (Save-HikStateOk $StatePath $State)) { Hk-Say (Get-HikNotSavedStop 'The import') 'Red'; break }; continue }
+    # 2.2.19 (Codex 2.2.18 F17, class E): the import is written down as STARTED (status importing) and that save is checked BEFORE the
+    # file goes to the device. If the PC cannot save it, nothing is sent: a refusal that cannot be recorded must not be repeatable.
+    # A record left at "importing" (the run stopped, or the result could not be saved) is never imported again on its own; the next run
+    # checks the site password on the device found by its MAC (Invoke-HikResetStage).
+    Set-HikStateField $d 'status' 'importing'; Set-HikStateField $d 'importStartedAt' (Get-Date -Format 's'); Set-HikStateField $d 'importFile' ([string]$d.replyFile)
+    if (-not (Save-HikStateOk $StatePath $State)) {
+      Set-HikStateField $d 'status' 'replied'
+      Hk-Say (Get-HikNotSavedStop ('Importing the unlock file into ' + $d.model + ' ' + $d.ip)) 'Red'
+      break
+    }
     $u = Read-HikUnlock $d.replyFile
     $r = Import-HikUnlock $live $u $NewPassword
     if ($r.ok) {
@@ -567,7 +639,7 @@ function Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [sc
       $ip = $live.ip; $chk = $false
       # 2.2.3 (Codex #29): wait for the device to be back (SADP, no login), then at most 2 login tries - a wrong password 6 times
       # in a row is how Hikvision locks a device
-      $logins = 0; for ($i = 0; $i -lt 8 -and -not $chk -and $logins -lt $script:HkVerifyMaxLogins; $i++) { $now = @(Find-HikSadp 2 | Where-Object { $_.mac -eq $d.mac })[0]; if ($now) { $ip = $now.ip; $logins++; try { $chk = [bool](& $VerifyLogin $ip $NewPassword) } catch {} }; if (-not $chk) { Start-Sleep -Seconds 4 } }
+      $logins = 0; for ($i = 0; $i -lt 8 -and -not $chk -and $logins -lt $script:HkVerifyMaxLogins; $i++) { $now = Find-HikLiveDevice $d @(Find-HikSadp 2); if ($now) { $ip = $now.ip; $logins++; try { $chk = [bool](& $VerifyLogin $ip $NewPassword) } catch {} }; if (-not $chk) { Start-Sleep -Seconds 4 } }
       if ($chk) { Set-HikStateField $d 'status' 'verified'; Set-HikStateField $d 'verifiedAt' (Get-Date -Format 's'); Hk-Say ('  Reset done. The site password logs in on ' + $ip + '.') 'Green'; $done += $d; Show-HikExtraIpReminder $live }
       else { Hk-Say ('  The device accepted the file, but the site password does not log in yet on ' + $ip + '. Check it in a minute.') 'Yellow' }
     } elseif ([string]$r.result -and [string]$r.result -notmatch '^(?i)success') {
@@ -575,6 +647,8 @@ function Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [sc
       # Almost always: the file does not belong to the device's latest request (an older reply, or a new export made after it was
       # sent). Importing it again, or other files from Downloads, cannot work; a new export now would void the next reply too.
       Set-HikStateField $d 'status' 'refused'; Set-HikStateField $d 'note' ('the device refused the unlock file (it answered "' + [string]$r.result + '")')
+      # 2.2.19 (F17): "will not be tried again" is true either way now - the record already says "importing" on disk (saved above), and an
+      # "importing" record is never imported again; the refusal itself is saved here
       Hk-Say ('  The device REFUSED Hikvision''s file (it answered "' + [string]$r.result + '"). This file will not be tried again.') 'Red'
       # 2.2.9 (Moshe, Nov 8 9:55 PM): when the Toolkit's own checks passed, the steps were right: reboot the camera, then Retry
       # (at most 2 reboot-retries, then Hik support). When a check did not pass, say what was wrong instead.
@@ -585,11 +659,17 @@ function Import-HikReplies($State, [string]$StatePath, [string]$NewPassword, [sc
       foreach ($l in @(Get-HikRefusedMessage $d $probs)) { Hk-Say $l $(if ($l -match '^\s*(Steps were correct|Call Hik support)') { 'Cyan' } else { 'Yellow' }) }
     } else {
       Hk-Say ('  The import did not work (' + $r.error + ').') 'Yellow'
+      # the device did not say yes or no (no answer / the file needs SADP by hand): the reply stays usable, as before
+      Set-HikStateField $d 'status' 'replied'
       Set-HikStateField $d 'note' ('import: ' + $r.error)
       # last resort, still the official path: SADP's own "Forgot password > Import file" with the file ready
       Hk-Say ('  Finish this one in SADP: tick the device, Forgot password, Import file, pick ' + $d.replyFile + ', type the site password.') 'Yellow'
     }
-    Save-HikState $StatePath $State
+    if (-not (Save-HikStateOk $StatePath $State)) {
+      Hk-Say ('  The result for ' + $d.model + ' ' + $d.ip + ' could not be saved. The record still says the import was started, so this file is NOT sent again; the next run checks the site password on the device instead.') 'Red'
+      Hk-Say (Get-HikNotSavedStop 'Any further import') 'Red'
+      break
+    }
   }
   return $done
 }
@@ -654,6 +734,11 @@ function Invoke-HikResetStage {
   # 2.2.18 (sweep C/D): a reset record that cannot be read stops the reset here (nothing sent); every target is pending with the reason
   $state = $null; try { $state = Read-HikState $statePath } catch { $rsWhy = $_.Exception.Message; Hk-Say ('  ' + $rsWhy) 'Red'; return [pscustomobject]@{ fixed = @(); pending = @(@($Targets) | ForEach-Object { [pscustomobject]@{ mac = (ConvertTo-SadpMac ([string]$_.mac)); reason = 'reset not started: the reset record on this PC could not be read (see above)' } }) } }
   $want = @{}; foreach ($t in @($Targets)) { $m = ConvertTo-SadpMac ([string]$t.mac); if ($m) { $want[$m] = $t } }
+  # 2.2.19 (Codex 2.2.18 F17, class E): the record must be savable before anything is sent to a device; if it is not, nothing starts
+  if (-not (Save-HikStateOk $statePath $state)) {
+    Hk-Say (Get-HikNotSavedStop 'The reset') 'Red'
+    return [pscustomobject]@{ fixed = @(); pending = @(@($Targets) | ForEach-Object { [pscustomobject]@{ mac = (ConvertTo-SadpMac ([string]$_.mac)); reason = 'reset not started: the reset record on this PC could not be saved (see above)' } }) }
+  }
   Hk-Say 'Finding the Hikvision devices (any IP range)...'
   $devs = @(Find-HikSadp 4 | Where-Object { $want.ContainsKey($_.mac) })
   $fixed = @(); $pending = @()
@@ -662,15 +747,27 @@ function Invoke-HikResetStage {
   # 2.2.1: a device whose unlock file was imported in an earlier run that stopped before the check: check its login now (once)
   # 2.2.2 (Codex, reset resume): this check runs BEFORE any new export. 2.2.1 exported first, which reset an "imported" device to
   # "exported", so the check never saw it (and a fresh request cancelled the reset that had worked).
-  foreach ($d in @(& $forMine $state | Where-Object { $_.status -eq 'imported' })) {
-    $okv = $false; try { $okv = [bool](& $VerifyLogin ([string]$d.ip) $SitePassword) } catch {}
-    if ($okv) { Set-HikStateField $d 'status' 'verified'; Set-HikStateField $d 'verifiedAt' (Get-Date -Format 's'); Save-HikState $statePath $state; $fixed += (ConvertTo-SadpMac ([string]$d.mac)); Hk-Say ('  ' + $d.model + ' ' + $d.ip + ': the earlier reset worked - the site password logs in.') 'Green' }
+  # 2.2.19 (Codex 2.2.18 F16, class A): the device is found again in THIS scan by its MAC (serial only when no MAC was saved) and its
+  # password is checked at the address it has NOW. 2.2.18 checked the saved address: another camera that moved onto it and took the site
+  # password made the selected camera "fixed". Not found = NOT CHECKED (it stays pending; nothing is checked at the old address).
+  # "importing" = an import was started but its result was never saved (F17): same check, and the file is never sent again on its own.
+  foreach ($d in @(& $forMine $state | Where-Object { $_.status -in @('imported', 'importing') })) {
+    $live = Find-HikLiveDevice $d $devs
+    if (-not $live) { Hk-Say ('  ' + $d.model + ' (serial ' + [string]$d.serial + '): the unlock file was imported earlier, but the device is not seen in this scan - the site password is NOT CHECKED.') 'Yellow'; continue }
+    $ipNow = [string]$live.ip
+    $okv = $false; try { $okv = [bool](& $VerifyLogin $ipNow $SitePassword) } catch {}
+    if ($okv) {
+      Set-HikStateField $d 'status' 'verified'; Set-HikStateField $d 'verifiedAt' (Get-Date -Format 's'); Set-HikStateField $d 'ip' $ipNow; Save-HikState $statePath $state
+      $fixed += (ConvertTo-SadpMac ([string]$d.mac)); Hk-Say ('  ' + $d.model + ' ' + $ipNow + ': the earlier reset worked - the site password logs in.') 'Green'
+    } elseif ([string]$d.status -eq 'importing') {
+      Hk-Say ('  ' + $d.model + ' ' + $ipNow + ': an earlier import of Hikvision''s file was started but its result was not saved, and the site password does not log in. That file is NOT sent again. It needs a new request.') 'Yellow'
+    }
   }
   # 2.2.3 (Codex #57): a reset verified in an EARLIER run counts only if the site password still logs in now (one try, at the address
   # the device has now). A factory reset or password change since then = it is reset again.
   foreach ($d in @(& $forMine $state | Where-Object { $_.status -eq 'verified' })) {
     $mv = ConvertTo-SadpMac ([string]$d.mac); if ($fixed -contains $mv) { continue }
-    $live = @($devs | Where-Object { $_.mac -eq $mv })[0]; $ipNow = $(if ($live) { [string]$live.ip } else { [string]$d.ip })
+    $live = Find-HikLiveDevice $d $devs; $ipNow = $(if ($live) { [string]$live.ip } else { [string]$d.ip })
     $okv = $false; if ($live) { try { $okv = [bool](& $VerifyLogin $ipNow $SitePassword) } catch {} }
     if ($okv) { $fixed += $mv }
     elseif ($live) { Set-HikStateField $d 'status' 'stale'; Save-HikState $statePath $state; Hk-Say ('  ' + $d.model + ' ' + $ipNow + ': was reset before, but the site password no longer logs in - it is reset again.') 'Yellow' }
@@ -710,7 +807,7 @@ function Invoke-HikResetStage {
   foreach ($d in @(& $forMine $state)) {
     if ($fixed -contains (ConvertTo-SadpMac ([string]$d.mac))) { continue }
     if ($script:HkSubnetBlocked.ContainsKey([string]$d.serial) -and @($pending | Where-Object { (ConvertTo-SadpMac ([string]$_.mac)) -eq (ConvertTo-SadpMac ([string]$d.mac)) }).Count) { continue }   # 2.2.9: said once
-    $why = switch ($d.status) { 'submitted' { 'sent to Hikvision, waiting for the unlock email (it can take a few hours). When it comes: press "I got Hik''s email" (or, with the reply mailbox set up, just press Fix this site again). The device must NOT restart meanwhile.' } 'exported' { 'request file made, not sent to Hikvision yet' } 'replied' { 'unlock file arrived but the import did not work' + $(if ($d.note) { ' (' + $d.note + ')' } else { '' }) } 'expired' { 'the request is no longer valid (' + $d.note + '): it needs a new one' } 'refused' { $(if (-not ($d.PSObject.Properties['refusedChecksOk'] -and $d.refusedChecksOk -and [int]$d.rebootRetries -ge $script:HkMaxRebootRetries)) { 'the device refused Hikvision''s file. Power-cycle it (unplug it or its PoE port for 10 seconds), wait until SADP shows it Active, then press Fix this site again: it makes ONE new request; submit it and import only the reply to it (no export in between)' } else { 'the device refused Hikvision''s file after correct steps and ' + [int]$d.rebootRetries + ' reboot-retries: call Hik support with the serial (' + [string]$d.serial + ') and the SADP log' }) } default { [string]$d.status } }
+    $why = switch ($d.status) { 'submitted' { 'sent to Hikvision, waiting for the unlock email (it can take a few hours). When it comes: press "I got Hik''s email" (or, with the reply mailbox set up, just press Fix this site again). The device must NOT restart meanwhile.' } 'exported' { 'request file made, not sent to Hikvision yet' } 'replied' { 'unlock file arrived but the import did not work' + $(if ($d.note) { ' (' + $d.note + ')' } else { '' }) } 'imported' { 'the unlock file was imported, but the site password is NOT CHECKED yet (the device was not seen, or it did not log in yet). Press Fix this site again when SADP shows it.' } 'importing' { 'an import of Hikvision''s file was started but its result was not saved: NOT CHECKED. That file is not sent again; if the site password does not log in, it needs a new request.' } 'expired' { 'the request is no longer valid (' + $d.note + '): it needs a new one' } 'refused' { $(if (-not ($d.PSObject.Properties['refusedChecksOk'] -and $d.refusedChecksOk -and [int]$d.rebootRetries -ge $script:HkMaxRebootRetries)) { 'the device refused Hikvision''s file. Power-cycle it (unplug it or its PoE port for 10 seconds), wait until SADP shows it Active, then press Fix this site again: it makes ONE new request; submit it and import only the reply to it (no export in between)' } else { 'the device refused Hikvision''s file after correct steps and ' + [int]$d.rebootRetries + ' reboot-retries: call Hik support with the serial (' + [string]$d.serial + ') and the SADP log' }) } default { [string]$d.status } }
     $pending += [pscustomobject]@{ mac = $d.mac; reason = $why }
   }
   return [pscustomobject]@{ fixed = @($fixed); pending = @($pending) }

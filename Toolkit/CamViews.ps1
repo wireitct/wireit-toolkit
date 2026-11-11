@@ -219,12 +219,43 @@ function Send-CvBody($body) {
     return ($r.Content | ConvertFrom-Json)
   } catch { CvLog ('send: ' + $_.Exception.Message); return $null }
 }
+# 2.2.19 (Codex 2.2.18 F20, class F): "kept in the outbox" only when the file is written AND reads back the same. Returns $true / $false.
 function Save-CvOutbox($body) {
-  New-Item -ItemType Directory -Force -Path $script:CvOutbox | Out-Null
-  $tot = 0; Get-ChildItem $script:CvOutbox -Filter *.json -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | ForEach-Object { $tot += $_.Length }
-  if ($tot -gt 60MB) { CvSay 'Outbox is full (60 MB): these pictures were not kept for later.' 'Yellow'; return }
-  $b2 = $body.Clone(); $b2.Remove('key')   # the key is never written to disk
-  ($b2 | ConvertTo-Json -Depth 6 -Compress) | Set-Content -Path (Join-Path $script:CvOutbox ('camviews-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.json')) -Encoding UTF8
+  try {
+    New-Item -ItemType Directory -Force -Path $script:CvOutbox -ErrorAction Stop | Out-Null
+    $tot = 0; Get-ChildItem $script:CvOutbox -Filter *.json -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | ForEach-Object { $tot += $_.Length }
+    if ($tot -gt 60MB) { CvSay 'Outbox is full (60 MB): these pictures were NOT kept for later.' 'Yellow'; return $false }
+    $b2 = $body.Clone(); $b2.Remove('key')   # the key is never written to disk
+    $txt = ($b2 | ConvertTo-Json -Depth 6 -Compress)
+    $dst = Join-Path $script:CvOutbox ('camviews-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.json')
+    $tmp = $dst + '.tmp'
+    try {
+      [IO.File]::WriteAllText($tmp, $txt, (New-Object Text.UTF8Encoding($false)))
+      if ([IO.File]::ReadAllText($tmp) -ne $txt) { throw 'the saved copy does not match' }
+      [IO.File]::Move($tmp, $dst)
+    } finally { if ([IO.File]::Exists($tmp)) { try { [IO.File]::Delete($tmp) } catch {} } }
+    if ([IO.File]::ReadAllText($dst) -ne $txt) { throw 'the saved copy does not match' }
+    return $true
+  } catch { CvLog ('outbox save: ' + $_.Exception.Message); CvSay ('These pictures could NOT be kept in the outbox for later (' + $_.Exception.Message + ').') 'Yellow'; return $false }
+}
+# 2.2.19 (Codex 2.2.18 F25, class E): a waiting file that cannot be read, is not a camera-pictures push, or that the service refused is
+# never deleted silently: it is moved to outbox\quarantine\<name>.<why>-<time> (kept as evidence), and the technician is told it was NOT
+# sent. If even the move fails, the file stays where it is and is named again next time. Returns the new path, or '' when it stayed.
+# $script:CvQuarantined lists what this run moved (or could not move), for the caller / the tests.
+$script:CvQuarantined = @()
+function Move-CvQuarantine([string]$Path, [string]$Why, [string]$Tag = 'corrupt') {
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $dest = ''
+  try {
+    $qd = Join-Path (Split-Path -Parent $Path) 'quarantine'
+    New-Item -ItemType Directory -Force -Path $qd -ErrorAction Stop | Out-Null
+    $d0 = Join-Path $qd ((Split-Path -Leaf $Path) + '.' + $Tag + '-' + $stamp)
+    if (Test-Path -LiteralPath $d0) { $d0 = $d0 + '-' + [guid]::NewGuid().ToString('N').Substring(0, 4) }
+    Move-Item -LiteralPath $Path -Destination $d0 -ErrorAction Stop
+    if ((Test-Path -LiteralPath $d0) -and -not (Test-Path -LiteralPath $Path)) { $dest = $d0 }
+  } catch { CvLog ('quarantine: ' + $_.Exception.Message) }
+  $script:CvQuarantined += [pscustomobject]@{ file = $Path; why = $Why; keptAs = $dest }
+  return $dest
 }
 function Send-CvOutbox {
   if (-not (Test-Path $script:CvOutbox)) { return 0 }
@@ -232,13 +263,23 @@ function Send-CvOutbox {
   $sent = 0
   # 2.2.6 (Codex file-by-file A): the outbox is shared with the scan uploader (scan-*.json, op scanPush). Only this uploader's own files
   # (camviews-*.json) are read here; a waiting camera list is left for ScanUpload.ps1 (2.2.5 deleted it as "not a camera-pictures push").
-  foreach ($f in @(Get-ChildItem $script:CvOutbox -Filter 'camviews-*.json' | Sort-Object Name)) {
-    try { $o = Get-Content $f.FullName -Raw | ConvertFrom-Json } catch { Remove-Item $f.FullName -Force; continue }
-    # 2.2.3 (Codex #60): only a camera-pictures push leaves the outbox with the key, and only with its own fields (anything else is dropped)
-    if ([string]$o.op -ne 'camPush') { Remove-Item $f.FullName -Force; continue }
+  foreach ($f in @(Get-ChildItem $script:CvOutbox -Filter 'camviews-*.json' -File | Where-Object { $_.Name -like 'camviews-*.json' } | Sort-Object Name)) {
+    $o = $null; $bad = ''
+    try { $o = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { $bad = 'it is damaged (' + $_.Exception.Message + ')' }
+    # 2.2.3 (Codex #60): only a camera-pictures push leaves the outbox with the key, and only with its own fields (anything else is not sent)
+    if (-not $bad -and (-not $o -or [string]$o.op -ne 'camPush')) { $bad = 'it is not a camera-pictures file' }
+    if ($bad) {
+      $kept = Move-CvQuarantine $f.FullName $bad 'corrupt'
+      CvSay ('A waiting camera-pictures file (' + $f.Name + ') could not be used: ' + $bad + '. Those pictures were NOT sent. ' + $(if ($kept) { 'The file is kept as ' + $kept + '.' } else { 'It could not be moved aside, so it stays in the outbox.' })) 'Yellow'
+      continue
+    }
     $body = @{}; foreach ($p in @('op', 'site', 'source', 'pc', 'pics', 'complete')) { if ($o.PSObject.Properties[$p]) { $body[$p] = $o.$p } }; $body.key = $key
     $r = Send-CvBody $body
-    if ($r -and $r.ok) { Remove-Item $f.FullName -Force; $sent++ } elseif ($r -and -not $r.ok -and $r.msg -notmatch '(?i)busy|too many') { CvSay ('Waiting pictures refused: ' + $r.msg) 'Yellow'; Remove-Item $f.FullName -Force } else { break }
+    if ($r -and $r.ok) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue; $sent++ }
+    elseif ($r -and -not $r.ok -and $r.msg -notmatch '(?i)busy|too many') {
+      $kept = Move-CvQuarantine $f.FullName ('refused: ' + [string]$r.msg) 'refused'
+      CvSay ('Waiting pictures refused by the service log: ' + $r.msg + '. They were NOT sent. ' + $(if ($kept) { 'The file is kept as ' + $kept + '.' } else { 'It stays in the outbox.' })) 'Yellow'
+    } else { break }
   }
   if ($sent) { CvSay ('Sent ' + $sent + ' waiting batch(es) of camera pictures.') 'Green' }
   return $sent
@@ -250,18 +291,27 @@ function Get-CvSiteFolderName([string]$site) {
   $sha = [Security.Cryptography.SHA256]::Create(); try { $h = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($t.ToLowerInvariant())) } finally { $sha.Dispose() }
   return ($safe + '-' + (-join ($h[0..3] | ForEach-Object { $_.ToString('x2') })))
 }
+# 2.2.19 (Codex 2.2.18 F20, class F): returns { ok; why; path }. ok only when the picture file is written and reads back byte for byte.
+# Older copies of the same camera are pruned only AFTER the new one is verified (a failed save never costs the last good picture).
 function Save-CvLocal([string]$site, [string]$key, [string]$ip, [string]$stamp, $bytes) {
+  $path = ''
   try {
-    $dir = Join-Path $script:CvPics (Get-CvSiteFolderName $site); New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    [IO.File]::WriteAllBytes((Join-Path $dir ($key + '_' + $(if ($ip) { $ip } else { '-' }) + '_' + $stamp + '.jpg')), $bytes)
-    Get-ChildItem $dir -Filter ($key + '_*.jpg') | Sort-Object Name -Descending | Select-Object -Skip 2 | Remove-Item -Force
-  } catch { CvLog ('local copy: ' + $_.Exception.Message) }
+    if (-not $bytes -or @($bytes).Count -eq 0) { throw 'no picture data' }
+    $dir = Join-Path $script:CvPics (Get-CvSiteFolderName $site); New-Item -ItemType Directory -Force -Path $dir -ErrorAction Stop | Out-Null
+    $path = Join-Path $dir ($key + '_' + $(if ($ip) { $ip } else { '-' }) + '_' + $stamp + '.jpg')
+    [IO.File]::WriteAllBytes($path, [byte[]]$bytes)
+    $back = [IO.File]::ReadAllBytes($path)
+    if ($back.Length -ne @($bytes).Count -or [Convert]::ToBase64String($back) -ne [Convert]::ToBase64String([byte[]]$bytes)) { throw 'the saved picture does not read back the same' }
+  } catch { CvLog ('local copy: ' + $_.Exception.Message); return [pscustomobject]@{ ok = $false; why = [string]$_.Exception.Message; path = $path } }
+  try { Get-ChildItem -LiteralPath $dir -Filter ($key + '_*.jpg') | Sort-Object Name -Descending | Select-Object -Skip 2 | Remove-Item -Force -ErrorAction SilentlyContinue } catch { CvLog ('local prune: ' + $_.Exception.Message) }
+  return [pscustomobject]@{ ok = $true; why = ''; path = $path }
 }
 
 # ---- the job ----
 function Save-CameraViews {
   param([string]$Nvr, $Cred, [string]$Site, [string]$Vendor = 'auto', [int]$RecorderNo = 1, [switch]$NoUpload, $Channels = $null)
-  $cvr = [ordered]@{ ok = $false; pictures = 0; offline = @(); failed = @(); sent = $false; queued = $false; changed = @(); missing = @(); site = $Site }
+  # 2.2.19 (F20): pictures = pictures taken AND saved on this PC (verified); notSaved = taken but the PC copy failed (named with the reason)
+  $cvr = [ordered]@{ ok = $false; pictures = 0; offline = @(); failed = @(); notSaved = @(); taken = 0; sent = $false; queued = $false; changed = @(); missing = @(); site = $Site }
   CvSay ''; CvSay '----- Camera pictures (last known view of each camera) -----' 'Cyan'
   if (-not $Nvr) { CvSay 'No NVR / camera address given.' 'Red'; return $cvr }
   if (-not $NoUpload) { try { [void](Send-CvOutbox) } catch { CvLog ('outbox: ' + $_.Exception.Message) } }
@@ -283,13 +333,19 @@ function Save-CameraViews {
     $p = Get-CvPrepared $raw
     if ($p.jpg.Length -gt 590000) { $cvr.failed += $label; CvSay ('  ' + $label + ': picture too big to send') 'Yellow'; continue }
     $taken = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
-    Save-CvLocal $Site $key $ch.ip ((Get-Date -Format 'yyyyMMdd-HHmm')) $p.jpg
+    $sv = Save-CvLocal $Site $key $ch.ip ((Get-Date -Format 'yyyyMMdd-HHmm')) $p.jpg
     $e = @{ key = $key; ip = $ch.ip; taken = $taken; jpg = [Convert]::ToBase64String($p.jpg) }
     if ($p.sig) { $e.sig = $p.sig; $e.sh = $p.sh }
-    $pics.Add($e); $cvr.pictures++
-    CvSay ('  ' + $label + ': picture ok (' + [int]($p.jpg.Length / 1024) + ' KB)')
+    $pics.Add($e); $cvr.taken++
+    if ($sv.ok) { $cvr.pictures++; CvSay ('  ' + $label + ': picture ok (' + [int]($p.jpg.Length / 1024) + ' KB)') }
+    else { $cvr.notSaved += $label; CvSay ('  ' + $label + ': picture taken, but it could NOT be saved on this PC (' + $sv.why + ')') 'Red' }
   }
-  if ($NoUpload -or -not $Site) { CvSay ('Pictures saved on this PC: ' + $script:CvPics) ; $cvr.ok = $cvr.pictures -gt 0; return $cvr }
+  if ($cvr.notSaved.Count) { CvSay ('NOT saved on this PC: ' + $cvr.notSaved.Count + ' picture' + $(if ($cvr.notSaved.Count -eq 1) { '' } else { 's' }) + ' (folder ' + $script:CvPics + ').') 'Red' }
+  if ($NoUpload -or -not $Site) {
+    # 2.2.19 (F20): ok only for pictures that are really on this PC, and only when none failed to save
+    if ($cvr.pictures -gt 0) { CvSay ('Pictures saved on this PC: ' + $cvr.pictures + ' in ' + $script:CvPics) }
+    $cvr.ok = ($cvr.pictures -gt 0 -and -not $cvr.notSaved.Count); return $cvr
+  }
   $key = Get-CvKey
   $withJpg = @($pics | Where-Object { $_.jpg }); $rest = @($pics | Where-Object { -not $_.jpg })
   $batches = New-Object System.Collections.Generic.List[object]
@@ -300,23 +356,30 @@ function Save-CameraViews {
   $bodies = New-Object System.Collections.Generic.List[object]
   foreach ($b in $batches) { $bodies.Add(@{ op = 'camPush'; site = $Site; source = 'toolkit'; pc = $env:COMPUTERNAME; pics = $b }) }
   $bodies.Add(@{ op = 'camPush'; site = $Site; source = 'toolkit'; pc = $env:COMPUTERNAME; pics = $list; complete = $true })
+  $keptAll = $true   # 2.2.19 (F20): "wait in the outbox" only when every batch really was kept there
   foreach ($body in $bodies) {
-    if (-not $key) { Save-CvOutbox $body; $okAll = $false; continue }
+    if (-not $key) { if (-not (Save-CvOutbox $body)) { $keptAll = $false }; $okAll = $false; continue }
     $body.key = $key
     $r = $(if ($okAll) { Send-CvBody $body } else { $null })
     if ($r -and $r.ok) {
       if ($r.site) { $cvr.site = $r.site }
       foreach ($x in @($r.results)) { if ($x.changed) { $cvr.changed += ('CH ' + [int](($x.k -replace '^.*CH', '')) + ': looks ' + $x.changed) } }
       if ($body.complete) { $cvr.missing = @($r.missingKeys) }
-    } elseif ($r -and -not $r.ok) { CvSay ('The service log refused the pictures: ' + $r.msg) 'Red'; $okAll = $false; if ($r.msg -match '(?i)site not found') { break }; Save-CvOutbox $body }
-    else { $okAll = $false; Save-CvOutbox $body }
+    } elseif ($r -and -not $r.ok) { CvSay ('The service log refused the pictures: ' + $r.msg) 'Red'; $okAll = $false; if ($r.msg -match '(?i)site not found') { $keptAll = $false; break }; if (-not (Save-CvOutbox $body)) { $keptAll = $false } }
+    else { $okAll = $false; if (-not (Save-CvOutbox $body)) { $keptAll = $false } }
   }
-  if (-not $key) { CvSay 'No upload key on this PC yet ("Set upload key.cmd"). Pictures wait in the outbox and go once the key is set.' 'Yellow'; $cvr.queued = $true }
-  elseif ($okAll) { $cvr.sent = $true; CvSay ('Sent ' + $cvr.pictures + ' picture' + $(if ($cvr.pictures -eq 1) { '' } else { 's' }) + ' to the site page' + $(if ($cvr.site) { ' (' + $cvr.site + ')' } else { '' }) + '.') 'Green' }
-  else { $cvr.queued = $true; CvSay 'No internet / service log not reachable: pictures wait in the outbox and go next time the Toolkit runs.' 'Yellow' }
+  $nTaken = $withJpg.Count
+  if (-not $key) {
+    if ($keptAll) { CvSay 'No upload key on this PC yet ("Set upload key.cmd"). Pictures wait in the outbox and go once the key is set.' 'Yellow'; $cvr.queued = $true }
+    else { CvSay 'No upload key on this PC yet ("Set upload key.cmd"), and the pictures could NOT be kept in the outbox: they were not sent and will not go later.' 'Red' }
+  }
+  elseif ($okAll) { $cvr.sent = $true; CvSay ('Sent ' + $nTaken + ' picture' + $(if ($nTaken -eq 1) { '' } else { 's' }) + ' to the site page' + $(if ($cvr.site) { ' (' + $cvr.site + ')' } else { '' }) + '.') 'Green' }
+  elseif ($keptAll) { $cvr.queued = $true; CvSay 'No internet / service log not reachable: pictures wait in the outbox and go next time the Toolkit runs.' 'Yellow' }
+  else { CvSay 'The pictures were NOT sent and could NOT all be kept in the outbox: those will not go later.' 'Red' }
   foreach ($c in $cvr.changed) { CvSay ('  VIEW CHANGED? ' + $c) 'Yellow' }
   if ($cvr.missing.Count) { CvSay ('  MISSING compared with before: ' + ((@($cvr.missing) | ForEach-Object { $_ -replace '^CH0?', 'CH ' }) -join ', ')) 'Yellow' }
-  $cvr.ok = $cvr.pictures -gt 0
+  # 2.2.19 (F20): ok = every picture taken is saved on this PC, and it is either sent or really kept in the outbox
+  $cvr.ok = ($cvr.pictures -gt 0 -and -not $cvr.notSaved.Count -and ($cvr.sent -or $cvr.queued))
   return $cvr
 }
 

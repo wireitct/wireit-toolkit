@@ -42,7 +42,23 @@ function Invoke-TkStartupRecovery([string]$toolkitDir) {
     try { if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force -ErrorAction Stop } } catch { $bad += [string]$a }
   }
   $vp = Join-Path $prev 'version.json.prev'
-  try { if (Test-Path -LiteralPath $vp) { Copy-TkAtomicFile $vp (Join-Path $toolkitDir 'version.json') } } catch { $bad += 'version.json' }
+  # 2.2.19 (Codex 2.2.18 F26, startup twin): the version record must match the files put back. 2.2.18 skipped it when the saved copy
+  # had none, so version.json kept naming the newer version. Now: the saved record is put back and read back; with no saved record, a
+  # record is written from the journal's own version (from = the version put back, checked to look like a version) and read back;
+  # anything else = NOT finished (the journal stays and the start says so).
+  $vjPath = Join-Path $toolkitDir 'version.json'
+  $backV = [string]$j.from
+  $vRebuilt = $false
+  try {
+    if (Test-Path -LiteralPath $vp) { Copy-TkAtomicFile $vp $vjPath }
+    elseif ($backV -match '^\d+(\.\d+){1,3}$') {
+      $vt = $vjPath + '.' + [guid]::NewGuid().ToString('N') + '.vtmp'
+      try { [IO.File]::WriteAllText($vt, ('{ "version": "' + $backV + '", "previous": "", "note": "rebuilt from the update record at start-up (the saved version record was missing)" }')); Copy-TkAtomicFile $vt $vjPath } finally { Remove-Item -LiteralPath $vt -Force -ErrorAction SilentlyContinue }
+      $vRebuilt = $true
+    } else { throw 'no saved version record and no version in the update record' }
+    $vr = $null; try { $vr = [IO.File]::ReadAllText($vjPath) | ConvertFrom-Json -ErrorAction Stop } catch {}
+    if (-not $vr -or -not [string]$vr.version -or ($vRebuilt -and [string]$vr.version -ne $backV)) { throw 'the version record does not read back as the version put back' }
+  } catch { $bad += 'version.json' }
   # 2.2.15 (Codex 2.2.14 R8): a "Go back" (kind = undo) that stopped half-way is FINISHED the same way: every saved old file back,
   # the update's added files removed, the old version number back, and the version we left is not re-installed on its own
   if ($bad.Count) { throw ('An earlier ' + $(if ($isUndo) { 'Go back' } else { 'update' }) + ' could not be put back: ' + ($bad -join ', ') + '. Run the Toolkit installer again.') }
@@ -50,7 +66,7 @@ function Invoke-TkStartupRecovery([string]$toolkitDir) {
   if ($isUndo) {
     # 2.2.16: back/left name the versions; a 2.2.15 journal (no back) had to = the version put back
     $back = ''; if ($j.PSObject.Properties['back'] -and [string]$j.back) { $back = [string]$j.back } else { $back = [string]$j.to }
-    return ('An earlier Go back to version ' + $back + ' stopped half-way. It was finished now: version ' + $back + ' is back in place.')
+    return ('An earlier Go back to version ' + $back + ' stopped half-way. It was finished now: version ' + $back + ' is back in place.' + $(if ($vRebuilt) { ' (Its version record was missing and was rebuilt from the update record.)' } else { '' }))
   }
-  return ('An earlier update to ' + $j.to + ' stopped half-way, so version ' + $j.from + ' was put back.')
+  return ('An earlier update to ' + $j.to + ' stopped half-way, so version ' + $j.from + ' was put back.' + $(if ($vRebuilt) { ' (Its version record was missing and was rebuilt from the update record.)' } else { '' }))
 }

@@ -57,7 +57,7 @@ if ($Mode -eq 'Retry') {
   $refused = @(@($state.devices) | Where-Object { [string]$_.status -eq 'refused' -and (-not $Only -or [string]$_.serial -like ('*' + $Only + '*') -or [string]$_.ip -eq $Only -or [string]$_.mac -eq $Only) })
   if (-not $refused.Count) { Hk-Say 'No camera here has refused Hikvision''s file - nothing to retry.'; Format-HikStatus $state | ForEach-Object { Hk-Say ('  ' + $_) }; exit 0 }
   foreach ($d in $refused) {
-    $live = @($seenR | Where-Object { $_.mac -eq $d.mac })[0]
+    $live = Find-HikLiveDevice $d $seenR   # 2.2.19 (class A): the same device by MAC (serial only when no MAC was saved)
     $rr = Get-HikRetryReadiness $d $live
     if ($rr.ok) { $retryDevs += $live } else { foreach ($l in ([string]$rr.why -split "`n")) { Hk-Say $l 'Yellow' } }
   }
