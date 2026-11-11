@@ -204,6 +204,9 @@ function Save-CvKey([string]$k) {
   else { Add-Type -AssemblyName System.Security; $b = [Security.Cryptography.ProtectedData]::Protect($data, [Text.Encoding]::ASCII.GetBytes('WireIt-Toolkit-v1'), [Security.Cryptography.DataProtectionScope]::LocalMachine) }
   $kf = Join-Path $dir 'upload-key.bin'
   try { [IO.File]::WriteAllBytes($kf, $b) } catch { CvSay ('The upload key was NOT saved: ' + $_.Exception.Message) 'Red'; return $false }
+  # 2.2.20 (Codex 2.2.19 class A sweep): "saved" only when the file reads back exactly as written
+  $kb = $null; try { $kb = [IO.File]::ReadAllBytes($kf) } catch { $kb = $null }
+  if (-not $kb -or $kb.Length -ne $b.Length -or [Convert]::ToBase64String($kb) -ne [Convert]::ToBase64String($b)) { CvSay 'The upload key was NOT saved: the file does not read back as written.' 'Red'; return $false }
   # 2.2.4 (#26): every local admin USER may read this one file without elevation (UAC); the folder stays admins + SYSTEM + you
   try { $mg = Join-Path $script:CvHere 'ToolkitMigrate.ps1'; if (Test-Path -LiteralPath $mg) { . $mg; $ops = Get-TkRealOps; foreach ($u in @(& $ops.adminUsers)) { [void](& $ops.icacls (Get-TkKeyReadArgs $kf $u)) } } } catch {}
   CvSay 'Upload key saved on this PC (encrypted, this PC only).' 'Green'

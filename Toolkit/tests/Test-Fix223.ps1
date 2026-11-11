@@ -123,8 +123,9 @@ Write-Host '#20 Undo marks a change done only once it is verified'
 $fs = Read-Src 'Toolkit/FixSite.ps1'
 Check ($fs -match "settings could not be read - not put back") 'reproduction: unreadable stream -> not marked done (2.2.2 found "no differences" and marked it)'
 Check ($fs -match 'reads them back as they were' -and $fs -match '\$okS = \[bool\]\(\$rd -and') 'settings are read back before "done"'
-Check ($fs -match "\[void\]\(Set-FsPassword \`$ip \`$c\.brand \`$cr \`$oldPw\); \(Test-FsLogin \`$ip \`$c\.brand \`$oldPw\) -eq 'ok'") 'camera password back = the old password logs in'
-Check ($fs -match "\`$ok = \(\(Test-FsLogin \`$nip 'Hikvision' \`$oldN\) -eq 'ok'\)") 'NVR password back = the old password logs in'
+# 2.2.20 (Codex 2.2.19 R12): Test-FsLoginIs = the same login check PLUS the saved device's MAC / serial (stricter, never weaker)
+Check ($fs -match "\[void\]\(Set-FsPassword \`$ip \`$c\.brand \`$cr \`$oldPw\); \(Test-FsLogin(Is)? \`$ip \`$c\.brand \`$oldPw.*?\) -eq 'ok'") 'camera password back = the old password logs in'
+Check ($fs -match "\`$ok = \(\(Test-FsLogin(Is)? \`$nip 'Hikvision' \`$oldN.*?\) -eq 'ok'\)") 'NVR password back = the old password logs in'
 Check ($fs -match "Restart-FsDevice \(\[string\]\`$n\.target\)" -and $fs -match "if \(\`$backN\) \{ & \`$markDone \('nvrmove") 'NVR move-back: restart when asked, done only when it answers on its old address'
 Write-Host '#8 discovery and repairs stay on the network the tech picked'
 $pcA = [pscustomobject]@{ ip = '192.168.1.105'; prefix = 24 }; $pcB = [pscustomobject]@{ ip = '10.0.5.20'; prefix = 24 }

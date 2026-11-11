@@ -103,7 +103,8 @@ function Get-FsNet { param($ip, $brand, $cred) $script:FsNetWhy = 'the device an
 $o = [ordered]@{ have = [bool](Get-Command Get-FsNetMismatch -ErrorAction SilentlyContinue) }
 if ($o.have) {
   $b = [pscustomobject]@{ ip = '192.168.1.19'; mask = '255.255.255.0'; gw = '192.168.1.254'; dhcp = $false; dns1 = '8.8.8.8'; dns2 = '' }
-  $script:Rd = [pscustomobject]@{ ip = '192.168.1.19'; mask = '255.255.255.0'; gw = '192.168.1.1'; dhcp = $false; dns1 = '8.8.8.8'; dns2 = '' }; $o.match = Get-FsNetMismatch '192.168.1.19' 'Hikvision' $null $b '192.168.1.19' '255.255.255.0' '192.168.1.1' '8.8.8.8' '1.1.1.1'
+  # 2.2.20 (Codex 2.2.19 R09): a DNS 2 that was asked for must read back too (2.2.19 skipped it when the old one was empty)
+  $script:Rd = [pscustomobject]@{ ip = '192.168.1.19'; mask = '255.255.255.0'; gw = '192.168.1.1'; dhcp = $false; dns1 = '8.8.8.8'; dns2 = '1.1.1.1' }; $o.match = Get-FsNetMismatch '192.168.1.19' 'Hikvision' $null $b '192.168.1.19' '255.255.255.0' '192.168.1.1' '8.8.8.8' '1.1.1.1'
   $script:Rd = [pscustomobject]@{ ip = '192.168.1.19'; mask = '255.255.0.0'; gw = '192.168.1.1'; dhcp = $false; dns1 = '4.4.4.4'; dns2 = '' }; $o.maskdns = Get-FsNetMismatch '192.168.1.19' 'Hikvision' $null $b '192.168.1.19' '255.255.255.0' '192.168.1.1' '8.8.8.8' '1.1.1.1'
   $script:Rd = [pscustomobject]@{ ip = '192.168.1.19'; mask = '255.255.255.0'; gw = '192.168.1.1'; dhcp = $true; dns1 = '8.8.8.8'; dns2 = '' }; $o.stilldhcp = Get-FsNetMismatch '192.168.1.19' 'Hikvision' $null $b '192.168.1.19' '255.255.255.0' '192.168.1.1' '8.8.8.8' '1.1.1.1'
   $script:Rd = [pscustomobject]@{ ip = '192.168.1.19'; mask = '255.255.255.0'; gw = '192.168.1.1'; dhcp = $false; dns1 = '8.8.8.8'; dns2 = '' }; $o.wantdhcp = Get-FsNetMismatch '192.168.1.19' 'Hikvision' $null $b '192.168.1.19' '' '' '' '' -Dhcp

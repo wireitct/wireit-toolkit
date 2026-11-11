@@ -449,7 +449,7 @@ if ($Mode -eq 'Rollback') {
       $idP = $(if ($pw -cne $oldPw) { & $camIdNow $ip $cr } else { '' })
       if ($idP) { $ok = $false; $res += [pscustomobject]@{ text = ('old password NOT put back: ' + $idP); ok = $false } }
       else {
-        $ok = $(if ($pw -ceq $oldPw) { $true } else { [void](Set-FsPassword $ip $c.brand $cr $oldPw); (Test-FsLogin $ip $c.brand $oldPw) -eq 'ok' })   # 2.2.3 (Codex #20): back = the old password logs in
+        $ok = $(if ($pw -ceq $oldPw) { $true } else { [void](Set-FsPassword $ip $c.brand $cr $oldPw); (Test-FsLoginIs $ip $c.brand $oldPw ([string]$c.mac) $camSer) -eq 'ok' })   # 2.2.3 (Codex #20): back = the old password logs in; 2.2.20 (R12): on THIS camera (DeviceInfo + MAC)
         if ($ok) { $pw = $oldPw; $cr = Fs-Cred $pw; $mk = ConvertTo-FsMac ([string]$c.mac); if ($mk) { $sec.cams[$mk] = $oldPw }; & $markDone ($ck + '|password') }
         $res += [pscustomobject]@{ text = 'old password back'; ok = $ok }
       }
@@ -583,7 +583,7 @@ if ($Mode -eq 'Rollback') {
       $ok = ($working.value -ceq $oldN)
       if (-not $ok) {
         [void](Set-FsPassword $nip 'Hikvision' (Fs-Cred $working.value) $oldN); Say-PlainWarning $nip
-        $ok = ((Test-FsLogin $nip 'Hikvision' $oldN) -eq 'ok')   # back = the old password logs in
+        $ok = ((Test-FsLoginIs $nip 'Hikvision' $oldN ([string](Get-FsProp $np 'mac' '')) ([string](Get-FsProp $np 'serial' '')) 'that NVR') -eq 'ok')   # back = the old password logs in; 2.2.20 (R12): on THAT NVR
       }
     }
     if ($ok) { $nvrPwR[$nip] = $oldN; $sec.nvr[$nip] = $oldN; if ($nip -ne $nip0) { $nvrPwR[$nip0] = $oldN; $sec.nvr[$nip0] = $oldN }; & $markDone ('nvrpw|' + $nip0) } else { $bad++ }
@@ -708,10 +708,14 @@ if ($Mode -eq 'DryRun') {
       $psexe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
       # 2.2.3 (Codex #8/#9): only the picked network is scanned, and only THIS run's scan is used: the old out\latest.json (another
       # site's, maybe) is moved aside first, and a failed finder (exit code, or no new file) gives no devices instead of stale ones
-      $lj = Join-Path $camResetDir 'out\latest.json'; if (Test-Path -LiteralPath $lj) { Move-Item -LiteralPath $lj -Destination ($lj + '.prev') -Force -ErrorAction SilentlyContinue }
-      $null = & $psexe -NoProfile -ExecutionPolicy Bypass -File $fc -NoLogin -LocalIp ([string]$pc.ip) 2>&1; $fcExit = $LASTEXITCODE
-      $scanOk = (Test-FsFreshScan $lj $fcExit $runStart)
-      if (-not $scanOk) { Say ('Find cameras did not finish a scan on this network' + $(if ($fcExit) { ' (code ' + $fcExit + ')' } else { '' }) + ', so its results are not used (only the NVR and the site list).') 'Yellow' }
+      # 2.2.20 (Codex 2.2.19 class D sweep): "this run's scan" is proven by the old file being GONE before the finder runs, not only by a
+      # time tolerance: when the old out\latest.json cannot be moved aside (or is still there), no scan result is used this run
+      $lj = Join-Path $camResetDir 'out\latest.json'; $ljAside = $true
+      if (Test-Path -LiteralPath $lj) { try { Move-Item -LiteralPath $lj -Destination ($lj + '.prev') -Force -ErrorAction Stop } catch { Fs-Log ('the previous scan result could not be moved aside: ' + $_.Exception.Message) }; if (Test-Path -LiteralPath $lj) { $ljAside = $false } }
+      $fcExit = 0; if ($ljAside) { $null = & $psexe -NoProfile -ExecutionPolicy Bypass -File $fc -NoLogin -LocalIp ([string]$pc.ip) 2>&1; $fcExit = $LASTEXITCODE }
+      $scanOk = $ljAside -and (Test-FsFreshScan $lj $fcExit $runStart)
+      if (-not $ljAside) { Say 'The previous Find cameras result (out\latest.json) could not be moved aside, so no scan result is used this run (only the NVR and the site list) - it could be another site''s.' 'Yellow' }
+      elseif (-not $scanOk) { Say ('Find cameras did not finish a scan on this network' + $(if ($fcExit) { ' (code ' + $fcExit + ')' } else { '' }) + ', so its results are not used (only the NVR and the site list).') 'Yellow' }
       foreach ($d in @($(if ($scanOk) { Get-TkScanDevices $camResetDir } else { @() }))) { $found += [pscustomobject]@{ brand = $d.brand; model = $d.model; serial = $d.serial; mac = $d.mac; ip = $d.ip; firmware = $d.firmware; kind = $(if ($d.kind -eq 'recorder') { 'nvr' } else { $d.kind }); activated = $true } }
       if ($scanOk) { try { $raw = Get-Content (Join-Path $camResetDir 'out\latest.json') -Raw | ConvertFrom-Json; foreach ($d in @($raw.devices)) { if ([string]$d.Activated -match '(?i)false|no') { foreach ($f in $found) { if ($f.ip -eq $d.IP) { $f.activated = $false } } } } } catch {} }
     } else { Say 'Find cameras is not on this PC (C:\WireIt\CamReset), so only the NVR''s list and the site list are used.' 'Yellow' }
@@ -994,6 +998,8 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'move' })) {
   if (-not (Test-FsBackupComplete $nbf 'Hikvision' -Nvr)) { & $nvrFail ('backup FAILED (' + $script:FsBackupWhy + ') - NVR not moved'); continue }
   $net = Get-FsNet $n.ip 'Hikvision' $cr
   if (-not $net) { & $nvrFail 'its address settings could not be read - not moved'; continue }
+  # 2.2.20 (Codex 2.2.19 R09): Undo needs every old value (mask, mode, router, DNS 1 / 2); one missing from its answer = not moved
+  $gapN = Get-FsNetUndoGap $net; if ($gapN) { & $nvrFail ('NOT moved: ' + $gapN + '. Nothing was changed'); continue }
   # 2.2.16 (Codex 2.2.15 F3): WHICH NVR this is (MAC / serial) goes into the undo file, so Undo never moves another NVR that takes the address
   $nid = Get-FsNvrIdRecord $n.ip $cr
   if (-not $nid.mac -and -not $nid.serial) { & $nvrFail 'its MAC / serial could not be read, so Undo could not check it is the same NVR later - not moved'; continue }
@@ -1012,7 +1018,7 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'move' })) {
   # 2.2.19 (Codex 2.2.18 F02/F03): right before the address write: still the scanned recorder (fresh MAC), and the new address still free
   $fwN2 = Get-FsFwdNvrBlock $n.ip $cr ([string]$n.mac) ''
   if ($fwN2) { & $nvrFail ('NOT moved: ' + $fwN2 + '. Nothing was changed - scan again'); continue }
-  if ($n.target -ne $n.ip -and -not (Test-FsIpFree $n.target)) { & $nvrFail ('NOT moved: ' + $n.target + ' started answering on the network just now (another device took it). Nothing was changed - run it again'); continue }
+  if ($n.target -ne $n.ip -and -not (Test-FsIpFree $n.target)) { & $nvrFail ('NOT moved: ' + $(if ($script:FsIpFreeWhy) { $script:FsIpFreeWhy } else { $n.target + ' started answering on the network just now (another device took it)' }) + '. Nothing was changed - run it again'); continue }
   $w = Set-FsNet $n.ip 'Hikvision' $cr $net $n.target $devNet.mask $devNet.gw
   if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $n.ip 'Hikvision' $cr) }
   $answers = $w.ok -and (Wait-FsDevice $n.target 'Hikvision' $nvrPw[$n.ip] ([int]$opts.rebootWaitSec))
@@ -1022,7 +1028,7 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'move' })) {
   # logged in before): the whole network config is read back and every field asked for must match before it says "fixed"
   $nmF = $(if ($answers) { Get-FsNetMismatch $n.target 'Hikvision' (Fs-Cred $nvrPw[$n.ip]) $net $n.target $devNet.mask $devNet.gw } else { '' })
   $back = $answers -and -not $nmF
-  $l = Format-FsCheckLine ('NVR ' + $n.ip) @([pscustomobject]@{ text = $(if (-not $w.ok) { 'the NVR refused the new address settings' } elseif ($w.PSObject.Properties['idWhy'] -and $w.idWhy) { 'new address sent, but NOT confirmed: ' + $w.idWhy } elseif ($nmF) { $(if ($n.target -eq $n.ip) { 'network settings NOT fixed' } else { 'moved -> ' + (Get-FsShort $n.target) + ', but its network settings are NOT confirmed' }) + ' - the NVR accepted them, but reads back: ' + $nmF } elseif ($n.target -eq $n.ip) { 'network settings fixed (router ' + $devNet.gw + ', fixed address)' } else { 'moved -> ' + (Get-FsShort $n.target) }); ok = $back })
+  $l = Format-FsCheckLine ('NVR ' + $n.ip) @([pscustomobject]@{ text = $(if (-not $w.ok) { $(if ($w.PSObject.Properties['why'] -and $w.why) { 'NOT moved: ' + $w.why } else { 'the NVR refused the new address settings' }) } elseif ($w.PSObject.Properties['idWhy'] -and $w.idWhy) { 'new address sent, but NOT confirmed: ' + $w.idWhy } elseif ($nmF) { $(if ($n.target -eq $n.ip) { 'network settings NOT fixed' } else { 'moved -> ' + (Get-FsShort $n.target) + ', but its network settings are NOT confirmed' }) + ' - the NVR accepted them, but reads back: ' + $nmF } elseif ($n.target -eq $n.ip) { 'network settings fixed (router ' + $devNet.gw + ', fixed address)' } else { 'moved -> ' + (Get-FsShort $n.target) }); ok = $back })
   Say $l $(if ($back) { 'Green' } else { 'Red' }); $results += $l
   if ($answers) { $nvrPw[$n.target] = $nvrPw[$n.ip]; $sec.nvr[$n.target] = $nvrPw[$n.ip]; Save-FsSecrets $SecretsDir $sec }; if ($back) { $okCount++ } else { $badCount++ }; $n | Add-Member -NotePropertyName moved -NotePropertyValue ([bool]$answers) -Force   # 2.2.18: moved = it answers there (the cameras follow it); fixed = also every setting read back
 }
@@ -1046,7 +1052,7 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'password' })) {
   if ($fwP2) { $np.attempted = $false; Save-Rb; $l = 'NVR ' + $nip + ': password NOT changed - ' + $fwP2 + ' ' + $script:FsBad; Say $l 'Red'; $results += $l; $badCount++; continue }
   [void](Set-FsPassword $nip 'Hikvision' (Fs-Cred $oldN) $sitePw)
   Say-PlainWarning $nip
-  $pwState = Resolve-FsPwChange $nip 'Hikvision' $sitePw $oldN   # 2.2.3 (Codex #19)
+  $pwState = Resolve-FsPwChange $nip 'Hikvision' $sitePw $oldN ([string]$nid.mac) ([string]$nid.serial)   # 2.2.3 (Codex #19); 2.2.20 (R12): the saved NVR's DeviceInfo, not HTTP 200
   if ($pwState -eq 'changed') { $nvrPw[$nip] = $sitePw; $sec.nvr[$nip] = $sitePw; $np.changed = $true; Save-FsSecrets $SecretsDir $sec; Save-Rb; $l = Format-FsCheckLine ('NVR ' + $nip) @([pscustomobject]@{ text = 'site password set'; ok = $true }); $okCount++ }
   elseif ($pwState -eq 'unknown') { $np.changed = $true; $np.unconfirmed = $true; $nvrPw.Remove($nip); Save-Rb; $l = Format-FsCheckLine ('NVR ' + $nip) @([pscustomobject]@{ text = 'password change not confirmed: neither password logs in right now - check the NVR'; ok = $false }); $badCount++ }
   else { $l = Format-FsCheckLine ('NVR ' + $nip) @([pscustomobject]@{ text = 'the NVR refused the new password - it keeps its old one'; ok = $false }); $badCount++ }
@@ -1080,7 +1086,7 @@ function Undo-CamPassword($c, [string]$ip, [string]$oldPw) {
   $idc = [string](Get-FsUndoIdentityBlock $ip ([string]$c.brand) (Fs-Cred $sitePw) ([string]$c.mac) ([string](Get-FsProp $c 'serial' '')) 'this camera' 'the scan')
   if ($idc) { return [pscustomobject]@{ ok = $false; video = $false; why = ($idc + '. Nothing was put back') } }
   $okP = Set-FsPassword $ip $c.brand (Fs-Cred $sitePw) $oldPw
-  if ($okP) { $okP = ((Test-FsLogin $ip $c.brand $oldPw) -eq 'ok') }
+  if ($okP) { $okP = ((Test-FsLoginIs $ip $c.brand $oldPw ([string]$c.mac) ([string](Get-FsProp $c 'serial' ''))) -eq 'ok') }   # 2.2.20 (R12): on THIS camera
   $okN = $true
   if ($okP -and $c.nvr -and $nvrCred.ContainsKey($c.nvr) -and [int]$c.channel -and [string](Get-FsUndoNvrBlock $c.nvr $nvrCred[$c.nvr] $rbc.nvr_id)) { $okN = $false }   # 2.2.19: fresh again right before the channel write
   elseif ($okP -and $c.nvr -and $nvrCred.ContainsKey($c.nvr) -and [int]$c.channel) { $w = Set-FsNvrChannel $c.nvr $nvrCred[$c.nvr] ([int]$c.channel) $ip $oldPw $c.brand ''; $okN = [bool]$w.ok }
@@ -1195,7 +1201,7 @@ foreach ($c in $ordered) {
       $rbc.password_attempted = $true; Save-Rb
       [void](Set-FsPassword $ip $c.brand $cr $sitePw)
       # 2.2.3 (Codex #19): the answer to the write may be lost while the change took: decide from what logs in now, never from the answer
-      $pwState = Resolve-FsPwChange $ip $c.brand $sitePw $pwBefore; $mk = ConvertTo-FsMac $c.mac
+      $pwState = Resolve-FsPwChange $ip $c.brand $sitePw $pwBefore ([string]$c.mac) $camSerF; $mk = ConvertTo-FsMac $c.mac   # 2.2.20 (R12)
       if ($pwState -eq 'changed') { $pw = $sitePw; $cr = Fs-Cred $pw; $rbc.password_changed = $true; if ($mk) { $sec.cams[$mk] = $sitePw; Save-FsSecrets $SecretsDir $sec }; & $step $(if (Test-FsSentPlain $ip) { 'password set' } else { 'password set (over HTTPS)' }) $true }
       elseif ($pwState -eq 'unchanged') { & $step 'password not changed (old one still works)' $false }
       else { $rbc.password_changed = $true; $rbc.password_unconfirmed = $true; if ($mk) { $sec.cams[$mk] = $sitePw; Save-FsSecrets $SecretsDir $sec }; & $step 'password change not confirmed: neither password logs in right now (it may have the site password) - camera left, check it' $false; $stop = $true }
@@ -1235,16 +1241,17 @@ foreach ($c in $ordered) {
       # its words: 'NOT moved: N NVRs record this camera' / 'N NVR channels record this camera')
       & $step ([string](Get-FsMoveBlock $c)) $false
     }
+    elseif ($net -and (Get-FsNetUndoGap $net)) { & $step ('NOT moved: ' + (Get-FsNetUndoGap $net) + ' - nothing was changed') $false }   # 2.2.20 (Codex 2.2.19 R09)
     elseif ($net) {
       $t = $c.target
       if ($t -ne $ip -and -not (Test-FsIpFree $t)) { $t = ''; for ($n = [int]$opts.camFirst; $n -le [int]$opts.camLast; $n++) { $x = $plan.scheme + '.' + $n; if (-not @($plan.cams | Where-Object { $_.target -eq $x -or $_.ip -eq $x }).Count -and (Test-FsIpFree $x)) { $t = $x; break } } }
-      if (-not $t) { & $step 'no free address - not moved' $false }
+      if (-not $t) { & $step $(if ($script:FsIpFreeWhy) { 'not moved: ' + $script:FsIpFreeWhy } else { 'no free address - not moved' }) $false }
       else {
         # 2.2.6 (Codex file-by-file E): the new address goes into the undo file BEFORE the move, so a run stopped mid-move still lets Undo find it
         $rbc.ip_target = $t; Save-Rb
         # 2.2.19 (Codex 2.2.18 F02 sweep): right before the address write: still the scanned camera, and the new address still free
         $mvOk = (& $camGate 'move')
-        if ($mvOk -and $t -ne $ip -and -not (Test-FsIpFree $t)) { & $step ('NOT moved: ' + (Get-FsShort $t) + ' started answering on the network just now (another device took it) - camera left on ' + (Get-FsShort $ip)) $false; $mvOk = $false }
+        if ($mvOk -and $t -ne $ip -and -not (Test-FsIpFree $t)) { & $step ('NOT moved: ' + $(if ($script:FsIpFreeWhy) { $script:FsIpFreeWhy } else { (Get-FsShort $t) + ' started answering on the network just now (another device took it)' }) + ' - camera left on ' + (Get-FsShort $ip)) $false; $mvOk = $false }
         if (-not $mvOk) { $rbc.ip_target = ''; Save-Rb; $stop = $true; $w = [pscustomobject]@{ ok = $false; reboot = $false; skipped = $true } }
         else { $w = Set-FsNet $ip $c.brand $cr $net $t $devNet.mask $devNet.gw }
         if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $ip $c.brand $cr) }
@@ -1268,6 +1275,7 @@ foreach ($c in $ordered) {
         elseif ($back) { & $step $(if ($t -ne $ip) { 'moved ' + (Get-FsShort $ip) + ' -> ' + (Get-FsShort $t) } else { 'address set fixed' }) $true; $ip = $t; $rbc.ip_after = $t; $c.target = $t; $c | Add-Member -NotePropertyName ipNow -NotePropertyValue $t -Force }
         elseif ($w.ok) { & $step ('moved to ' + (Get-FsShort $t) + ' but it does not answer there yet') $false; $stop = $true; $rbc.ip_after = $t }
         elseif ($w.PSObject.Properties['skipped']) { }
+        elseif ($w.PSObject.Properties['why'] -and $w.why) { & $step ('NOT moved: ' + $w.why) $false }   # 2.2.20 (R09)
         else { & $step 'the camera refused the new address' $false }
       }
     } else { & $step 'address could not be read - not moved' $false }
