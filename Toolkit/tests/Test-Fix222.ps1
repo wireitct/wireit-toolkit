@@ -155,6 +155,7 @@ function New-SimNet2([bool]$dhcp) {
   $script:sim = @{ dhcp = $dhcp; coexist = 'disabled'; addrs = New-Object System.Collections.ArrayList; gw = @('192.168.1.1'); calls = New-Object System.Collections.ArrayList; lease = 0; noRoute = $false; n = 0 }
   [void]$script:sim.addrs.Add([pscustomobject]@{ ip = '192.168.1.105'; prefix = 24; origin = $(if ($dhcp) { 'Dhcp' } else { 'Manual' }); skip = $false; store = 'ActiveStore'; addrState = 'Preferred' })
   $script:FsNetOps = @{
+    ident = { param($a) [pscustomobject]@{ name = 'Ethernet'; guid = '{6f1c2b9e-0d3a-4c55-9a51-2f0e5d7c1a11}' } }   # 2.2.19 (F05): the stand-in also answers which adapter is at that number
     state = { param($a) [void]$script:sim.calls.Add('state'); [pscustomobject]@{ dhcp = $script:sim.dhcp; coexist = $script:sim.coexist; addrs = @($script:sim.addrs); gw = @($script:sim.gw) } }
     coexist = { param($a) $script:sim.coexist = $(if ($a.on) { 'enabled' } else { 'disabled' }); return $true }
     dhcp = { param($a) $script:sim.dhcp = [bool]$a.on; return $true }

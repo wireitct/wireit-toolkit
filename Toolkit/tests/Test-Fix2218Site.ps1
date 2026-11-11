@@ -47,6 +47,8 @@ $script:sim = @{ calls = New-Object System.Collections.ArrayList; addrs = New-Ob
 [void]$script:sim.addrs.Add([pscustomobject]@{ ip = '192.168.1.105'; prefix = 24; origin = 'Dhcp'; skip = $false })
 $script:FsNetOps = @{
   state = { param($a) [pscustomobject]@{ dhcp = $true; coexist = 'disabled'; addrs = @($script:sim.addrs); gw = @('192.168.1.1') } }
+  ident = { param($a) [pscustomobject]@{ name = 'Ethernet'; guid = '{6f1c2b9e-0d3a-4c55-9a51-2f0e5d7c1a11}' } }   # 2.2.19 (F05): which adapter is at that number
+  allstate = { param($a) [pscustomobject]@{ adapters = @([pscustomobject]@{ name = 'Ethernet'; ifIndex = 5; state = (& $script:FsNetOps['state'] @{ ifIndex = 5 }) }) } }   # 2.2.19: every connected adapter, read completely
   coexist = { param($a) [void]$script:sim.calls.Add('coexist ' + $a.on); return $true }
   dhcp = { param($a) [void]$script:sim.calls.Add('dhcp ' + $a.on); return $true }
   addtemp = { param($a) [void]$script:sim.calls.Add('addtemp ' + $a.ip); [void]$script:sim.addrs.Add([pscustomobject]@{ ip = $a.ip; prefix = 24; origin = 'Manual'; skip = $true }); return 'Preferred' }

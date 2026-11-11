@@ -65,6 +65,7 @@ $script:RnPauseMinutes = 10                                    # the pause expir
 $script:RnAnswer = $null                                       # tests: the crew's answer to the fixed-address question
 $script:RnLines = New-Object System.Collections.ArrayList     # what was said (for the receipt)
 $script:RnDone = New-Object System.Collections.ArrayList      # what was changed
+$script:RnNotes = @()                                          # 2.2.19: things noted as not checked (said with the result)
 if ($null -eq $script:RnOps) { $script:RnOps = $null }       # tests put a simulated Windows here
 
 function Rn-Say([string]$t, [string]$c = '') {
@@ -75,6 +76,11 @@ function Rn-Say([string]$t, [string]$c = '') {
 function Rn-Changed([string]$t) { [void]$script:RnDone.Add($t); Rn-Say ('  ' + $t) }
 
 # ---------------- the Windows side (tests replace it with $script:RnOps) ----------------
+# 2.2.19: $true when a failed Windows network query only means "there is none" (no address / no route), not a failed read
+function Test-RnNoneFound($err) {
+  try { if ([string]$err.CategoryInfo.Category -eq 'ObjectNotFound') { return $true } } catch {}
+  return $false
+}
 function Invoke-RnOp([string]$op, $a = @{}) {
   if ($script:RnOps) { return (& $script:RnOps $op $a) }
   switch ($op) {
@@ -89,19 +95,26 @@ function Invoke-RnOp([string]$op, $a = @{}) {
       return $out
     }
     'state' {
-      $ix = [int]$a.ifIndex; $r = [ordered]@{ dhcp = $false; coexist = 'unknown'; active = @(); persistent = @(); routes = @(); dnsStatic = $false; dnsServers = @() }
-      $ipi = Get-NetIPInterface -InterfaceIndex $ix -AddressFamily IPv4 -ErrorAction SilentlyContinue
+      # 2.2.19 (Codex 2.2.18 F18/F08 twin): every query's success is tracked ('unread' names what could not be read); a failed query
+      # is never read as "DHCP off" / "no fixed address" / "DNS automatic". "No matching object" from Windows is a real empty answer.
+      $ix = [int]$a.ifIndex; $r = [ordered]@{ dhcp = $false; coexist = 'unknown'; active = @(); persistent = @(); routes = @(); dnsStatic = $false; dnsServers = @(); unread = @() }
+      $un = @()
+      $ipi = $null; try { $ipi = Get-NetIPInterface -InterfaceIndex $ix -AddressFamily IPv4 -ErrorAction Stop } catch { $un += 'the DHCP setting' }
+      if (-not $ipi -and $un -notcontains 'the DHCP setting') { $un += 'the DHCP setting' }
       $r.dhcp = ($ipi -and [string]$ipi.Dhcp -eq 'Enabled')
       try { $t = (netsh interface ipv4 show interface ([string]$ix)) -join "`n"; $m = [regex]::Match($t, '(?i)DHCP/Static IP coexistence\s*:\s*(\w+)'); if ($m.Success) { $r.coexist = $m.Groups[1].Value.ToLower() } } catch {}
-      $r.active = @(Get-NetIPAddress -InterfaceIndex $ix -AddressFamily IPv4 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ ip = [string]$_.IPAddress; prefix = [int]$_.PrefixLength; origin = [string]$_.PrefixOrigin } })
-      $r.persistent = @(Get-NetIPAddress -InterfaceIndex $ix -AddressFamily IPv4 -PolicyStore PersistentStore -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ ip = [string]$_.IPAddress; prefix = [int]$_.PrefixLength; origin = 'Manual' } })
+      try { $r.active = @(Get-NetIPAddress -InterfaceIndex $ix -AddressFamily IPv4 -PolicyStore ActiveStore -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ ip = [string]$_.IPAddress; prefix = [int]$_.PrefixLength; origin = [string]$_.PrefixOrigin } }) } catch { if (-not (Test-RnNoneFound $_)) { $un += 'the live addresses' } }
+      try { $r.persistent = @(Get-NetIPAddress -InterfaceIndex $ix -AddressFamily IPv4 -PolicyStore PersistentStore -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ ip = [string]$_.IPAddress; prefix = [int]$_.PrefixLength; origin = 'Manual' } }) } catch { if (-not (Test-RnNoneFound $_)) { $un += 'the saved addresses' } }
       # a fixed router address is the one Windows SAVED (PersistentStore); a DHCP router address is never saved. Its live copy goes too.
-      $pr = @(Get-NetRoute -InterfaceIndex $ix -DestinationPrefix '0.0.0.0/0' -PolicyStore PersistentStore -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.NextHop })
+      $pr = @(); try { $pr = @(Get-NetRoute -InterfaceIndex $ix -DestinationPrefix '0.0.0.0/0' -PolicyStore PersistentStore -ErrorAction Stop | ForEach-Object { [string]$_.NextHop }) } catch { if (-not (Test-RnNoneFound $_)) { $un += 'the saved router address' } }
       $rt = @($pr | ForEach-Object { [pscustomobject]@{ gw = $_; store = 'PersistentStore'; manual = $true } })
-      $rt += @(Get-NetRoute -InterfaceIndex $ix -DestinationPrefix '0.0.0.0/0' -PolicyStore ActiveStore -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ gw = [string]$_.NextHop; store = 'ActiveStore'; manual = ($pr -contains [string]$_.NextHop) } })
+      try { $rt += @(Get-NetRoute -InterfaceIndex $ix -DestinationPrefix '0.0.0.0/0' -PolicyStore ActiveStore -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ gw = [string]$_.NextHop; store = 'ActiveStore'; manual = ($pr -contains [string]$_.NextHop) } }) } catch { if (-not (Test-RnNoneFound $_)) { $un += 'the live router address' } }
       $r.routes = $rt
       $r.dnsServers = @(); try { $r.dnsServers = @((Get-DnsClientServerAddress -InterfaceIndex $ix -AddressFamily IPv4 -ErrorAction Stop).ServerAddresses | ForEach-Object { [string]$_ }) } catch {}
-      try { $g = [string]$a.guid; if ($g) { $k = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\' + $g; $ns = [string](Get-ItemProperty -LiteralPath $k -Name NameServer -ErrorAction SilentlyContinue).NameServer; $r.dnsStatic = [bool]($ns.Trim()) } } catch {}
+      $g = [string]$a.guid
+      if (-not $g) { $un += 'the DNS setting' }
+      else { try { $k = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\' + $g; $ip0 = Get-ItemProperty -LiteralPath $k -ErrorAction Stop; $ns = $(if ($ip0.PSObject.Properties['NameServer']) { [string]$ip0.NameServer } else { '' }); $r.dnsStatic = [bool]($ns.Trim()) } catch { $un += 'the DNS setting' } }
+      $r.unread = @($un)
       return [pscustomobject]$r
     }
     'enable' { Enable-NetAdapter -Name $a.name -Confirm:$false -ErrorAction Stop; return $true }
@@ -380,8 +393,8 @@ function Save-RnBefore($ad, $st) {
 # the adapter's OWN fixed setup (DHCP off, not done by the Toolkit): addresses + gateway, '' when it is not one
 function Get-RnOwnStatic($ad, $st, $journals) {
   if ($st.dhcp) { return $null }
-  foreach ($j in @($journals | Where-Object { $_.ifIndex -eq $ad.ifIndex -and $_.readable })) { if ($j.dhcpBefore -eq $true) { return $null } }   # the Toolkit's record: it WAS automatic -> the Toolkit turned it off
-  $tk = @(); foreach ($j in @($journals | Where-Object { $_.ifIndex -eq $ad.ifIndex })) { $tk += @($j.ips) }
+  foreach ($j in @($journals | Where-Object { (Test-RnJournalFor $_ $ad) -and $_.readable })) { if ($j.dhcpBefore -eq $true) { return $null } }   # the Toolkit's record: it WAS automatic -> the Toolkit turned it off
+  $tk = @(); foreach ($j in @($journals | Where-Object { Test-RnJournalFor $_ $ad })) { $tk += @($j.ips) }
   $ips = @(@($st.active | Where-Object { $_ -and [string]$_.origin -eq 'Manual' }) + @($st.persistent | Where-Object { $_ }) | ForEach-Object { [string]$_.ip } | Where-Object { $tk -notcontains $_ } | Select-Object -Unique)
   if (-not $ips.Count) { return $null }
   $gws = @($st.routes | Where-Object { $_ -and $_.manual } | ForEach-Object { [string]$_.gw } | Select-Object -Unique)
@@ -392,19 +405,49 @@ function Get-RnJournals {
   $j = @()
   foreach ($f in @($script:RnFixSiteState, $FixNvrState)) {
     if (-not $f -or -not (Test-Path -LiteralPath $f)) { continue }
-    $o = $null; try { $o = [IO.File]::ReadAllText($f) | ConvertFrom-Json } catch {}
-    $temps = @(); $ix = -1; $co = ''; $dhb = $null
+    $o = $null; $bad = ''; try { $o = [IO.File]::ReadAllText($f) | ConvertFrom-Json -ErrorAction Stop } catch { $bad = 'could not be read' }
+    $temps = @(); $ix = -1; $co = ''; $dhb = $null; $nm = ''; $gd = ''
     if ($o) {
       if ($o.PSObject.Properties['temps']) { $temps = @($o.temps | Where-Object { $_ -and $_.ip }) } else { $temps = @($o | Where-Object { $_ -and $_.ip }) }
-      if ($o.PSObject.Properties['before'] -and $o.before) { $ix = [int]$o.before.ifIndex; $co = [string]$o.before.coexist; if ($o.before.PSObject.Properties['dhcp'] -and $null -ne $o.before.dhcp) { $dhb = [bool]$o.before.dhcp } }
+      if ($o.PSObject.Properties['before'] -and $o.before) { $ix = [int]$o.before.ifIndex; $co = [string]$o.before.coexist; if ($o.before.PSObject.Properties['dhcp'] -and $null -ne $o.before.dhcp) { $dhb = [bool]$o.before.dhcp }; if ($o.before.PSObject.Properties['name']) { $nm = [string]$o.before.name }; if ($o.before.PSObject.Properties['guid']) { $gd = [string]$o.before.guid } }
       # 2.2.12 (P1-3): Fix NVR's record names its adapter and whether it was automatic (DHCP) before Fix NVR touched it
-      if ($o.PSObject.Properties['pc'] -and $o.pc) { if ($ix -lt 0 -and $o.pc.PSObject.Properties['ifIndex'] -and $null -ne $o.pc.ifIndex) { $ix = [int]$o.pc.ifIndex }; if ($null -eq $dhb -and $o.pc.PSObject.Properties['dhcp'] -and $null -ne $o.pc.dhcp -and $null -ne $o.pc.ifIndex) { $dhb = [bool]$o.pc.dhcp } }
+      if ($o.PSObject.Properties['pc'] -and $o.pc) { if ($ix -lt 0 -and $o.pc.PSObject.Properties['ifIndex'] -and $null -ne $o.pc.ifIndex) { $ix = [int]$o.pc.ifIndex }; if ($null -eq $dhb -and $o.pc.PSObject.Properties['dhcp'] -and $null -ne $o.pc.dhcp -and $null -ne $o.pc.ifIndex) { $dhb = [bool]$o.pc.dhcp }; if (-not $nm -and $o.pc.PSObject.Properties['name']) { $nm = [string]$o.pc.name } }
       if ($o.PSObject.Properties['pc'] -and $o.pc -and $o.pc.PSObject.Properties['coexistence_before'] -and $o.pc.coexistence_before) { $co = $(if ([string]$o.pc.coexistence_before -match '(?i)enabled') { 'enabled' } else { 'disabled' }) }
       if ($ix -lt 0 -and $temps.Count) { $ix = [int]$temps[0].ifIndex }
-    }
-    $j += [pscustomobject]@{ file = $f; readable = [bool]$o; ifIndex = $ix; coexist = $co; dhcpBefore = $dhb; ips = @($temps | ForEach-Object { [string]$_.ip }) }
+      # 2.2.19 (Codex 2.2.18 F09 twin): a record that reads but holds none of the Toolkit's record fields ({} included), or lists
+      # temporary addresses / an adapter's old settings without saying which adapter, is damaged - not "nothing changed". (A Fix NVR
+      # record from before any adapter change - no addresses, no adapter yet - is a real empty record.)
+      $shape = ($o -is [array]) -or [bool]$o.PSObject.Properties['temps'] -or [bool]$o.PSObject.Properties['before'] -or [bool]$o.PSObject.Properties['pc']
+      if (-not $shape) { $bad = 'is damaged (it holds none of the Toolkit''s record fields)' }
+      elseif ($ix -lt 0 -and ($temps.Count -or ($o.PSObject.Properties['before'] -and $o.before))) { $bad = 'is damaged (it does not say which adapter it changed)' }
+    } elseif (-not $bad) { $bad = 'is empty' }
+    $j += [pscustomobject]@{ file = $f; readable = (-not $bad); bad = $bad; ifIndex = $ix; name = $nm; guid = $gd; coexist = $co; dhcpBefore = $dhb; ips = @($temps | ForEach-Object { [string]$_.ip }) }
   }
   return $j
+}
+# 2.2.19 (Codex 2.2.18 F05 twin): a record belongs to this adapter only when its number AND (when it names one) its adapter
+# name / ID match - another adapter that took the number is not the one the record changed
+# 2.2.19 (Codex 2.2.18 F05 twin): the chosen adapter read again - the one at its number with the SAME ID (name when no ID was
+# read). $null = not found again (gone, or its number now belongs to another adapter, or the list could not be read)
+function Get-RnAdapterAgain($ad) {
+  $l = $null; try { $l = @(Invoke-RnOp 'list') } catch { return $null }
+  foreach ($x in @($l | Where-Object { $_ -and $_.ifIndex -eq $ad.ifIndex })) {
+    if ($ad.guid -and $x.guid) { if (([string]$x.guid).Trim('{}').ToLower() -eq ([string]$ad.guid).Trim('{}').ToLower()) { return $x } }
+    elseif ([string]$x.name -eq [string]$ad.name) { return $x }
+  }
+  return $null
+}
+function Test-RnJournalFor($j, $ad) {
+  if (-not $j -or -not $ad -or $j.ifIndex -ne $ad.ifIndex) { return $false }
+  if ($j.guid -and $ad.guid -and ([string]$j.guid).Trim('{}').ToLower() -ne ([string]$ad.guid).Trim('{}').ToLower()) { return $false }
+  if ($j.name -and $ad.name -and [string]$j.name -ne [string]$ad.name) { return $false }
+  return $true
+}
+# 2.2.19 (Codex 2.2.18 F18): '' when this state read is complete, else what could not be read
+function Get-RnReadProblem($st) {
+  if ($null -eq $st) { return 'the adapter''s settings could not be read' }
+  if ($st.PSObject.Properties['unread'] -and @($st.unread | Where-Object { $_ }).Count) { return ((@($st.unread | Where-Object { $_ }) -join ', ') + ' could not be read') }
+  return ''
 }
 
 function Get-RnPlan($ad, $st, $journals, [bool]$keep = $false) {
@@ -414,7 +457,7 @@ function Get-RnPlan($ad, $st, $journals, [bool]$keep = $false) {
   # Toolkit's own temporary addresses (named in its records) and its coexistence change come off
   $p = New-Object System.Collections.ArrayList
   if ($ad.disabled) { [void]$p.Add([pscustomobject]@{ op = 'enable'; what = 'turn the adapter on' }) }
-  $tk = @(); foreach ($j in @($journals | Where-Object { $_.ifIndex -eq $ad.ifIndex })) { $tk += @($j.ips) }
+  $tk = @(); foreach ($j in @($journals | Where-Object { Test-RnJournalFor $_ $ad })) { $tk += @($j.ips) }
   if (-not $st.dhcp -and -not $keep) { [void]$p.Add([pscustomobject]@{ op = 'dhcp'; what = 'DHCP on (the router gives the address)' }) }
   foreach ($x in @($st.active | Where-Object { $_ -and [string]$_.origin -eq 'Manual' -and (-not $keep -or $tk -contains [string]$_.ip) })) { [void]$p.Add([pscustomobject]@{ op = 'removeaddr'; ip = [string]$x.ip; store = 'ActiveStore'; what = ('take off the ' + $(if ($tk -contains [string]$x.ip) { 'Toolkit''s temporary' } else { 'fixed' }) + ' address ' + $x.ip + ' (live copy)') }) }
   foreach ($x in @($st.persistent | Where-Object { $_ -and (-not $keep -or $tk -contains [string]$_.ip) })) { [void]$p.Add([pscustomobject]@{ op = 'removeaddr'; ip = [string]$x.ip; store = 'PersistentStore'; what = ('take off the ' + $(if ($tk -contains [string]$x.ip) { 'Toolkit''s temporary' } else { 'fixed' }) + ' address ' + $x.ip + ' (saved copy, it would come back after a restart)') }) }
@@ -423,12 +466,15 @@ function Get-RnPlan($ad, $st, $journals, [bool]$keep = $false) {
     if ($st.dnsStatic) { [void]$p.Add([pscustomobject]@{ op = 'dnsreset'; what = 'DNS back to automatic' }) }
   }
   $want = Get-RnCoexistWant $ad $journals $keep
-  if ($want -and [string]$st.coexist -ne 'unknown' -and [string]$st.coexist -ne $want) { [void]$p.Add([pscustomobject]@{ op = 'coexist'; on = ($want -eq 'enabled'); what = ('DHCP+static coexistence back to ' + $want) }) }
+  # 2.2.19 (Codex 2.2.18 F18): an unknown setting is not "already right" - no blind write, and Test-RnNormal says NOT CHECKED
+  if ($want -and (ConvertTo-RnCoexist $st.coexist) -and (ConvertTo-RnCoexist $st.coexist) -ne $want) { [void]$p.Add([pscustomobject]@{ op = 'coexist'; on = ($want -eq 'enabled'); what = ('DHCP+static coexistence back to ' + $want) }) }
   return $p.ToArray()
 }
 # coexistence as it should be: the Toolkit's record, else off. A kept fixed adapter with no Toolkit record: left as it is ('')
+# 2.2.19 (class D): coexistence words normalized ('enabled'/'disabled'); '' = not known
+function ConvertTo-RnCoexist($v) { $s = ([string]$v).Trim().ToLower(); if ($s -in @('enabled', 'on', 'true')) { return 'enabled' }; if ($s -in @('disabled', 'off', 'false')) { return 'disabled' }; return '' }
 function Get-RnCoexistWant($ad, $journals, [bool]$keep) {
-  $mine = @($journals | Where-Object { $_.ifIndex -eq $ad.ifIndex -and $_.coexist })
+  $mine = @($journals | Where-Object { (Test-RnJournalFor $_ $ad) -and $_.coexist })
   if ($keep -and -not $mine.Count) { return '' }
   $want = 'disabled'; foreach ($j in $mine) { $want = $(if ($j.coexist -match '(?i)enabled') { 'enabled' } else { 'disabled' }) }
   return $want
@@ -437,8 +483,13 @@ function Get-RnCoexistWant($ad, $journals, [bool]$keep) {
 function Test-RnNormal($ad, $st, $journals, [bool]$keep = $false) {
   # returns the list of things that are NOT normal (empty = normal); $keep (2.2.12, P1-3): the adapter's own fixed setup is normal
   $bad = @()
+  # 2.2.19 (Codex 2.2.18 F18/F08 twin): a read that failed or is incomplete is NOT CHECKED, never "normal"
+  $rp = Get-RnReadProblem $st
+  if ($rp) { return @('NOT CHECKED: ' + $rp + ', so it is not known whether this adapter is back to normal') }
+  # 2.2.19 (Codex 2.2.18 F09 twin): a Toolkit record that cannot be read or is damaged: what it changed is not known
+  foreach ($j in @($journals | Where-Object { -not $_.readable })) { $bad += ('NOT CHECKED: the Toolkit''s record ' + (Split-Path -Leaf $j.file) + ' ' + $j.bad + ', so it is not known what that run changed on this PC - restart this PC, start Fix this site once (it checks every adapter and keeps the record aside), then run this again') }
   if ($ad.disabled) { $bad += 'the adapter is still turned off' }
-  $tk = @(); foreach ($j in @($journals | Where-Object { $_.ifIndex -eq $ad.ifIndex })) { $tk += @($j.ips) }
+  $tk = @(); foreach ($j in @($journals | Where-Object { Test-RnJournalFor $_ $ad })) { $tk += @($j.ips) }
   if (-not $keep) {
     if (-not $st.dhcp) { $bad += 'DHCP is not on' }
     foreach ($x in @($st.active | Where-Object { $_ -and [string]$_.origin -eq 'Manual' -and $tk -notcontains [string]$_.ip })) { $bad += ('the fixed address ' + $x.ip + ' is still on (live copy)') }
@@ -447,7 +498,14 @@ function Test-RnNormal($ad, $st, $journals, [bool]$keep = $false) {
     if ($st.dnsStatic) { $bad += 'DNS is still set by hand' }
   }
   $want = Get-RnCoexistWant $ad $journals $keep
-  if ($want -and [string]$st.coexist -ne 'unknown' -and [string]$st.coexist -ne $want) { $bad += ('DHCP+static coexistence is ' + $st.coexist + ', should be ' + $want) }
+  $coNow = ConvertTo-RnCoexist $st.coexist
+  if ($want -and $coNow -and $coNow -ne $want) { $bad += ('DHCP+static coexistence is ' + $coNow + ', should be ' + $want) }
+  # 2.2.19 (Codex 2.2.18 F18): when the Toolkit's record says what it should be, a setting that cannot be read is NOT CHECKED - never
+  # "back to normal" (2.2.18 skipped it and said DONE). Without a Toolkit record it is only noted (Restore Network's own policy).
+  if ($want -and -not $coNow) {
+    if (@($journals | Where-Object { Test-RnJournalFor $_ $ad }).Count) { $bad += ('NOT CHECKED: the DHCP+static coexistence setting could not be read (the Toolkit''s record says it should be ' + $want + ')') }
+    elseif ($script:RnNotes -notcontains 'coexist') { $script:RnNotes += 'coexist' }
+  }
   foreach ($ip in @($tk | Select-Object -Unique)) {
     if (@($st.active | Where-Object { $_ -and [string]$_.ip -eq $ip }).Count) { $bad += ('the Toolkit''s temporary address ' + $ip + ' is still on (live copy)') }
     if (@($st.persistent | Where-Object { $_ -and [string]$_.ip -eq $ip }).Count) { $bad += ('the Toolkit''s temporary address ' + $ip + ' is still saved (it comes back after a restart)') }
@@ -482,7 +540,7 @@ function Select-RnAdapter($ads, $journals) {
     return $null
   }
   $sug = $null
-  foreach ($j in @($journals)) { if (-not $sug -and $j.ifIndex -ge 0) { $sug = @($ads | Where-Object { $_.ifIndex -eq $j.ifIndex })[0] } }
+  foreach ($j in @($journals)) { if (-not $sug -and $j.ifIndex -ge 0) { $sug = @($ads | Where-Object { Test-RnJournalFor $j $_ })[0] } }
   if (-not $sug) { foreach ($x in @($ads)) { if (-not $sug -and $x.needs) { $sug = $x } } }
   if (-not $sug) { $sug = @($ads | Where-Object { -not $_.wifi })[0] }
   if (-not $sug) { $sug = @($ads)[0] }
@@ -497,7 +555,7 @@ function Select-RnAdapter($ads, $journals) {
 
 function Move-RnJournals($ad, $journals) {
   # the adapter checked back to normal: the Toolkit's records for THIS adapter are done (kept, renamed, never deleted)
-  foreach ($j in @($journals | Where-Object { $_.ifIndex -eq $ad.ifIndex -and $_.readable })) {
+  foreach ($j in @($journals | Where-Object { (Test-RnJournalFor $_ $ad) -and $_.readable })) {
     $to = $j.file -replace '\.json$', ('.restored-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')
     try { Move-Item -LiteralPath $j.file -Destination $to -Force; Rn-Say ('  the Toolkit''s record ' + (Split-Path -Leaf $j.file) + ' is done (kept as ' + (Split-Path -Leaf $to) + ')') } catch {}
   }
@@ -541,6 +599,15 @@ function Invoke-RestoreNetwork {
   }
   if (-not $Elevated) { Rn-Say ('Adapter: ' + $ad.name + ' (' + $ad.desc + ')') }
   $st = Invoke-RnOp 'state' @{ ifIndex = $ad.ifIndex; guid = $ad.guid }
+  # 2.2.19 (Codex 2.2.18 F18/F08 twin): settings that cannot be fully read are not planned from (a failed DHCP read is not "DHCP
+  # off", a failed address read is not "no fixed address") and their before-copy would be incomplete: nothing is changed
+  $rp0 = Get-RnReadProblem $st
+  if ($rp0) {
+    Rn-Say ('This adapter''s settings could not be fully read (' + $rp0 + '). Nothing was changed (NOT CHECKED).') 'Red'
+    Rn-Say 'FAILED - Run again. If it fails twice, restart the PC.' 'Red'
+    $r0 = Write-RnReceipt ('FAILED - NOT CHECKED, nothing changed (' + $rp0 + ')') $ad; if ($r0) { Rn-Say ('Receipt: ' + $r0) }
+    return 6
+  }
   # 2.2.12 (Codex P1-3): its OWN before-snapshot, BEFORE anything is changed, and where it is
   $beforeFile = Save-RnBefore $ad $st
   if ($beforeFile) { Rn-Say ('  this adapter''s settings before this run are saved in ' + $beforeFile) } else { Rn-Say '  the settings before this run could NOT be saved' 'Yellow' }
@@ -564,7 +631,7 @@ function Invoke-RestoreNetwork {
           if (-not ($w0 -and $w0.connected)) {
             $pz = Start-RnPause $admin0; if (-not $pz.ok) { $failed0 += ('WifiWatch could not be paused (' + $pz.why + ')') }
             try { [void](Invoke-RnOp 'reconnect' @{ ifIndex = $ad.ifIndex; name = $ad.name; wifi = $true }); Say-RnWifiJoined $ad } catch { Rn-Say ('  reconnect did not work: ' + $_.Exception.Message) 'Yellow' }
-            $ad3 = @(@(Invoke-RnOp 'list') | Where-Object { $_.ifIndex -eq $ad.ifIndex })[0]; if ($ad3) { $ad = $ad3 }
+            $ad3 = Get-RnAdapterAgain $ad; if ($ad3) { $ad = $ad3 }
             $st = Invoke-RnOp 'state' @{ ifIndex = $ad.ifIndex; guid = $ad.guid }
           }
         }
@@ -603,13 +670,16 @@ function Invoke-RestoreNetwork {
     if (-not $pz.ok) { $failed += ('WifiWatch could not be paused (' + $pz.why + ')') }
     if ($pz.needed) {
       # a WifiWatch run that was stopped may have left things half-way (the adapter off): read the adapter again
-      $adR = @(@(Invoke-RnOp 'list') | Where-Object { $_.ifIndex -eq $ad.ifIndex })[0]; if ($adR) { $ad = $adR }
+      $adR = Get-RnAdapterAgain $ad; if ($adR) { $ad = $adR }
       $st = Invoke-RnOp 'state' @{ ifIndex = $ad.ifIndex; guid = $ad.guid }; $plan = @(Get-RnPlan $ad $st $journals $keep)
+      $rp1 = Get-RnReadProblem $st; if ($rp1) { $failed += ('NOT CHECKED: ' + $rp1 + ' - nothing was changed'); $plan = @() }
     }
     Rn-Say 'Putting it back:'
     # the adapter on and DHCP first, so the PC can get an address even if a later step fails
     foreach ($s in @($plan | Where-Object { $_.op -eq 'enable' }) + @($plan | Where-Object { $_.op -eq 'dhcp' }) + @($plan | Where-Object { $_.op -notin @('enable', 'dhcp') })) {
       try {
+        # 2.2.19 (F05 twin): the adapter is identified again right before each change
+        if (-not (Get-RnAdapterAgain $ad)) { throw ('the adapter "' + $ad.name + '" could not be found again (its number may now belong to another adapter), so this was not changed') }
         $a = @{ ifIndex = $ad.ifIndex; name = $ad.name; guid = $ad.guid }
         foreach ($k in @('ip', 'store', 'gw', 'on')) { if ($s.PSObject.Properties[$k]) { $a[$k] = $s.$k } }
         $ok = Invoke-RnOp $s.op $a
@@ -619,11 +689,11 @@ function Invoke-RestoreNetwork {
       } catch { $failed += ($s.what + ': ' + $_.Exception.Message); Rn-Say ('  NOT DONE: ' + $s.what + ' (' + $_.Exception.Message + ')') 'Red' }
     }
     # reconnect, then wait for the router's address
-    $ad2 = @(@(Invoke-RnOp 'list') | Where-Object { $_.ifIndex -eq $ad.ifIndex })[0]; if ($ad2) { $ad = $ad2 }
+    $ad2 = Get-RnAdapterAgain $ad; if ($ad2) { $ad = $ad2 }
     try { $rc = Invoke-RnOp 'reconnect' @{ ifIndex = $ad.ifIndex; name = $ad.name; wifi = $ad.wifi }; if ($ad.wifi) { Say-RnWifiJoined $ad } elseif (-not $keep) { Rn-Changed 'asked the router for a new address' } } catch { Rn-Say ('  reconnect did not work: ' + $_.Exception.Message) 'Yellow' }
     $st2 = $null
     for ($w = 0; $w -le [Math]::Max(0, $WaitSeconds); $w += 2) {
-      $ad3 = @(@(Invoke-RnOp 'list') | Where-Object { $_.ifIndex -eq $ad.ifIndex })[0]; if ($ad3) { $ad = $ad3 }
+      $ad3 = Get-RnAdapterAgain $ad; if ($ad3) { $ad = $ad3 }
       $st2 = Invoke-RnOp 'state' @{ ifIndex = $ad.ifIndex; guid = $ad.guid }
       if ($keep -or (Get-RnLease $st2)) { break }
       if ((-not $ad.connected) -and $w -ge 10) { break }
@@ -690,7 +760,7 @@ function Complete-RnRun($ad, $v, $journals, $failed = @(), [bool]$keep = $false)
     if ($r) { Rn-Say ('Receipt: ' + $r) }
     return 6
   }
-  if (@($journals | Where-Object { $_.ifIndex -eq $ad.ifIndex }).Count) { Move-RnJournals $ad $journals }
+  if (@($journals | Where-Object { Test-RnJournalFor $_ $ad }).Count) { Move-RnJournals $ad $journals }
   # 2.2.11 round 2: the settings are normal; DONE only when the PC is REALLY online on this adapter (2.2.12: the web, through it)
   $on = $v.on
   $net = $(if ($ad.wifi -and $on -and $on.ssid) { 'Wi-Fi "' + $on.ssid + '", ' } else { '' })
@@ -707,6 +777,7 @@ function Complete-RnRun($ad, $v, $journals, $failed = @(), [bool]$keep = $false)
     if ($r) { Rn-Say ('Receipt: ' + $r) }
     return 8   # 8, not 7: Fix this site already uses 7 for its own stop
   }
+  if ($script:RnNotes -contains 'coexist') { Rn-Say '  note: the DHCP+static coexistence setting could not be read, so it was not checked (no Toolkit record names it)' 'Yellow' }
   $gwt = $(if ($on.gw) { $(if ($on.gwPing) { ', router ' + $on.gw + ' answers' } else { ', router ' + $on.gw + ' does not answer ping (some routers never do)' }) } else { '' })
   Rn-Say ('DONE - network is back to normal and online (' + $ad.name + ': ' + $net + $how + 'address ' + $on.ip + $gwt + ', the internet answers through this adapter).') 'Green'
   Say-RnTail $ad
