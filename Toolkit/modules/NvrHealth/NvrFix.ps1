@@ -542,6 +542,9 @@ function Invoke-NvrFix {
       $bk2 = Fix-Save $BackupDir 'nvr-channels-at-write.xml' $all2.body
       if (-not $bk2) { return (& $done $false (Fix-SaveFailed 'the NVR channel list (read again after your YES)')) }
       $res.backup = $bk2
+      # 2.2.20 (class B sweep): the reads above took time - the NVR is identified once more immediately before the write
+      $sameP = Test-NhSameDevice $t $id0
+      if (-not $sameP.ok) { $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - NOT done (' + $sameP.why + ')'; return (& $done $false ('Nothing changed: right before the write, ' + $sameP.why + '. Check the NVR address and run it again.')) }
       $res.ran = $true
       $xml = '<?xml version="1.0" encoding="UTF-8"?><InputProxyChannel version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema"><id>' + $Channel + '</id><sourceInputPortDescriptor><proxyProtocol>HIKVISION</proxyProtocol><addressingFormatType>ipaddress</addressingFormatType><ipAddress>' + $CameraIp + '</ipAddress><managePortNo>8000</managePortNo><srcInputPort>1</srcInputPort><userName>' + (Fix-Xml $NewCredential.UserName) + '</userName><password>' + (Fix-Xml (Plain $NewCredential)) + '</password><streamType>auto</streamType></sourceInputPortDescriptor></InputProxyChannel>'
       $w = Http -Ip $Ip -Method 'PUT' -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $Channel) -Body $xml -Credential $t.cred -Port $t.port -NoLogBody
@@ -595,6 +598,9 @@ function Invoke-NvrFix {
       $same = Test-NhSameDevice $t $id0
       if (-not $same.ok) { return (& $done $false ('Not updated: ' + $same.why + '. Nothing changed.')) }
       $di2 = Hik-DeviceInfo $t
+      # 2.2.20 (class B sweep): this last read before the upload must ALSO be the same device (MAC / serial as saved)
+      $id2 = Test-NhIdMatch $id0 $di2
+      if ($di2.login -eq 'ok' -and -not $id2.ok) { return (& $done $false ('Not updated: right before the upload, ' + $id2.why + '. Nothing changed.')) }
       if ($di2.login -ne 'ok' -or ([string]$di2.version).Trim() -cne $fw0) { return (& $done $false ('Not updated: after your YES the device reports ' + $(if ($di2.login -ne 'ok') { 'nothing (it could not be read)' } elseif ($di2.version) { 'version ' + $di2.version } else { 'no version' }) + ', not ' + $fw0 + ' as in the plan. Nothing changed. Run it again.')) }
       # 2.2.20 (Codex 2.2.19 R05, class D): the bytes that are sent are read ONCE, here, after the YES, and THOSE bytes are hashed: only
       # bytes whose SHA-256 is the one approved are sent. A file replaced / edited / still downloading while the plan was shown is

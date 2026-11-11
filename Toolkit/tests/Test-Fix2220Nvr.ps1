@@ -47,9 +47,10 @@ $fwRun = {
   param($cred, [string]$dir, [string]$mode)
   $script:phase = 'before'; $script:writes = 0; $script:sent = $null
   $script:MacB = 'AA:BB:CC:00:00:01'; $script:MacA = $(if ($mode -in @('othermac', 'lost-othermac')) { 'AA:BB:CC:00:00:99' } else { 'AA:BB:CC:00:00:01' })
-  $script:PutCode = $(if ($mode -like 'lost*') { 0 } else { 200 })
+  $script:PutCode = $(if ($mode -like 'lost*') { 0 } else { 200 }); $script:InfoReads = 0; $script:Mode = $mode
   function script:Http {
     param($Ip, $Method = 'GET', $Path, $Body, $ContentType, $Credential, $Headers, $Port, $Scheme, [switch]$NoLogBody, $Timeout, $BodyBytes, $OutFile, [switch]$SecretTransport)
+    if ($Path -eq '/ISAPI/System/deviceInfo' -and $script:Mode -eq 'preupload') { $script:InfoReads++; if ($script:InfoReads -ge 4) { $script:MacB = 'AA:BB:CC:00:00:99' } }
     if ($OutFile) { [IO.File]::WriteAllBytes($OutFile, [byte[]](@(1..255) * 4)); return @{ code = 200; body = '' } }
     if ($Method -eq 'PUT') { $script:writes++; $script:sent = $BodyBytes; $script:phase = 'after'; return @{ code = $script:PutCode; body = $(if ($script:PutCode -eq 200) { '<ResponseStatus><statusCode>1</statusCode></ResponseStatus>' } else { '' }) } }
     if ($Path -eq '/ISAPI/System/deviceInfo') {
@@ -76,6 +77,9 @@ $r = InMod $fwRun @($cred, (Join-Path $tmp 'fw4'), 'lost-othermac')
 Check (-not $r.ok -and $r.msg -notmatch '^Updated') 'R11 twin (lost-answer branch): the answer is lost, a device with ANOTHER MAC reports the new version -> NOT confirmed (2.2.19: ok=True)' (J $r)
 $r = InMod $fwRun @($cred, (Join-Path $tmp 'fw5'), 'lost')
 Check ($r.ok -and $r.msg -match '^Updated') 'R11 control: the answer is lost and the SAME device (same MAC) reports the new version -> confirmed' (J $r)
+
+$r = InMod $fwRun @($cred, (Join-Path $tmp 'fw6'), 'preupload')
+Check ($r.writes -eq 0 -and -not $r.ok) 'class B sweep (firmware): the last device read before the upload comes from ANOTHER MAC -> nothing uploaded (2.2.19: that read was checked for the version only)' (J $r)
 
 # ---------------- R10 + R11: restart ----------------
 # Uniview / Hikvision camera stand-in. $rebootAns = the reboot answer; after the reboot the camera is down for $downPolls polls,
@@ -273,9 +277,10 @@ Check (-not $r.ok -and $r.msg -notmatch 'DW now says Online') 'R21 twin (DW pass
 # re-add: the read that certifies the channel must come from the same NVR; a lost write answer is not "refused"
 $readd = {
   param($cred, $newCred, [string]$dir, [string]$mode)
-  $script:owner = 'NVR1'; $script:chIp = ''; $script:Writes = @(); $script:mode = $mode
+  $script:owner = 'NVR1'; $script:chIp = ''; $script:Writes = @(); $script:mode = $mode; $script:InfoReads = 0
   function script:Http {
     param($Ip, $Method = 'GET', $Path, $Body, $ContentType, $Credential, $Headers, $Port, $Scheme, [switch]$NoLogBody, $Timeout, $BodyBytes, $OutFile, [switch]$SecretTransport)
+    if ($Path -eq '/ISAPI/System/deviceInfo' -and $script:mode -eq 'preput') { $script:InfoReads++; if ($script:InfoReads -ge 3) { $script:owner = 'NVR2' } }
     if ($Path -eq '/ISAPI/System/deviceInfo') { return @{ code = 200; body = ('<DeviceInfo><model>NVR</model><serialNumber>' + $script:owner + '</serialNumber><macAddress>' + $(if ($script:owner -eq 'NVR1') { 'AA:BB:CC:00:00:01' } else { 'AA:BB:CC:00:00:99' }) + '</macAddress></DeviceInfo>') } }
     if ($Method -eq 'PUT') {
       $script:Writes += $Path; $script:chIp = '10.0.0.31'
@@ -293,6 +298,9 @@ $r = InMod $readd @($cred, $newCred, (Join-Path $tmp 'ra1'), 'swap')
 Check (@($r.writes).Count -eq 1 -and -not $r.ok -and $r.msg -match 'NOT confirmed') 'R21 twin (re-add, certifying read): another NVR answers the channel read-back -> NOT confirmed (2.2.19: the other NVR''s channel certified ok=True)' (J $r)
 $r = InMod $readd @($cred, $newCred, (Join-Path $tmp 'ra2'), 'lost')
 Check ($r.msg -notmatch 'refused' -and $r.ok -and $r.msg -match 'read back') 'R10 twin (re-add): the write answer is LOST (code 0) -> not "refused"; the channel is read back and the camera is there (2.2.19: "The NVR refused it (answer 0)")' (J $r)
+
+$r = InMod $readd @($cred, $newCred, (Join-Path $tmp 'ra3'), 'preput')
+Check (@($r.writes).Count -eq 0 -and -not $r.ok) 'class B sweep (re-add): another NVR answers between the after-YES checks and the write -> the channel is NOT written (2.2.19: identity read once after YES, then several reads, then the write)' (J $r)
 
 # time fix: the device is identified again before EACH of its writes; a lost answer is not "refused"
 $ntp = {
