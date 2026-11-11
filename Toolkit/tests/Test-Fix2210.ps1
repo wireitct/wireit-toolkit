@@ -145,14 +145,15 @@ $script:FnRecoverWaitSec = 0
 function Get-NetIPInterface { param($InterfaceIndex, $AddressFamily, $ErrorAction) return [pscustomobject]@{ Dhcp = $script:sim.dhcp } }
 function Set-NetIPInterface { param($InterfaceIndex, $AddressFamily, $Dhcp, $ErrorAction) [void]$script:sim.calls.Add('dhcp ' + $Dhcp); $script:sim.dhcp = $Dhcp }
 # 2.2.19 (Codex 2.2.18 F05): the clean-up checks the adapter number still belongs to the recorded adapter (name) before any change
-function Get-NetAdapter { param($InterfaceIndex, $ErrorAction) return [pscustomobject]@{ Name = 'Ethernet'; InterfaceIndex = 5; InterfaceGuid = '' } }
+# 2.2.20 (Codex 2.2.19 R02): every adapter change checks the saved name AND InterfaceGuid, so the stand-in adapter has its ID too
+function Get-NetAdapter { param($InterfaceIndex, $ErrorAction) return [pscustomobject]@{ Name = 'Ethernet'; InterfaceIndex = 5; InterfaceGuid = '{0f1c2b9e-0d3a-4c55-9a51-2f0e5d7c1a11}' } }
 function netsh { [void]$script:sim.calls.Add('netsh ' + ($args -join ' ')); if (($args -join ' ') -match 'coexistence=(\w+)') { $script:sim.coexist = $Matches[1] }; $global:LASTEXITCODE = 0; if (($args -join ' ') -match 'show interface') { return @('DHCP/Static IP coexistence     : ' + $script:sim.coexist) } }
 function Register-ScheduledTask { $script:sim.task = $true }
 function Unregister-ScheduledTask { [void]$script:sim.calls.Add('unregister'); $script:sim.task = $false }
 function New-ScheduledTaskAction { 1 }; function New-ScheduledTaskTrigger { 1 }; function New-ScheduledTaskPrincipal { 1 }
 function Remove-NetFirewallRule { }
 function Start-Sleep { }
-$pc = [pscustomobject]@{ ifIndex = 5; alias = 'Ethernet'; dhcp = $true; ip = '192.168.1.105'; prefix = 24 }
+$pc = [pscustomobject]@{ ifIndex = 5; alias = 'Ethernet'; guid = '{0f1c2b9e-0d3a-4c55-9a51-2f0e5d7c1a11}'; dhcp = $true; ip = '192.168.1.105'; prefix = 24 }
 $script:pcNet = $pc
 $out = [ordered]@{}
 '@

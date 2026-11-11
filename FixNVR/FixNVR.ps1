@@ -505,14 +505,17 @@ function Get-FnConnectedAdaptersWhy($all) {
   if (-not $ifs.Count) { return 'the tool could not find a connected network adapter on this PC' }
   foreach ($i in $ifs) {
     $nm = '"' + [string]$i.InterfaceAlias + '"'
-    if ($null -eq $i.ifIndex -or [string]$i.ifIndex -notmatch '^\d+$') { return ('the tool could not read the number of the network adapter ' + $nm) }
+    $iix = Get-FnIfIndex $i
+    if ($null -eq $iix -or [string]$iix -notmatch '^\d+$') { return ('the tool could not read the number of the network adapter ' + $nm) }
     if ([string]$i.Dhcp -notmatch '^(?i)(enabled|disabled)$') { return ('the tool could not read whether ' + $nm + ' uses DHCP or a fixed address') }
-    $own = @($all | Where-Object { $_ -and [string]$_.ifIndex -eq [string]$i.ifIndex -and -not $_.SkipAsSource -and [string]$_.IPAddress -and [string]$_.IPAddress -notlike '169.254.*' -and ([string]$_.AddressState -eq '' -or [string]$_.AddressState -eq 'Preferred') })
+    $own = @($all | Where-Object { $_ -and [string](Get-FnIfIndex $_) -eq [string]$iix -and -not $_.SkipAsSource -and [string]$_.IPAddress -and [string]$_.IPAddress -notlike '169.254.*' -and ([string]$_.AddressState -eq '' -or [string]$_.AddressState -eq 'Preferred') })
     $good = @($own | Where-Object { (Test-FnIpv4 ([string]$_.IPAddress)) -and ($null -eq $_.PrefixLength -or ([string]$_.PrefixLength -match '^\d+$' -and [int]$_.PrefixLength -ge 1 -and [int]$_.PrefixLength -le 32)) })
     if (-not $good.Count) { return ('the connected network adapter ' + $nm + ' has no working address of its own (' + $(if ([string]$i.Dhcp -match '(?i)enabled') { 'no lease from the router' } else { 'its fixed address is not there or not working' }) + '), so the tool cannot say an earlier run put it back') }
   }
   return ''
 }
+# Windows' objects carry the adapter number as both ifIndex and InterfaceIndex; either is read
+function Get-FnIfIndex($o) { if ($o.PSObject.Properties['InterfaceIndex'] -and $null -ne $o.InterfaceIndex) { return $o.InterfaceIndex }; if ($o.PSObject.Properties['ifIndex']) { return $o.ifIndex }; return $null }
 # 2.2.20 (R08 / R07): a real dotted IPv4 address (four numbers 0-255)
 function Test-FnIpv4($v) {
   if (-not ($v -is [string]) -or [string]$v -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { return $false }

@@ -242,7 +242,7 @@ $res.C = [string](Get-FnNetReadBackWhy '192.168.1.20' $A 'nvr' 'hik' '255.255.25
 Set-Item function:Read-FnIdentity $origRead
 # F06 (Codex repro): after the move, the answer at the new address carries no MAC
 $script:ow = @(); $script:hw = ''
-function Onvif($ip, $body, $cred) { if ($body -match 'Set(Network|DNS)') { $script:ow += ($ip + ' ' + $body) }; if ($body -match 'GetNetworkInterfaces') { return @{ code = 200; body = $(if ($script:hw) { '<GetNetworkInterfacesResponse><tt:HwAddress>' + $script:hw + '</tt:HwAddress></GetNetworkInterfacesResponse>' } else { '<GetNetworkInterfacesResponse/>' }); err = '' } }; return @{ code = 200; body = '<ok/>'; err = '' } }
+function Onvif($ip, $body, $cred) { if ($body -match 'Set(Network|DNS)') { $script:ow += ($ip + ' ' + $body) }; if ($body -match 'GetNetworkInterfaces') { return @{ code = 200; body = $(if ($script:hw) { '<GetNetworkInterfacesResponse><tt:HwAddress>' + $script:hw + '</tt:HwAddress></GetNetworkInterfacesResponse>' } else { '<GetNetworkInterfacesResponse/>' }); err = '' } }; $rn = $(if ($body -match 'SetNetworkInterfaces') { 'SetNetworkInterfacesResponse' } elseif ($body -match 'SetNetworkDefaultGateway') { 'SetNetworkDefaultGatewayResponse' } elseif ($body -match 'SetDNS') { 'SetDNSResponse' } else { 'ok' }); return @{ code = 200; body = ('<' + $rn + '/>'); err = '' } }   # 2.2.20: real reply documents (a bare 200 no longer counts)
 $cam = [pscustomobject]@{ ip = '192.168.0.50'; mac = $A; kind = 'camera'; onvif_token = 'eth0' }
 $z = Onvif-SetNet $cam '192.168.1.50' 24 '192.168.1.1' '8.8.8.8' '1.1.1.1'; $res.D = @{ ok = [bool]$z.ok; note = [string]$z.note; w = @($script:ow) }
 # F06 twin: the camera has no MAC on record -> not moved at all
@@ -334,6 +334,8 @@ function Reset-Pc {
 # Windows commands stood in for (each call is recorded)
 function netsh { $a = ($args -join ' '); [void]$script:calls.Add('netsh ' + $a); if ($a -match ' show interface') { return @('Interface Ethernet Parameters', '----', ('DHCP/Static IP coexistence         : ' + $script:coex)) }; if ($a -match 'dhcpstaticipcoexistence=enabled' -and $script:coexTakes) { $script:coex = 'enabled' } }
 function New-NetIPAddress { param($InterfaceIndex, $IPAddress, $PrefixLength, $SkipAsSource, $PolicyStore, $ErrorAction) [void]$script:calls.Add('add ' + $IPAddress) }
+# 2.2.20 (Codex 2.2.19 R02): every adapter change checks the saved name AND InterfaceGuid first; the stand-in is the saved adapter
+function Get-NetAdapter { param($InterfaceIndex, $ErrorAction) return [pscustomobject]@{ Name = 'Ethernet'; InterfaceGuid = '{11111111-2222-3333-4444-555555555555}' } }
 function Get-NetIPAddress { param($InterfaceIndex, $IPAddress, $AddressFamily, $ErrorAction) return [pscustomobject]@{ IPAddress = $IPAddress; AddressState = 'Preferred' } }
 function Remove-NetIPAddress { param($IPAddress, $InterfaceIndex, $PolicyStore, $Confirm, $ErrorAction) [void]$script:calls.Add('remove ' + $IPAddress) }
 function New-ScheduledTaskAction { param($Execute, $Argument) return 'act' }

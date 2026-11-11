@@ -315,6 +315,32 @@ function Invoke-Soap([string]$url, [string]$body, [int]$timeoutSec = 3) {
     return $txt
   } catch { return '' }
 }
+# 2.2.20 (Codex 2.2.19 class C sweep, CamReset twin of R12): "the default password works" only from the device's own successful LAPI
+# device-information reply (JSON, Response.ResponseCode 0, with its Data). An HTTP 200 with a login page, an error reply or anything
+# else = NOT CHECKED (2.2.19 said YES for any page the default login could download).
+function Test-CrUnvInfoDoc([string]$t) {
+  if (-not $t) { return $false }
+  $j = $null; try { $j = $t | ConvertFrom-Json -ErrorAction Stop } catch { return $false }
+  if (-not $j -or -not $j.PSObject.Properties['Response'] -or -not $j.Response) { return $false }
+  $rc = $j.Response.PSObject.Properties['ResponseCode']; $sc = $j.Response.PSObject.Properties['StatusCode']
+  $ok = (($rc -and [string]$rc.Value -eq '0') -or (-not $rc -and $sc -and [string]$sc.Value -eq '0'))
+  if (-not $ok) { return $false }
+  return [bool]($j.Response.PSObject.Properties['Data'] -and $j.Response.Data -is [pscustomobject])
+}
+# 2.2.20 (Codex 2.2.19 class A sweep): the "one try per device per day" line is written with errors stopping AND read back before the
+# try is made; a line that is not there afterwards = no try (2.2.19 trusted the write)
+function Add-CrTryRecord([string]$path, [string]$line) {
+  try { Add-Content -LiteralPath $path -Value $line -ErrorAction Stop } catch { Log ('default-try record not writable: ' + $_.Exception.Message); return $false }
+  $back = @(); try { $back = @(Get-Content -LiteralPath $path -ErrorAction Stop) } catch { Log ('default-try record not readable after the write: ' + $_.Exception.Message); return $false }
+  if ($back -notcontains $line) { Log 'default-try record did not read back with the new line'; return $false }
+  return $true
+}
+# the one default-login read (a function so tests can stand in for the device)
+function Get-CrUnvDefaultInfo([string]$ip) {
+  $cred = New-Object Net.NetworkCredential('admin', '123456')
+  $wc = New-Object Net.WebClient; $wc.Proxy = $null; $wc.Credentials = $cred
+  return $wc.DownloadString('http://' + $ip + '/LAPI/V1.0/System/DeviceInfo')
+}
 # ONVIF DateTime: the schema puts <Time> before <Date>, so read each field on its own (local time first, else UTC)
 function Get-OnvifDate([string]$t) {
   foreach ($blk in 'LocalDateTime', 'UTCDateTime') {
@@ -350,16 +376,14 @@ foreach ($k in @($dev.Keys)) {
       # and tried anyway, and did not check that the try was recorded).
       $prev = @(); $ledgerOk = $true
       if (Test-Path -LiteralPath $tried) { try { $prev = @(Get-Content -LiteralPath $tried -ErrorAction Stop | Where-Object { $_ -eq $todayKey -or $_.StartsWith($todayKey + ' ') }) } catch { $ledgerOk = $false; Log ('default-try record not readable: ' + $_.Exception.Message) } }
-      if ($ledgerOk -and -not $prev.Count) { try { Add-Content -LiteralPath $tried -Value $todayKey -ErrorAction Stop } catch { $ledgerOk = $false; Log ('default-try record not writable: ' + $_.Exception.Message) } }
+      if ($ledgerOk -and -not $prev.Count) { if (-not (Add-CrTryRecord $tried $todayKey)) { $ledgerOk = $false } }
       if (-not $ledgerOk) {
         $d.DefaultLoginWorks = 'NOT CHECKED (the record of earlier tries could not be read or written, so no try was made)'
       } elseif (-not $prev.Count) {
         try {
-          $cred = New-Object Net.NetworkCredential('admin', '123456')
-          $wc = New-Object Net.WebClient; $wc.Proxy = $null; $wc.Credentials = $cred
-          $info = $wc.DownloadString('http://' + $d.IP + '/LAPI/V1.0/System/DeviceInfo')
-          $d.DefaultLoginWorks = 'YES'
-          foreach ($p in 'SerialNumber','DeviceModel','FirmwareVersion','Manufacturer') { $m = [regex]::Match($info, '"' + $p + '"\s*:\s*"([^"]*)"'); if ($m.Success) { switch ($p) { 'SerialNumber' { $d.Serial = $m.Groups[1].Value } 'DeviceModel' { $d.Model = $m.Groups[1].Value } 'FirmwareVersion' { $d.Firmware = $m.Groups[1].Value } } } }
+          $info = Get-CrUnvDefaultInfo $d.IP
+          if (-not (Test-CrUnvInfoDoc $info)) { $d.DefaultLoginWorks = 'NOT CHECKED (the default login got an answer that was not the camera''s device information)'; $info = '' } else { $d.DefaultLoginWorks = 'YES' }
+          if ($info) { foreach ($p in 'SerialNumber','DeviceModel','FirmwareVersion','Manufacturer') { $m = [regex]::Match($info, '"' + $p + '"\s*:\s*"([^"]*)"'); if ($m.Success) { switch ($p) { 'SerialNumber' { $d.Serial = $m.Groups[1].Value } 'DeviceModel' { $d.Model = $m.Groups[1].Value } 'FirmwareVersion' { $d.Firmware = $m.Groups[1].Value } } } } }
         } catch {
           $code = ''; if ($_.Exception.InnerException -and $_.Exception.InnerException.Response) { $code = [int]$_.Exception.InnerException.Response.StatusCode }
           if (-not $code -and $_.Exception.Response) { try { $code = [int]$_.Exception.Response.StatusCode } catch {} }
@@ -381,7 +405,7 @@ foreach ($k in @($dev.Keys)) {
     if ($dl -eq 'YES') { $d.Status = 'Default password works (admin/123456)'; $d.NextStep = 'No reset needed: log in and set a new password' }
     elseif ($dl -like '*no (401)*') { if (-not $d.Status) { $d.Status = 'Locked (default does not work)' }; $d.NextStep = 'Uniview request: needs 20-digit SN (label or EZTools list) + device date (see README step U)' }
     elseif ($dl -like '*no answer*') { if (-not $d.Status) { $d.Status = 'Login try got no answer (not known if locked)' }; $d.NextStep = 'Open its web page; if the default admin/123456 fails, use the Uniview request (README step U)' }
-    elseif ($dl -like 'NOT CHECKED*') { if (-not $d.Status) { $d.Status = 'Default password NOT CHECKED (the try record could not be read or written)' }; $d.NextStep = 'Check the CamReset state folder (state\default-tried.txt), or open its web page and try admin/123456 by hand' }
+    elseif ($dl -like 'NOT CHECKED*') { if (-not $d.Status) { $d.Status = $(if ($dl -like '*record*') { 'Default password NOT CHECKED (the try record could not be read or written)' } else { 'Default password ' + $dl }) }; $d.NextStep = $(if ($dl -like '*record*') { 'Check the CamReset state folder (state\default-tried.txt), or open its web page and try admin/123456 by hand' } else { 'Open its web page and try admin/123456 by hand (the tool will not try again today)' }) }
     elseif ($dl -like 'already tried today*') { if (-not $d.Status) { $d.Status = 'Tried earlier today (result not saved)' }; $d.NextStep = 'Open its web page and try admin/123456 by hand, or run again tomorrow' }
     else {
       $d.DefaultLoginWorks = 'not tried'
