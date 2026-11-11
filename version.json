@@ -1,8 +1,8 @@
 {
   "version": "2.2.19",
   "released": "2026-11-11",
-  "commit": "11aa4af8d6db134cdf46f9c79782479411c709a2",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/11aa4af8d6db134cdf46f9c79782479411c709a2/",
+  "commit": "e6ed5cccdbea9ac3e14300f2f4494942ec9022bb",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/e6ed5cccdbea9ac3e14300f2f4494942ec9022bb/",
   "notes": "2.2.19: fixes for the Codex review of 2.2.18 (27 findings), by pattern across the whole repo: every device or adapter write needs a fresh identity match (MAC, or the saved serial when only a serial was saved) right before it, and a move needs a free destination; anything read before a YES is read again after it; a value that could not be read is NOT CHECKED, never ok / already right / none / done; DHCP modes are normalized and empty saved values are written back; recovery records, limits, login counts, reset steps and queued uploads are saved and checked before the risky step, and damaged ones are kept and block instead of being deleted; Go back and updates refuse to work over a half-finished update.",
   "files": [
     {
@@ -422,8 +422,8 @@
     },
     {
       "path": "Toolkit/tests/repro-2.2.15/reproduce-pending-headline.ps1",
-      "sha256": "268d2a0a4456d51fa4864118c28c9dd61aa093de2c155ef5c526e689a85e1816",
-      "size": 5405
+      "sha256": "76c5dea0c646a30b91c9004e5918f307d6e2296be458029584507824d89341f2",
+      "size": 5576
     },
     {
       "path": "Toolkit/tests/repro-2.2.15/reproduce-recording-disappears.ps1",
