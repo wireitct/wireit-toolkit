@@ -238,6 +238,9 @@ function Remove-NetIPAddress { }
 function Get-NetIPAddress { param($InterfaceIndex, $IPAddress, $AddressFamily, $ErrorAction) $a = @([pscustomobject]@{ IPAddress = '192.168.1.105'; InterfaceIndex = 5; SkipAsSource = $false; AddressState = 'Preferred' }); if ($env:SIM_LEFT) { $a += [pscustomobject]@{ IPAddress = $env:SIM_LEFT; InterfaceIndex = 5; SkipAsSource = $true; AddressState = 'Preferred' } }; return $a }
 function Get-PcNet { return [pscustomobject]@{ ifIndex = 5; alias = 'Ethernet'; ip = '192.168.1.105'; prefix = 24; gw = '192.168.1.1'; dhcp = $true } }
 function Get-FnBootTime { if ($env:SIM_BOOT -eq 'later') { return (Get-Date).AddMinutes(5) } return (Get-Date).AddDays(-1) }
+# 2.2.19: the clear is a positive check that also reads the DHCP+static coexistence setting of every connected adapter (stand-ins: off)
+function Get-NetIPInterface { return @([pscustomobject]@{ ifIndex = 5; InterfaceAlias = 'Ethernet'; ConnectionState = 'Connected'; Dhcp = 'Enabled' }) }
+function netsh { return 'DHCP/Static IP coexistence : disabled' }
 $ok = Invoke-LeftoverCleanup
 'JSON=' + (@{ ok = [bool]$ok; files = @(Get-ChildItem -LiteralPath $stateDir -Filter 'temp-ips*' | ForEach-Object { $_.Name }) } | ConvertTo-Json -Compress)
 '@

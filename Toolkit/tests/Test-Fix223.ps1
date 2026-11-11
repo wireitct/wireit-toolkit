@@ -472,7 +472,8 @@ $dev62 = [pscustomobject]@{ ip = '10.0.0.5'; if_id = 1; net_xml = '<IPAddress><a
 Check ($script:put62 -match '<addressingType>dynamic</addressingType>') 'reproduction: Undo of a camera that was on DHCP writes DHCP back (2.2.2 always wrote static)'
 [void](Hik-SetNet $dev62 '192.168.1.64' '255.255.255.0' '192.168.1.1' '' '')
 Check ($script:put62 -match '<addressingType>static</addressingType>') 'a normal fix still writes static'
-Check ($fn62 -match "\`$toDhcp = \(\`$rev -and \[string\]\`$st\.old_addressing -eq 'dhcp'\)" -and $fn62 -match "\`$toDhcpN = \(\`$rev -and \[string\]\`$st\.old_addressing -eq 'dhcp'\)") 'Undo passes the recorded DHCP mode for cameras and the NVR'
+# 2.2.19 (Codex 2.2.18 F10): the recorded mode is normalised first ('dynamic' from ISAPI = DHCP); the old text compared it verbatim to 'dhcp'
+Check ($fn62 -match "\`$stOldMode = .*Get-FnAddrMode \`$st\.old_addressing" -and $fn62 -match "\`$toDhcp = \(\`$rev -and \`$stOldMode -eq 'dhcp'\)" -and $fn62 -match "\`$toDhcpN = \(\`$rev -and \`$stOldMode -eq 'dhcp'\)") 'Undo passes the recorded DHCP mode (normalised) for cameras and the NVR'
 Check ($fn62 -match "\`$fails \+= @\(\`$manual \| ForEach-Object" -and $fn62 -match "Undo does not turn platform access") 'steps left to a person, and platform access Undo cannot reverse, make the run end with code 4'
 Write-Host '#61 an update cut off half-way is undone at the next start'
 . (Join-Path $tk 'ToolkitCore.ps1') 2>$null

@@ -343,11 +343,17 @@ foreach ($k in @($dev.Keys)) {
     if ($t) { $dd = Get-OnvifDate $t; if ($dd) { $d.DeviceDate = $dd } }
     # Uniview: one try with the factory default (never more than one per device per day; never on sweep-only hosts)
     if ($d.Brand -eq 'Uniview' -and -not $NoLogin -and $cfg -and $cfg.univiewTryDefault -and -not $d.SweepOnly) {
-      $tried = Join-Path $here 'state\default-tried.txt'; New-Item -ItemType Directory -Force -Path (Join-Path $here 'state') | Out-Null
+      $tried = Join-Path $here 'state\default-tried.txt'; New-Item -ItemType Directory -Force -Path (Join-Path $here 'state') -ErrorAction SilentlyContinue | Out-Null
       $todayKey = $d.IP + ' ' + (Get-Date -Format 'yyyy-MM-dd')
-      $prev = @(); if (Test-Path $tried) { $prev = @(Get-Content $tried | Where-Object { $_ -eq $todayKey -or $_.StartsWith($todayKey + ' ') }) }
-      if (-not $prev.Count) {
-        Add-Content -Path $tried -Value $todayKey
+      # 2.2.19 (class E, Codex 2.2.18 F27 twin): the "one try per device per day" record is safety state. A record that exists but
+      # cannot be read, or a try that cannot be written down BEFORE it is made, = NO try (2.2.18 read a failed file as "never tried"
+      # and tried anyway, and did not check that the try was recorded).
+      $prev = @(); $ledgerOk = $true
+      if (Test-Path -LiteralPath $tried) { try { $prev = @(Get-Content -LiteralPath $tried -ErrorAction Stop | Where-Object { $_ -eq $todayKey -or $_.StartsWith($todayKey + ' ') }) } catch { $ledgerOk = $false; Log ('default-try record not readable: ' + $_.Exception.Message) } }
+      if ($ledgerOk -and -not $prev.Count) { try { Add-Content -LiteralPath $tried -Value $todayKey -ErrorAction Stop } catch { $ledgerOk = $false; Log ('default-try record not writable: ' + $_.Exception.Message) } }
+      if (-not $ledgerOk) {
+        $d.DefaultLoginWorks = 'NOT CHECKED (the record of earlier tries could not be read or written, so no try was made)'
+      } elseif (-not $prev.Count) {
         try {
           $cred = New-Object Net.NetworkCredential('admin', '123456')
           $wc = New-Object Net.WebClient; $wc.Proxy = $null; $wc.Credentials = $cred
@@ -359,7 +365,7 @@ foreach ($k in @($dev.Keys)) {
           if (-not $code -and $_.Exception.Response) { try { $code = [int]$_.Exception.Response.StatusCode } catch {} }
           $d.DefaultLoginWorks = $(if ($code -eq 401) { 'no (401)' } else { 'no answer (' + $_.Exception.Message.Split("`n")[0] + ')' })
         }
-        Add-Content -Path $tried -Value ($todayKey + ' ' + $d.DefaultLoginWorks)
+        try { Add-Content -LiteralPath $tried -Value ($todayKey + ' ' + $d.DefaultLoginWorks) -ErrorAction Stop } catch { Log ('default-try result not saved: ' + $_.Exception.Message) }
       } else {
         $lastRes = @($prev | Where-Object { $_.Length -gt $todayKey.Length } | ForEach-Object { $_.Substring($todayKey.Length + 1) }) | Select-Object -Last 1
         $d.DefaultLoginWorks = $(if ($lastRes -eq 'YES') { 'YES' } elseif ($lastRes) { 'already tried today: ' + $lastRes } else { 'already tried today (result not saved)' })
@@ -375,6 +381,7 @@ foreach ($k in @($dev.Keys)) {
     if ($dl -eq 'YES') { $d.Status = 'Default password works (admin/123456)'; $d.NextStep = 'No reset needed: log in and set a new password' }
     elseif ($dl -like '*no (401)*') { if (-not $d.Status) { $d.Status = 'Locked (default does not work)' }; $d.NextStep = 'Uniview request: needs 20-digit SN (label or EZTools list) + device date (see README step U)' }
     elseif ($dl -like '*no answer*') { if (-not $d.Status) { $d.Status = 'Login try got no answer (not known if locked)' }; $d.NextStep = 'Open its web page; if the default admin/123456 fails, use the Uniview request (README step U)' }
+    elseif ($dl -like 'NOT CHECKED*') { if (-not $d.Status) { $d.Status = 'Default password NOT CHECKED (the try record could not be read or written)' }; $d.NextStep = 'Check the CamReset state folder (state\default-tried.txt), or open its web page and try admin/123456 by hand' }
     elseif ($dl -like 'already tried today*') { if (-not $d.Status) { $d.Status = 'Tried earlier today (result not saved)' }; $d.NextStep = 'Open its web page and try admin/123456 by hand, or run again tomorrow' }
     else {
       $d.DefaultLoginWorks = 'not tried'
