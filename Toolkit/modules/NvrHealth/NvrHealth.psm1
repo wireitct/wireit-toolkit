@@ -367,12 +367,41 @@ function Hik-DeviceInfo($t) {
   $r = Http -Ip $t.ip -Path '/ISAPI/System/deviceInfo' -Credential $t.cred -Port $t.port
   if ($r.code -eq 401) { Mark-Login $t 'refused'; return @{ login = 'refused' } }
   $x = Xml $r.body; if ($r.code -ne 200 -or -not $x) { return @{ login = 'noanswer'; err = $r.err } }
+  # 2.2.19 (Codex 2.2.18 F14 sweep, class C): a 200 answer that is not the device's own DeviceInfo (an error / login page that
+  # happens to be XML) is NOT a reading of this device - no model, serial or firmware is taken from it
+  if (-not $x.DocumentElement -or $x.DocumentElement.LocalName -notmatch '(?i)^DeviceInfo$') { return @{ login = 'noanswer'; err = 'the answer was not the device information' } }
+  # 2.2.19 (Codex 2.2.18 F07): the firmware VERSION is kept on its own ($version). The release date is a separate field
+  # ($released): "firmware" (version + date) is for showing only - a check that the firmware changed compares $version alone.
+  $ver = XText $x 'firmwareVersion'; $rel = XText $x 'firmwareReleasedDate'
   return @{ login = 'ok'; model = (XText $x 'model'); serial = (XText $x 'serialNumber'); name = (XText $x 'deviceName');
-            firmware = ((XText $x 'firmwareVersion') + ' ' + (XText $x 'firmwareReleasedDate')).Trim(); type = (XText $x 'deviceType') }
+            firmware = ($ver + ' ' + $rel).Trim(); version = $ver; released = $rel; mac = ((XText $x 'macAddress').ToUpper().Replace('-', ':')); type = (XText $x 'deviceType') }
+}
+# 2.2.19 (Codex 2.2.18 class A, NvrFix): which device answers at this address right now, read fresh every time (no cache).
+# @{ ok; serial; mac; model; why } - ok only when the device's own information was read and holds a serial or a MAC.
+function Get-NhDeviceId($t) {
+  $d = $null
+  if ($t.vendor -eq 'Uniview') { $d = Unv-DeviceInfo $t } elseif ($t.vendor -eq 'Hikvision') { $d = Hik-DeviceInfo $t }
+  elseif ($t.vendor -in @('Onvif', 'Auto', 'NoLogin')) { $d = Onvif-DeviceInfo $t }
+  else { return @{ ok = $false; serial = ''; mac = ''; model = ''; why = ('the tool cannot read which ' + $t.vendor + ' device this is') } }
+  if (-not $d -or $d.login -ne 'ok') { return @{ ok = $false; serial = ''; mac = ''; model = ''; why = ('its device information could not be read (' + $(if ($d) { [string]$d.login } else { 'no answer' }) + ')') } }
+  $sn = ([string]$d.serial).Trim(); $mc = $(if ($d.ContainsKey('mac')) { ([string]$d.mac).Trim() } else { '' })
+  if (-not $sn -and -not $mc) { return @{ ok = $false; serial = ''; mac = ''; model = [string]$d.model; why = 'it did not give its serial number or MAC address' } }
+  return @{ ok = $true; serial = $sn; mac = $mc; model = [string]$d.model; why = '' }
+}
+# 2.2.19 (class A): the device at the address is still the one read before: a FRESH read, and every identity value read the first
+# time (serial, MAC) must be there again, non-empty and the same. Unreadable / missing / different = NOT the same device (stop).
+function Test-NhSameDevice($t, $first) {
+  if (-not $first -or -not $first.ok) { return @{ ok = $false; why = 'which device this is was never read' } }
+  $now = Get-NhDeviceId $t
+  if (-not $now.ok) { return @{ ok = $false; why = $now.why } }
+  if ($first.serial -and $now.serial -cne $first.serial) { return @{ ok = $false; why = ('a different device answers now (serial ' + $(if ($now.serial) { $now.serial } else { 'not given' }) + ', it was ' + $first.serial + ')') } }
+  if ($first.mac -and $now.mac -ne $first.mac) { return @{ ok = $false; why = ('a different device answers now (MAC ' + $(if ($now.mac) { $now.mac } else { 'not given' }) + ', it was ' + $first.mac + ')') } }
+  return @{ ok = $true; why = '' }
 }
 function Hik-Time($t) {
   $r = Http -Ip $t.ip -Path '/ISAPI/System/time' -Credential $t.cred -Port $t.port
   $x = Xml $r.body; if ($r.code -ne 200 -or -not $x) { return $null }
+  if (-not $x.DocumentElement -or $x.DocumentElement.LocalName -notmatch '(?i)^Time$') { return $null }   # 2.2.19 (class C): not the time answer
   $tz = Parse-Tz (XText $x 'timeZone')
   $dt = Parse-DeviceTime (XText $x 'localTime') $tz
   $n = Http -Ip $t.ip -Path '/ISAPI/System/time/ntpServers' -Credential $t.cred -Port $t.port
@@ -402,14 +431,15 @@ function Hik-ReadChannels($t) {
   foreach ($c in (XFind (Xml $s.body) 'InputProxyChannelStatus')) {
     $id = [int](XText $c 'id'); $o = $out | Where-Object { $_.ch -eq $id } | Select-Object -First 1
     if (-not $o) { $o = [pscustomobject]@{ ch = $id; name = ''; ip = ''; online = $null; kind = 'ip'; detect = '' }; $out += $o }
-    $o.online = ((XText $c 'online') -eq 'true'); $o.detect = (XText $c 'chanDetectResult')
+    # 2.2.19 (class C): only an explicit true / false is a reading; anything else = $null (NOT CHECKED), never "offline"
+    $onT = XText $c 'online'; $o.online = $(if ($onT -match '^(?i)true$') { $true } elseif ($onT -match '^(?i)false$') { $false } else { $null }); $o.detect = (XText $c 'chanDetectResult')
     if (-not $o.ip) { $o.ip = XText $c 'ipAddress' }
   }
   if (-not $out.Count) {
     $a = Http -Ip $t.ip -Path '/ISAPI/System/Video/inputs/channels' -Credential $t.cred -Port $t.port
     $ax0 = $(if ($a.code -eq 200) { Xml $a.body } else { $null })
     if ($ax0 -and $ax0.DocumentElement -and $ax0.DocumentElement.LocalName -match '(?i)^VideoInputChannelList$') { $read = $true }
-    foreach ($c in (XFind (Xml $a.body) 'VideoInputChannel')) { $out += [pscustomobject]@{ ch = [int](XText $c 'id'); name = (XText $c 'name'); ip = ''; online = ((XText $c 'resDesc') -ne 'NO VIDEO'); kind = 'analog'; detect = '' } }
+    foreach ($c in (XFind (Xml $a.body) 'VideoInputChannel')) { $out += [pscustomobject]@{ ch = [int](XText $c 'id'); name = (XText $c 'name'); ip = ''; online = $(if (-not (XText $c 'resDesc')) { $null } else { (XText $c 'resDesc') -ne 'NO VIDEO' }); kind = 'analog'; detect = '' } }
   }
   return @{ ok = ($read -or [bool]$out.Count); list = @($out | Sort-Object ch) }
 }
@@ -423,7 +453,10 @@ function Hik-Search($t, [int]$trackId, [DateTime]$fromLocal, [DateTime]$toLocal,
   $segs = @()
   foreach ($m in (XFind $x 'searchMatchItem')) {
     $st = Parse-DeviceTime (XText $m 'startTime') $null; $en = Parse-DeviceTime (XText $m 'endTime') $null
-    if ($st) { $segs += [pscustomobject]@{ start = $st.local; end = $(if ($en) { $en.local } else { $st.local }) } }
+    # 2.2.19 (Codex 2.2.18 F14 sweep, class C): a clip whose start time cannot be read makes the answer unreadable (NOT CHECKED);
+    # 2.2.18 skipped it, so a search of unreadable clips became "no footage"
+    if (-not $st) { Log ('search answer has a clip with no readable start time - search treated as failed'); return $null }
+    $segs += [pscustomobject]@{ start = $st.local; end = $(if ($en) { $en.local } else { $st.local }) }
   }
   return @{ status = (XText $x 'responseStatusStrg'); segs = $segs }
 }
@@ -518,7 +551,8 @@ function Hik-ParseTracks([string]$body) {
   if ($x.DocumentElement.LocalName -notmatch '(?i)^Track(List)?$') { return $null }
   $out = @{}
   foreach ($tr in (XFind $x 'Track')) {
-    $id = 0; [void][int]::TryParse((XText $tr 'id'), [ref]$id); if (-not $id) { continue }
+    # 2.2.19 (class C): a track with no readable id makes the list incomplete = unknown, never skipped (its camera would vanish)
+    $id = 0; [void][int]::TryParse((XText $tr 'id'), [ref]$id); if (-not $id) { return $null }
     $modes = @((XFind $tr 'ActionRecordingMode') | ForEach-Object { $_.InnerText.Trim() } | Where-Object { $_ } | Select-Object -Unique)
     $rec = @((XFind $tr 'Record') | ForEach-Object { $_.InnerText.Trim() })
     $en = XText $tr 'Enable'
@@ -582,14 +616,16 @@ function Hik-Storage($t) {
   $hdds = @()
   foreach ($h in (XFind $x 'hdd')) {
     $id = XText $h 'id'
-    $o = [pscustomobject]@{ id = $id; status = (XText $h 'status'); capMB = [double]('0' + (XText $h 'capacity')); freeMB = [double]('0' + (XText $h 'freeSpace')); property = (XText $h 'property'); smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null }
+    $capN = [double]0; $freeN = [double]0; [void][double]::TryParse((XText $h 'capacity'), [ref]$capN); [void][double]::TryParse((XText $h 'freeSpace'), [ref]$freeN)
+    $o = [pscustomobject]@{ id = $id; status = (XText $h 'status'); capMB = $capN; freeMB = $freeN; property = (XText $h 'property'); smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null }
     if ($id) {
       $s = Http -Ip $t.ip -Path ('/ISAPI/ContentMgmt/Storage/hdd/' + $id + '/SMARTTest/status') -Credential $t.cred -Port $t.port
       $sx = Xml $s.body
       if ($s.code -eq 200 -and $sx -and @(XFind $sx 'SMARTTestStatus').Count) {
-        $se = XText $sx 'selfEvaluaingStatus'; $o.smartOk = ($se -eq '' -or $se -eq 'ok'); $o.smartAll = XText $sx 'allEvaluaingStatus'
-        $tc = XText $sx 'temprature'; if ($tc) { $o.tempC = [int]$tc }
-        $pd = XText $sx 'powerOnDay'; if ($pd) { $o.powerOnDays = [int]$pd }
+        # 2.2.19 (class C): no self-test result in the answer = SMART unknown ($null), never "SMART ok"
+        $se = XText $sx 'selfEvaluaingStatus'; $o.smartOk = $(if ($se -eq 'ok') { $true } elseif ($se) { $false } else { $null }); $o.smartAll = XText $sx 'allEvaluaingStatus'
+        $tc = XText $sx 'temprature'; $tn = 0; if ($tc -and [int]::TryParse($tc, [ref]$tn)) { $o.tempC = $tn }
+        $pd = XText $sx 'powerOnDay'; $pn = 0; if ($pd -and [int]::TryParse($pd, [ref]$pn)) { $o.powerOnDays = $pn }
       }
     }
     $hdds += $o
@@ -657,12 +693,18 @@ function Onvif-Call($t, [string]$path, [string]$inner, [string]$ns) {
 function Onvif-Time($t) {
   $r = Onvif-Call $t '/onvif/device_service' '<x:GetSystemDateAndTime/>' $script:NsDev
   $x = Xml $r.body; if ($r.code -ne 200 -or -not $x) { return $null }
+  # 2.2.19 (class C): only the device's own date/time answer is a reading (an error / fault page that is XML is not)
+  if (-not @(XFind $x 'SystemDateAndTime').Count) { return $null }
   $u = @(XFind $x 'UTCDateTime') | Select-Object -First 1; $utc = $null
-  if ($u) { $utc = New-Object DateTime([int](XText $u 'Year'), [int](XText $u 'Month'), [int](XText $u 'Day'), [int](XText $u 'Hour'), [int](XText $u 'Minute'), [int](XText $u 'Second'), ([DateTimeKind]::Utc)) }
+  if ($u) { try { $utc = New-Object DateTime([int](XText $u 'Year'), [int](XText $u 'Month'), [int](XText $u 'Day'), [int](XText $u 'Hour'), [int](XText $u 'Minute'), [int](XText $u 'Second'), ([DateTimeKind]::Utc)) } catch { $utc = $null } }
   $n = Onvif-Call $t '/onvif/device_service' '<x:GetNTP/>' $script:NsDev
-  $nx = Xml $n.body; $ntp = @()
-  foreach ($m in @(@(XFind $nx 'NTPManual') + @(XFind $nx 'NTPFromDHCP'))) { $h = XText $m 'DNSname'; if (-not $h) { $h = XText $m 'IPv4Address' }; if ($h) { $ntp += [pscustomobject]@{ host = $h; port = ''; interval = '' } } }
-  return @{ mode = (XText $x 'DateTimeType'); dst = ((XText $x 'DaylightSavings') -eq 'true'); tz = (Parse-Tz (XText $x 'TZ')); utc = $utc; ntp = $ntp }
+  $nx = $(if ($n.code -eq 200) { Xml $n.body } else { $null }); $ntp = @()
+  # 2.2.19 (Codex 2.2.18 F15): like Hik-Time, the time-server list is READ only when GetNTP answered 200 with its NTPInformation.
+  # A failed / fault / other answer is ntpRead = $false: "could not read", never "no time server" (no plan, no "was none").
+  $ntpRead = [bool]($nx -and @(XFind $nx 'NTPInformation').Count)
+  if ($ntpRead) { foreach ($m in @(@(XFind $nx 'NTPManual') + @(XFind $nx 'NTPFromDHCP'))) { $h = XText $m 'DNSname'; if (-not $h) { $h = XText $m 'IPv4Address' }; if ($h) { $ntp += [pscustomobject]@{ host = $h; port = ''; interval = '' } } } }
+  $dstT = XText $x 'DaylightSavings'
+  return @{ mode = (XText $x 'DateTimeType'); dst = ($dstT -eq 'true'); dstRead = [bool]($dstT -match '^(?i)(true|false)$'); tz = (Parse-Tz (XText $x 'TZ')); utc = $utc; ntp = $ntp; ntpRead = $ntpRead }
 }
 function Onvif-TimeNoLogin($t, [int]$timeout = 3) {
   # 1.4: read-only clock read WITHOUT a login. ONVIF lets anyone ask GetSystemDateAndTime (so a client can line up its clock
@@ -686,14 +728,20 @@ function Onvif-Recordings($t) {
   $recPath = $svc[$script:NsRec]; $seaPath = $svc[$script:NsSearch]
   if (-not $recPath -or -not $seaPath) { return $null }
   $r = Onvif-Call $t $recPath '<x:GetRecordings/>' $script:NsRec
+  # 2.2.19 (Codex 2.2.18 F14 sweep, class C): the recording list is read only from a 200 GetRecordingsResponse; anything else is
+  # "could not read" ($null: NOT CHECKED), never an empty list (= "no cameras" / "no footage")
+  $rx = $(if ($r.code -eq 200) { Xml $r.body } else { $null })
+  if (-not $rx -or -not @(XFind $rx 'GetRecordingsResponse').Count) { $script:NhOnvifRecWhy = ('the recording list could not be read (answer ' + $r.code + ')'); return $null }
   $out = @()
-  foreach ($it in (XFind (Xml $r.body) 'RecordingItem')) {
+  foreach ($it in (XFind $rx 'RecordingItem')) {
     $tok = XText $it 'RecordingToken'; $nm = XText $it 'Name'; if (-not $nm) { $nm = XText $it 'SourceId' }
     $i = Onvif-Call $t $seaPath ('<x:GetRecordingInformation><x:RecordingToken>' + [Security.SecurityElement]::Escape($tok) + '</x:RecordingToken></x:GetRecordingInformation>') $script:NsSearch
-    $ix = Xml $i.body
-    $out += [pscustomobject]@{ token = $tok; source = $nm; earliest = (Onvif-Date (XText $ix 'EarliestRecording')); latest = (Onvif-Date (XText $ix 'LatestRecording')); status = (XText $ix 'RecordingStatus') }
+    $ix = $(if ($i.code -eq 200) { Xml $i.body } else { $null })
+    # 2.2.19: a recording whose information could not be read is "footage NOT CHECKED" (info_failed), never "no footage"
+    $infoOk = [bool]($tok -and $ix -and @(XFind $ix 'RecordingInformation').Count)
+    $out += [pscustomobject]@{ token = $tok; source = $nm; earliest = $(if ($infoOk) { Onvif-Date (XText $ix 'EarliestRecording') } else { $null }); latest = $(if ($infoOk) { Onvif-Date (XText $ix 'LatestRecording') } else { $null }); status = $(if ($infoOk) { XText $ix 'RecordingStatus' } else { '' }); info_failed = (-not $infoOk) }
   }
-  return $out
+  return ,$out
 }
 
 # ================= UNIVIEW (LAPI) =================
@@ -702,19 +750,36 @@ function Unv-Get($t, [string]$path) {
   if ($r.code -eq 401) { return @{ login = 'refused' } }
   try { $j = $r.body | ConvertFrom-Json } catch { $j = $null }
   if (-not $j -or -not $j.Response) { return @{ login = 'noanswer' } }
-  return @{ login = 'ok'; code = $j.Response.ResponseCode; data = $j.Response.Data }
+  # 2.2.19 (class C): ok = the device said ResponseCode 0 (success) AND sent its Data; any other code / no Data is not a reading
+  $rc = $j.Response.ResponseCode
+  $okR = ($null -ne $rc -and [string]$rc -eq '0' -and $j.Response.PSObject.Properties['Data'] -and $null -ne $j.Response.Data)
+  return @{ login = 'ok'; code = $rc; data = $j.Response.Data; ok = [bool]$okR }
 }
 function Unv-DeviceInfo($t) {
   $blk = Login-Blocked $t; if ($blk) { return @{ login = $(if ($blk -eq 'skipped') { 'skipped' } else { 'refused' }) } }
   $r = Unv-Get $t '/LAPI/V1.0/System/DeviceInfo'
   if ($r.login -eq 'refused') { Mark-Login $t 'refused' }
   if ($r.login -ne 'ok') { return @{ login = $r.login } }
+  if (-not $r.ok) { return @{ login = 'noanswer'; err = ('the device answered code ' + [string]$r.code + ' with no device information') } }   # 2.2.19 (class C)
   $d = $r.data
-  return @{ login = 'ok'; model = [string]$d.DeviceModel; serial = [string]$d.SerialNumber; firmware = [string]$d.FirmwareVersion; name = [string]$d.DeviceName }
+  $mc = $(if ($d.PSObject.Properties['MAC']) { [string]$d.MAC } elseif ($d.PSObject.Properties['MACAddress']) { [string]$d.MACAddress } else { '' })
+  return @{ login = 'ok'; model = [string]$d.DeviceModel; serial = [string]$d.SerialNumber; firmware = [string]$d.FirmwareVersion; version = ([string]$d.FirmwareVersion).Trim(); name = [string]$d.DeviceName; mac = $mc.ToUpper().Replace('-', ':') }
+}
+# 2.2.19 (Codex 2.2.18 F07 twin, class C): ONVIF GetDeviceInformation, read only when the answer IS that answer. The firmware
+# version is its own field; an empty one stays empty (never "OK").
+function Onvif-DeviceInfo($t) {
+  $r = Onvif-Call $t '/onvif/device_service' '<x:GetDeviceInformation/>' $script:NsDev
+  if ($r.code -eq 401) { return @{ login = 'refused' } }
+  $x = Xml $r.body
+  if ($r.code -ne 200 -or -not $x -or -not @(XFind $x 'GetDeviceInformationResponse').Count) { return @{ login = 'noanswer' } }
+  $v = XText $x 'FirmwareVersion'
+  return @{ login = 'ok'; model = (XText $x 'Model'); serial = (XText $x 'SerialNumber'); firmware = $v; version = $v; name = ''; mac = '' }
 }
 function Unv-Ntp($t) {
   $r = Unv-Get $t '/LAPI/V1.0/System/Time/NTP'
   if ($r.login -ne 'ok') { return $null }
+  # 2.2.19 (Codex 2.2.18 F15 twin): a refused / empty answer is NOT "no time server" - only a success answer with the server list
+  if (-not $r.ok -or -not $r.data.PSObject.Properties['NTPServerInfos']) { return $null }
   $out = @(); foreach ($s in @($r.data.NTPServerInfos)) { if ($s) { $h = [string]$s.IPAddress; if (-not $h) { $h = [string]$s.Domain }; if ($h) { $out += [pscustomobject]@{ host = $h; port = [string]$s.Port; interval = [string]$s.SynchronizeInterval } } } }
   return @{ enabled = $r.data.Enabled; servers = $out }
 }
@@ -789,7 +854,10 @@ function Dw-ReadJson($t, [string]$path) {
   return @{ ok = $true; j = $j; empty = $false; why = '' }
 }
 function Dw-StorageRow($s, [string]$id) {
-  return [pscustomobject]@{ id = $id; status = $(if ($s.isOnline -eq $false) { 'offline' } else { 'ok' }); capMB = [double]$s.totalSpace / 1MB; freeMB = [double]$s.freeSpace / 1MB; property = $(if ($s.isBackup) { 'backup' } elseif ($s.isUsedForWriting -eq $false) { 'not used' } else { 'RW' }); smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null }
+  # 2.2.19 (class C): "ok" only when DW says isOnline = true; no / unknown isOnline = status unknown (NOT CHECKED), not healthy
+  $on = $(if ($s.PSObject.Properties['isOnline']) { [string]$s.isOnline } else { '' })
+  $capN = [double]0; $freeN = [double]0; [void][double]::TryParse([string]$s.totalSpace, [ref]$capN); [void][double]::TryParse([string]$s.freeSpace, [ref]$freeN)
+  return [pscustomobject]@{ id = $id; status = $(if ($on -match '^(?i)false$') { 'offline' } elseif ($on -match '^(?i)true$') { 'ok' } else { 'unknown' }); capMB = $capN / 1MB; freeMB = $freeN / 1MB; property = $(if ($s.isBackup) { 'backup' } elseif ($s.isUsedForWriting -eq $false) { 'not used' } else { 'RW' }); smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null }
 }
 function Dw-Storage($t) {
   # 2.2.18 (Codex F6): @{ ok; why; disks }. A failed / unreadable storage answer (both DW endpoints) is "storage NOT CHECKED",
@@ -802,12 +870,26 @@ function Dw-Storage($t) {
   }
   if ($out.Count) { return @{ ok = $true; why = ''; disks = $out } }
   $old = Dw-ReadJson $t '/api/storageSpace'
+  # 2.2.19 (Codex 2.2.18 F14): the old endpoint counts only when its answer has the DW shape: no error code, reply.storages is a
+  # LIST, and every row in it is a storage row (an address and a total size that is a number). One bad row (e.g. {"error":"busy"})
+  # = the answer is NOT a storage list = NOT CHECKED. 2.2.18 skipped bad rows and said ok with no drives ("No hard drive found").
+  $oldWhy = ''
   if ($old.ok -and $old.j -and $old.j.PSObject.Properties['reply'] -and $old.j.reply -and $old.j.reply.PSObject.Properties['storages']) {
-    foreach ($s in @($old.j.reply.storages)) { if ($s -and $null -ne $s.totalSpace) { $out += Dw-StorageRow $s ([string]$s.url) } }
-    return @{ ok = $true; why = ''; disks = $out }
+    $errV = $(if ($old.j.PSObject.Properties['error']) { [string]$old.j.error } else { '0' })
+    $rows = $old.j.reply.storages
+    if ($errV -ne '0' -and $errV -ne '') { $oldWhy = 'DW answered with error ' + $errV }
+    elseif ($null -ne $rows -and -not ($rows -is [array])) { $rows = @($rows) }
+    if (-not $oldWhy) {
+      $badO = @(@($rows) | Where-Object { $n0 = [double]0; -not $_ -or -not ($_ -is [psobject]) -or $null -eq $_.PSObject.Properties['totalSpace'] -or -not [double]::TryParse([string]$_.totalSpace, [ref]$n0) -or -not ([string]$_.url -or [string]$_.storageId) })
+      if ($badO.Count) { $oldWhy = 'a row in DW''s storage answer is not a storage (' + $badO.Count + ' of ' + @($rows).Count + ')' }
+      else {
+        foreach ($s in @($rows)) { $out += Dw-StorageRow $s ([string]$(if ($s.url) { $s.url } else { $s.storageId })) }
+        return @{ ok = $true; why = ''; disks = $out }
+      }
+    }
   }
   if ($v3List) { return @{ ok = $true; why = ''; disks = @() } }   # a real, empty storage list
-  return @{ ok = $false; why = $(if (-not $v3.ok) { $v3.why } else { 'the answer was not a storage list' }); disks = @() }
+  return @{ ok = $false; why = $(if ($oldWhy) { $oldWhy } elseif (-not $v3.ok) { $v3.why } else { 'the answer was not a storage list' }); disks = @() }
 }
 function Dw-ParseSched($d) {
   # 2.2.14 (Codex 2.2.13 F6/F9): only an explicit true/false recording flag is known; anything else = $null (UNKNOWN, never "on")
@@ -849,8 +931,24 @@ function Dw-Periods($t, [string]$id, [DateTime]$nowUtc) {
   # 2.2.18 (Codex F6 twin): $script:NhDwPeriodsFailed = the footage list could not be read (vs. read, and no footage in it)
   $rj = Dw-ReadJson $t ('/ec2/recordedTimePeriods?cameraId=' + [uri]::EscapeDataString($id) + '&startTime=0&endTime=' + (Utc-ToMs $nowUtc) + '&detail=60000&flat=true')
   $script:NhDwPeriodsFailed = (-not $rj.ok); $j = $rj.j
-  $p = @(); if ($j -and $j.PSObject.Properties['reply'] -and $j.reply) { $p = @($j.reply) } elseif ($j -and -not $j.PSObject.Properties['reply']) { $p = @($j) }
-  $p = @($p | Where-Object { $_ -and $null -ne $_.startTimeMs } | Sort-Object { [double]$_.startTimeMs })
+  # 2.2.19 (Codex 2.2.18 F14): the footage list is READ only when the answer has DW's shape: a list of periods (as the answer,
+  # or as "reply" with no error code), and every period has a numeric startTimeMs and durationMs. {"error":"busy"}, an object
+  # with no list, or one bad row = the footage list could NOT be read (NhDwPeriodsFailed) - never "no footage".
+  $p = @()
+  if ($rj.ok -and -not $rj.empty) {
+    $list = $null
+    if ($j -is [array]) { $list = $j }
+    elseif ($j -and $j.PSObject.Properties['reply'] -and (-not $j.PSObject.Properties['error'] -or [string]$j.error -in @('', '0'))) { $list = @($j.reply | Where-Object { $null -ne $_ }) }
+    elseif ($j -and $j.PSObject.Properties['startTimeMs']) { $list = @($j) }   # one period on its own (5.1 ConvertFrom-Json unrolls a 1-item list)
+    if ($null -eq $list -and -not ($j -and $j.PSObject.Properties['reply'])) { $script:NhDwPeriodsFailed = $true; Log ('footage list for ' + $id + ': the answer was not a list of periods') }
+    else {
+      $n1 = [double]0; $n2 = [double]0
+      $badP = @(@($list) | Where-Object { -not $_ -or $null -eq $_.PSObject.Properties['startTimeMs'] -or $null -eq $_.PSObject.Properties['durationMs'] -or -not [double]::TryParse([string]$_.startTimeMs, [ref]$n1) -or -not [double]::TryParse([string]$_.durationMs, [ref]$n2) })
+      if ($badP.Count) { $script:NhDwPeriodsFailed = $true; Log ('footage list for ' + $id + ': ' + $badP.Count + ' period(s) without a readable start / length - NOT CHECKED') }
+      else { $p = @($list) }
+    }
+  }
+  $p = @($p | Sort-Object { [double]$_.startTimeMs })
   if (-not $p.Count) { return $null }
   $last = $p[$p.Count - 1]
   # 2.2.4: the oldest period that is part of continuous footage back from the newest (a gap over 36 h ends it; an isolated old chunk is not retention)
@@ -960,7 +1058,9 @@ function Get-RecordingStatus {
       if (-not $dwDevs.Count -and -not ($script:NhDwDevRead -and $script:NhDwDevRead.ok)) { $chanRead = $false; $chanWhy = 'DW''s camera list could not be read' + $(if ($script:NhDwDevRead -and $script:NhDwDevRead.why) { ' (' + $script:NhDwDevRead.why + ')' } else { '' }) }
       foreach ($d in $dwDevs) {
         $i++; $script:NhDwPeriodsFailed = $false; $p = Dw-Periods $t $d.id $now; $pFailed = [bool]$script:NhDwPeriodsFailed
-        $online = ($d.status -eq 'Online' -or $d.status -eq 'Recording')
+        # 2.2.19 (class C): only a status DW really gave is a reading: Online / Recording = online, a known DW "not working" status
+        # = offline; an empty / unknown status is $null (NOT CHECKED), never "camera OFFLINE"
+        $online = $(if ($d.status -in @('Online', 'Recording')) { $true } elseif ($d.status -in @('Offline', 'Unauthorized', 'NotDefined', 'Incompatible', 'Mismatched')) { $false } else { $null })
         $recNow = ($d.status -eq 'Recording') -or ($p -and ($p.live -or (($now - $p.newest).TotalMinutes -le [double]$script:Opt.FreshMinutes)))
         $chans += [pscustomobject]@{ ch = $i; ip = $d.ip; online = $online; scheduled = $d.scheduled; recording_now = [bool]$recNow; mode = ''; newest = $(if ($p) { $p.newest } else { $null }); oldest = $(if ($p) { $p.oldest } else { $null }); days_held = $(if ($p) { [int][math]::Floor(($now - $p.oldest).TotalDays) } else { $null }); detect = $d.status; name = $d.name; mac = $d.mac; model = $d.model; vendor = $d.vendor; search_failed = [bool]($pFailed -and -not $p) }
       }
@@ -973,7 +1073,8 @@ function Get-RecordingStatus {
       foreach ($r in $recs) {
         $i++
         $recNow = ($r.status -eq 'Recording') -or ($r.latest -and (($now - $r.latest).TotalMinutes -le [double]$script:Opt.FreshMinutes))
-        $chans += [pscustomobject]@{ ch = $i; ip = ''; online = $null; scheduled = $null; recording_now = [bool]$recNow; mode = ''; newest = $r.latest; oldest = $r.earliest; days_held = $(if ($r.earliest) { [int][math]::Floor(($now - $r.earliest).TotalDays) } else { $null }); detect = $r.source }
+        # 2.2.19 (class C): a recording whose information could not be read is footage NOT CHECKED (search_failed), never "NO footage"
+        $chans += [pscustomobject]@{ ch = $i; ip = ''; online = $null; scheduled = $null; recording_now = [bool]$recNow; mode = ''; newest = $r.latest; oldest = $r.earliest; days_held = $(if ($r.earliest) { [int][math]::Floor(($now - $r.earliest).TotalDays) } else { $null }); detect = $r.source; search_failed = [bool]($r.PSObject.Properties['info_failed'] -and $r.info_failed) }
       }
     }
   }
@@ -989,12 +1090,14 @@ function Get-RecordingStatus {
     $capT += $d.capMB; $freeT += $d.freeMB
     $line = 'Drive ' + $d.id + ': ' + [math]::Round($d.capMB / 1024) + ' GB'
     $st = ([string]$d.status).ToLower()
+    # 2.2.19 (Codex 2.2.18 F14 sweep, class C): a drive whose status was not given is NOT CHECKED - not "healthy", not a fault
+    if (-not $st -or $st -eq 'unknown') { Warn ($line + ' - its status could NOT be read, so this drive is NOT CHECKED. Look at the recorder''s Storage page.'); $problems.Add('drive ' + $d.id + ' status NOT CHECKED'); continue }
     if ($st -in @('ok', 'idle', 'normal', 'sleeping')) {
       $bits = @(); if ($null -ne $d.tempC) { $bits += ([string]$d.tempC + ' C') }; if ($null -ne $d.powerOnDays) { $bits += ('on for ' + [math]::Round($d.powerOnDays / 365, 1) + ' years') }
       if ($d.smartOk -eq $false -or $d.smartAll -in @('badsectors', 'fault')) { Bad ($line + ' - its own health test (SMART) says it is FAILING' + $(if ($d.smartAll) { ' (' + $d.smartAll + ')' } else { '' }) + '. Replace it soon.'); $problems.Add('drive ' + $d.id + ' failing') }
       elseif ($null -ne $d.tempC -and $d.tempC -ge 55) { Warn ($line + ' - running hot (' + $d.tempC + ' C). Give the recorder air.'); $problems.Add('drive ' + $d.id + ' hot') }
       elseif ($null -ne $d.powerOnDays -and $d.powerOnDays -ge 1825) { Warn ($line + ' - healthy but old (' + [math]::Round($d.powerOnDays / 365, 1) + ' years on). Plan a replacement.') }
-      else { Ok ($line + ' - healthy' + $(if ($bits.Count) { ' (' + ($bits -join ', ') + ')' } else { '' }) + $(if ($d.property -and $d.property -ne 'RW') { ' [' + $d.property + ']' } else { '' })) }
+      else { Ok ($line + ' - healthy' + $(if ($bits.Count) { ' (' + ($bits -join ', ') + ')' } else { '' }) + $(if ($d.property -and $d.property -ne 'RW') { ' [' + $d.property + ']' } else { '' }) + $(if ($t.vendor -eq 'Hikvision' -and $null -eq $d.smartOk) { ' - by its status; its own health test (SMART) could not be read' } else { '' })) }
     } else {
       $why = switch ($st) { 'unformatted' { 'not formatted, nothing is saved on it' } 'error' { 'in ERROR' } 'smartfailed' { 'failing its health test (SMART)' } 'offline' { 'offline / not detected' } 'notexist' { 'missing' } 'mismatch' { 'from another recorder (mismatch)' } 'formating' { 'being formatted right now' } 'reparing' { 'being repaired right now' } default { 'status "' + $d.status + '"' } }
       Bad ($line + ' - ' + $why + '.'); $problems.Add('drive ' + $d.id + ' ' + $st)
@@ -1086,10 +1189,11 @@ function Clock-Of($t) {
     'DW' { if (-not (Dw-Login $t)) { return $null }; $d = Dw-Time $t; if (-not $d) { return $null }; return @{ utc = $d.utc; mode = 'Windows clock'; tz = $null; tzId = $d.tzId; ntp = @() } }
     default {
       $o = Onvif-Time $t; if (-not $o) { return $null }
-      $ntp = @($o.ntp | ForEach-Object { $_.host })
-      if ($t.vendor -eq 'Uniview' -and -not $ntp.Count) { $u = Unv-Ntp $t; if ($u) { $ntp = @($u.servers | ForEach-Object { $_.host }) } }
+      $ntp = @($o.ntp | ForEach-Object { $_.host }); $ntpRead = [bool]$o.ntpRead
+      # 2.2.19 (Codex 2.2.18 F15): the Uniview list counts only when Unv-Ntp really READ it (a success answer)
+      if ($t.vendor -eq 'Uniview' -and -not $ntp.Count) { $u = Unv-Ntp $t; if ($u) { $ntp = @($u.servers | ForEach-Object { $_.host }); $ntpRead = $true } }
       $tz = $o.tz; if ($tz -and $tz.ok -and -not $o.dst -and $tz.start) { $tz.isUsEastern = $false }
-      return @{ utc = $o.utc; mode = $o.mode; tz = $tz; ntp = $ntp; dst = $o.dst }
+      return @{ utc = $o.utc; mode = $o.mode; tz = $tz; ntp = $ntp; dst = $o.dst; ntpRead = $ntpRead }
     }
   }
 }
@@ -1108,7 +1212,9 @@ function Judge-Clock([string]$label, $c, $ref, [string]$why = '') {
     Info 'A DW server takes its time from Windows. Fix drift on the server: Windows time sync (w32tm) to time.nist.gov.'
     return $p
   }
-  if ($c.mode -notmatch '(?i)^ntp$') { Bad ($label + ': time is set by hand ("' + $c.mode + '"), not synced to an internet time server. It will drift.'); $p += 'NTP off' }
+  # 2.2.19 (class C): no time mode in the answer is NOT "set by hand" - it is NOT CHECKED
+  if (-not ([string]$c.mode).Trim()) { Warn ($label + ': its time mode (NTP or by hand) could NOT be read - time server NOT CHECKED.'); $p += 'time server not checked' }
+  elseif ($c.mode -notmatch '(?i)^ntp$') { Bad ($label + ': time is set by hand ("' + $c.mode + '"), not synced to an internet time server. It will drift.'); $p += 'NTP off' }
   elseif ($c -is [hashtable] -and $c.ContainsKey('ntpRead') -and -not $c.ntpRead) { Warn ($label + ': NTP is on, but its time-server list could NOT be read - time server NOT CHECKED.'); $p += 'time server not checked' }
   elseif (-not @($c.ntp | Where-Object { $_ }).Count) { Bad ($label + ': NTP is on but no time server is filled in.'); $p += 'no NTP server' }
   else { Ok ($label + ': syncs to ' + (@($c.ntp | Where-Object { $_ }) -join ', ') + '.') }
@@ -1200,6 +1306,7 @@ function Hik-NtpPlan($t, [string]$server) {
   $h = Hik-Time $t; if (-not $h) { return @{ ok = $false; why = 'could not read its time settings' } }
   # 2.2.18 (sweep, class C): an unreadable time-server list is not "none" - no plan (and no "was none") from it
   if ($h.ContainsKey('ntpRead') -and -not $h.ntpRead) { return @{ ok = $false; why = 'could not read its time-server list' } }
+  if (-not ([string]$h.mode).Trim()) { return @{ ok = $false; why = 'could not read its time mode (NTP or by hand)' } }   # 2.2.19 (class C)
   $first = $h.ntp | Select-Object -First 1
   $needNtp = (-not $first) -or ($first.host -ne $server) -or ($first.interval -and [int]$first.interval -gt [int]$script:Opt.NtpIntervalMin)
   $needMode = $h.mode -ne 'NTP'; $needTz = -not ($h.tz -and $h.tz.isUsEastern)
@@ -1240,6 +1347,10 @@ function Hik-NtpApply($t, [string]$server, $plan) {
 }
 function Onvif-NtpPlan($t, [string]$server) {
   $o = Onvif-Time $t; if (-not $o) { return @{ ok = $false; why = 'could not read its time settings (ONVIF)' } }
+  # 2.2.19 (Codex 2.2.18 F15): like Hik-NtpPlan - an unread time-server list is no plan (2.2.18 planned "was none" from a failed GetNTP)
+  if (-not $o.ntpRead) { return @{ ok = $false; why = 'could not read its time-server list (ONVIF)' } }
+  if (-not ([string]$o.mode).Trim()) { return @{ ok = $false; why = 'could not read its time mode (ONVIF)' } }
+  if (-not $o.dstRead) { return @{ ok = $false; why = 'could not read its daylight-saving setting (ONVIF)' } }
   $hosts = @($o.ntp | ForEach-Object { $_.host })
   $needNtp = -not ($hosts -contains $server); $needMode = $o.mode -ne 'NTP'; $needTz = (-not ($o.tz -and $o.tz.isUsEastern)) -or (-not $o.dst)
   $ch = @()
@@ -1276,7 +1387,11 @@ function Set-NtpTime {
   #>
   [CmdletBinding(SupportsShouldProcess = $true)]
   param([Parameter(Mandatory)][string]$Ip, [ValidateSet('Auto', 'Hikvision', 'Uniview', 'DW', 'Onvif')][string]$Vendor = 'Auto',
-        [pscredential]$Credential, [int]$Port = 0, [string]$NtpServer = '', [switch]$IncludeCameras, [string[]]$CameraIps, [pscredential]$CameraCredential, [switch]$NoLog)
+        [pscredential]$Credential, [int]$Port = 0, [string]$NtpServer = '', [switch]$IncludeCameras, [string[]]$CameraIps, [pscredential]$CameraCredential, [switch]$NoLog,
+        [hashtable]$Expect = $null)
+  # 2.2.19 (Codex 2.2.18 F04 twin, classes A + B): -Expect = the plan the technician saw and said YES to (label -> @{ id; changes },
+  # from the -WhatIf run's devices). A device is changed only when it is still the SAME device (serial / MAC read again) and its
+  # fresh plan is exactly the plan that was shown; anything else is not changed ("changed since the plan you saw").
   if (-not $NoLog) { Start-Log 'settime' }
   if (-not $NtpServer) { $NtpServer = [string]$script:Opt.NtpServer }
   $t = Resolve-Target $Ip $Vendor $Credential $Port
@@ -1296,10 +1411,27 @@ function Set-NtpTime {
     if (-not $plan.ok) { Bad ($x.label + ': ' + $plan.why + '. Nothing changed.'); $failed++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = ('failed: ' + $plan.why); changes = @() }; continue }
     if (-not $plan.changes.Count) { Ok ($x.label + ': already right. Skipped, nothing changed.'); $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = 'already right'; changes = @() }; continue }
     foreach ($c in $plan.changes) { Info ($x.label + ': ' + $c) }
-    if (-not $PSCmdlet.ShouldProcess($(if ($x.label -eq 'Recorder') { 'Recorder ' + $tt.ip } else { $x.label }), ($plan.changes -join '; '))) { $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = 'what-if (not changed)'; changes = $plan.changes }; continue }
+    # 2.2.19 (class A): which device answers here is read with the plan; a device that does not say who it is is not changed
+    $idA = Get-NhDeviceId $tt
+    $idW = $(if ($idA.ok) { ([string]$idA.serial + '|' + [string]$idA.mac) } else { '' })
+    if (-not $dry -and -not $idA.ok) { Bad ($x.label + ': ' + $idA.why + ', so it is not known which device would be changed. Nothing changed.'); $failed++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = ('failed: device not identified (' + $idA.why + ')'); changes = $plan.changes; id = '' }; continue }
+    if ($Expect -and -not $dry) {
+      $ex = $Expect[$x.label]
+      $exCh = $(if ($ex) { [string]$ex.changes } else { '' })
+      if (-not $ex) { Bad ($x.label + ': it was not in the plan you said YES to. Nothing changed.'); $failed++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = 'failed: not in the confirmed plan'; changes = $plan.changes; id = $idW }; continue }
+      if (-not [string]$ex.id -or [string]$ex.id -cne $idW) { Bad ($x.label + ': a different device answers at ' + $tt.ip + ' than in the plan you said YES to. Nothing changed. Run Fix clock again.'); $failed++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = 'failed: different device than in the confirmed plan'; changes = $plan.changes; id = $idW }; continue }
+      if ($exCh -cne ($plan.changes -join '; ')) { Bad ($x.label + ': its time settings changed since the plan you said YES to (now: ' + ($plan.changes -join '; ') + '). Nothing changed. Run Fix clock again.'); $failed++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = 'failed: changed since the confirmed plan'; changes = $plan.changes; id = $idW }; continue }
+    }
+    if (-not $PSCmdlet.ShouldProcess($(if ($x.label -eq 'Recorder') { 'Recorder ' + $tt.ip } else { $x.label }), ($plan.changes -join '; '))) { $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = 'what-if (not changed)'; changes = $plan.changes; id = $idW }; continue }
+    # 2.2.19 (class B): after the OK, read it again - the same device, and the same plan - right before the write
+    $same = Test-NhSameDevice $tt $idA
+    if (-not $same.ok) { Bad ($x.label + ': ' + $same.why + '. Nothing changed.'); $failed++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = ('failed: ' + $same.why); changes = $plan.changes; id = $idW }; continue }
+    $plan2 = $(if ($isHik) { Hik-NtpPlan $tt $NtpServer } else { Onvif-NtpPlan $tt $NtpServer })
+    if (-not $plan2.ok -or (($plan2.changes -join '; ') -cne ($plan.changes -join '; '))) { $why2 = $(if (-not $plan2.ok) { $plan2.why } else { 'its time settings changed while waiting for the OK' }); Bad ($x.label + ': ' + $why2 + '. Nothing changed.'); $failed++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = ('failed: ' + $why2); changes = $plan.changes; id = $idW }; continue }
+    $plan = $plan2
     $w = $(if ($isHik) { Hik-NtpApply $tt $NtpServer $plan } else { Onvif-NtpApply $tt $NtpServer $plan })
-    if ($w.ok) { Ok ($x.label + ': time settings saved and read back correctly.'); $changedN++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = 'changed'; changes = $plan.changes } }
-    else { Bad ($x.label + ': ' + $w.why + '.'); $failed++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = ('failed: ' + $w.why); changes = $plan.changes } }
+    if ($w.ok) { Ok ($x.label + ': time settings saved and read back correctly.'); $changedN++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = 'changed'; changes = $plan.changes; id = $idW } }
+    else { Bad ($x.label + ': ' + $w.why + '.'); $failed++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = ('failed: ' + $w.why); changes = $plan.changes; id = $idW } }
   }
   $after = $null
   if ($changedN -and -not $dry) {
@@ -1362,6 +1494,12 @@ function Get-FwResultLine([int]$sec, [int]$old, [int]$notJudged) {
   if ($old) { return @{ ok = $true; color = 'Yellow'; text = ('RESULT: no known holes; ' + $old + ' device(s) on older firmware.') } }
   return @{ ok = $true; color = 'Green'; text = 'RESULT: firmware OK.' }
 }
+# 2.2.19 (Codex 2.2.18 F07): a device reading carries a firmware VERSION (not only a release date)
+function Test-NhFwVersion($d) {
+  if (-not $d -or $d.login -ne 'ok') { return $false }
+  $v = $(if ($d.ContainsKey('version')) { [string]$d.version } else { [string]$d.firmware })
+  return [bool]($v.Trim())
+}
 function Judge-Firmware([string]$label, [string]$model, [string]$fw, $ref, [switch]$Quiet) {
   $o = [ordered]@{ label = $label; model = $model; firmware = $fw; latest = ''; update_available = $null; advisories = @(); verdict = 'unknown'; note = ''; unlisted = $false }
   $cur = Parse-Fw $fw; $m = Find-RefModel $ref $model
@@ -1415,18 +1553,19 @@ function Get-FirmwareStatus {
       $di = Hik-DeviceInfo $t
       if ($di.login -in @('skipped', 'refused')) { Warn ('Firmware NOT CHECKED (' + (Login-Words $di.login) + ').'); return [pscustomobject]@{ check = 'firmware'; ip = $Ip; vendor = $t.vendor; ok = $false; notChecked = $true; devices = @(); problems = @('not checked (login ' + $di.login + ')'); log = $script:LogFile } }
       if ($di.login -ne 'ok') { Bad ('Could not read the recorder (' + $di.login + ').'); return [pscustomobject]@{ check = 'firmware'; ip = $Ip; vendor = $t.vendor; ok = $false; devices = @(); problems = @('recorder unreadable'); log = $script:LogFile } }
-      $items += Judge-Firmware 'Recorder' $di.model $di.firmware $ref
+      # 2.2.19 (Codex 2.2.18 F07 twin): judged only on a real firmware VERSION; a date alone (or nothing) is NOT CHECKED
+      if (Test-NhFwVersion $di) { $items += Judge-Firmware 'Recorder' $di.model $di.firmware $ref } else { Warn ('Recorder ' + $di.model + ': it did not give its firmware version' + $(if ($di.released) { ' (only the release date ' + $di.released + ')' } else { '' }) + ' - firmware NOT CHECKED.'); $fwUnread++ }
       if ($IncludeCameras) {
         foreach ($ct in (Get-CameraTargets $t $CameraIps $CameraCredential)) {
           $cd = Hik-DeviceInfo $ct
-          if ($cd.login -eq 'ok') { $items += Judge-Firmware ('Camera ' + $ct.ip) $cd.model $cd.firmware $ref -Quiet } else { Warn ('Camera ' + $ct.ip + ': could not read it (' + $cd.login + ').'); $fwUnread++ }
+          if ($cd.login -eq 'ok' -and (Test-NhFwVersion $cd)) { $items += Judge-Firmware ('Camera ' + $ct.ip) $cd.model $cd.firmware $ref -Quiet } elseif ($cd.login -eq 'ok') { Warn ('Camera ' + $ct.ip + ': it did not give its firmware version - NOT CHECKED.'); $fwUnread++ } else { Warn ('Camera ' + $ct.ip + ': could not read it (' + $cd.login + ').'); $fwUnread++ }
         }
         Write-FwUnlisted $items
       }
     }
     'DW' {
       $info = Dw-Info $t
-      if (-not $info) { Bad 'Could not read the DW server version.'; return [pscustomobject]@{ check = 'firmware'; ip = $Ip; vendor = 'DW'; ok = $false; devices = @(); problems = @('server unreadable'); log = $script:LogFile } }
+      if (-not $info -or -not ([string]$info.version).Trim()) { Bad 'Could not read the DW server version.'; return [pscustomobject]@{ check = 'firmware'; ip = $Ip; vendor = 'DW'; ok = $false; devices = @(); problems = @('server unreadable'); log = $script:LogFile } }
       $items += Judge-Firmware 'Server' 'DW Spectrum' $info.version $ref
       Info 'A DW server is updated with Digital Watchdog''s own installer - report only, the Toolkit never updates it.'
       if ($IncludeCameras -and (Dw-Login $t)) {
@@ -1443,17 +1582,17 @@ function Get-FirmwareStatus {
       $blk = Login-Blocked $t
       if ($blk) { Warn ('Firmware NOT CHECKED (' + (Login-Words $blk) + ').'); return [pscustomobject]@{ check = 'firmware'; ip = $Ip; vendor = $t.vendor; ok = $false; notChecked = $true; devices = @(); problems = @('not checked (login ' + $blk + ')'); log = $script:LogFile } }
       $di = $(if ($t.vendor -eq 'Uniview') { Unv-DeviceInfo $t } else { $null })
-      if ($di -and $di.login -eq 'ok') { $items += Judge-Firmware 'Recorder' $di.model $di.firmware $ref }
+      if ($di -and $di.login -eq 'ok' -and (Test-NhFwVersion $di)) { $items += Judge-Firmware 'Recorder' $di.model $di.firmware $ref }
       else {
-        $r = Onvif-Call $t '/onvif/device_service' '<x:GetDeviceInformation/>' $script:NsDev
-        $x = Xml $r.body
-        if ($x) { $items += Judge-Firmware 'Recorder' (XText $x 'Model') (XText $x 'FirmwareVersion') $ref } else { Bad 'Could not read the recorder''s model / firmware.'; $fwUnread++ }
+        # 2.2.19 (class C): only a real GetDeviceInformation answer with a firmware version is judged (an error page is not)
+        $od = Onvif-DeviceInfo $t
+        if ($od.login -eq 'ok' -and (Test-NhFwVersion $od)) { $items += Judge-Firmware 'Recorder' $od.model $od.firmware $ref } else { Bad 'Could not read the recorder''s model / firmware.'; $fwUnread++ }
       }
       if ($IncludeCameras) {
         foreach ($ct in (Get-CameraTargets $t $CameraIps $CameraCredential)) {
           if ($ct.vendor -eq 'Auto') { $ct.vendor = Detect-Vendor $ct.ip 0 }
           $cd = $(if ($ct.vendor -eq 'Hikvision') { Hik-DeviceInfo $ct } elseif ($ct.vendor -eq 'Uniview') { Unv-DeviceInfo $ct } else { $null })
-          if ($cd -and $cd.login -eq 'ok') { $items += Judge-Firmware ('Camera ' + $ct.ip) $cd.model $cd.firmware $ref -Quiet } else { Warn ('Camera ' + $ct.ip + ': could not read it.'); $fwUnread++ }
+          if ($cd -and $cd.login -eq 'ok' -and (Test-NhFwVersion $cd)) { $items += Judge-Firmware ('Camera ' + $ct.ip) $cd.model $cd.firmware $ref -Quiet } else { Warn ('Camera ' + $ct.ip + ': could not read it' + $(if ($cd -and $cd.login -eq 'ok') { ' (no firmware version given)' } else { '' }) + '.'); $fwUnread++ }
         }
         Write-FwUnlisted $items
       }
