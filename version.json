@@ -1,8 +1,8 @@
 {
   "version": "2.2.16",
   "released": "2026-11-10",
-  "commit": "0f833a7080cb20e52a74738878608bf30beef026",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/0f833a7080cb20e52a74738878608bf30beef026/",
+  "commit": "e1f97b9f60f159ab20157b68d028827aecc2e999",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/e1f97b9f60f159ab20157b68d028827aecc2e999/",
   "notes": "2.2.16: fixes for Codex review of 2.2.15 (F1-F7 + Crew standard-user note). Branch build, not released.",
   "files": [
     {
@@ -462,12 +462,12 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2210.ps1",
-      "sha256": "77311b10b68d8b2a8b991624d7d33893cb3b87f719e84be4c02080a545719a4f",
+      "sha256": "82ebea49d0682b391c9d8717af7032ad2a15362303e89be2052bb70bff95fb24",
       "size": 30000
     },
     {
       "path": "Toolkit/tests/Test-Fix2211.ps1",
-      "sha256": "6fb93c67b6c4b85a975a8ecf2487a744dbff1361ddeafd538ca4b765d2b4ad6d",
+      "sha256": "8de414613f0dc4e02f42d5306cc4c5481ad8303b299fd71b4f044181e1b6230f",
       "size": 44868
     },
     {
@@ -562,7 +562,7 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
-      "sha256": "61ad6012c9ecf259cec201f947d9a4416c52b8e85415db63ecdc98ef7b71afbb",
+      "sha256": "12e3ccd2488fd365b7588f8fc2902d9297d0a442401f33ef0baad2e595da9337",
       "size": 57401
     },
     {
@@ -587,12 +587,12 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix228.ps1",
-      "sha256": "95e8cbcc3267391aad962db97de72948142d82560f3350425582784239ace617",
+      "sha256": "d8507d286bd99d9f92aa9cad711b3fd802583451ad575bd233e95d411a9cd8d9",
       "size": 26952
     },
     {
       "path": "Toolkit/tests/Test-Fix229.ps1",
-      "sha256": "63e1b57550ef76b4017fcc0f953887a37634c5e7b3ec620fe86ae3e904602242",
+      "sha256": "e95222f61cef92c1b9f7421941dd0f6c7c0f68d1543fcc03a1b845e8646879d1",
       "size": 28857
     },
     {
