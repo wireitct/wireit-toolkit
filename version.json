@@ -1,8 +1,8 @@
 {
   "version": "2.2.20",
   "released": "2026-11-11",
-  "commit": "092fbe0f68a320811dcc72adbb6ec2235eec99fd",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/092fbe0f68a320811dcc72adbb6ec2235eec99fd/",
+  "commit": "516bee67accbba908d5c4b0bd30aeffea1d3ed7a",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/516bee67accbba908d5c4b0bd30aeffea1d3ed7a/",
   "notes": "2.2.20: fixes for the Codex review of 2.2.19 (21 findings R01-R21), by class across the whole repo: recovery journals, undo files, plans, limits, login counts, reset reservations and result files are saved with errors stopping and read back BEFORE the change they protect, and removals are verified before anything is called finished; identity (MAC, or the saved serial; adapter GUID and name) is re-read before EACH write and before the read that certifies a result, including removals, recording tracks, channels and firmware outcomes; an unreadable, missing or error answer (HTTP 200 login or error pages included) is NOT CHECKED, never free / empty / ok / refused / healthy / nobody; what was approved is what is used (firmware bytes hashed after YES, the exact expected version record, this run's own result id); journals are type-checked before any recovery write; a lost or unclear answer keeps the restart, login and reset allowances used.",
   "files": [
     {
@@ -672,8 +672,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "27487a2c794794a8fb0d5df9df556f8c69991b7735d94c5aac528696569675ba",
-      "size": 43833
+      "sha256": "0672232019085cec9c6f9b8a63b3c26674991d36a46769db504a47d9bce186ec",
+      "size": 43867
     },
     {
       "path": "Toolkit/tests/Test-Fix2220Classic.ps1",
