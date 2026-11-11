@@ -140,7 +140,12 @@ try { Add-Type -TypeDefinition $code2 -ErrorAction Stop; 'OLD=ok' } catch { 'OLD
   $o75 = & $pw75 -NoProfile -File $c75 (Join-Path $tk 'FixSiteDevices.ps1') 2>&1 | Out-String
   Check ($o75 -match 'V=7\.5' -and $o75 -match 'NEW=True') ('PowerShell 7.5: the 2.2.2 helper compiles (' + (($o75 -split "`n" | Where-Object { $_ -like 'V=*' }) -join '') + ')')
   Check ($o75 -match 'OLD=fails .*SYSLIB0014') 'reproduction (Codex): the 2.2.1 Add-Type (no -IgnoreWarnings) fails on 7.5 with SYSLIB0014'
-} else { Write-Host '  (no PowerShell 7.5 here: set WIREIT_PWSH75 to run the 7.5 compile check)' }
+} else {
+  # 2.2.19 (Codex 2.2.18 validation note: 2,291 vs 2,293): without a PowerShell 7.5 these two checks did not run - they are DEFERRED rows,
+  # so the totals on a PC with and without 7.5 reconcile (passed + deferred is the same)
+  Write-Host '  DEFERRED PowerShell 7.5: the 2.2.2 helper compiles (no PowerShell 7.5 here: set WIREIT_PWSH75)'
+  Write-Host '  DEFERRED reproduction (Codex): the 2.2.1 Add-Type fails on 7.5 with SYSLIB0014 (no PowerShell 7.5 here)'
+}
 
 # =====================================================================================
 # 2.2.3: section 'H3/M2/installer.' removed with the Crew/SYSTEM split (Test-Fix223 proves the old path is gone)

@@ -13,15 +13,19 @@
  out says DEFERRED (Codex 2.2.15 R11 note), and a suite that fails without printing its summary (it aborted half-way) counts as at least
  1 failed check, so the totals never read "0 failed" over an aborted suite (Codex 2.2.15 F7).
  2.2.18: Test-Fix2218Classic / Nvr / Site / Sweep (Codex review of 2.2.17 + the repo-wide sweep) run first.
+ 2.2.19: Test-Fix2219Site / PcNet / Classic / Nvr / Sweep (Codex review of 2.2.18, F01-F27) run first. -SummaryJson <file> writes every
+ suite row (passed / failed / deferred / exit / seconds), the totals and the PowerShell / Python / node used, so two runs can be
+ reconciled suite by suite (Codex 2.2.18 could not reconcile 2,291 vs 2,293: the difference was Test-Fix222's two PowerShell 7.5 checks,
+ which now print DEFERRED where no 7.5 is installed).
  2.2.12 (Codex P2-15): the Hik relay suite (appsscript\tests\hikrelay.test.js, Node) is part of the pack: it runs with node and is
  counted like any other suite; with no node on the PC it is DEFERRED (never a pass), so a broken relay can not slip through.
 #>
-param([switch]$Portable, [switch]$OnlyRelay)
+param([switch]$Portable, [switch]$OnlyRelay, [string]$SummaryJson = '')
 $ErrorActionPreference = 'Continue'
 if (-not $env:TEMP) { $env:TEMP = [IO.Path]::GetTempPath() }
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $exe = $(if ($PSVersionTable.PSEdition -eq 'Core') { (Get-Process -Id $PID).Path } else { Join-Path $PSHOME 'powershell.exe' })
-$suites = @('Toolkit\tests\Test-Fix2218Classic.ps1', 'Toolkit\tests\Test-Fix2218Nvr.ps1', 'Toolkit\tests\Test-Fix2218Site.ps1', 'Toolkit\tests\Test-Fix2218Sweep.ps1', 'Toolkit\tests\Test-Fix2217Nvr.ps1', 'Toolkit\tests\Test-Fix2217Site.ps1', 'Toolkit\tests\Test-Repro2215.ps1', 'Toolkit\tests\Test-Fix2216Nvr.ps1', 'Toolkit\tests\Test-Fix2216Classic.ps1', 'Toolkit\tests\Test-Fix2216Site.ps1', 'Toolkit\tests\Test-Repro2214.ps1', 'Toolkit\tests\Test-Fix2215Nvr.ps1', 'Toolkit\tests\Test-Fix2215Classic.ps1', 'Toolkit\tests\Test-Fix2215Site.ps1', 'Toolkit\tests\Test-Fix2214Nvr.ps1', 'Toolkit\tests\Test-Fix2214Classic.ps1', 'Toolkit\tests\Test-Fix2214Site.ps1', 'Toolkit\tests\Test-Fix2213Nvr.ps1', 'Toolkit\tests\Test-Fix2213Classic.ps1', 'Toolkit\tests\Test-Fix2213Net.ps1', 'Toolkit\tests\Test-Fix2213Site.ps1', 'Toolkit\tests\Test-Fix2212.ps1', 'Toolkit\tests\Test-Fix2212Site.ps1', 'Toolkit\tests\Test-Fix2212Nvr.ps1', 'Toolkit\tests\Test-Fix2212Net.ps1', 'Toolkit\tests\Test-Fix2211.ps1', 'Toolkit\tests\Test-Fix2210.ps1', 'Toolkit\tests\Test-Fix229.ps1', 'Toolkit\tests\Test-Fix228.ps1', 'Toolkit\tests\Test-Fix227.ps1', 'Toolkit\tests\Test-Fix226.ps1', 'Toolkit\tests\Test-Review225.ps1', 'Toolkit\tests\Test-Fix225.ps1', 'Toolkit\tests\Test-Fix224.ps1', 'Toolkit\tests\Test-Fix223.ps1', 'Toolkit\tests\Test-Fix222.ps1', 'Toolkit\tests\Test-Fix221.ps1', 'Toolkit\tests\Test-Fix22.ps1',
+$suites = @('Toolkit\tests\Test-Fix2219Site.ps1', 'Toolkit\tests\Test-Fix2219PcNet.ps1', 'Toolkit\tests\Test-Fix2219Classic.ps1', 'Toolkit\tests\Test-Fix2219Nvr.ps1', 'Toolkit\tests\Test-Fix2219Sweep.ps1', 'Toolkit\tests\Test-Fix2218Classic.ps1', 'Toolkit\tests\Test-Fix2218Nvr.ps1', 'Toolkit\tests\Test-Fix2218Site.ps1', 'Toolkit\tests\Test-Fix2218Sweep.ps1', 'Toolkit\tests\Test-Fix2217Nvr.ps1', 'Toolkit\tests\Test-Fix2217Site.ps1', 'Toolkit\tests\Test-Repro2215.ps1', 'Toolkit\tests\Test-Fix2216Nvr.ps1', 'Toolkit\tests\Test-Fix2216Classic.ps1', 'Toolkit\tests\Test-Fix2216Site.ps1', 'Toolkit\tests\Test-Repro2214.ps1', 'Toolkit\tests\Test-Fix2215Nvr.ps1', 'Toolkit\tests\Test-Fix2215Classic.ps1', 'Toolkit\tests\Test-Fix2215Site.ps1', 'Toolkit\tests\Test-Fix2214Nvr.ps1', 'Toolkit\tests\Test-Fix2214Classic.ps1', 'Toolkit\tests\Test-Fix2214Site.ps1', 'Toolkit\tests\Test-Fix2213Nvr.ps1', 'Toolkit\tests\Test-Fix2213Classic.ps1', 'Toolkit\tests\Test-Fix2213Net.ps1', 'Toolkit\tests\Test-Fix2213Site.ps1', 'Toolkit\tests\Test-Fix2212.ps1', 'Toolkit\tests\Test-Fix2212Site.ps1', 'Toolkit\tests\Test-Fix2212Nvr.ps1', 'Toolkit\tests\Test-Fix2212Net.ps1', 'Toolkit\tests\Test-Fix2211.ps1', 'Toolkit\tests\Test-Fix2210.ps1', 'Toolkit\tests\Test-Fix229.ps1', 'Toolkit\tests\Test-Fix228.ps1', 'Toolkit\tests\Test-Fix227.ps1', 'Toolkit\tests\Test-Fix226.ps1', 'Toolkit\tests\Test-Review225.ps1', 'Toolkit\tests\Test-Fix225.ps1', 'Toolkit\tests\Test-Fix224.ps1', 'Toolkit\tests\Test-Fix223.ps1', 'Toolkit\tests\Test-Fix222.ps1', 'Toolkit\tests\Test-Fix221.ps1', 'Toolkit\tests\Test-Fix22.ps1',
   'Toolkit\tests\Test-HikReset.ps1', 'Toolkit\tests\Test-FixSite.ps1', 'Toolkit\tests\Test-FixIt.ps1', 'Toolkit\tests\Test-Toolkit.ps1',
   'Toolkit\modules\NvrHealth\tests\Test-NvrHealth.ps1', 'sitecheck\tests\Test-SiteCheck.ps1')
 if ($Portable) {
@@ -92,6 +96,15 @@ $rows += $nrow
 Write-Host ''; $rows | Format-Table -AutoSize | Out-String | Write-Host
 $tp = ($rows | Measure-Object passed -Sum).Sum; $tf = ($rows | Measure-Object failed -Sum).Sum; $td = ($rows | Measure-Object deferred -Sum).Sum
 Write-Host ('Checks: ' + $tp + ' passed, ' + $tf + ' failed, ' + $td + ' deferred (deferred is NOT a pass)')
+if ($SummaryJson) {
+  # 2.2.19: a per-suite record next to the log, so totals reconcile suite by suite
+  $pyv = ''; try { $pyc = Get-Command python3 -ErrorAction SilentlyContinue | Select-Object -First 1; if (-not $pyc) { $pyc = Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1 }; if ($pyc) { $pyv = [string](& $pyc.Source --version 2>&1) } } catch { $pyv = '' }
+  $ndv = ''; if ($nodeExe) { try { $ndv = [string](& $nodeExe --version 2>&1) } catch { $ndv = '' } }
+  $sum = [ordered]@{ portable = [bool]$Portable; powershell = [string]$PSVersionTable.PSVersion; edition = [string]$PSVersionTable.PSEdition; os = [string][Environment]::OSVersion.VersionString;
+    python = $pyv; node = $ndv; pwsh75 = [bool]($env:WIREIT_PWSH75 -or (Test-Path '/home/user/opt/pwsh75/pwsh')); suites = @($rows | ForEach-Object { [ordered]@{ suite = $_.suite; result = $_.result; passed = [int]$_.passed; failed = [int]$_.failed; deferred = [int]$_.deferred; exit = [int]$_.exit; seconds = [int]$_.seconds } });
+    totals = [ordered]@{ passed = [int]$tp; failed = [int]$tf; deferred = [int]$td; suites = @($rows).Count; failedSuites = [int]$bad; deferredSuites = [int]$deferredSuites; exit = [int]($bad + $deferredSuites) } }
+  try { [IO.File]::WriteAllText($SummaryJson, ($sum | ConvertTo-Json -Depth 5)); Write-Host ('Per-suite summary written: ' + $SummaryJson) } catch { Write-Host ('FAIL could not write the per-suite summary ' + $SummaryJson + ': ' + $_.Exception.Message); $bad++ }
+}
 $scope = $(if ($Portable) { 'SELECTED PORTABLE SUITES' } else { 'SUITES' })
 if ($bad) { Write-Host ('' + $bad + ' suite(s) FAILED' + $(if ($deferredSuites) { ', ' + $deferredSuites + ' suite(s) with DEFERRED checks (not a pass)' } else { '' })) -ForegroundColor Red }
 elseif ($deferredSuites) { Write-Host ('NOT A FULL PASS: no suite failed, but ' + $deferredSuites + ' suite(s) have ' + $td + ' DEFERRED check(s). Deferred never counts as pass.') -ForegroundColor Yellow }
