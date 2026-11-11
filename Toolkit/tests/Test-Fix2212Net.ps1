@@ -330,10 +330,11 @@ Set-Content -LiteralPath $PauseFile -Value ('until=' + (U -5)); $p3 = Test-WwPau
 # too far ahead (a wrong clock / a hand-made file): ignored; garbage: ignored
 Set-Content -LiteralPath $PauseFile -Value ('until=' + (U 600)); $p4 = Test-WwPaused
 Set-Content -LiteralPath $PauseFile -Value 'hello'; $p5 = Test-WwPaused
+(Get-Item -LiteralPath $PauseFile).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(-45); $p5old = Test-WwPaused
 # the pause lands while a cycle is half-way (adapter already off): the adapter is STILL switched back on, but no connect follows
 Remove-Item -LiteralPath $PauseFile -Force; $script:ww.pauseAfterDisable = $true; $script:ww.calls.Clear()
 Invoke-WwAdapterCycle 'Wi-Fi 2' 'Reichman Mesh'; $c6 = @($script:ww.calls); $u6 = $script:ww.up; $m6 = Test-Path $marker
-'JSON=' + (@{ w1 = $w1; p1 = $p1; s2 = $s2; s3 = $s3; s13 = $s13; c1 = $c1; rm = $rm; p2 = $p2; s2b = $s2b; c2 = $c2; p3 = $p3; s3b = $s3b; c3 = $c3; p4 = $p4; p5 = $p5; c6 = $c6; u6 = $u6; m6 = $m6; log = [IO.File]::ReadAllText($log) } | ConvertTo-Json -Compress)
+'JSON=' + (@{ w1 = $w1; p1 = $p1; s2 = $s2; s3 = $s3; s13 = $s13; c1 = $c1; rm = $rm; p2 = $p2; s2b = $s2b; c2 = $c2; p3 = $p3; s3b = $s3b; c3 = $c3; p4 = $p4; p5 = $p5; p5old = $p5old; c6 = $c6; u6 = $u6; m6 = $m6; log = [IO.File]::ReadAllText($log) } | ConvertTo-Json -Compress)
 '@)
   $j = Get-Json $o
   if (-not $j) { Check $false 'WW2 driver ran' $o } else {
@@ -341,7 +342,9 @@ Invoke-WwAdapterCycle 'Wi-Fi 2' 'Reichman Mesh'; $c6 = @($script:ww.calls); $u6 
     Check ($j.s2 -eq 'paused' -and $j.s3 -eq 'paused' -and $j.s13 -eq 'paused' -and -not @($j.c1).Count) 'P1-7 while it is fresh: no reconnect (check 2), no adapter off (check 3, 13) - not one Wi-Fi command' (@($j.c1) -join ', ')
     Check ($j.rm -and -not $j.p2 -and $j.s2b -eq 'reconnect' -and @($j.c2) -contains 'disconnect' -and @($j.c2) -contains 'connect') 'P1-7 once Restore Network removed it: WifiWatch reconnects again as before' (@($j.c2) -join ', ')
     Check (-not $j.p3 -and $j.s3b -eq 'cycle' -and @($j.c3) -contains 'disable' -and @($j.c3) -contains 'enable' -and $j.log -match 'pause file expired') 'P1-7 a STALE pause file (a crashed Restore Network) is ignored: WifiWatch acts, and logs why' (@($j.c3) -join ', ')
-    Check (-not $j.p4 -and -not $j.p5) 'P1-7 a pause file 10 hours ahead, or an unreadable one, is ignored (it can never stop WifiWatch for good)' $j.log
+    Check (-not $j.p4 -and -not $j.p5old) 'P1-7 a pause file 10 hours ahead, or an unreadable one older than 30 min, is ignored (it can never stop WifiWatch for good)' $j.log
+    # 2.2.19 (Codex 2.2.18 class C/E): an unreadable pause file written in the last 30 min is not "no pause" (Restore Network may be working)
+    Check ($j.p5) '2.2.19 an unreadable pause file written in the last 30 min counts as paused (bounded: 30 min from the file time)' $j.log
     Check ($j.u6 -and -not $j.m6 -and @($j.c6) -contains 'enable' -and @($j.c6) -notcontains 'connect') 'P1-7 a pause that lands while the adapter is off: it is still switched back on (recovery), then no connect' (@($j.c6) -join ', ')
   }
   # the real script, run as the task runs it: a fresh pause file = it does nothing at all

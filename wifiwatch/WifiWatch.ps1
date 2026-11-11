@@ -38,13 +38,22 @@ function Ww-Op([string]$op, $a = @{}) {
   }
 }
 # 2.2.12 (Codex P1-7): $true while Restore Network's pause file is fresh (until= in the future, at most 30 min ahead)
+# 2.2.19 (Codex 2.2.18 class C/E): a pause file that is there but cannot be read (or holds no valid until=) is not "no pause": while
+# the FILE is fresh (written in the last 30 minutes) Restore Network may be working, so this counts as paused; an older one is
+# ignored as before (it can never stop WifiWatch for good). 2.2.12-2.2.18 ignored it at once.
+function Test-WwPauseFileFresh([string]$why) {
+  $w = $null; try { $w = (Get-Item -LiteralPath $PauseFile -ErrorAction Stop).LastWriteTimeUtc } catch { $w = $null }
+  $now = (Get-Date).ToUniversalTime()
+  if ($w -and $w -gt $now.AddMinutes(-30) -and $w -le $now.AddMinutes(1)) { $script:WwPausedUntil = $w.AddMinutes(30).ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture); L ('pause file ' + $why + ' - written in the last 30 min, so treated as paused until ' + $script:WwPausedUntil); return $true }
+  L ('pause file ' + $why + ' - ignored (older than 30 min)'); return $false
+}
 function Test-WwPaused {
   if (-not (Test-Path -LiteralPath $PauseFile)) { return $false }
-  $t = ''; try { $t = [string](Get-Content -LiteralPath $PauseFile -Raw -ErrorAction Stop) } catch { return $false }
+  $t = ''; try { $t = [string][IO.File]::ReadAllText($PauseFile) } catch { return (Test-WwPauseFileFresh 'unreadable') }
   $m = [regex]::Match($t, '(?m)^until=(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\s*$')
-  if (-not $m.Success) { L 'pause file unreadable - ignored'; return $false }
+  if (-not $m.Success) { return (Test-WwPauseFileFresh 'unreadable') }
   $u = [datetime]::MinValue
-  if (-not [datetime]::TryParseExact($m.Groups[1].Value, 'yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture, ([Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal), [ref]$u)) { L 'pause file unreadable - ignored'; return $false }
+  if (-not [datetime]::TryParseExact($m.Groups[1].Value, 'yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture, ([Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal), [ref]$u)) { return (Test-WwPauseFileFresh 'unreadable') }
   $now = (Get-Date).ToUniversalTime()
   if ($u -le $now) { L ('pause file expired (' + $m.Groups[1].Value + ') - ignored'); return $false }
   if ($u -gt $now.AddMinutes(30)) { L ('pause file too far ahead (' + $m.Groups[1].Value + ') - ignored'); return $false }
@@ -66,10 +75,12 @@ function Enable-WwAdapter([string]$name) {
 # (this run does nothing else) until a checked recovery: every Wi-Fi adapter on this PC reads as switched on; only then is the
 # marker set aside (renamed adapter-off.resolved-<time>.txt, never deleted).
 function Get-WwWifiOff {
-  # the Wi-Fi adapters that are switched off now: a list of names, or $null when the adapters could not be read
+  # the Wi-Fi adapters that are switched off now
+  # { off = names } (an empty list = none is off), or $null when the adapters could not be read
   if ($script:WwOps) { return (& $script:WwOps 'wifioff' @{}) }
   try {
-    return @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { ([string]$_.NdisPhysicalMedium -eq '9' -or [string]$_.InterfaceDescription -match '(?i)wi-?fi|wireless|802\.11|wlan') -and ([string]$_.Status -eq 'Disabled' -or [string]$_.AdminStatus -eq 'Down') } | ForEach-Object { [string]$_.Name })
+    $l = @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { ([string]$_.NdisPhysicalMedium -eq '9' -or [string]$_.InterfaceDescription -match '(?i)wi-?fi|wireless|802\.11|wlan') -and ([string]$_.Status -eq 'Disabled' -or [string]$_.AdminStatus -eq 'Down') } | ForEach-Object { [string]$_.Name })
+    return [pscustomobject]@{ off = $l }
   } catch { return $null }
 }
 function Set-WwMarkerAside([string]$why) {
@@ -81,13 +92,13 @@ function Set-WwMarkerAside([string]$why) {
 function Repair-WwAdapter {
   if (-not (Test-Path -LiteralPath $marker)) { return $true }
   $name = $null; $rerr = ''
-  try { $name = ([string](Get-Content -LiteralPath $marker -Raw -ErrorAction Stop)).Trim() } catch { $name = $null; $rerr = $_.Exception.Message }
+  try { $name = ([string][IO.File]::ReadAllText($marker)).Trim() } catch { $name = $null; $rerr = $_.Exception.Message }
   if (-not $name) {
     $why = $(if ($rerr) { 'could not be read (' + $rerr + ')' } else { 'holds no adapter name' })
     L ('RECOVERY NOT DONE: the marker ' + $marker + ' (an earlier run switched a Wi-Fi adapter off) ' + $why + ' - it is kept, and nothing else is done until it is sorted out')
     $off = Get-WwWifiOff
-    if ($null -eq $off) { L 'the Wi-Fi adapters could not be read, so it is not known whether one is still off - still blocked'; return $false }
-    if (@($off | Where-Object { $_ }).Count) { L ('Wi-Fi adapter(s) switched off now: ' + (@($off | Where-Object { $_ }) -join ', ') + ' - switch it on (Restore Network, or Settings > Network) - still blocked'); return $false }
+    if ($null -eq $off -or -not $off.PSObject.Properties['off']) { L 'the Wi-Fi adapters could not be read, so it is not known whether one is still off - still blocked'; return $false }
+    if (@($off.off | Where-Object { $_ }).Count) { L ('Wi-Fi adapter(s) switched off now: ' + (@($off.off | Where-Object { $_ }) -join ', ') + ' - switch it on (Restore Network, or Settings > Network) - still blocked'); return $false }
     return (Set-WwMarkerAside 'every Wi-Fi adapter on this PC reads as switched on')
   }
   L ('adapter "' + $name + '" was left switched off by an earlier run - switching it back on')
