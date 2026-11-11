@@ -123,6 +123,19 @@ function Test-FsFreshScan([string]$file, $exitCode, [datetime]$since) {
   if (-not $file -or -not (Test-Path -LiteralPath $file)) { return $false }
   return ((Get-Item -LiteralPath $file).LastWriteTime -ge $since.AddSeconds(-2))
 }
+# 2.2.20 (Codex 2.2.19 class D, second pass): the finder's out\latest.json is THIS run's only when it carries the run id this run gave
+# the finder (-RunId) - not a time tolerance, not only "the old file was moved aside". The file is read ONCE here and the caller uses this
+# object (2.2.19 checked the file, then read it again twice). @{ ok; why; scan } - scan = the parsed latest.json when ok.
+function Read-FsScanForRun([string]$file, $exitCode, [string]$runId) {
+  $r = [pscustomobject]@{ ok = $false; why = ''; scan = $null }
+  if (-not $runId) { $r.why = 'no run id was given to the finder'; return $r }
+  if ($null -ne $exitCode -and [int]$exitCode -ne 0) { $r.why = 'the finder ended with code ' + $exitCode; return $r }
+  if (-not $file -or -not (Test-Path -LiteralPath $file)) { $r.why = 'the finder wrote no result'; return $r }
+  $o = $null; try { $o = [IO.File]::ReadAllText($file) | ConvertFrom-Json -ErrorAction Stop } catch { $r.why = 'its result could not be read (' + $_.Exception.Message + ')'; return $r }
+  if ($null -eq $o -or $o -isnot [pscustomobject] -or -not $o.PSObject.Properties['runId'] -or $o.runId -isnot [string] -or -not $o.PSObject.Properties['devices']) { $r.why = 'its result is not one this run asked for (no run id in it)'; return $r }
+  if ($o.runId -cne $runId) { $r.why = 'its result belongs to another run (run id ' + [string]$o.runId + ')'; return $r }
+  $r.ok = $true; $r.scan = $o; return $r
+}
 function Select-FsFoundOnNet($found, $pc, $pcAll) {
   # drops devices that sit inside one of this PC's OTHER networks (not the one the tech picked): they belong to that network
   $others = @(@($pcAll) | Where-Object { $_ -and [string]$_.ip -and [string]$_.ip -ne [string]$pc.ip -and [int]$_.prefix -gt 0 })

@@ -29,11 +29,78 @@ function Read-HikState([string]$Path) {
   if (Test-Path -LiteralPath $Path) {
     $o = $null; $why = ''
     try { $raw = [IO.File]::ReadAllText($Path); if (-not ([string]$raw).Trim()) { $why = 'the file is empty' } else { $o = $raw | ConvertFrom-Json -ErrorAction Stop } } catch { $why = $_.Exception.Message }
-    if ($o -and $o.PSObject.Properties['devices']) { $o.devices = @($o.devices | Where-Object { $null -ne $_ }); if ($o.PSObject.Properties['exports']) { $o.exports = @($o.exports | Where-Object { $null -ne $_ }) } else { $o | Add-Member -NotePropertyName exports -NotePropertyValue @() -Force }; return $o }
+    if ($o -and $o.PSObject.Properties['devices']) {
+      $o.devices = @($o.devices | Where-Object { $null -ne $_ }); if ($o.PSObject.Properties['exports']) { $o.exports = @($o.exports | Where-Object { $null -ne $_ }) } else { $o | Add-Member -NotePropertyName exports -NotePropertyValue @() -Force }
+      # 2.2.20 (Codex 2.2.19 class E, second pass): every device row is TYPE-checked before any reset step uses it. A row with a field of
+      # the wrong type (a "2" string for a count, a status this tool never writes, a time that is not a time) is QUARANTINED: taken out of
+      # the device list, kept in the record under "quarantined" (so it is never lost or overwritten), a copy of the file as it was read is
+      # kept beside it as evidence, and nothing is done to that device (Test-HikQuarantined) until the technician sorts it out.
+      [void](Split-HikQuarantine $o $Path $raw)
+      return $o
+    }
     if (-not $why) { $why = 'it has no device list' }
     throw ('The Hikvision reset record on this PC (' + $Path + ') could not be read (' + $why + '). Nothing was sent to any device. It says which unlock files a device refused and which request file is in force, so the reset does not start over without it. Check in SADP that no reset is half-way, then move that file away and run again.')
   }
   return [pscustomobject]@{ version = 1; site = ''; created = (Get-Date -Format 's'); devices = @(); exports = @() }
+}
+# 2.2.20 (Codex 2.2.19 class E, second pass): the statuses this tool writes into a device row of the reset record
+$script:HkKnownStatus = @('', 'exporting', 'exported', 'submitted', 'replied', 'importing', 'imported', 'verified', 'refused', 'expired', 'stale', 'failed')
+function Test-HikIsInt($v) { return ($v -is [int] -or $v -is [long] -or $v -is [int16] -or $v -is [byte]) }
+function Test-HikIsTime($v) {
+  if ($v -is [datetime]) { return $true }   # PowerShell 7's ConvertFrom-Json turns an ISO time string into a date
+  if ($v -isnot [string]) { return $false }
+  $t = [datetime]::MinValue
+  return [datetime]::TryParse($v, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$t)
+}
+# '' = this device row has every field a reset step reads, each of the type this tool writes; otherwise the plain reason
+function Get-HikDeviceRowWhy($d) {
+  if ($null -eq $d -or $d -isnot [pscustomobject]) { return 'the entry is not a device record' }
+  $has = { param($n) [bool]$d.PSObject.Properties[$n] }
+  if (-not (& $has 'serial') -or $d.serial -isnot [string] -or -not ([string]$d.serial).Trim()) { return 'it has no serial (text)' }
+  foreach ($n in @('mac', 'ip', 'model', 'shortSerial', 'requestFile', 'replyFile', 'exportId', 'note')) { if ((& $has $n) -and $null -ne $d.$n -and $d.$n -isnot [string]) { return ('its "' + $n + '" is not text') } }
+  if ((& $has 'mac') -and [string]$d.mac -and -not (ConvertTo-SadpMac ([string]$d.mac))) { return ('its MAC "' + [string]$d.mac + '" is not a MAC address') }
+  if (-not (& $has 'status') -or $d.status -isnot [string]) { return 'it has no status (text)' }
+  if ($script:HkKnownStatus -notcontains [string]$d.status) { return ('its status "' + [string]$d.status + '" is not one this tool writes') }
+  if ((& $has 'rebootRetries') -and -not ((Test-HikIsInt $d.rebootRetries) -and [long]$d.rebootRetries -ge 0)) { return 'its reboot-retry count is not a whole number of 0 or more' }
+  if ((& $has 'refusedChecksOk') -and $d.refusedChecksOk -isnot [bool]) { return 'its "refused after correct steps" mark is not true / false' }
+  foreach ($n in @('exportStartedAt', 'exportedAt', 'validUntil', 'submittedAt', 'replyAt', 'verifiedAt')) { if ((& $has $n) -and $null -ne $d.$n -and ([string]$d.$n) -and -not (Test-HikIsTime $d.$n)) { return ('its "' + $n + '" is not a time') } }
+  foreach ($n in @('bootTime', 'retryBootTime', 'exportBootTime')) { if ((& $has $n) -and $null -ne $d.$n -and $d.$n -isnot [string] -and $d.$n -isnot [datetime]) { return ('its "' + $n + '" is not a boot time') } }
+  if ((& $has 'replySha') -and $null -ne $d.replySha -and ([string]$d.replySha) -and ($d.replySha -isnot [string] -or [string]$d.replySha -notmatch '^[0-9a-fA-F]{64}$')) { return 'its reply-file fingerprint is not a SHA-256' }
+  return ''
+}
+# Moves the device rows that fail the type check into $State.quarantined (kept in the record) and keeps a copy of the file as it was
+# read. A copy that cannot be made THROWS (the record then counts as unreadable: nothing is sent to any device).
+function Split-HikQuarantine($State, [string]$Path, [string]$Raw) {
+  $q = @(); if ($State.PSObject.Properties['quarantined']) { if ($null -ne $State.quarantined -and -not ($State.quarantined -is [array]) -and $State.quarantined -isnot [pscustomobject]) { throw 'its quarantined list is damaged' }; $q = @($State.quarantined | Where-Object { $null -ne $_ }) }
+  $keep = @(); $new = @()
+  foreach ($d in @($State.devices)) {
+    $why = Get-HikDeviceRowWhy $d
+    if ($why) {
+      $sr = ''; $mr = ''; if ($d -is [pscustomobject]) { if ($d.PSObject.Properties['serial'] -and ($d.serial -is [string] -or $d.serial -is [ValueType])) { $sr = ([string]$d.serial).Trim() }; if ($d.PSObject.Properties['mac'] -and $d.mac -is [string]) { $mr = ConvertTo-SadpMac ([string]$d.mac) } }
+      $new += [pscustomobject]@{ serial = $sr; mac = $mr; why = $why; at = (Get-Date -Format 's'); row = $d }
+    } else { $keep += $d }
+  }
+  if ($new.Count) {
+    $ev = $Path + '.quarantined-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json'
+    try { [IO.File]::WriteAllText($ev, $Raw); if ([IO.File]::ReadAllText($ev) -cne $Raw) { throw 'the copy does not read back' } } catch { throw ('a device entry is damaged (' + $new[0].why + ') and a copy of the record could not be kept as evidence: ' + $_.Exception.Message) }
+    foreach ($n in $new) { $w = ('  QUARANTINED: the reset record entry for ' + $(if ($n.serial) { 'serial ' + $n.serial } elseif ($n.mac) { 'MAC ' + $n.mac } else { 'an unnamed device' }) + ' is damaged (' + $n.why + '). Nothing is done to that device until it is sorted out. The record as it was read is kept as ' + (Split-Path -Leaf $ev) + '.'); try { Hk-Say $w 'Red' } catch { Write-Warning $w } }
+  }
+  $State.devices = @($keep)
+  $all = @($q) + @($new)
+  if ($State.PSObject.Properties['quarantined']) { $State.quarantined = $all } elseif ($all.Count) { $State | Add-Member -NotePropertyName quarantined -NotePropertyValue $all -Force }
+  return $new.Count
+}
+# '' = no quarantined entry of this record stands for $Dev; otherwise the reason. An entry with no readable serial or MAC could be ANY
+# device of this record, so it blocks every device.
+function Test-HikQuarantined($State, $Dev) {
+  if (-not $State -or -not $State.PSObject.Properties['quarantined']) { return '' }
+  $dm = ConvertTo-SadpMac ([string]$Dev.mac); $ds = ([string]$Dev.serial).Trim()
+  foreach ($q in @($State.quarantined | Where-Object { $null -ne $_ })) {
+    $qm = ''; $qs = ''; try { $qm = ConvertTo-SadpMac ([string]$q.mac); $qs = ([string]$q.serial).Trim() } catch {}
+    $hit = (-not $qm -and -not $qs) -or ($qm -and $dm -and $qm -eq $dm) -or ($qs -and $ds -and $qs -ceq $ds)
+    if ($hit) { return ('its entry in the reset record is QUARANTINED (' + [string]$q.why + '), so nothing is done to it. Move the reset record (hikreset-<site>\state.json) away after checking the device in SADP, then run again') }
+  }
+  return ''
 }
 # 2.2.19 (Codex 2.2.18 F17, class E): a save that fails is no longer only a warning. $script:HkStateSaved says whether the LAST save
 # reached the disk (written, read back, swapped in); Save-HikStateOk returns it. Every step that sends something to a device
@@ -397,6 +464,7 @@ function Undo-HikExportReservation($State, $Res) {
 function Export-HikRequests($Devices, [string]$OutDir, $State, [string]$StatePath, [switch]$Redo) {
   $made = @(); $newOnes = 0
   foreach ($dev in @($Devices | Where-Object { $_.activated })) {
+    $qw = Test-HikQuarantined $State $dev; if ($qw) { Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': NOT exported - ' + $qw + '.') 'Red'; continue }   # 2.2.20 (class E)
     $cur = Get-HikStateDevice $State $dev.serial
     # 2.2.20 (Codex 2.2.19 R14): an export reserved earlier whose result was never recorded is settled first, never repeated blindly
     if ($cur -and [string]$cur.status -eq 'exporting') {
@@ -551,6 +619,7 @@ function Register-HikRequestFiles($State, [string]$Dir, $Devices, [string]$State
     if (-not $t) { Hk-Say ('  ' + $f.Name + ': the file is empty - skipped.') 'Yellow'; continue }
     $dev = $null; foreach ($d in @($Devices)) { if ($d.serial -and $t.EndsWith([string]$d.serial)) { $dev = $d; break } }
     if (-not $dev) { Hk-Say ('  ' + $f.Name + ': no device here has the serial this file ends with - skipped.') 'Yellow'; continue }
+    $qw = Test-HikQuarantined $State $dev; if ($qw) { Hk-Say ('  ' + $f.Name + ': NOT used - ' + $qw + '.') 'Red'; continue }   # 2.2.20 (class E)
     $k = [string]$dev.serial; if (-not $bySerial.ContainsKey($k)) { $bySerial[$k] = @() }; $bySerial[$k] += $f
   }
   foreach ($k in $bySerial.Keys) {
@@ -600,7 +669,7 @@ function Get-HikReplyMessages($Cfg, [string]$ToolkitDir, [string]$ReplyDir, [dat
 # A drop from inbox\hik that is stale, unusable (no / empty / non-xml file) is moved to inbox\hik\not-used\, so it is said once.
 function Move-HikDropNotUsed([string]$InboxDir, [string]$Src) {
   if (-not $InboxDir -or -not $Src -or -not $Src.StartsWith($InboxDir) -or -not (Test-Path -LiteralPath $Src)) { return }
-  try { $nu = Join-Path $InboxDir 'not-used'; New-Item -ItemType Directory -Force -Path $nu | Out-Null; Move-Item -LiteralPath $Src -Destination (Join-Path $nu (Split-Path -Leaf $Src)) -Force } catch {}
+  try { $nu = Join-Path $InboxDir 'not-used'; New-Item -ItemType Directory -Force -Path $nu | Out-Null; Move-Item -LiteralPath $Src -Destination (Join-Path $nu (Split-Path -Leaf $Src)) -Force -ErrorAction Stop } catch { Hk-Say ('  (the unused file ' + (Split-Path -Leaf $Src) + ' could not be moved to not-used: ' + $_.Exception.Message + ')') 'Yellow' }
 }
 $script:HkReplySkewSec = 60   # 2.2.8: see Receive-HikReplies
 function Receive-HikReplies($State, [string]$StatePath, $Cfg, [string]$ToolkitDir, [string]$ReplyDir, [string]$InboxDir = '', [switch]$ForceRelay) {
@@ -672,15 +741,26 @@ function Show-HikReplyNotes($R) {
 }
 # the devices still waiting for Hikvision, for the "I got Hik's email" button (inbox\hik\waiting.json; no passwords, no codes)
 function Save-HikWaitingList([string]$InboxDir, $State, [string]$Site, [string]$ReplyTo = '') {
-  if (-not $InboxDir) { return }
+  if (-not $InboxDir) { return $true }
   try {
-    New-Item -ItemType Directory -Force -Path $InboxDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $InboxDir -ErrorAction Stop | Out-Null
     $w = @($State.devices | Where-Object { $_.status -eq 'submitted' } | ForEach-Object { [ordered]@{ serial = [string]$_.serial; shortSerial = [string]$_.shortSerial; model = [string]$_.model; ip = [string]$_.ip; site = $Site; submittedAt = [string]$_.submittedAt } })
     $f = Join-Path $InboxDir 'waiting.json'
-    $old = @(); if (Test-Path -LiteralPath $f) { try { $old = @((Get-Content -LiteralPath $f -Raw | ConvertFrom-Json).devices | Where-Object { $_ -and [string]$_.site -ne $Site }) } catch {} }
+    # 2.2.20 (Codex 2.2.19 class A/C, second pass): an existing list that cannot be read is NOT an empty list (2.2.19 dropped the other
+    # sites' waiting devices and wrote over it); it is kept as it is. The new list counts as saved only when it reads back as written.
+    $old = @()
+    if (Test-Path -LiteralPath $f) {
+      $oo = $null; try { $oo = Get-Content -LiteralPath $f -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { $oo = $null }
+      if ($null -eq $oo -or -not $oo.PSObject.Properties['devices']) { Hk-Say ('  The waiting list ' + $f + ' could not be read, so it was left as it is (the "I got Hik''s email" button may not list these devices).') 'Yellow'; return $false }
+      $old = @(@($oo.devices) | Where-Object { $_ -and [string]$_.site -ne $Site })
+    }
     $all = @($old) + @($w)
-    ([ordered]@{ updated = (Get-Date -Format 's'); replyTo = $ReplyTo; devices = $all } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $f -Encoding UTF8
-  } catch {}
+    $json = [string]([ordered]@{ updated = (Get-Date -Format 's'); replyTo = $ReplyTo; devices = $all } | ConvertTo-Json -Depth 4)
+    $tmp = $f + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+    try { [IO.File]::WriteAllText($tmp, $json); Move-Item -LiteralPath $tmp -Destination $f -Force -ErrorAction Stop } finally { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }
+    if ([IO.File]::ReadAllText($f) -cne $json) { throw 'it does not read back as written' }
+    return $true
+  } catch { Hk-Say ('  The waiting list for the "I got Hik''s email" button could not be saved (' + $_.Exception.Message + ').') 'Yellow'; return $false }
 }
 # one plain line for the screen about where the reply stands (the waiting message, or why the mailbox could not be checked)
 function Format-HikWaitLine($Cfg, [int]$Count, [int]$MinutesLeft) {
@@ -871,7 +951,14 @@ function Invoke-HikResetStage {
   New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
   # 2.2.18 (sweep C/D): a reset record that cannot be read stops the reset here (nothing sent); every target is pending with the reason
   $state = $null; try { $state = Read-HikState $statePath } catch { $rsWhy = $_.Exception.Message; Hk-Say ('  ' + $rsWhy) 'Red'; return [pscustomobject]@{ fixed = @(); pending = @(@($Targets) | ForEach-Object { [pscustomobject]@{ mac = (ConvertTo-SadpMac ([string]$_.mac)); reason = 'reset not started: the reset record on this PC could not be read (see above)' } }) } }
-  $want = @{}; foreach ($t in @($Targets)) { $m = ConvertTo-SadpMac ([string]$t.mac); if ($m) { $want[$m] = $t } }
+  $want = @{}; $qPending = @()
+  foreach ($t in @($Targets)) {
+    $m = ConvertTo-SadpMac ([string]$t.mac); if (-not $m) { continue }
+    # 2.2.20 (Codex 2.2.19 class E, second pass): a device whose record entry is quarantined is not touched at all (no export, no import)
+    $qw = Test-HikQuarantined $state $t
+    if ($qw) { Hk-Say ('  ' + [string]$t.ip + ' (MAC ' + $m + '): NOT reset - ' + $qw + '.') 'Red'; $qPending += [pscustomobject]@{ mac = $m; reason = ('reset not started: ' + $qw) }; continue }
+    $want[$m] = $t
+  }
   # 2.2.19 (Codex 2.2.18 F17, class E): the record must be savable before anything is sent to a device; if it is not, nothing starts
   if (-not (Save-HikStateOk $statePath $state)) {
     Hk-Say (Get-HikNotSavedStop 'The reset') 'Red'
@@ -879,7 +966,7 @@ function Invoke-HikResetStage {
   }
   Hk-Say 'Finding the Hikvision devices (any IP range)...'
   $devs = @(Find-HikSadp 4 | Where-Object { $want.ContainsKey($_.mac) })
-  $fixed = @(); $pending = @()
+  $fixed = @(); $pending = @($qPending)
   foreach ($m in $want.Keys) { if (-not @($devs | Where-Object { $_.mac -eq $m }).Count) { $pending += [pscustomobject]@{ mac = $m; reason = 'not seen on the network (check power and cable)' } } }
   $forMine = { param($st) @($st.devices | Where-Object { $want.ContainsKey((ConvertTo-SadpMac ([string]$_.mac))) }) }
   # 2.2.1: a device whose unlock file was imported in an earlier run that stopped before the check: check its login now (once)
@@ -922,14 +1009,14 @@ function Invoke-HikResetStage {
   if (-not $form) { return [pscustomobject]@{ fixed = @($fixed); pending = @($pending) + @($todo | ForEach-Object { [pscustomobject]@{ mac = $_.mac; reason = 'config.json has no "form" (name, email, company)' } }) } }
   $mine = @(& $forMine $state | ForEach-Object { [string]$_.serial })
   [void](Submit-HikRequests $state $statePath $form $SubmitTimeoutSec $mine)
-  Save-HikWaitingList $InboxDir $state $Site ([string]$Config.replyTo)
+  [void](Save-HikWaitingList $InboxDir $state $Site ([string]$Config.replyTo))
   $end = (Get-Date).AddMinutes($WaitMinutes); $lastLine = ''; $lastSaid = [datetime]::MinValue; $first = $true
   do {
     $r = Receive-HikReplies $state $statePath $Config $ToolkitDir $repDir $InboxDir -ForceRelay:$first
     $first = $false
     Show-HikReplyNotes $r   # 2.2.8: skipped / stale / unmatched files, each with its reason, said once
     $waiting = @(& $forMine $state | Where-Object { $_.status -eq 'submitted' })
-    if ($r.got.Count) { Save-HikWaitingList $InboxDir $state $Site ([string]$Config.replyTo) }
+    if ($r.got.Count) { [void](Save-HikWaitingList $InboxDir $state $Site ([string]$Config.replyTo)) }
     $left = [math]::Max(0, [int][math]::Ceiling(($end - (Get-Date)).TotalMinutes))
     $line = Format-HikWaitLine $Config $waiting.Count $left
     if ($script:HkStatus) { try { & $script:HkStatus ([pscustomobject]@{ waiting = @($waiting | ForEach-Object { [pscustomobject]@{ serial = $_.serial; shortSerial = $_.shortSerial; model = $_.model; ip = $_.ip } }); relay = $script:HkRelayStatus; replyTo = [string]$Config.replyTo; minutesLeft = $left; line = $line.text }) } catch {} }
@@ -941,7 +1028,7 @@ function Invoke-HikResetStage {
   } while ($true)
   $ready = @(& $forMine $state | Where-Object { $_.status -eq 'replied' })
   if ($ready.Count) { $done = @(Import-HikReplies $state $statePath $SitePassword $VerifyLogin '' $mine); foreach ($d in $done) { $fixed += (ConvertTo-SadpMac ([string]$d.mac)) } }
-  Save-HikWaitingList $InboxDir $state $Site ([string]$Config.replyTo)
+  [void](Save-HikWaitingList $InboxDir $state $Site ([string]$Config.replyTo))
   if ($script:HkStatus) { try { & $script:HkStatus ([pscustomobject]@{ waiting = @(); relay = $script:HkRelayStatus; replyTo = [string]$Config.replyTo; minutesLeft = 0; line = ''; done = $true }) } catch {} }
   foreach ($d in @(& $forMine $state)) {
     if ($fixed -contains (ConvertTo-SadpMac ([string]$d.mac))) { continue }

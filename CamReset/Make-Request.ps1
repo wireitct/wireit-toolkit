@@ -36,7 +36,15 @@ $now = (Get-Item -LiteralPath $XmlPath).LastWriteTime; if ($now -gt (Get-Date)) 
 if ($now.AddHours(48) -le (Get-Date)) { Write-Host ('That export is from ' + $now.ToString('ddd MMM d h:mm tt') + ' - more than 48 hours ago, so Hikvision will not accept it. Export a new XML in HiTools.'); exit 1 }
 $req = [ordered]@{ brand = 'Hikvision'; model = $dev.Model; serial = $sn; shortSerial = $short; startTime = $dev.StartTime; ip = $dev.IP; mac = $dev.MAC
   xmlFile = [IO.Path]::GetFileName($XmlPath); exportedAt = $now.ToString('s'); validUntil = $now.AddHours(48).ToString('s'); status = 'exported'; pc = $env:COMPUTERNAME }
-Set-Content -Path (Join-Path $dir 'request.json') -Value ($req | ConvertTo-Json) -Encoding UTF8
+# 2.2.20 (Codex 2.2.19 class A, second pass): "Request ready" only when request.json reads back as written (2.2.19 used a plain
+# Set-Content under 'Continue': a refused write was only a warning and "Request ready" was still printed)
+$rqPath = Join-Path $dir 'request.json'; $rqJson = [string]($req | ConvertTo-Json); $rqTmp = $rqPath + '.tmp'
+try {
+  [IO.File]::WriteAllText($rqTmp, $rqJson, (New-Object Text.UTF8Encoding($true)))
+  Move-Item -LiteralPath $rqTmp -Destination $rqPath -Force -ErrorAction Stop
+  $rqBack = [IO.File]::ReadAllText($rqPath); if ($rqBack.Length -and [int][char]$rqBack[0] -eq 0xFEFF) { $rqBack = $rqBack.Substring(1) }
+  if ($rqBack -cne $rqJson) { throw 'it does not read back as written' }
+} catch { Write-Host ('The request was NOT saved (' + $rqPath + ': ' + $_.Exception.Message + '). Make the CamReset folder writable, then run this again.'); exit 1 }
 # 2.2.3 (Codex #46): the log is best-effort and goes where this login can write; the request is already saved, so it never fails here
 $crLog = Join-Path $here 'camreset.log'; try { [IO.File]::AppendAllText($crLog, '') } catch { $crLog = Join-Path $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'WireIt' } else { Join-Path ([IO.Path]::GetTempPath()) 'WireIt' }) 'camreset.log'; try { New-Item -ItemType Directory -Force -Path (Split-Path $crLog) | Out-Null } catch {} }
 try { Add-Content -Path $crLog -Value ((Get-Date -Format 's') + ' REQUEST ' + $sn + ' xml=' + $req.xmlFile) -ErrorAction Stop } catch {}

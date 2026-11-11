@@ -310,7 +310,7 @@ $m = [regex]::Match($dev, '(?s)function Write-FsFileAtomic.*?\n}')
 Check ($m.Success -and $m.Value -match 'ReadAllText\(\$path\)' -and $m.Value -match 'throw') 'class A sweep: Write-FsFileAtomic (the undo file) reads the file in place back and throws when it differs (code shape)'
 
 $fsrc = [IO.File]::ReadAllText((Join-Path $tk 'FixSite.ps1'))
-Check ($fsrc -match '\$ljAside' -and $fsrc -match '\$scanOk = \$ljAside -and \(Test-FsFreshScan') 'class D sweep: Find cameras'' old out\latest.json must be GONE before the finder runs, else no scan result is used (code shape)'
+Check ($fsrc -match '\$ljAside' -and $fsrc -match '\$scanOk = \$ljAside -and (\$fcRead\.ok -and )?\(Test-FsFreshScan') 'class D sweep: Find cameras'' old out\latest.json must be GONE before the finder runs, else no scan result is used (code shape)'
 $cv = [IO.File]::ReadAllText((Join-Path $tk 'CamViews.ps1'))
 $m = [regex]::Match($cv, '(?s)function Save-CvKey.*?\n}')
 Check ($m.Success -and $m.Value -match 'ReadAllBytes\(\$kf\)' -and $m.Value -match 'does not read back') 'class A sweep: CamViews says "Upload key saved" only after the key file reads back as written (code shape)'

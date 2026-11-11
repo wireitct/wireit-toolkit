@@ -172,7 +172,20 @@ def main():
                     env = dict(os.environ)
                     env['HOME'] = str(case / 'home')
                     (case / 'home').mkdir()
-                    run = subprocess.run(command + extra, capture_output=True, text=True, timeout=180, preexec_fn=limit, env=env)
+                    # 2.2.20: the run's scan.json and plan.json are now checked records that stop a Fix run when they cannot be saved whole,
+                    # and both are bigger than this limit; so the limit is put on the running process (prlimit) only once its plan.json is
+                    # saved - the undo file's later rewrites are what it stops half-way, as before
+                    state['size'] = 10 ** 9
+                    proc = subprocess.Popen(command + extra, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, preexec_fn=limit, env=env)
+                    end = time.time() + 120
+                    while time.time() < end and proc.poll() is None and not list(runs.glob('FixSite-*/plan.json')):
+                        time.sleep(0.01)
+                    if proc.poll() is None:
+                        resource.prlimit(proc.pid, resource.RLIMIT_FSIZE, (2600, 2600))
+                    so, _ = proc.communicate(timeout=180)
+
+                    class _R: pass
+                    run = _R(); run.returncode = proc.returncode; run.stdout = so or ''; run.stderr = ''
                     results['atomic_exit'] = run.returncode
                     rbs = list(runs.glob('FixSite-*/rollback.json'))
                     ok = False

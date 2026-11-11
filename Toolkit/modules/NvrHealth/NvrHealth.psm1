@@ -1683,7 +1683,20 @@ function Get-NvrHealth {
   $wd = { param($x) if ($x.ok) { 'OK' } elseif ($x.PSObject.Properties['target_pending'] -and $x.target_pending -and -not @($x.problems).Count) { 'STILL FILLING' } elseif (@($x.problems).Count -and -not @(@($x.problems) | Where-Object { $_ -notmatch 'login refused|login skipped|not checked|no answer|unreadable' }).Count) { 'NOT CHECKED' } else { 'PROBLEM' } }
   $ws = @((& $wd $rec), (& $wd $clk), (& $wd $fw))
   Say ''; Say ('SUMMARY: recording ' + $ws[0] + ' | time ' + $ws[1] + ' | firmware ' + $ws[2]) $(if ($out.ok) { 'Green' } elseif ($ws -contains 'PROBLEM') { 'Red' } else { 'Yellow' })
-  if ($Json) { ($out | ConvertTo-Json -Depth 8) | Set-Content -Path $Json -Encoding UTF8 -WhatIf:$false -Confirm:$false }
+  # 2.2.20 (Codex 2.2.19 class A, second pass): the -Json result (what the scheduled check and the window read) is written whole and read
+  # back; one that cannot be saved is said, and $out.json_saved says so (2.2.19: Set-Content under the caller's preference, unchecked)
+  if ($Json) {
+    $jt = [string]($out | ConvertTo-Json -Depth 8); $jtmp = $Json + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'; $jok = $false
+    try {
+      [IO.File]::WriteAllText($jtmp, $jt, (New-Object Text.UTF8Encoding($true)))
+      Move-Item -LiteralPath $jtmp -Destination $Json -Force -ErrorAction Stop -WhatIf:$false -Confirm:$false
+      $jb = [IO.File]::ReadAllText($Json); if ($jb.Length -and [int][char]$jb[0] -eq 0xFEFF) { $jb = $jb.Substring(1) }
+      if ($jb -cne $jt) { throw 'it does not read back as written' }
+      $jok = $true
+    } catch { Say ('The result file ' + $Json + ' could NOT be saved (' + $_.Exception.Message + '): the summary above is the result.') 'Red' }
+    finally { if (Test-Path -LiteralPath $jtmp) { Remove-Item -LiteralPath $jtmp -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false } }
+    $out | Add-Member -NotePropertyName json_saved -NotePropertyValue $jok -Force
+  }
   return $out
 }
 

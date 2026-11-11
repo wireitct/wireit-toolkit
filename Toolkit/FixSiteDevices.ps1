@@ -761,6 +761,22 @@ function Test-FsLoginIs([string]$ip, [string]$brand, [string]$pw, [string]$mac =
   if ($idw) { $script:FsLoginIsWhy = $idw; Fs-LogLine ('login to ' + $ip + ' works, but not certified: ' + $idw); return 'other' }
   return 'ok'
 }
+# 2.2.20 (Codex 2.2.19 class B/C, second pass): the login check the Hikvision reset stage uses to say "the site password works".
+# $D = the device's row in the reset record (Test-HikLoginOk passes it). $true ONLY when the authenticated device document came back
+# with this password AND the device answering at $ip NOW is positively the one the record names: its MAC (the serial only when the
+# record has no MAC; exact, non-empty). No record, or a record with neither = NOT verified (2.2.19's checker took any device at the
+# address that accepted the site password as the reset camera). $script:FsHikResetLoginWhy says why not.
+$script:FsHikResetLoginWhy = ''
+function Test-FsHikResetLogin([string]$ip, [string]$pw, $D) {
+  $script:FsHikResetLoginWhy = ''
+  if ($null -eq $D) { $script:FsHikResetLoginWhy = 'the reset record entry for this device was not given, so it cannot be checked that the device at ' + $ip + ' is it'; return $false }
+  $m = ''; $s = ''
+  try { if ($D.PSObject.Properties['mac']) { $m = ConvertTo-FsMac ([string]$D.mac) }; if ($D.PSObject.Properties['serial']) { $s = ([string]$D.serial).Trim() } } catch {}
+  if (-not $m -and -not $s) { $script:FsHikResetLoginWhy = 'the reset record has no MAC or serial for this device, so it cannot be checked that the device at ' + $ip + ' is it'; return $false }
+  $r = Test-FsLoginIs $ip 'Hikvision' $pw $m $s 'the camera being reset'
+  if ($r -eq 'other') { $script:FsHikResetLoginWhy = $script:FsLoginIsWhy }
+  return ($r -eq 'ok')
+}
 function Resolve-FsPwChange([string]$ip, [string]$brand, [string]$newPw, [string]$oldPw, [string]$mac = '', [string]$serial = '') {
   # 2.2.3 (Codex #19): after a password write, what the device REALLY has: 'changed' (new logs in), 'unchanged' (old still logs in)
   # or 'unknown' (neither answers now: the write may have taken). One login try each; 'unknown' is bookkept as maybe-changed.
@@ -1423,7 +1439,11 @@ function Get-FsNetVerifyProblems($b, $chk, $temps = @(), [bool]$coexist = $false
 function Remove-FsTempIps([string]$stateFile) {
   if ($script:FsMockUrl -and -not $script:FsNetOps) {
     foreach ($t in @($script:FsTemps)) { [void](Fs-Http -Ip '_pc' -Path ('/deltemp?p3=' + $t.p3)) }
-    $script:FsTemps.Clear(); if ($stateFile -and (Test-Path $stateFile)) { Remove-Item $stateFile -Force -ErrorAction SilentlyContinue }
+    $script:FsTemps.Clear()
+    # 2.2.20 (Codex 2.2.19 R19 class, second pass): "back to normal" only once the finished record is really gone (2.2.19 removed it
+    # SilentlyContinue and said OK while the record stayed, so the next start took this PC for one with a change in progress)
+    $rmWhy = ''; if ($stateFile -and (Test-Path -LiteralPath $stateFile)) { try { Remove-Item -LiteralPath $stateFile -Force -ErrorAction Stop } catch { $rmWhy = $_.Exception.Message }; if (-not $rmWhy -and (Test-Path -LiteralPath $stateFile)) { $rmWhy = 'it is still there' } }
+    if ($rmWhy) { $script:FsLastRestore = [pscustomobject]@{ ok = $false; problems = @('this PC''s network is back, but its finished record could not be removed (' + $rmWhy + '); the next run will check it again') }; return $script:FsLastRestore }
     $script:FsLastRestore = [pscustomobject]@{ ok = $true; problems = @() }; return $script:FsLastRestore
   }
   if (-not $script:FsPcBefore -and -not @($script:FsTemps).Count) {
@@ -1500,8 +1520,13 @@ function Test-FsNetRecoveryMarker([string]$stateFile) {
   $why = Test-FsNetRecoveryVerified $created
   if (-not $why) {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    try { if (Test-Path -LiteralPath $mk) { Move-Item -LiteralPath $mk -Destination ($stateFile -replace '\.json$', ('.recovery-cleared-' + $stamp + '.json')) -Force } } catch {}
-    foreach ($f in $ev) { try { Move-Item -LiteralPath $f.FullName -Destination (Join-Path $dir ($f.Name -replace '\.unreadable-', '.cleared-unreadable-')) -Force } catch {} }
+    # 2.2.20 (Codex 2.2.19 class A, second pass): "sorted out" only when the marker and the evidence files are VERIFIED moved out of the
+    # way (2.2.19 moved them inside catch {} with no -ErrorAction Stop and cleared the block whatever happened; a marker that stayed then
+    # blocked the next start with no reason, and a move that half-worked was said as done)
+    $mvWhy = @()
+    if (Test-Path -LiteralPath $mk) { try { Move-Item -LiteralPath $mk -Destination ($stateFile -replace '\.json$', ('.recovery-cleared-' + $stamp + '.json')) -Force -ErrorAction Stop } catch { $mvWhy += ('the reminder ' + (Split-Path -Leaf $mk) + ': ' + $_.Exception.Message) }; if (-not $mvWhy.Count -and (Test-Path -LiteralPath $mk)) { $mvWhy += ('the reminder ' + (Split-Path -Leaf $mk) + ' is still there') } }
+    foreach ($f in $ev) { try { Move-Item -LiteralPath $f.FullName -Destination (Join-Path $dir ($f.Name -replace '\.unreadable-', '.cleared-unreadable-')) -Force -ErrorAction Stop } catch { $mvWhy += ($f.Name + ': ' + $_.Exception.Message) }; if (Test-Path -LiteralPath $f.FullName) { if (-not @($mvWhy | Where-Object { $_ -like ($f.Name + ':*') }).Count) { $mvWhy += ($f.Name + ' is still there') } } }
+    if ($mvWhy.Count) { Fs-LogLine ('the earlier unreadable network record is checked, but could not be marked as cleared: ' + ($mvWhy -join '; ')); return ('this PC''s network is checked (restarted since, no temporary address on it), but the earlier recovery record could not be marked as cleared (' + ($mvWhy -join '; ') + '); no change is made to this PC''s network until it is. Make the folder ' + $dir + ' writable, then run again') }
     Fs-LogLine 'the earlier unreadable network record is sorted out: this PC restarted since, and no temporary address is on it'
     return ''
   }
@@ -1788,9 +1813,12 @@ function Convert-FsSecretStores([string]$FromDir, [string]$ToDir) {
   foreach ($f in @(Get-ChildItem -LiteralPath $FromDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'site-*.dat' -or $_.Name -eq 'password-word.dat' })) {
     $dst = Join-Path $ToDir $f.Name
     if (Test-Path -LiteralPath $dst) { continue }
-    try { $t = Unprotect-FsText ((Get-Content -LiteralPath $f.FullName -Raw).Trim()); [IO.File]::WriteAllText($dst, (Protect-FsText $t)); Remove-Item -LiteralPath $f.FullName -Force; $moved++ } catch { $bad += $f.Name }
+    # 2.2.20 (Codex 2.2.19 class A, second pass): the old copy is removed only after the new one reads back to the same secret, and a
+    # removal that fails is not counted as moved (2.2.19: Remove-Item with no -ErrorAction Stop, counted moved either way)
+    try { $t = Unprotect-FsText ((Get-Content -LiteralPath $f.FullName -Raw -ErrorAction Stop).Trim()); [IO.File]::WriteAllText($dst, (Protect-FsText $t)); if ((Unprotect-FsText ([IO.File]::ReadAllText($dst).Trim())) -cne $t) { throw 'the new copy does not read back' }; Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; $moved++ } catch { $bad += $f.Name }
   }
-  foreach ($d in @(Get-ChildItem -LiteralPath $FromDir -Directory -Filter 'hikreset-*' -ErrorAction SilentlyContinue)) { $dd = Join-Path $ToDir $d.Name; if (-not (Test-Path -LiteralPath $dd)) { try { Move-Item -LiteralPath $d.FullName -Destination $dd; $moved++ } catch {} } }
+  # 2.2.20 (class A): a reset record folder counts as moved only when it is at the new place and gone from the old one
+  foreach ($d in @(Get-ChildItem -LiteralPath $FromDir -Directory -Filter 'hikreset-*' -ErrorAction SilentlyContinue)) { $dd = Join-Path $ToDir $d.Name; if (-not (Test-Path -LiteralPath $dd)) { try { Move-Item -LiteralPath $d.FullName -Destination $dd -ErrorAction Stop; if ((Test-Path -LiteralPath $d.FullName) -or -not (Test-Path -LiteralPath $dd)) { throw 'not moved whole' }; $moved++ } catch { $bad += $d.Name } } }
   return [pscustomobject]@{ moved = $moved; unreadable = @($bad) }
 }
 function New-FsSitePassword([string]$prefix) {

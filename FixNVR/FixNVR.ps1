@@ -145,6 +145,24 @@ function Save-Json($obj, [string]$path) {
   if ($back -cne $json) { throw ('the saved file ' + $path + ' does not read back as written') }
   try { [void]($back | ConvertFrom-Json -ErrorAction Stop) } catch { throw ('the saved file ' + $path + ' does not read back as JSON') }
 }
+# 2.2.20 (Codex 2.2.19 class A, second pass): '' when this run's plan.json AND before.json are saved and read back; else the plain reason
+function Save-FnText([string]$path, [string]$text) {
+  # the same checked install as Save-Json, for text already made (a temp file swapped in, then the FINAL file read back and parsed)
+  $tmp = $path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+  try {
+    [IO.File]::WriteAllText($tmp, $text, (New-Object Text.UTF8Encoding($true)))
+    if ([IO.File]::Exists($path)) { [IO.File]::Replace($tmp, $path, [NullString]::Value) } else { [IO.File]::Move($tmp, $path) }
+  } finally { if ([IO.File]::Exists($tmp)) { try { [IO.File]::Delete($tmp) } catch {} } }
+  $back = [IO.File]::ReadAllText($path); if ($back.Length -gt 0 -and [int][char]$back[0] -eq 0xFEFF) { $back = $back.Substring(1) }
+  if ($back -cne $text) { throw ('the saved file ' + $path + ' does not read back as written') }
+  try { [void]($back | ConvertFrom-Json -ErrorAction Stop) } catch { throw ('the saved file ' + $path + ' does not read back as JSON') }
+}
+function Save-FnRunRecords([string]$runDir, $plan, $before) {
+  try { Save-FnText (Join-Path $runDir 'plan.json') ([string]($plan | ConvertTo-Json -Depth 6)) } catch { return ('this run''s plan (plan.json) could not be saved: ' + $_.Exception.Message) }
+  if (-not @($before).Count) { return '' }   # no device was read: nothing to record
+  try { Save-FnText (Join-Path $runDir 'before.json') ([string]($before | ConvertTo-Json -Depth 12)) } catch { return ('this run''s record of how the devices were (before.json) could not be saved: ' + $_.Exception.Message) }
+  return ''
+}
 # 2.2.7 (F05): Undo takes back every step that was SENT (done, or sent and not confirmed: a timeout, a stopped run), newest first
 function Get-FnRollbackSteps($rb) {
   $tmp = @($rb.steps | Where-Object { $_ -and ($_.done -or ($_.PSObject.Properties['attempted'] -and $_.attempted)) -and $_.type -ne 'nvr-platform' })
@@ -1718,9 +1736,16 @@ function Invoke-Main {
   elseif (-not $rev -and $script:routerStepShown) { Say ''; Say ('Remember the ROUTER STEP above (router hands out .' + [int]$cfg.router_dhcp_start + ' and up). Do it today, before or right after the fix.') 'Yellow' }
   $manual = @($plan | Where-Object { $_.how -eq 'manual' })
   if ($manual.Count) { Say ''; Say ('' + $manual.Count + ' step(s) must be done by hand (Uniview NVR settings are not yet verified for automatic change, or no login). Steps are printed after the automatic part.') 'Yellow' }
-  $plan | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $runDir 'plan.json')
+  # 2.2.20 (Codex 2.2.19 class A, second pass): plan.json and before.json are what a technician undoes BY HAND from when Undo refuses its
+  # undo file ("Undo the changes by hand from the run's plan.json / summary.txt"), so they are written whole and READ BACK (Save-Json)
+  # before the YES. 2.2.19 wrote plan.json with a plain Set-Content under 'Continue' and only logged a before.json that failed; a Fix run
+  # now stops here, before any device or adapter change, when either cannot be saved (exit 7). Check mode only says so.
   $before = @($script:devs | ForEach-Object { [ordered]@{ ip = $_.ip; mac = $_.mac; kind = $_.kind; brand = $_.brand; model = $_.model; serial = $_.serial; mask = $_.mask; gw = $_.gw; dns1 = $_.dns1; dns2 = $_.dns2; addressing = $_.addressing; platform_enabled = $_.platform_enabled; platform_online = $_.platform_online; channel = $_.channel_id; found_by = $_.found_by; login = $_.login } })
-  try { Save-Json $before (Join-Path $runDir 'before.json') } catch { Log ('before.json not saved: ' + $_.Exception.Message) }
+  $recWhy = Save-FnRunRecords $runDir $plan $before
+  if ($recWhy) {
+    if ($Mode -ne 'Check') { Say ('STOPPED: ' + $recWhy + '. Nothing was changed. Make the run folder writable (or free some disk space), then run again.') 'Red'; $script:exitCode = 7; return }
+    Say ('Note: ' + $recWhy + '.') 'Yellow'
+  }
   if ($Mode -eq 'Check') {
     Say ''; Say 'Check only: nothing was changed. Run "Fix NVR.cmd" (Fix mode) to apply this plan.' 'Cyan'
     if ($notChecked.Count) { Say ('Not an all-clear: ' + $notChecked.Count + ' recorder(s) NOT CHECKED (see the red lines).') 'Red'; $script:exitCode = 4 }

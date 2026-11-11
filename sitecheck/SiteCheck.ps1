@@ -361,10 +361,11 @@ function Invoke-SiteCheck([string]$Nvr = '', $Cred = $null, [int]$Pings = 20, [s
     $model = $(if ($sd) { $sd.Model } elseif ($od) { $od.Model } else { '' })
     $kind = ''
     if ($i -eq $Nvr) { $kind = 'NVR' } elseif ($model -match '^(i?DS-7|DS-9|DS-96|NVR|DHI-NVR|XVR|DVR)' -or $model -match 'NVR|DVR') { $kind = 'NVR/DVR' } elseif ($sd -or $od -or $op -contains 554) { $kind = 'camera' } elseif ($op -contains 37777) { $kind = 'camera/NVR' }
-    $loss = $(if ($pq.Sent) { [math]::Round(100.0 * ($pq.Sent - $pq.Ok) / $pq.Sent) } else { 100 })
+    # 2.2.20 (Codex 2.2.19 class C, second pass): no ping could even be SENT to it = not checked (loss unknown), never 100% loss
+    $loss = $(if ($pq.Sent) { [math]::Round(100.0 * ($pq.Sent - $pq.Ok) / $pq.Sent) } else { $null })
     $diff = $false; if ($nvrNet -and $i -ne $Nvr) { $diff = -not (Test-ScSameSubnet $i $nvrNet $nvrPrefix) }
     if ($sd -and $sd.Mask -and $sd.Gateway -and $nvrNet) { $diff = -not (Test-ScSameSubnet $sd.Ip $nvrNet $nvrPrefix) }
-    $devs += [pscustomobject]@{ Ip = $i; Mac = $mac; Vendor = $brand; Model = $model; Kind = $kind; Sent = $pq.Sent; Ok = $pq.Ok; LossPct = $loss; Median = (Get-ScMedian $pq.Rtt); Max = $(if ($pq.Rtt.Count) { ($pq.Rtt | Measure-Object -Maximum).Maximum } else { $null }); Ports = $op; InArp = [bool]$mac; DiffSubnet = $diff; Firmware = $(if ($sd) { $sd.Firmware } else { '' }); Source = (@($dd | ForEach-Object { $_.Source }) -join '+') }
+    $devs += [pscustomobject]@{ Ip = $i; Mac = $mac; Vendor = $brand; Model = $model; Kind = $kind; Sent = $pq.Sent; Ok = $pq.Ok; LossPct = $loss; Median = (Get-ScMedian $pq.Rtt); Max = $(if ($pq.Rtt.Count) { ($pq.Rtt | Measure-Object -Maximum).Maximum } else { $null }); Ports = $op; InArp = [bool]$mac; DiffSubnet = $diff; Firmware = $(if ($sd) { $sd.Firmware } else { '' }); Source = (@($dd | ForEach-Object { $_.Source }) -join '+'); PingNotSent = (-not $pq.Sent) }
   }
   # SADP devices on a different IP scheme (not reachable by ping from here)
   foreach ($d in $disc) { if ($d.Source -eq 'SADP' -and $d.Ip -and -not ($devs | Where-Object { $_.Ip -eq $d.Ip })) { $devs += [pscustomobject]@{ Ip = $d.Ip; Mac = $d.Mac; Vendor = 'Hikvision'; Model = $d.Model; Kind = $(if ($d.Model -match '^(i?DS-7|DS-9)') { 'NVR/DVR' } else { 'camera' }); Sent = 0; Ok = 0; LossPct = 100; Median = $null; Max = $null; Ports = @(); InArp = $false; DiffSubnet = $true; Firmware = $d.Firmware; Source = 'SADP (other IP scheme)' } } }
@@ -412,6 +413,7 @@ function Get-ScDiagnosis($R) {
     elseif ($det -match 'password|user|auth') { $why = 'The camera answers but rejects the NVR''s login (password changed or camera was reset). Fix the camera password in the NVR.' }
     elseif ($det -match 'andwidth|Flow|ipcLimit') { $why = 'The NVR is over its camera bandwidth limit - not a camera fault.' }
     elseif (-not $ip) { $why = 'No camera address set for this channel in the NVR.' }
+    elseif ($d -and $d.PSObject.Properties['PingNotSent'] -and $d.PingNotSent -and -not @($d.Ports).Count) { $why = 'NOT CHECKED: this PC could not send a single ping to ' + $ip + ' (its own network error), so it is not known whether the camera answers. Check this PC''s network connection and run the check again.' }   # 2.2.20 (class C)
     elseif (-not $onLan -and -not $d) { $deadCount++; $why = 'This camera is on the NVR''s own PoE ports (' + $ip + '), so only the NVR can see it. Offline there = no power or no link on that PoE port: check the cable/jack, re-seat it at the NVR, or try another NVR port. If a known-good port and cable fail, the camera is dead.' }
     elseif ($d -and $d.Ok -gt 0 -and $d.LossPct -ge 10) { $why = 'The camera answers but drops ' + $d.LossPct + '% of pings - a flaky cable, jack, or switch port (or a PoE port that is browning out). Re-terminate or move it to another port.' }
     elseif ($d -and $d.Ok -gt 0) { $why = 'The camera is ON the network (pings fine' + $(if (@($d.Ports).Count) { ', ports ' + (@($d.Ports) -join '/') + ' open' } else { ', but its video ports are closed' }) + '), but the NVR gets no video. Likely the camera is frozen or its settings changed. Reboot it (unplug its PoE 10 s); if it comes back then goes again, update its firmware.' }
@@ -433,6 +435,7 @@ function Get-ScDiagnosis($R) {
     if ($chIps.ContainsKey([string]$d.Ip) -or $d.Ip -eq $nvr) { continue }
     $cam = ($d.Kind -match 'camera|NVR') -or ($d.Vendor -match 'Hikvision|Dahua|Uniview')
     if (($cam -or $d.Vendor -match 'Ubiquiti|DrayTek') -and $d.Sent -ge 10 -and $d.Ok -gt 0 -and $d.LossPct -ge 10) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($d.Ip + ' ' + $(if ($d.Vendor) { '(' + $d.Vendor + ') ' } else { '' }) + 'drops ' + $d.LossPct + '% of pings - flaky cable/port.') } }
+    if ($d.PSObject.Properties['PingNotSent'] -and $d.PingNotSent -and -not @($d.Ports).Count) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($d.Ip + ' ' + $(if ($d.Vendor) { '(' + $d.Vendor + ') ' } else { '' }) + '- NOT CHECKED: this PC could not send a ping to it.') } }   # 2.2.20 (class C)
     if ($cam -and $d.DiffSubnet) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($d.Ip + ' ' + $d.Model + ' is on a DIFFERENT IP scheme than the NVR (' + $nvr + '), so the NVR can''t reach it. Change its address to the NVR''s scheme.') } }
   }
   # 2.2.19 (sweep2): only a channel READ as offline already names the conflict in its own line
@@ -440,7 +443,10 @@ function Get-ScDiagnosis($R) {
   # comparison with the previous run on this PC
   if ($R.previous) {
     $now = @{}; foreach ($d in $devs) { if ($d.Ok -gt 0) { $now[[string]$d.Ip] = 1 } }
-    $gone = @($R.previous | Where-Object { -not $now.ContainsKey([string]$_.ip) -and -not $chIps.ContainsKey([string]$_.ip) })
+    # 2.2.20 (class C): a device this run could not even ping is NOT CHECKED, not "gone"
+    $nsIps = @{}; foreach ($d in $devs) { if ($d.PSObject.Properties['PingNotSent'] -and $d.PingNotSent) { $nsIps[[string]$d.Ip] = 1 } }
+    foreach ($g in @($R.previous | Where-Object { $nsIps.ContainsKey([string]$_.ip) -and -not $chIps.ContainsKey([string]$_.ip) })) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($g.ip + ' ' + $(if ($g.vendor) { '(' + $g.vendor + ') ' } else { '' }) + 'answered last time (' + $R.previousWhen + ') - NOT CHECKED now: this PC could not send a ping to it.') } }
+    $gone = @($R.previous | Where-Object { -not $now.ContainsKey([string]$_.ip) -and -not $nsIps.ContainsKey([string]$_.ip) -and -not $chIps.ContainsKey([string]$_.ip) })
     foreach ($g in $gone) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($g.ip + ' ' + $(if ($g.vendor) { '(' + $g.vendor + ') ' } else { '' }) + 'answered last time (' + $R.previousWhen + ') but not now.') } }
   }
   # headline
@@ -469,12 +475,12 @@ function Format-ScReport($R, $D) {
   if (@($R.channels).Count) {
     $L.Add(''); $L.Add('NVR CHANNELS')
     foreach ($c in @($R.channels)) { $dv = $null; foreach ($x in @($R.devices)) { if ($x.Ip -eq $c.Ip) { $dv = $x } }
-      $L.Add(('  ch {0,-3} {1,-16} {2,-8} {3,-22} {4}' -f $c.Ch, $c.Ip, $(if ($c.Online) { 'online' } elseif ($c.PSObject.Properties['Known'] -and -not $c.Known) { 'NOT CHKD' } else { 'OFFLINE' }), $(if ($dv) { 'ping ' + (100 - $dv.LossPct) + '% ok ' + $(if ($dv.Median -ne $null) { '' + $dv.Median + 'ms' } else { '' }) } else { 'not pingable here' }), $c.Name)) }
+      $L.Add(('  ch {0,-3} {1,-16} {2,-8} {3,-22} {4}' -f $c.Ch, $c.Ip, $(if ($c.Online) { 'online' } elseif ($c.PSObject.Properties['Known'] -and -not $c.Known) { 'NOT CHKD' } else { 'OFFLINE' }), $(if ($dv -and $dv.PSObject.Properties['PingNotSent'] -and $dv.PingNotSent) { 'ping NOT SENT ' } elseif ($dv) { 'ping ' + (100 - $dv.LossPct) + '% ok ' + $(if ($dv.Median -ne $null) { '' + $dv.Median + 'ms' } else { '' }) } else { 'not pingable here' }), $c.Name)) }
   }
   $L.Add(''); $L.Add('DEVICES THAT ANSWERED (' + @($R.devices).Count + ')')
   $L.Add('  IP               MAC                VENDOR                 KIND       PINGS   LOSS  MS(med/max) PORTS          MODEL')
   foreach ($dv in @($R.devices)) {
-    $L.Add(('  {0,-16} {1,-18} {2,-22} {3,-10} {4,-7} {5,-5} {6,-11} {7,-14} {8}{9}' -f $dv.Ip, $dv.Mac, $dv.Vendor, $dv.Kind, ('' + $dv.Ok + '/' + $dv.Sent), ('' + $dv.LossPct + '%'), $(if ($dv.Median -ne $null) { '' + $dv.Median + '/' + $dv.Max } else { '-' }), (@($dv.Ports) -join ','), $dv.Model, $(if ($dv.DiffSubnet) { '  <- other IP scheme' } else { '' })))
+    $L.Add(('  {0,-16} {1,-18} {2,-22} {3,-10} {4,-7} {5,-5} {6,-11} {7,-14} {8}{9}' -f $dv.Ip, $dv.Mac, $dv.Vendor, $dv.Kind, ('' + $dv.Ok + '/' + $dv.Sent), $(if ($null -eq $dv.LossPct) { 'n/a' } else { '' + $dv.LossPct + '%' }), $(if ($dv.Median -ne $null) { '' + $dv.Median + '/' + $dv.Max } else { '-' }), (@($dv.Ports) -join ','), $dv.Model, $(if ($dv.DiffSubnet) { '  <- other IP scheme' } else { '' })))
   }
   if (@($R.duplicates).Count) { $L.Add(''); $L.Add('DUPLICATE IPs'); foreach ($x in @($R.duplicates)) { $L.Add('  ' + $x.ip + ': ' + (@($x.macs) -join ', ')) } }
   $L.Add(''); $L.Add('Checked in ' + $R.seconds + ' s. Nothing was changed on any device.')
@@ -489,8 +495,16 @@ function Save-ScReport($R, $D, [string]$dir) {
   $o = [ordered]@{}; foreach ($k in $R.Keys) { if ($k -ne 'previous') { $o[$k] = $R[$k] } }; $o.headline = $D.Headline; $o.findings = @($D.Findings)
   [IO.File]::WriteAllText($base + '.json', ($o | ConvertTo-Json -Depth 6))
   $prev = @($R.devices | Where-Object { $_.Ok -gt 0 } | ForEach-Object { [ordered]@{ ip = $_.Ip; mac = $_.Mac; vendor = $_.Vendor } })
-  [IO.File]::WriteAllText((Join-Path $dir 'last-scan.json'), ([ordered]@{ when = $R.started; nets = @(Get-ScNetKeys $R.nets); devices = $prev } | ConvertTo-Json -Depth 4))
-  return [pscustomobject]@{ Txt = $base + '.txt'; Json = $base + '.json'; Text = $txt }
+  # 2.2.20 (Codex 2.2.19 class C, second pass): a device this run could not ping stays in the comparison as it was last time (not checked
+  # is not gone); (class A) last-scan.json feeds the next run's comparison, so it counts as saved only when it reads back as written. A
+  # save that fails removes the old one, so the next run compares with nothing rather than with a stale list.
+  $nsIps = @{}; foreach ($d in @($R.devices)) { if ($d.PSObject.Properties['PingNotSent'] -and $d.PingNotSent) { $nsIps[[string]$d.Ip] = 1 } }
+  foreach ($g in @($R.previous)) { if ($g -and $nsIps.ContainsKey([string]$g.ip)) { $prev += [ordered]@{ ip = [string]$g.ip; mac = [string]$g.mac; vendor = [string]$g.vendor } } }
+  $ls = Join-Path $dir 'last-scan.json'; $lsJson = [string]([ordered]@{ when = $R.started; nets = @(Get-ScNetKeys $R.nets); devices = $prev } | ConvertTo-Json -Depth 4)
+  $lsOk = $true; $tmp = $ls + '.tmp'
+  try { [IO.File]::WriteAllText($tmp, $lsJson); Move-Item -LiteralPath $tmp -Destination $ls -Force -ErrorAction Stop; if ([IO.File]::ReadAllText($ls) -cne $lsJson) { throw 'it does not read back as written' } }
+  catch { $lsOk = $false; try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction Stop } } catch {}; try { if (Test-Path -LiteralPath $ls -PathType Leaf) { Remove-Item -LiteralPath $ls -Force -Confirm:$false -ErrorAction Stop } } catch {} }
+  return [pscustomobject]@{ Txt = $base + '.txt'; Json = $base + '.json'; Text = $txt; LastScanSaved = $lsOk }
 }
 # 2.2.3 (Codex #44): the previous scan is compared only when it was taken on the SAME network(s): another site's devices are not "missing" here
 function Get-ScNetKeys($nets) {
@@ -502,7 +516,7 @@ function Read-ScPrevious($R, [string]$dir) {
   if (Test-Path $p) { try { $j = Get-Content $p -Raw | ConvertFrom-Json
     $now = @(Get-ScNetKeys $R.nets); $then = @($j.nets | Where-Object { $_ })
     if ($then.Count -and $now.Count -and @($now | Where-Object { $then -contains $_ }).Count) { $R.previous = @($j.devices); $R.previousWhen = ([string]$j.when).Replace('T', ' ') }
-  } catch {} }
+  } catch { $R.notes = @($R.notes) + @('the previous scan (last-scan.json) could not be read, so this run is NOT compared with it') } }   # 2.2.20 (class C): said, not silent
 }
 # Upload to the site page: OFF until the server side exists (see INTEGRATION.md). Never sends passwords.
 function Send-ScReport($R, $D, [string]$siteCode, [string]$uploadCode) {
@@ -578,6 +592,7 @@ function Invoke-ScConsole {
   $D = Get-ScDiagnosis $R
   $s = Save-ScReport $R $D $dir
   Write-Output ''; Write-Output $s.Text; Write-Output ''; Write-Output ('Report saved: ' + $s.Txt)
+  if (-not $s.LastScanSaved) { Write-Output 'NOTE: this scan could not be saved for the next run''s comparison (last-scan.json), so the next run is not compared with anything.' }   # 2.2.20 (class A)
   if ($Site -and $UploadCode) { Write-Output (Send-ScReport $R $D $Site $UploadCode) }
 }
 if ($NoWindow) { Invoke-ScConsole; if ($Launcher) { Read-Host 'Press Enter to close' | Out-Null }; return }
@@ -654,7 +669,7 @@ $timer.Add_Tick({
     $R = $sync.R; if ($R.nvr -and -not $tNvr.Text.Trim()) { $tNvr.Text = [string]$R.nvr }; $dir = Get-ScReportDir; Read-ScPrevious $R $dir; $D = Get-ScDiagnosis $R; $saved = $null
     try { $saved = Save-ScReport $R $D $dir } catch { $st.Text = 'Could not save the report: ' + $_.Exception.Message }
     $script:last = [pscustomobject]@{ R = $R; D = $D; Saved = $saved; Dir = $dir }
-    Show-ScResult $R $D $saved; $st.Text = 'Done in ' + $R.seconds + ' s. Nothing was changed on any device.'
+    Show-ScResult $R $D $saved; $st.Text = 'Done in ' + $R.seconds + ' s. Nothing was changed on any device.' + $(if ($saved -and -not $saved.LastScanSaved) { ' (This scan could not be saved for the next run''s comparison.)' } else { '' })
     if ($tSite.Text.Trim() -and $tCode.Text.Trim()) { $st.Text = 'Posting the result to the site page...'; [Windows.Forms.Application]::DoEvents(); $st.Text = 'Done in ' + $R.seconds + ' s. ' + (Send-ScReport $R $D $tSite.Text $tCode.Text) }
     $bCopy.Enabled = $true; $bOpen.Enabled = $true; $bFull.Enabled = $true; $script:full = $false; $bFull.Text = 'Show full details'
   }
