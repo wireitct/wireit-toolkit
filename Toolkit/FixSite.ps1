@@ -1014,7 +1014,10 @@ foreach ($c in $ordered) {
   if (-not $stop -and $nvrWrite) {
     $nidPre = Get-FsNvrIdRecord $c.nvr $nvrCred[$c.nvr]
     if (-not $nidPre.mac -and -not $nidPre.serial) {
-      Save-Rb; & $step ('NOT changed: NVR ' + $c.nvr + ' records this camera but did not tell its MAC / serial, so Undo could not check later that it is the same NVR. Camera and NVR left as they were - check the NVR and run Fix this site again') $false; $stop = $true
+      # an NVR that does not answer at all is told as that (the old "does not answer right now" words), not as a missing MAC / serial
+      $nst = $(if ($nvrPw.ContainsKey($c.nvr)) { Test-FsLogin $c.nvr 'Hikvision' $nvrPw[$c.nvr] } else { 'ok' })
+      if ($nst -ne 'ok') { Save-Rb; & $step ('NOT changed: NVR ' + $c.nvr + ' records this camera and does not answer right now (' + $nst + '), so its MAC / serial could not be read for Undo. Camera and NVR left as they were - run Fix this site again when it is back') $false; $stop = $true }
+      else { Save-Rb; & $step ('NOT changed: NVR ' + $c.nvr + ' records this camera but did not tell its MAC / serial, so Undo could not check later that it is the same NVR. Camera and NVR left as they were - check the NVR and run Fix this site again') $false; $stop = $true }
     } else { $rbc.nvr_id = [ordered]@{ nvr = $c.nvr; mac = [string]$nidPre.mac; serial = [string]$nidPre.serial }; Save-Rb }
   }
   # password
