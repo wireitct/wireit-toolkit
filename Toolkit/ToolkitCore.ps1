@@ -15,7 +15,7 @@ $script:TkCurVersion = ''
 # 2.2.2 (re-review NEW-2): the version these files ARE. Get-TkVersion never reads lower than this, so a copy installed from the
 # repository (no Toolkit\version.json) is not "0.0.0", and an update is only taken when the published one is NEWER (never a downgrade).
 # Same number as FixSiteCore.ps1 $FsVersion and the release manifest (version.json); Test-Fix222 checks all three.
-$script:TkBuiltVersion = '2.2.16'
+$script:TkBuiltVersion = '2.2.17'
 . (Join-Path $PSScriptRoot 'ToolkitRecover.ps1')
 
 function Get-TkPaths([string]$toolkitDir) {

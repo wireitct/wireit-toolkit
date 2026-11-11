@@ -63,6 +63,8 @@ Toolkit/tests/Test-Fix2215Site.ps1
 Toolkit/tests/Test-Fix2216Classic.ps1
 Toolkit/tests/Test-Fix2216Nvr.ps1
 Toolkit/tests/Test-Fix2216Site.ps1
+Toolkit/tests/Test-Fix2217Nvr.ps1
+Toolkit/tests/Test-Fix2217Site.ps1
 Toolkit/tests/Test-Fix222.ps1
 Toolkit/tests/Test-Fix223.ps1
 Toolkit/tests/Test-Fix224.ps1
@@ -129,6 +131,7 @@ Toolkit/tests/repro-2.2.15/reproduce-rollback-bootstrap.ps1
 Toolkit/tests/repro-2.2.15/reproduce-sadp-state-race.py
 Toolkit/tests/repro-2.2.15/reproduce-undo-wrong-nvr.py
 Toolkit/tests/repro-2.2.15/reproduce-unread-second-nvr.py
+Toolkit/tests/repro-2.2.16/reproduce-forward-no-nvr-id.py
 Toolkit/tests/review225/scenarios.py
 Toolkit/wireit-logo.png
 Toolkit/wireit.ico

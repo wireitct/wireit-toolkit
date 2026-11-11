@@ -123,8 +123,12 @@ function Invoke-NvrFix {
         $nowOff = @($rt.map.Values | Where-Object { $offIds -notcontains $_.id -and $afterTracks.ContainsKey($_.id) -and ($afterTracks[$_.id].enabled -eq $false -or ($afterTracks[$_.id].enabled -eq $true -and $afterTracks[$_.id].hasSchedule -eq $false)) } | Sort-Object id)
         $still = @(@($still) + @($nowOff))
         $unknownAfter = @($afterTracks.Values | Where-Object { $null -eq $_.enabled -or ($_.enabled -eq $true -and $null -eq $_.hasSchedule) } | Sort-Object id)
+        # 2.2.17 (Codex 2.2.16 re-review): a camera that is NEW in the read-back (not in the first list) and reads OFF is not "on again"
+        # either: this run did not look at it before, so the result stays NOT confirmed and names it (unknown new ones: the line below).
+        $newOff = @($afterTracks.Values | Where-Object { -not $rt.map.ContainsKey($_.id) -and ($_.enabled -eq $false -or ($_.enabled -eq $true -and $_.hasSchedule -eq $false)) } | Sort-Object id)
         $unkNote = ''
         if ($goneAfter.Count) { $unkNote += ' Camera(s) ' + (& $unkWords $goneAfter) + ' were in the recording list before the change but NOT in the answer read back afterwards: NOT CHECKED.' }
+        if ($newOff.Count) { $unkNote += ' Camera(s) ' + (& $unkWords $newOff) + ' are NEW in the answer read back (not in the list before the change) and their recording is OFF: NOT confirmed, not changed by this run.' }
         if ($unknownAfter.Count) { $unkNote += ' Recording could NOT be checked for camera(s) ' + (& $unkWords $unknownAfter) + ' (no clear Enable / schedule).' }
         $stillWords = { param($list) (@($list | ForEach-Object { 'camera ' + [math]::Floor($_.id / 100) }) -join ', ') }
       } elseif ($v -eq 'DW') {
@@ -160,8 +164,13 @@ function Invoke-NvrFix {
         $nowOff = @($devs | Where-Object { $id = $_.id; $offIds -notcontains $id -and @($afterDevices | Where-Object { $_.id -eq $id -and $_.scheduled -eq $false }).Count })
         $still = @(@($still) + @($nowOff))
         $unknownAfter = @($afterDevices | Where-Object { $null -eq $_.scheduled })
+        # 2.2.17 (Codex 2.2.16 re-review): a camera that is NEW in the read-back (not in the first list) with recording OFF keeps the
+        # result NOT confirmed and is named (unknown new ones: the "could NOT be checked" line below).
+        $beforeIds = @($devs | ForEach-Object { $_.id })
+        $newOff = @($afterDevices | Where-Object { $beforeIds -notcontains $_.id -and $_.scheduled -eq $false })
         $unkNote = ''
         if ($goneAfter.Count) { $unkNote += ' ' + (& $unkWords $goneAfter) + ' - in DW''s camera list before the change but NOT in the list read back afterwards: NOT CHECKED.' }
+        if ($newOff.Count) { $unkNote += ' ' + (& $unkWords $newOff) + ' - NEW in DW''s camera list read back (not in the list before the change) with recording OFF: NOT confirmed, not changed by this run.' }
         if ($unknownAfter.Count) { $unkNote += ' Recording could NOT be checked for: ' + (& $unkWords $unknownAfter) + '.' }
         $stillWords = { param($list) (@($list | ForEach-Object { $_.name + ' (' + $_.ip + ')' }) -join ', ') }
       } else { return (& $done $false ('Turning recording on is not built for ' + $v + ' yet. Nothing changed.')) }

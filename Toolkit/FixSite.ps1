@@ -934,13 +934,19 @@ Resolve-FsPlanNvrAddresses $plan
 $nvrCred = @{}; foreach ($k in @($nvrPw.Keys)) { $nvrCred[$k] = Fs-Cred $nvrPw[$k] }
 function Undo-CamPassword($c, [string]$ip, [string]$oldPw) {
   # 2.0.3: the picture did not come back after the password change: the camera's old password goes back on it AND on its NVR channel
+  # 2.2.17 (Codex 2.2.16 note): the in-run undo writes to the NVR too, so it follows the same rule as Undo: the NVR answering now must be
+  # the one recorded before the change (MAC / serial). If it cannot be confirmed, nothing is written (camera or NVR) and the tech is told.
+  if ($c.nvr -and $nvrCred.ContainsKey($c.nvr) -and [int]$c.channel) {
+    $idw = [string](Get-FsUndoNvrBlock $c.nvr $nvrCred[$c.nvr] $rbc.nvr_id)
+    if ($idw) { return [pscustomobject]@{ ok = $false; video = $false; why = ('NVR ' + $c.nvr + ' not confirmed: ' + $idw + '. Nothing was put back') } }
+  }
   $okP = Set-FsPassword $ip $c.brand (Fs-Cred $sitePw) $oldPw
   if ($okP) { $okP = ((Test-FsLogin $ip $c.brand $oldPw) -eq 'ok') }
   $okN = $true
   if ($okP -and $c.nvr -and $nvrCred.ContainsKey($c.nvr) -and [int]$c.channel) { $w = Set-FsNvrChannel $c.nvr $nvrCred[$c.nvr] ([int]$c.channel) $ip $oldPw $c.brand ''; $okN = [bool]$w.ok }
   $vid = $false
   if ($okP) { $end = (Get-Date).AddSeconds($(if ($script:FsMockUrl) { 8 } else { 90 })); do { $vid = Test-FsVideo $c.nvr $(if ($c.nvr -and $nvrCred.ContainsKey($c.nvr)) { $nvrCred[$c.nvr] } else { $null }) $(if ($c.nvr -and $nvrCred.ContainsKey($c.nvr)) { [int]$c.channel } else { 0 }) $ip $c.brand (Fs-Cred $oldPw); if (-not $vid) { Fs-Sleep 5 } } while (-not $vid -and (Get-Date) -lt $end) }
-  return [pscustomobject]@{ ok = [bool]($okP -and $okN); video = [bool]$vid }
+  return [pscustomobject]@{ ok = [bool]($okP -and $okN); video = [bool]$vid; why = '' }
 }
 
 # =====================================================================================
@@ -1000,6 +1006,16 @@ foreach ($c in $ordered) {
     $nb = Get-FsNet $ip $c.brand $cr
     if ($nb) { $rbc.net_before = [ordered]@{ ip = $nb.ip; mask = $nb.mask; gw = $nb.gw; dhcp = $nb.dhcp; dns1 = $nb.dns1; dns2 = $nb.dns2; iface = $nb.iface }; Save-Rb }
     else { Save-Rb; & $step ('its network settings could not be read (' + $script:FsNetWhy + ') - camera left alone, nothing changed. Run Fix this site again') $false; $stop = $true }
+  }
+  # 2.2.17 (Codex 2.2.16 re-review): a camera fix that will write to its NVR - the new password on the NVR channel, a move the channel
+  # follows, or the channel put back - first reads and records WHICH NVR that is (MAC / serial), the same identity Undo checks before
+  # it writes to an NVR (2.2.16 F3). If the NVR does not tell it, nothing is changed on the camera or the NVR (Still a problem).
+  $nvrWrite = ($c.nvr -and $nvrCred.ContainsKey($c.nvr) -and (($c.steps -contains 'nvr') -or ($pw -cne $sitePw -and ($c.steps -contains 'password' -or $opts.passwordAll)) -or (($c.steps -contains 'move') -and $c.target -and $c.target -ne $ip)))
+  if (-not $stop -and $nvrWrite) {
+    $nidPre = Get-FsNvrIdRecord $c.nvr $nvrCred[$c.nvr]
+    if (-not $nidPre.mac -and -not $nidPre.serial) {
+      Save-Rb; & $step ('NOT changed: NVR ' + $c.nvr + ' records this camera but did not tell its MAC / serial, so Undo could not check later that it is the same NVR. Camera and NVR left as they were - check the NVR and run Fix this site again') $false; $stop = $true
+    } else { $rbc.nvr_id = [ordered]@{ nvr = $c.nvr; mac = [string]$nidPre.mac; serial = [string]$nidPre.serial }; Save-Rb }
   }
   # password
   if (-not $stop -and $pw -cne $sitePw -and ($c.steps -contains 'password' -or $opts.passwordAll)) {   # 2.2.3 (Codex #37): -cne
@@ -1105,6 +1121,10 @@ foreach ($c in $ordered) {
       if (-not $ch) { $cl = Read-FsNvrChannelList $c.nvr $nvrCred[$c.nvr]; if (-not $cl.ok) { $chWhy = $cl.why } else { $chs = @($cl.channels); $ch = Get-FsFreeNvrChannel $chs $ip ([string]$rbc.ip_before); if (-not $ch) { $used = @($chs | ForEach-Object { $_.channel }); for ($k = 1; $k -le 64; $k++) { if ($used -notcontains $k) { $ch = $k; break } } } } }
     }
     if (-not $ch -and $nvrCred.ContainsKey($c.nvr)) { & $step ('NVR ' + $c.nvr + $(if ($chWhy) { ' channel list could not be read (' + $chWhy + ')' } else { ' has no free channel' }) + ' - NOT put on the NVR; add it there by hand') $false }
+    elseif ($nvrCred.ContainsKey($c.nvr) -and -not ($nidC = Get-FsNvrIdRecord $c.nvr $nvrCred[$c.nvr]).mac -and -not $nidC.serial) {
+      # 2.2.17: no NVR identity = no channel write (Undo could not check it is the same NVR)
+      & $step ('NOT put on NVR ' + $c.nvr + ': it did not tell its MAC / serial, so Undo could not check later that it is the same NVR - add ch ' + $ch + ' there by hand') $false
+    }
     elseif ($nvrCred.ContainsKey($c.nvr)) {
       # 2.2.7 (Codex file-by-file F01): the channel goes into the undo file BEFORE the NVR is changed ("pending"); a run stopped
       # right after the NVR took the change still lets Undo put the channel back (its saved copy, or remove a channel it added)
@@ -1135,7 +1155,7 @@ foreach ($c in $ordered) {
     if (-not $vok -and $c.pwOnly -and $rbc.password_changed -and $pwBefore) {
       $u = Undo-CamPassword $c $ip $pwBefore
       if ($u.ok) { $rbc.password_changed = $false; $rbc.password_rolled_back = $true; $mk = ConvertTo-FsMac $c.mac; if ($mk) { $sec.cams[$mk] = $pwBefore }; Save-FsSecrets $SecretsDir $sec; Save-Rb }
-      & $step $(if ($u.ok -and $u.video) { 'old password put back, video back - this camera stays on its old password' } elseif ($u.ok) { 'old password put back, but still no video - check it' } else { 'could NOT put the old password back - check it now' }) $false
+      & $step $(if ($u.ok -and $u.video) { 'old password put back, video back - this camera stays on its old password' } elseif ($u.ok) { 'old password put back, but still no video - check it' } elseif ($u.why) { 'could NOT put the old password back (' + $u.why + ') - check it now' } else { 'could NOT put the old password back - check it now' }) $false
     }
   }
   $line = Format-FsCheckLine $c.name @($res | Where-Object { $_.text -notin @('backup saved') })
@@ -1151,9 +1171,14 @@ foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'missing' })) {
     $pr = Invoke-FsPoeCycle $siteId $c.mac $portMapDir
     if ($pr.state -eq 'done') {
       $back = $false; if ($c.listIp) { $back = Wait-FsDevice $c.listIp $c.brand $sitePw 120 }
-      if ($back -and $c.nvr -and $nvrCred.ContainsKey($c.nvr) -and $c.channel) {
+      $nidM = $(if ($back -and $c.nvr -and $nvrCred.ContainsKey($c.nvr) -and $c.channel) { Get-FsNvrIdRecord $c.nvr $nvrCred[$c.nvr] } else { $null })
+      if ($nidM -and -not $nidM.mac -and -not $nidM.serial) {
+        # 2.2.17: no NVR identity = no channel write (Undo could not check it is the same NVR)
+        $line = $c.name + ': power-cycled ' + $c.switch + ' port ' + $c.port + ', answers again, but NOT put on NVR ' + $c.nvr + ' ch ' + $c.channel + ': the NVR did not tell its MAC / serial, so Undo could not check later that it is the same NVR - check ch ' + $c.channel + ' by hand ' + $script:FsBad
+      }
+      elseif ($back -and $c.nvr -and $nvrCred.ContainsKey($c.nvr) -and $c.channel) {
         # 2.2.7 (F01): this channel change gets its own undo entry first, like every other change
-        $nid = Get-FsNvrIdRecord $c.nvr $nvrCred[$c.nvr]   # 2.2.16 (Codex 2.2.15 F3): which NVR, for Undo
+        $nid = $nidM   # 2.2.16 (Codex 2.2.15 F3): which NVR, for Undo
         $rbm = [ordered]@{ name = $c.name; mac = $c.mac; brand = $c.brand; ip_before = $c.listIp; ip_after = ''; net_before = $null; stream_before = $null; password_changed = $false; recovered = $true; backup = ''
                            nvr = [ordered]@{ nvr = $c.nvr; channel = [int]$c.channel; action = 'pending'; before_file = ('backup\nvr-' + $c.nvr + '-ch' + [int]$c.channel + '.xml'); nvr_mac = [string]$nid.mac; nvr_serial = [string]$nid.serial } }
         $rb.cameras += $rbm; Save-Rb
