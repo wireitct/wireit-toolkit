@@ -503,7 +503,10 @@ function Set-Clip([string]$text, [string]$what) {
 }
 function Begin-Run([string]$name, [bool]$keep = $false) {
   if (-not $keep) { $TK.out.Clear() }   # keep = a follow-up step (saving the list) under the results it follows
-  $TK.run = @{ Name = $name; Log = (New-Object Text.StringBuilder); Started = Get-Date }
+  # 2.2.20 (Codex 2.2.19 R16, class D): every run gets its own id; the tool it starts inherits it (WIREIT_RUN_ID) and writes it into
+  # its result (Save-TkRunResult). A result is accepted only with THIS run's id - never by its file time.
+  $TK.run = @{ Name = $name; Log = (New-Object Text.StringBuilder); Started = Get-Date; RunId = [guid]::NewGuid().ToString('N') }
+  $env:WIREIT_RUN_ID = $TK.run.RunId
   if (-not $keep) { Add-Out ('=== ' + $name + ' - ' + (Get-Date -Format 'ddd MMM d, h:mm tt') + ' ===') }
   Set-Busy $true; Set-Status ($name + ' is running...'); Set-Pill ($name + ' - running') $cAmber
 }
@@ -517,6 +520,7 @@ function End-Run([int]$code, [string]$plain) {
   $TK.run = $null
   Set-Busy $false; Set-Status ($r.Name + ' done. ' + $(if ($logPath) { 'Saved to the logs folder.' } else { 'The log could NOT be saved to the logs folder.' }))
   $TK.lastRunStarted = $r.Started   # 2.2.19 (sweep2): the after-run step reads only result files THIS run wrote
+  $TK.lastRunId = $r.RunId          # 2.2.20 (R16): ...proved by the run's own id inside the result
   if ($r.OnDone) { try { & $r.OnDone $code } catch { Add-Out ('(after-run step failed: ' + $_.Exception.Message + ')') } }
 }
 function Test-Tool([string]$path, [string]$name) {
@@ -534,13 +538,18 @@ function Get-TkConsoleEnd([int]$code, [string]$name, [bool]$nvr) {
 }
 # 2.2.19 (sweep2, class C/F): a "last result" file counts only when THIS run wrote it (not older than the run's start) and it can be
 # read. Otherwise $null, and the caller says NOT CHECKED - never the PREVIOUS run's "all OK" / "fixed".
-function Read-TkRunResult([string]$path, $since) {
-  if (-not (Test-Path -LiteralPath $path)) { return $null }
+# 2.2.20 (Codex 2.2.19 R16, class D): the file time is not proof (2.2.19 accepted a result written up to 2 s BEFORE the run started, so a
+# quick re-run whose own write failed showed the previous "OK"). A result counts only when it carries THIS run's id ($runId, from
+# Begin-Run, which the tool copied from WIREIT_RUN_ID). No id given, no id in the file, another id = $null = NOT CHECKED.
+function Read-TkRunResult([string]$path, $since, [string]$runId = '') {
+  if (-not $runId -or -not (Test-Path -LiteralPath $path)) { return $null }
   if ($null -ne $since) {
     $wt = $null; try { $wt = (Get-Item -LiteralPath $path -ErrorAction Stop).LastWriteTime } catch { return $null }
-    if ($wt -lt ([datetime]$since).AddSeconds(-2)) { return $null }
+    if ($wt -lt [datetime]$since) { return $null }
   }
-  return (Read-TkJson $path)
+  $j = Read-TkJson $path
+  if (-not $j -or -not $j.PSObject.Properties['runId'] -or [string]$j.runId -ne $runId) { return $null }
+  return $j
 }
 # 2.2.19 (sweep2, class C): what the window shows for a fix / camera doctor result: green only when the tool said ok AND ended with
 # code 0; red only for a confirmed failure (fix ran and did not work, doctor named fixes); anything unknown is amber NOT CHECKED
@@ -599,10 +608,11 @@ function Start-Fix([string]$name, [string]$mode, [string[]]$extra, [scriptblock]
   Add-Out 'Type passwords there - they are hidden and never saved. Results show up here as it works.'
   Add-Out ''
   $since = Get-Date
+  $runsBefore = $null; try { $runsBefore = Get-TkDirStamp (Join-Path $TK.P.FixNVR 'runs') } catch { $runsBefore = @{ '?' = '?' } }   # 2.2.20 (R16 twin): run folders already there are never this run's
   # 2.2.16: on the STANDARD Crew login RunAs asks for an administrator's name + password and this runs as that admin account (not Crew); UNVERIFIED, DEFERRED
   try { $proc = Start-Process -FilePath $TK.psexe -ArgumentList $a -Verb RunAs -PassThru -WorkingDirectory $TK.P.FixNVR -ErrorAction Stop }
   catch { Add-Out 'Windows asked for permission and it was not given, so nothing ran.'; End-Run 2 ''; return }
-  $TK.run.Kind = 'console'; $TK.run.Proc = $proc; $TK.run.Mode = $mode; $TK.run.Since = $since; $TK.run.RunDir = $null; $TK.run.Offset = [long]0; $TK.run.Shown = 0; $TK.run.OnDone = $onDone
+  $TK.run.Kind = 'console'; $TK.run.Proc = $proc; $TK.run.Mode = $mode; $TK.run.Since = $since; $TK.run.RunsBefore = $runsBefore; $TK.run.RunDir = $null; $TK.run.Offset = [long]0; $TK.run.Shown = 0; $TK.run.OnDone = $onDone
 }
 
 function Poll-Run {
@@ -620,7 +630,7 @@ function Poll-Run {
       $ce = Get-TkConsoleEnd $code $r.Name $false; End-Run $ce.code $ce.plain
     }
   } else {
-    if (-not $r.RunDir) { $d = Get-TkNewRunDir $(if ($r.Root) { $r.Root } else { $TK.P.FixNVR }) $r.Mode $r.Since; if ($d) { $r.RunDir = $d.FullName } }
+    if (-not $r.RunDir) { $d = Get-TkNewRunDir $(if ($r.Root) { $r.Root } else { $TK.P.FixNVR }) $r.Mode $r.Since $r.RunsBefore; if ($d) { $r.RunDir = $d.FullName } }
     if ($r.RunDir) {
       $x = Read-TkShared (Join-Path $r.RunDir 'log.txt') $r.Offset ([Text.Encoding]::UTF8); $r.Offset = $x.offset
       if ($x.text) { $said = ConvertFrom-TkFixLog ($x.text -split "`r?`n"); foreach ($l in $said) { Add-Out $l; $r.Shown++ } }
@@ -669,9 +679,10 @@ function Q([string]$s) { return '"' + ($s -replace '"', '') + '"' }
 # ---------------- the 12 jobs ----------------
 function Do-Find {
   $TK.findStarted = [DateTime]::UtcNow   # 2.2.7 (F07): what counts as THIS scan's list
+  $TK.findStamp = Get-TkFileStamp (Join-Path (Join-Path $TK.P.CamReset 'out') 'latest.json')   # 2.2.20 (R16 twin): ...and it must have changed
   [void](Start-Hidden 'Find cameras' (Join-Path $TK.P.CamReset 'Find-Cameras.ps1') '' {
     param($code)
-    if (-not (Test-TkFreshScan $TK.P.CamReset $code $TK.findStarted)) {
+    if (-not (Test-TkFreshScan $TK.P.CamReset $code $TK.findStarted $TK.findStamp)) {
       # 2.2.7 (Codex file-by-file F07): a failed or stopped Find cameras never shows, saves or uploads the PREVIOUS list
       Add-Out ('Find cameras did not finish' + $(if ($null -ne $code -and [int]$code -ne 0) { ' (code ' + $code + ')' } else { ' with a new camera list' }) + '. The previous camera list was not used, saved or uploaded.') $cRed
       Invoke-AfterScan; return
@@ -694,7 +705,7 @@ function Start-ScanUpload([string]$snapshotFile) {
   $a = '-Site ' + (Q $TK.site.Text.Trim()) + ' -CamResetDir ' + (Q $TK.P.CamReset); if ($snapshotFile) { $a += ' -Snapshot ' + (Q $snapshotFile) }
   [void](Start-Hidden 'Save to site page' $su $a {
     param($code)
-    $j = Read-TkRunResult (Join-Path $TK.P.Toolkit 'logs\scan-upload-last.json') $TK.lastRunStarted   # 2.2.19 (sweep2): this run's result only
+    $j = Read-TkRunResult (Join-Path $TK.P.Toolkit 'logs\scan-upload-last.json') $TK.lastRunStarted $TK.lastRunId   # 2.2.19 (sweep2): this run's result only
     if ($j -and @($j.red).Count) { Add-OutTop @($j.red) $cRed }
     elseif (-not $j -and $null -ne $code -and [int]$code -ne 0) { Add-Out ('Save to site page: no result came back (code ' + $code + ') - the list is NOT confirmed saved on the site page.') $cWarn }
     Invoke-AfterScan
@@ -756,10 +767,11 @@ function Do-Snapshot {
   if (-not $a) { return }
   $e = @(); if ($a.site) { $e += '-Site ' + (Q $a.site); $TK.site.Text = $a.site }; if ($a.router) { $e += '-RouterModel ' + (Q $a.router) }; if ($a.range) { $e += '-DhcpRange ' + (Q $a.range) }
   $TK.snapSince = Get-Date
+  $TK.snapBefore = $null; try { $TK.snapBefore = Get-TkDirStamp (Join-Path $TK.P.FixNVR 'snapshots') 'FixNVR snapshot*.json' } catch { $TK.snapBefore = @{ '?' = '?' } }   # 2.2.20 (R16 twin)
   Start-Fix 'Install snapshot' 'Snapshot' $e {
     param($code)
     # the snapshot is also the site's known-good camera list on the site page (one list, Moshe Nov 3)
-    $sn = Get-TkNewestSnapshot $TK.P.FixNVR $TK.snapSince
+    $sn = Get-TkNewestSnapshot $TK.P.FixNVR $TK.snapSince $TK.snapBefore
     if ($sn -and $TK.site.Text.Trim()) { Start-ScanUpload $sn.FullName } elseif ($sn) { Add-Out 'Tip: type the site to save this snapshot to the site page.' $cBlue }
   }
 }
@@ -784,10 +796,11 @@ function Start-Nvr([string]$name, [string]$mode, [string[]]$extra, [scriptblock]
   Add-Out 'Results show up here as it works.'
   Add-Out ''
   $since = Get-Date
+  $runsBefore = $null; try { $runsBefore = Get-TkDirStamp (Join-Path $TK.P.Toolkit 'runs') } catch { $runsBefore = @{ '?' = '?' } }   # 2.2.20 (R16 twin): run folders already there are never this run's
   try { $proc = Start-Process -FilePath $TK.psexe -ArgumentList $a -PassThru -WorkingDirectory $TK.P.Toolkit -ErrorAction Stop }
   catch { Add-Out ('Could not start: ' + $_.Exception.Message); End-Run 2 ''; return }
   $TK.run.Kind = 'console'; $TK.run.Proc = $proc; $TK.run.Mode = $(if ($isFix) { 'Fix-' + $mode } else { 'Nvr' + $mode }); $TK.run.Root = $TK.P.Toolkit; $TK.run.Nvr = $true
-  $TK.run.Since = $since; $TK.run.RunDir = $null; $TK.run.Offset = [long]0; $TK.run.Shown = 0; $TK.run.OnDone = $onDone
+  $TK.run.Since = $since; $TK.run.RunsBefore = $runsBefore; $TK.run.RunDir = $null; $TK.run.Offset = [long]0; $TK.run.Shown = 0; $TK.run.OnDone = $onDone
 }
 # ---------------- Camera doctor (Nov 3 2026): ONE camera, why is it offline? Read-only + ONE login try ----------------
 function Do-Doctor {
@@ -806,7 +819,7 @@ function Get-TkSavedMac([string]$ip) {
 }
 function Show-Doctor($code = $null) {
   # 2.2.19 (sweep2): only the result THIS run wrote; no result / no verdict / a non-zero end is amber NOT CHECKED, never green
-  $c = Read-TkRunResult (Join-Path $TK.P.Toolkit 'logs\doctor-last.json') $TK.lastRunStarted
+  $c = Read-TkRunResult (Join-Path $TK.P.Toolkit 'logs\doctor-last.json') $TK.lastRunStarted $TK.lastRunId
   $v = Get-TkResultView 'doctor' $c $code
   Add-OutTop @($v.text) (Get-TkToneColor $v.tone)
   if ($c) { Show-Fixes @($c.fixes) }
@@ -861,7 +874,7 @@ function Do-SiteCheck {
 }
 function Show-SiteCheck($code = $null) {
   # 2.2.19 (sweep2, class C): only the check THIS run wrote counts; none (tool stopped, file damaged, an older file) = NOT CHECKED
-  $c = Read-TkRunResult (Join-Path $TK.P.Toolkit 'logs\check-site-last.json') $TK.lastRunStarted
+  $c = Read-TkRunResult (Join-Path $TK.P.Toolkit 'logs\check-site-last.json') $TK.lastRunStarted $TK.lastRunId
   if (-not $c) { Add-OutTop @('CHECK THIS SITE: NOT CHECKED - no result came back from this check' + $(if ($null -ne $code) { ' (code ' + $code + ')' } else { '' }) + '. This is not an all-clear.') $cWarn; return }
   $red = @($c.lines | Where-Object { $_.k -eq 'red' } | ForEach-Object { [string]$_.t })
   # 1.6.1: "not checked" parts (login refused / skipped, unreadable clock) are amber and the result is never "all OK"
@@ -929,7 +942,7 @@ function Do-FixFailed([string]$key) {
 }
 function Show-FixDone($code = $null) {
   # 2.2.19 (sweep2, class C/F): the PREVIOUS fix's "ok" is never shown for this run; green needs ok AND the tool's code 0
-  $j = Read-TkRunResult (Join-Path $TK.P.Toolkit 'logs\fix-last.json') $TK.lastRunStarted
+  $j = Read-TkRunResult (Join-Path $TK.P.Toolkit 'logs\fix-last.json') $TK.lastRunStarted $TK.lastRunId
   $v = Get-TkResultView 'fix' $j $code
   Add-OutTop @($v.text) (Get-TkToneColor $v.tone)
 }

@@ -491,7 +491,7 @@ Check ([IO.File]::ReadAllText((Join-Path $tk61 'A.ps1')) -eq 'old A' -and -not (
 Check (([IO.File]::ReadAllText((Join-Path $tk61 'version.json'))) -match '2\.2\.2' -and -not (Test-Path (Join-Path $P61.Previous 'update-pending.json')) -and $m61 -match 'put back') 'version.json is the old one, the journal is cleared, and the window is told'
 Eq (Repair-TkInterruptedUpdate $tk61) '' 'no journal: nothing to do'
 $tcs = Read-Src 'Toolkit/ToolkitCore.ps1'
-Check ($tcs.IndexOf("Save-TkJson ([ordered]@{ prev = `$prev; from = `$old") -lt $tcs.IndexOf('$done.Add([string]$f.path)') -and $tcs -match "Remove-Item -LiteralPath \`$journal -Force -ErrorAction SilentlyContinue\r?\n  \} catch") 'Install-TkUpdate writes the journal before the first copy and clears it only at the end'
+Check ($tcs.IndexOf("Save-TkJson ([ordered]@{ prev = `$prev; from = `$old") -lt $tcs.IndexOf('$done.Add([string]$f.path)') -and $tcs -match "Remove-Item -LiteralPath \`$journal -Force -ErrorAction Stop\r?\n\s+if \(Test-Path -LiteralPath \`$journal\)") 'Install-TkUpdate writes the journal before the first copy and clears it only at the end (2.2.20 R19: the clear is checked, not SilentlyContinue)'
 #@@BLOCKS@@
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

@@ -72,7 +72,8 @@ if (Test-Path $box) {
     if (-not $key) { continue }
     $b = @{}; foreach ($p in $o.PSObject.Properties) { $b[$p.Name] = $p.Value }; $b.key = $key
     $r0 = Send-CvBody $b
-    if ($r0 -and $r0.ok) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue; Write-Output ('Sent the list that was waiting for ' + [string]$o.site + '.') }
+    # 2.2.20 (class A): the waiting copy is removed and checked gone; one that stays is said (it would be sent again next time)
+    if ($r0 -and $r0.ok) { try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop } catch {}; if (Test-Path -LiteralPath $f.FullName) { Write-Output ('Sent the list that was waiting for ' + [string]$o.site + ', but its waiting copy could not be removed (it is sent again next time).') } else { Write-Output ('Sent the list that was waiting for ' + [string]$o.site + '.') } }
     elseif ($r0 -and -not $r0.ok -and $r0.msg -notmatch '(?i)busy|too many') { Set-SuQuarantined $f.FullName ('the site page refused it for ' + [string]$o.site + ': ' + [string]$r0.msg) 'refused' }
   }
 }
@@ -90,7 +91,8 @@ if ($retry) {
   # keep ONLY the newest list per site (no pile-up); the key is never written
   New-Item -ItemType Directory -Force -Path $box | Out-Null
   $kept = $false
-  try { Write-SuFileAtomic (Pending-Path $Site) ($body | ConvertTo-Json -Depth 5 -Compress); $kept = $true } catch { $kept = $false }
+  # 2.2.20 (class A): "kept to send later" only when the waiting copy reads back as this site's list
+  try { Write-SuFileAtomic (Pending-Path $Site) ($body | ConvertTo-Json -Depth 5 -Compress); $kb = Get-Content -LiteralPath (Pending-Path $Site) -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop; $kept = ([string]$kb.op -eq 'scanPush' -and [string]$kb.site -eq $Site -and @($kb.devices).Count -eq @($devs).Count) } catch { $kept = $false }
   if ($kept) { Remove-OlderPendingSite $Site (Pending-Path $Site) }
   else { Write-Output ('!! This list could NOT be saved to send later (the disk may be full). Any list that was already waiting for ' + $Site + ' is kept. Free some space and run it again.') }
 }
@@ -99,6 +101,8 @@ Say-Lines $lines
 try {
   $logDir = Join-Path $here 'logs'; New-Item -ItemType Directory -Force -Path $logDir | Out-Null
   $keep = [ordered]@{ at = (Get-Date -Format 's'); site = $Site; snapshot = [bool]$Snapshot; sent = [bool]$r; answer = $r; lines = @($lines | ForEach-Object { $_.t }); red = @($lines | Where-Object { $_.k -eq 'red' } | ForEach-Object { $_.t }) }
-  ($keep | ConvertTo-Json -Depth 6) | Set-Content -Path $lastFile -Encoding UTF8
-} catch {}
+  # 2.2.20 (Codex 2.2.19 R16, class A/D): saved with this run's id (WIREIT_RUN_ID from the Toolkit window) and read back; a result that
+  # could not be saved is said - the window then shows NOT CHECKED, never the previous run's result
+  Save-TkRunResult $keep $lastFile
+} catch { Write-Output ('!! The result of this save could not be written on this PC (' + $_.Exception.Message + '). Check the site page before you trust it.') }
 if ($r -and $r.ok) { exit 0 } else { exit 4 }

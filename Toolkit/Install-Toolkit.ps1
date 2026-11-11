@@ -47,7 +47,7 @@ if ((Resolve-Path $here).Path.TrimEnd('\') -ne (Resolve-Path $tk).Path.TrimEnd('
 # too, so the Toolkit knows its own version (2.2.1 read 0.0.0 and the first start "updated" it back to 2.0.4)
 $rootVj = Join-Path (Split-Path -Parent $here) 'version.json'
 if (-not (Test-Path -LiteralPath (Join-Path $here 'version.json')) -and (Test-Path -LiteralPath $rootVj)) {
-  try { $mv = Get-Content -LiteralPath $rootVj -Raw | ConvertFrom-Json; ([ordered]@{ version = [string]$mv.version; released = [string]$mv.released; commit = [string]$mv.commit; installed = (Get-Date -Format 's'); from = 'repository copy' } | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $tk 'version.json') -Encoding UTF8; 'Version ' + $mv.version + ' (from the repository''s version.json)' } catch { 'Could not read ' + $rootVj + ': ' + $_.Exception.Message }
+  try { $mv = Get-Content -LiteralPath $rootVj -Raw | ConvertFrom-Json; ([ordered]@{ version = [string]$mv.version; released = [string]$mv.released; commit = [string]$mv.commit; installed = (Get-Date -Format 's'); from = 'repository copy' } | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $tk 'version.json') -Encoding UTF8; $vjBack = Get-Content -LiteralPath (Join-Path $tk 'version.json') -Raw | ConvertFrom-Json; if ([string]$vjBack.version -ne [string]$mv.version) { throw 'it does not read back' }; 'Version ' + $mv.version + ' (from the repository''s version.json)' } catch { 'Could not read ' + $rootVj + ': ' + $_.Exception.Message }
 }
 # bundled tool folders (only when they came along); config.json of an existing tool is never replaced
 foreach ($t in 'NetCheck', 'FixNVR', 'CamReset') {
@@ -68,6 +68,16 @@ foreach ($t in 'NetCheck', 'FixNVR', 'CamReset') {
 $notThere = @($files | Where-Object { $optional -notcontains $_ -and -not (Test-Path -LiteralPath (Join-Path $tk $_)) })
 if ($notThere.Count) { 'INSTALL NOT COMPLETE: these files did not get into ' + $tk + ': ' + ($notThere -join ', '); exit 4 }
 Get-ChildItem $Root -Recurse -Include *.ps1, *.cmd -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
+# 2.2.20 (R20 twin): the shortcut file is read back (exists, target as written) before "Shortcut:" is said; otherwise a WARNING line
+function Write-TkShortcutResult([string]$path, [string]$target, [string]$argLike) {
+  $why = ''
+  try {
+    if (-not (Test-Path -LiteralPath $path)) { $why = 'the file is not there' }
+    else { $chk = $sh.CreateShortcut($path); if ([string]$chk.TargetPath -ne $target) { $why = 'it does not point at ' + $target } elseif ($argLike -and [string]$chk.Arguments -notlike ('*' + $argLike + '*')) { $why = 'it does not start ' + $argLike } }
+  } catch { $why = $_.Exception.Message }
+  if ($why) { return ('WARNING: the shortcut ' + $path + ' could not be checked after saving (' + $why + ') - make it again by running this installer') }
+  return ('Shortcut: ' + $path)
+}
 if (-not $NoShortcut) {
   $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
   $sh = New-Object -ComObject WScript.Shell
@@ -81,12 +91,13 @@ if (-not $NoShortcut) {
     $lnk.Arguments = '-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "' + (Join-Path $tk 'WireItToolkit.ps1') + '"'
     $lnk.WorkingDirectory = $tk; $lnk.WindowStyle = 7; $lnk.Description = 'WireIt Toolkit - find cameras, fix NVRs, reset passwords'
     $lnk.IconLocation = (Join-Path $tk 'wireit.ico') + ',0'
-    $lnk.Save(); 'Shortcut: ' + (Join-Path $d 'WireIt Toolkit.lnk')
+    # 2.2.20 (Codex 2.2.19 R20 twin, class A): a shortcut is reported only when it reads back from disk pointing at the Toolkit
+    $lnk.Save(); Write-TkShortcutResult (Join-Path $d 'WireIt Toolkit.lnk') $ps 'WireItToolkit.ps1'
     # 2.2.11: "Restore Network" on its own (this PC's network back to normal), one double-click, works without the Toolkit window
     $l2 = $sh.CreateShortcut((Join-Path $d 'Restore Network.lnk'))
     $l2.TargetPath = (Join-Path $tk 'Restore Network.cmd'); $l2.WorkingDirectory = $tk; $l2.Description = 'WireIt: this PC''s network back to normal (DHCP, extra addresses off)'
     $l2.IconLocation = (Join-Path $env:SystemRoot 'System32\shell32.dll') + ',18'
-    $l2.Save(); 'Shortcut: ' + (Join-Path $d 'Restore Network.lnk')
+    $l2.Save(); Write-TkShortcutResult (Join-Path $d 'Restore Network.lnk') (Join-Path $tk 'Restore Network.cmd') ''
   }
 }
 $adm = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -101,7 +112,8 @@ if (-not (Get-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue
     foreach ($p in @((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'), (Join-Path $env:SystemRoot 'SysWOW64\WindowsPowerShell\v1.0\powershell.exe'))) {
       if (Test-Path $p) { New-NetFirewallRule -DisplayName $fwName -Direction Inbound -Program $p -Protocol UDP -RemoteAddress LocalSubnet -Action Allow -Profile Any | Out-Null }
     }
-    'Added the camera-discovery firewall rules.'
+    # 2.2.20 (R20 twin): said only when the rule reads back from Windows
+    if (Get-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue) { 'Added the camera-discovery firewall rules.' } else { 'WARNING: the camera-discovery firewall rules could not be read back after adding them - Find cameras may ask about the firewall. Run this installer again as administrator.' }
   }
 }
 # HiTools Delivery can be in either Program Files folder (the Office PC has the 64-bit one): look in both

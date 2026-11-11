@@ -197,6 +197,8 @@ function hikReplyGet_(req) {
   if (!/^[A-Za-z0-9][A-Za-z0-9/._-]{3,127}$/.test(serial) || (ss && !/^[A-Za-z0-9-]{4,64}$/.test(ss))) return { ok: false, msg: 'Bad serial.' };
   // 2.2.3 (Codex #51): only a reply that came AFTER this box's request file was made (and inside its 48 hours) answers it
   var nowMs = Date.now(), since = Date.parse(String(req.exportedAt || ''));
+  // 2.2.20 (class C): a request time that is SENT but cannot be read is not "no time" (that would widen it to the whole 48 hours): refused
+  if (req.exportedAt && isNaN(since)) return { ok: false, msg: 'Bad request time - NOT CHECKED. Make the request file again on the laptop.' };
   if (isNaN(since)) since = nowMs - HR.VALID_H * 3600000;
   since = Math.max(since - 10 * 60000, nowMs - HR.VALID_H * 3600000);   // 10 min of clock skew between the PC and Google
   var lock = LockService.getScriptLock(); if (!lock.tryLock(15000)) return { ok: false, msg: 'Busy - try again in a minute.' };
