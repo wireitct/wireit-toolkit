@@ -90,7 +90,8 @@ function Ad-View($x) { return @{ dhcp = $x.dhcp; act = @($x.active | ForEach-Obj
 function Out-Result($h) { 'JSON=' + ($h | ConvertTo-Json -Compress -Depth 6) }
 # Fix this site's record: a Toolkit alias 192.168.1.250 on ifIndex 12, the adapter was FIXED (dhcp false) before it
 function Write-FsJournal([int]$ix, [bool]$dhcpBefore, [string]$ip) {
-  $j = [ordered]@{ version = 2; written = (Get-Date -Format 's'); before = [ordered]@{ ifIndex = $ix; name = 'Ethernet'; dhcp = $dhcpBefore; coexist = 'disabled'; addrs = $(if ($dhcpBefore) { @() } else { @([ordered]@{ ip = '10.1.10.2'; prefix = 24 }) }); gw = @() }   # 2.2.20: a fixed adapter's record lists its own address, as Fix this site writes it (a fixed setup with no address is damaged); coexistChanged = $false; temps = @([ordered]@{ ip = $ip; prefix = 24; ifIndex = $ix }) }
+  # 2.2.20: a fixed adapter's record lists its own address, as Fix this site writes it (a fixed setup with no address is damaged)
+  $j = [ordered]@{ version = 2; written = (Get-Date -Format 's'); before = [ordered]@{ ifIndex = $ix; name = 'Ethernet'; dhcp = $dhcpBefore; coexist = 'disabled'; addrs = $(if ($dhcpBefore) { @() } else { @([ordered]@{ ip = '10.1.10.2'; prefix = 24 }) }); gw = @() }; coexistChanged = $false; temps = @([ordered]@{ ip = $ip; prefix = 24; ifIndex = $ix }) }
   [IO.File]::WriteAllText((Join-Path $D 'Toolkit\fixsite-runs\_state\fixsite-temp-ips.json'), (ConvertTo-Json -Depth 5 -InputObject $j))
 }
 '@
