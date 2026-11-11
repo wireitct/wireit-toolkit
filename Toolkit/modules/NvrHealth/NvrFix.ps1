@@ -149,6 +149,48 @@ function Get-FixExpectWhy($id, [string]$expect, [string]$ip) {
   if ($have -ne $want) { return ('a DIFFERENT device answers at ' + $ip + ' (MAC ' + [string]$id.mac + '; the last scan saved ' + $expect + ')') }
   return ''
 }
+# 2.2.20 (Codex 2.2.19 R11, class B): does a device-information answer that was ALREADY READ belong to the device saved in $first?
+# Every identity value saved the first time (serial, MAC) must be in it again, non-empty and the same; a missing value is a
+# MISMATCH, never a pass. @{ ok; why }
+function Test-NhIdMatch($first, $info) {
+  if (-not $first -or -not $first.ok) { return @{ ok = $false; why = 'which device this is was never read' } }
+  if (-not $info -or $info.login -ne 'ok') { return @{ ok = $false; why = 'its device information could not be read' } }
+  $sn = ([string]$info.serial).Trim(); $mc = $(if ($info.ContainsKey('mac')) { ([string]$info.mac).Trim() } else { '' })
+  if ($first.serial -and $sn -cne $first.serial) { return @{ ok = $false; why = ('a different device answers now (serial ' + $(if ($sn) { $sn } else { 'not given' }) + ', it was ' + $first.serial + ')') } }
+  $mk = ConvertTo-FixMacKey $mc
+  if ($first.mac -and (-not $mk -or $mk -ne (ConvertTo-FixMacKey $first.mac))) { return @{ ok = $false; why = ('a different device answers now (MAC ' + $(if ($mc) { $mc } else { 'not given' }) + ', it was ' + $first.mac + ')') } }
+  return @{ ok = $true; why = '' }
+}
+# 2.2.20 (Codex 2.2.19 R10/R12, classes C + F): what a Hikvision write answer really says. 'ok' = a <ResponseStatus> with statusCode
+# 1 or 7; 'refused' = an EXPLICIT no (a ResponseStatus with another statusCode, or an HTTP 4xx answer); 'unknown' = everything else
+# (no answer, a 5xx, a 200 that is not a ResponseStatus: empty, HTML, a login page). Only 'refused' may be treated as "not done".
+function Get-HikWriteAnswer($w) {
+  $code = [int]$w.code
+  if ($code -ge 400 -and $code -lt 500) { return 'refused' }
+  if ($code -ne 200) { return 'unknown' }
+  $x = Xml ([string]$w.body)
+  if (-not $x -or -not $x.DocumentElement -or $x.DocumentElement.LocalName -notmatch '(?i)^ResponseStatus$') { return 'unknown' }
+  $sc = XText $x 'statusCode'
+  if ($sc -eq '1' -or $sc -eq '7') { return 'ok' }
+  if ($sc -match '^\d+$') { return 'refused' }
+  return 'unknown'
+}
+# 2.2.20 (Codex 2.2.19 R12, class C): a login with $cred is proven ONLY by the device's own DeviceInfo document (root element
+# DeviceInfo) from the SAME device (Test-NhIdMatch). An HTTP 200 login / error / HTML page is NOT a login. A 401 / 403 is an
+# explicit "wrong password". @{ state = 'ok' | 'refused' | 'other' | 'unknown'; code; why }. Read straight through Http with the
+# given login, so a refused try does not block the other password's try in this run.
+function Test-NhHikLoginAs($t, [pscredential]$cred, $first) {
+  $r = Http -Ip $t.ip -Path '/ISAPI/System/deviceInfo' -Credential $cred -Port $t.port
+  $code = [int]$r.code
+  if ($code -eq 401 -or $code -eq 403) { return @{ state = 'refused'; code = $code; why = ('the login was refused, answer ' + $code) } }
+  if ($code -ne 200) { return @{ state = 'unknown'; code = $code; why = $(if ($code -le 0) { 'no answer' } else { 'answer ' + $code }) } }
+  $x = Xml ([string]$r.body)
+  if (-not $x -or -not $x.DocumentElement -or $x.DocumentElement.LocalName -notmatch '(?i)^DeviceInfo$') { return @{ state = 'unknown'; code = $code; why = 'the answer was not the device''s information (an error or login page)' } }
+  $info = @{ login = 'ok'; serial = (XText $x 'serialNumber'); mac = ((XText $x 'macAddress').ToUpper().Replace('-', ':')) }
+  $m = Test-NhIdMatch $first $info
+  if (-not $m.ok) { return @{ state = 'other'; code = $code; why = $m.why } }
+  return @{ state = 'ok'; code = $code; why = '' }
+}
 function Invoke-NvrFix {
   <#
   .SYNOPSIS One fix, after a check failed. Plan -> backup -> typed YES -> change -> verify. UNTESTED ON REAL GEAR.
@@ -208,8 +250,14 @@ function Invoke-NvrFix {
         $same = Test-NhSameDevice $t $id0
         if (-not $same.ok) { return (& $done $false ('Recording NOT changed: ' + $same.why + '. Nothing changed.')) }
         $res.ran = $true
-        $skipped = @()
+        $skipped = @(); $stopWhy = ''; $notWritten = @()
         foreach ($o in $off) {
+          # 2.2.20 (Codex 2.2.19 R21, class B): the recorder is identified AGAIN right before each track is read and right before it is
+          # written - the one check after YES does not cover the writes that follow. A different / unreadable recorder = STOP: no
+          # more writes, the rest is reported NOT done.
+          if ($stopWhy) { $notWritten += $o; continue }
+          $sameR = Test-NhSameDevice $t $id0
+          if (-not $sameR.ok) { $stopWhy = $sameR.why; Log ('track ' + $o.id + ': STOP, the recorder is not the same one (' + $sameR.why + ') - not written'); $notWritten += $o; continue }
           $one = Http -Ip $Ip -Path ('/ISAPI/ContentMgmt/record/tracks/' + $o.id) -Credential $t.cred -Port $t.port
           # 2.2.13: never PUT back an answer that is not this camera's own track (an error page / another track)
           # 2.2.15: and only when it still shows the same off state that was read in the list (else: not written, reported)
@@ -222,10 +270,21 @@ function Invoke-NvrFix {
           $xml = [string]$one.body
           if ($o.enabled -eq $false) { $xml = $xml -replace '<Enable>\s*(?i:false)\s*</Enable>', '<Enable>true</Enable>' }
           if ($o.hasSchedule -eq $false) { $xml = $xml -replace '<Record>\s*(?i:false)\s*</Record>', '<Record>true</Record>' }
+          $sameW = Test-NhSameDevice $t $id0
+          if (-not $sameW.ok) { $stopWhy = $sameW.why; Log ('track ' + $o.id + ': STOP, the recorder is not the same one right before the write (' + $sameW.why + ') - not written'); $notWritten += $o; continue }
           $w = Http -Ip $Ip -Method 'PUT' -Path ('/ISAPI/ContentMgmt/record/tracks/' + $o.id) -Body $xml -Credential $t.cred -Port $t.port
           if (Hik-Ok $w) { $res.changed += ('camera ' + [math]::Floor($o.id / 100)) }
         }
-        $ra = Hik-ReadTracks $t
+        if ($stopWhy) {
+          $doneW = $(if ($res.changed.Count) { ($res.changed -join ', ') } else { 'nothing' })
+          $notW = (@($notWritten | ForEach-Object { 'camera ' + [math]::Floor($_.id / 100) }) -join ', ')
+          $res.history = 'Recording turn-on STOPPED on ' + $Ip + ' (' + $stopWhy + ') - sent: ' + $doneW + '; NOT done: ' + $notW + ' - NOT confirmed'
+          return (& $done $false ('STOPPED - NOT confirmed: ' + $stopWhy + ', so nothing more was written. Sent before it stopped: ' + $doneW + '. NOT done: ' + $notW + '. Check which recorder has the address ' + $Ip + ', then run the Recording check again.'))
+        }
+        # 2.2.20 (R21): the read that certifies the result must come from the same recorder - checked right before AND right after it
+        $sameV = Test-NhSameDevice $t $id0
+        $ra = $(if ($sameV.ok) { Hik-ReadTracks $t } else { @{ ok = $false; map = @{}; why = ('the recorder is not the same one (' + $sameV.why + ')'); body = '' } })
+        if ($ra.ok) { $sameV2 = Test-NhSameDevice $t $id0; if (-not $sameV2.ok) { $ra = @{ ok = $false; map = @{}; why = ('the recorder is not the same one after the read-back (' + $sameV2.why + ')'); body = '' } } }
         if (-not $ra.ok) {
           $res.history = 'Recording turn-on sent for: ' + ($res.changed -join ', ') + ' (' + $Ip + ') - NOT confirmed (read-back failed)'
           return (& $done $false ('Sent to the recorder, but its recording settings could not be read back (' + $ra.why + '), so it is NOT confirmed. Run the Recording check again.'))
@@ -274,8 +333,13 @@ function Invoke-NvrFix {
         $res.backup = $bk2
         $res.ran = $true
         foreach ($o in $off) {
+          # 2.2.20 (Codex 2.2.19 R21 twin, class B): DW's camera list is read again right before EACH camera's write (the read after
+          # YES covers only the first one): the same camera (same DW id, address and MAC when DW gave one) and still OFF, else not written
           $c2 = @($rd2.devs | Where-Object { $_.id -eq $o.id }) | Select-Object -First 1
-          if (-not $c2 -or $c2.ip -ne $o.ip -or $c2.scheduled -ne $false) { Log ('DW camera ' + $o.name + ': changed while waiting for YES (or gone) - not written'); continue }
+          if (-not $c2 -or $c2.ip -ne $o.ip -or ($o.mac -and $c2.mac -ne $o.mac) -or $c2.scheduled -ne $false) { Log ('DW camera ' + $o.name + ': changed while waiting for YES (or gone) - not written'); continue }
+          $rdW = Dw-ReadDevices $t
+          $cW = $(if ($rdW.ok) { @($rdW.devs | Where-Object { $_.id -eq $o.id }) | Select-Object -First 1 } else { $null })
+          if (-not $cW -or $cW.ip -ne $o.ip -or ($o.mac -and $cW.mac -ne $o.mac) -or $cW.scheduled -ne $false) { Log ('DW camera ' + $o.name + ': ' + $(if (-not $rdW.ok) { 'the camera list could not be read right before its write (' + $rdW.why + ')' } else { 'changed right before its write (or gone)' }) + ' - not written'); continue }
           $w = Dw-Send $t 'PATCH' ('/rest/v3/devices/' + [uri]::EscapeDataString($o.id)) @{ schedule = @{ isEnabled = $true } }; if ($w.code -eq 200) { $res.changed += $o.name }
         }
         $ra = Dw-ReadDevices $t
@@ -340,13 +404,22 @@ function Invoke-NvrFix {
       $w = Http -Ip $Ip -Method 'PUT' -Path $path -Body $(if ($v -eq 'Uniview') { '{}' } else { '' }) -ContentType $(if ($v -eq 'Uniview') { 'application/json' } else { 'application/xml' }) -Credential $t.cred -Port $t.port -Timeout 8
       # 2.2.12 (Codex P1-10): an HTTP 200 is not a yes. Hikvision answers <statusCode> (1 = OK, 7 = reboot needed), Uniview
       # answers Response.ResponseCode (0 = OK). An explicit no is a refusal: nothing restarted, and the restart limit is not used up.
-      $refused = ''
-      if ($w.code -eq 200) {
-        if ($v -eq 'Uniview') {
-          $rc = $null; try { $rj = ([string]$w.body) | ConvertFrom-Json; if ($rj -and $rj.Response -and $null -ne $rj.Response.ResponseCode) { $rc = [string]$rj.Response.ResponseCode } } catch {}
-          if ($null -eq $rc) { $refused = 'the camera''s answer could not be read' } elseif ($rc -ne '0') { $refused = 'camera answer code ' + $rc }
-        } elseif (-not (Hik-Ok $w)) { $refused = 'camera answer ' + (XText (Xml $w.body) 'statusCode') + ' ' + (XText (Xml $w.body) 'statusString') }
-      } elseif ($w.code -gt 0) { $refused = 'answer ' + $w.code }
+      # 2.2.20 (Codex 2.2.19 R10, class F): ONLY an explicit refusal takes the reservation back: Uniview Response.ResponseCode other than
+      # 0, a Hikvision <ResponseStatus> statusCode other than 1 / 7, or an HTTP 4xx answer. An answer that cannot be read (a 200 with no
+      # or an unreadable code, an HTML page, a 5xx, no answer at all) is UNKNOWN - it can arrive after the camera accepted the reboot:
+      # the reservation stays, the outcome is checked below and, unless proven, the result is NOT CONFIRMED (never "NOT restarted").
+      $refused = ''; $unclear = ''
+      if ($w.code -eq 200 -and $v -eq 'Uniview') {
+        $rc = $null; try { $rj = ([string]$w.body) | ConvertFrom-Json -ErrorAction Stop; if ($rj -and $rj.PSObject.Properties['Response'] -and $rj.Response -and $rj.Response.PSObject.Properties['ResponseCode'] -and $null -ne $rj.Response.ResponseCode) { $rc = ([string]$rj.Response.ResponseCode).Trim() } } catch {}
+        if ($null -eq $rc -or $rc -notmatch '^-?\d+$') { $unclear = 'the camera''s answer could not be read' } elseif ($rc -ne '0') { $refused = 'camera answer code ' + $rc }
+      } elseif ($v -eq 'Uniview') {
+        if ($w.code -ge 400 -and $w.code -lt 500) { $refused = 'answer ' + $w.code } elseif ($w.code -gt 0) { $unclear = 'answer ' + $w.code }
+      } else {
+        $hwa = Get-HikWriteAnswer $w
+        if ($hwa -eq 'refused') { $refused = $(if ($w.code -eq 200) { 'camera answer ' + (XText (Xml $w.body) 'statusCode') + ' ' + (XText (Xml $w.body) 'statusString') } else { 'answer ' + $w.code }) }
+        elseif ($hwa -eq 'unknown' -and $w.code -gt 0) { $unclear = $(if ($w.code -eq 200) { 'the camera''s answer could not be read' } else { 'answer ' + $w.code }) }
+      }
+      if ($unclear) { Log ('restart: the answer is UNCLEAR (' + $unclear + ') - the reservation stays, the outcome is checked') }
       if ($refused) {
         # an explicit NO: nothing restarted, so the reservation is taken back (if that fails it stays - one restart counted too many)
         $rel = Fix-LimitRelease $StateFile $Ip $now
@@ -355,7 +428,9 @@ function Invoke-NvrFix {
       }
       # no answer at all (code 0) or an accepted request: the reservation stays - the outcome is checked below and, if unknown,
       # the record still counts it, so no other window restarts this camera again within the hour
-      $res.changed += 'restart asked'; Say ('Restart accepted by the camera... waiting up to ' + $WaitSec + ' s: it must go offline and come back.')
+      $res.changed += 'restart asked'
+      if ($unclear -or [int]$w.code -le 0) { Say ('The camera''s answer to the restart was ' + $(if ($unclear) { 'unclear (' + $unclear + ')' } else { 'lost (no answer)' }) + ', so the restart stays counted... waiting up to ' + $WaitSec + ' s: it must go offline and come back.') }
+      else { Say ('Restart accepted by the camera... waiting up to ' + $WaitSec + ' s: it must go offline and come back.') }
       # 2.2.12 (Codex P1-10): an accepted request is not proof. "Restarted" needs the camera to go away and answer again.
       # 2.2.13 (Codex 2.2.12 #8): an HTTP error answer (500, 401, ...) means the camera is UP and answering - it is not "went down".
       # Only no answer at all (no connection / timeout, code 0) counts as offline. Where the camera gives its own uptime
@@ -380,9 +455,22 @@ function Invoke-NvrFix {
       } while (-not $back -and (Get-Date) -lt $end)
       if ($httpErr) { Log ('restart wait: ' + $httpErr + ' error answer(s) from the camera (it was answering, so not counted as offline)') }
       $confirmed = $(if ($null -ne $upBefore) { $upReset } else { $back })
+      # 2.2.20 (Codex 2.2.19 R11, class B): "it came back" is only about THIS camera when the device answering afterwards is the same one
+      # (serial / MAC as saved before the restart). A different or unreadable device = NOT confirmed; the restart stays counted.
+      if ($confirmed -or $back) {
+        $sameB = Test-NhSameDevice $t $id0
+        if (-not $sameB.ok) {
+          $res.history = 'Camera ' + $Ip + ' restart asked - NOT confirmed (the device answering afterwards is not proven to be the same camera: ' + $sameB.why + ')'
+          return (& $done $false ('Something answered again at ' + $Ip + ', but it is NOT proven to be the same camera (' + $sameB.why + '), so the restart is NOT confirmed. It stays counted (1 per hour, 2 per day). Check which device has this address.'))
+        }
+      }
       if ($confirmed) { $res.changed = @('restarted'); $res.history = 'Camera ' + $Ip + ' restarted, back online' + $(if ($upReset) { ' (its uptime started again)' } else { '' }); return (& $done $true 'The camera restarted and is back. Run the Recording check to confirm it records again.') }
       if ($back -and $null -ne $upBefore) { $res.history = 'Camera ' + $Ip + ' restart asked - NOT confirmed (it dropped off but its uptime kept counting)'; return (& $done $false 'The camera dropped off the network and came back, but its own uptime kept counting, so it did NOT restart. It is NOT confirmed. Wait 5 minutes and check it; if it is still stuck, restart its switch port (PoE).') }
       if ($wentDown) { $res.history = 'Camera ' + $Ip + ' restarted, NOT back yet'; return (& $done $false ('The camera went offline for the restart but is not back after ' + $WaitSec + ' s. Restart its switch port (PoE) or go look at it.')) }
+      if ($unclear -or [int]$w.code -le 0) {
+        $res.history = 'Camera ' + $Ip + ' restart asked - NOT CONFIRMED (its answer was ' + $(if ($unclear) { 'unclear: ' + $unclear } else { 'lost' }) + '; it never went offline; the restart stays counted)'
+        return (& $done $false ('NOT CONFIRMED: the camera''s answer to the restart was ' + $(if ($unclear) { 'unclear (' + $unclear + ')' } else { 'lost' }) + ' and it did not go offline in ' + $WaitSec + ' s, so it is NOT known whether it restarted. The restart stays counted (1 per hour, 2 per day). Wait 5 minutes and check it; if it is still stuck, restart its switch port (PoE).'))
+      }
       $res.history = 'Camera ' + $Ip + ' restart asked - NOT confirmed (it never went offline' + $(if ($httpErr) { '; it answered with errors' } else { '' }) + ')'
       return (& $done $false ('The camera said OK but never went offline in ' + $WaitSec + ' s' + $(if ($httpErr) { ' (it answered with errors, which is not a restart)' } else { '' }) + ', so it is NOT confirmed that it restarted. Wait 5 minutes and check it; if it is still stuck, restart its switch port (PoE).'))
     }
@@ -454,22 +542,31 @@ function Invoke-NvrFix {
       $bk2 = Fix-Save $BackupDir 'nvr-channels-at-write.xml' $all2.body
       if (-not $bk2) { return (& $done $false (Fix-SaveFailed 'the NVR channel list (read again after your YES)')) }
       $res.backup = $bk2
+      # 2.2.20 (class B sweep): the reads above took time - the NVR is identified once more immediately before the write
+      $sameP = Test-NhSameDevice $t $id0
+      if (-not $sameP.ok) { $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - NOT done (' + $sameP.why + ')'; return (& $done $false ('Nothing changed: right before the write, ' + $sameP.why + '. Check the NVR address and run it again.')) }
       $res.ran = $true
       $xml = '<?xml version="1.0" encoding="UTF-8"?><InputProxyChannel version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema"><id>' + $Channel + '</id><sourceInputPortDescriptor><proxyProtocol>HIKVISION</proxyProtocol><addressingFormatType>ipaddress</addressingFormatType><ipAddress>' + $CameraIp + '</ipAddress><managePortNo>8000</managePortNo><srcInputPort>1</srcInputPort><userName>' + (Fix-Xml $NewCredential.UserName) + '</userName><password>' + (Fix-Xml (Plain $NewCredential)) + '</password><streamType>auto</streamType></sourceInputPortDescriptor></InputProxyChannel>'
       $w = Http -Ip $Ip -Method 'PUT' -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $Channel) -Body $xml -Credential $t.cred -Port $t.port -NoLogBody
       $xml = $null
-      if (-not (Hik-Ok $w)) { $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - refused by the NVR'; return (& $done $false ('The NVR refused it (answer ' + $w.code + ').')) }
-      $res.changed += ('channel ' + $Channel + ' = ' + $CameraIp)
+      # 2.2.20 (class C/F twin of Codex 2.2.19 R10): only an EXPLICIT no is "refused". No answer, a 5xx or a 200 that is not a
+      # ResponseStatus is UNKNOWN - the NVR may have taken it - so the channel is read back below (2.2.19 said "refused" for those).
+      $wa = Get-HikWriteAnswer $w
+      if ($wa -eq 'refused') { $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - refused by the NVR'; return (& $done $false ('The NVR refused it (answer ' + $w.code + $(if ($w.code -eq 200) { ' ' + (XText (Xml $w.body) 'statusCode') + ' ' + (XText (Xml $w.body) 'statusString') } else { '' }) + ').')) }
+      $res.changed += $(if ($wa -eq 'ok') { 'channel ' + $Channel + ' = ' + $CameraIp } else { 'channel ' + $Channel + ' = ' + $CameraIp + ' (answer unclear)' })
       # 2.2.13 (Codex 2.2.12 #6): "online" alone is not proof: the channel must be READ BACK (a real list) with the camera
       # address we asked for. An NVR that says OK but keeps the old camera (which then comes back online) is NOT done.
-      $rb = Hik-ReadChannel $t $Channel
+      # 2.2.20 (Codex 2.2.19 R21 twin, class B): the read that certifies it must come from the SAME NVR - checked before and after it
+      $sameV = Test-NhSameDevice $t $id0
+      $rb = $(if ($sameV.ok) { Hik-ReadChannel $t $Channel } else { @{ ok = $false; found = $false; ip = ''; online = $null; statusFound = $false; why = ('the NVR answering is not the same one (' + $sameV.why + ')') } })
+      if ($rb.ok) { $sameV2 = Test-NhSameDevice $t $id0; if (-not $sameV2.ok) { $rb = @{ ok = $false; found = $false; ip = ''; online = $null; statusFound = $false; why = ('the NVR answering is not the same one after the read-back (' + $sameV2.why + ')') } } }
       if (-not $rb.ok) {
         $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - sent, NOT confirmed (' + $rb.why + ')'
         return (& $done $false ('Sent to the NVR, but ' + $rb.why + ', so it is NOT confirmed that ' + $CameraIp + ' is on channel ' + $Channel + '. Run it again or check the channel in the NVR.'))
       }
       if (-not $rb.found -or $rb.ip -ne $CameraIp) {
         $res.history = 'Re-add camera ' + $CameraIp + ' to channel ' + $Channel + ' - NOT done (channel shows ' + $(if ($rb.found) { $(if ($rb.ip) { $rb.ip } else { 'no address' }) } else { 'nothing' }) + ')'
-        return (& $done $false ('The NVR said OK, but channel ' + $Channel + ' still shows ' + $(if ($rb.found) { $(if ($rb.ip) { $rb.ip } else { 'no camera address' }) } else { 'no camera' }) + ', not ' + $CameraIp + '. NOT done - check the channel in the NVR.'))
+        return (& $done $false ('The NVR ' + $(if ($wa -eq 'ok') { 'said OK' } else { 'answer was unclear (' + $w.code + ')' }) + ', but channel ' + $Channel + ' still shows ' + $(if ($rb.found) { $(if ($rb.ip) { $rb.ip } else { 'no camera address' }) } else { 'no camera' }) + ', not ' + $CameraIp + '. NOT done - check the channel in the NVR.'))
       }
       $ok = [bool]$rb.online
       $res.history = 'Camera ' + $CameraIp + ' put back on NVR channel ' + $Channel + $(if ($ok) { ', online' } else { ', not online yet' })
@@ -501,23 +598,41 @@ function Invoke-NvrFix {
       $same = Test-NhSameDevice $t $id0
       if (-not $same.ok) { return (& $done $false ('Not updated: ' + $same.why + '. Nothing changed.')) }
       $di2 = Hik-DeviceInfo $t
+      # 2.2.20 (class B sweep): this last read before the upload must ALSO be the same device (MAC / serial as saved)
+      $id2 = Test-NhIdMatch $id0 $di2
+      if ($di2.login -eq 'ok' -and -not $id2.ok) { return (& $done $false ('Not updated: right before the upload, ' + $id2.why + '. Nothing changed.')) }
       if ($di2.login -ne 'ok' -or ([string]$di2.version).Trim() -cne $fw0) { return (& $done $false ('Not updated: after your YES the device reports ' + $(if ($di2.login -ne 'ok') { 'nothing (it could not be read)' } elseif ($di2.version) { 'version ' + $di2.version } else { 'no version' }) + ', not ' + $fw0 + ' as in the plan. Nothing changed. Run it again.')) }
+      # 2.2.20 (Codex 2.2.19 R05, class D): the bytes that are sent are read ONCE, here, after the YES, and THOSE bytes are hashed: only
+      # bytes whose SHA-256 is the one approved are sent. A file replaced / edited / still downloading while the plan was shown is
+      # refused and nothing is sent (2.2.19 hashed the file before YES and read it again for the upload without comparing).
+      $fwBytes = $null
+      try { $fwBytes = [IO.File]::ReadAllBytes($File) } catch { $res.history = 'Firmware update of ' + $Ip + ' - NOT sent (the file could not be read after YES)'; return (& $done $false ('Not updated: the firmware file could not be read again after your YES (' + $_.Exception.Message + '). Nothing was sent.')) }
+      $shaF = [Security.Cryptography.SHA256]::Create()
+      try { $sentHash = ([BitConverter]::ToString($shaF.ComputeHash([byte[]]$fwBytes))).Replace('-', '') } finally { $shaF.Dispose() }
+      if (-not $fwBytes -or $fwBytes.Length -le 0 -or $sentHash -ne $Sha256.ToUpper()) {
+        $fwBytes = $null
+        $res.history = 'Firmware update of ' + $Ip + ' - NOT sent (the file changed after YES: its SHA-256 no longer matches)'
+        return (& $done $false 'Not updated: the firmware file CHANGED after you typed YES (its SHA-256 no longer matches the one you approved). Nothing was sent. Download it again from the maker''s website and start over.')
+      }
       $res.ran = $true
-      $w = Http -Ip $Ip -Method 'PUT' -Path '/ISAPI/System/updateFirmware' -BodyBytes ([IO.File]::ReadAllBytes($File)) -ContentType 'application/octet-stream' -Credential $t.cred -Port $t.port -Timeout 600
+      $w = Http -Ip $Ip -Method 'PUT' -Path '/ISAPI/System/updateFirmware' -BodyBytes $fwBytes -ContentType 'application/octet-stream' -Credential $t.cred -Port $t.port -Timeout 600
       # 2.2.15 (Codex 2.2.14 R10): NO answer (connection dropped / timed out, code 0) is not a refusal: the device may have taken
       # the file and be installing it. Read the device back; unless it already shows a new version it is SENT, NOT confirmed.
-      if ([int]$w.code -le 0) {
+      $fwBytes = $null
+      # 2.2.20 (class C/F): a 5xx answer is not a refusal either - it is handled like a lost answer (read back, NOT confirmed)
+      if ([int]$w.code -le 0 -or [int]$w.code -ge 500) {
         $res.changed += 'firmware sent (answer lost)'
         $lost = Hik-DeviceInfo $t
         # 2.2.19 (Codex 2.2.18 F07): the VERSION field, non-empty and different, on the SAME device - a date alone proves nothing
         $lostV = $(if ($lost.login -eq 'ok') { ([string]$lost.version).Trim() } else { '' })
-        $lostSame = $(if ($lost.login -eq 'ok') { (-not $id0.serial -or [string]$lost.serial -ceq $id0.serial) } else { $false })
+        # 2.2.20 (Codex 2.2.19 R11, class B): the SAME device = every identity value saved before (MAC and / or serial) read again here
+        $lostId = Test-NhIdMatch $id0 $lost; $lostSame = [bool]$lostId.ok
         if ($lostV -and $lostV -ne $fw0 -and $lostSame) {
           $res.changed = @($fw0 + ' -> ' + $lostV)
           $res.history = 'Firmware ' + $Ip + ' ' + $fw0 + ' -> ' + $lostV + ' (its answer was lost; the new version was read back)'
           return (& $done $true ('Updated: ' + $fw0 + ' -> ' + $lostV + '. The device''s answer was lost, but it now reports the new version (read back).'))
         }
-        $seen = $(if ($lost.login -eq 'ok') { 'right now it reports ' + $(if ($lostV) { 'version ' + $lostV } else { 'no version' }) + ', which is normal while it installs' } else { 'it could not be read back (it may be rebooting)' })
+        $seen = $(if ($lost.login -eq 'ok' -and -not $lostSame) { 'the device answering now is NOT proven to be the same one: ' + $lostId.why } elseif ($lost.login -eq 'ok') { 'right now it reports ' + $(if ($lostV) { 'version ' + $lostV } else { 'no version' }) + ', which is normal while it installs' } else { 'it could not be read back (it may be rebooting)' })
         $res.history = 'Firmware update of ' + $Ip + ' sent - NOT confirmed (the answer was lost; ' + $(if ($lost.login -eq 'ok') { 'read back: ' + $(if ($lostV) { $lostV } else { 'no version' }) } else { 'read-back failed' }) + ')'
         return (& $done $false ('Sent, but the device''s answer was lost, so it is NOT confirmed whether the update ran (' + $seen + '). Do NOT send it again yet: wait 10 minutes, then run the Firmware check. Only if that still shows ' + $fw0 + ' try the update again. Settings export kept: ' + $res.backup))
       }
@@ -528,14 +643,16 @@ function Invoke-NvrFix {
       # 2.2.19 (Codex 2.2.18 F07): the VERSION field alone (not version + release date), non-empty and different from the version
       # before, on the same device (same serial). 2.2.18 compared "version + date", so an empty version with the old date passed.
       $newFw = $(if ($after.login -eq 'ok') { ([string]$after.version).Trim() } else { '' })
-      $afterSame = $(if ($after.login -eq 'ok') { (-not $id0.serial -or [string]$after.serial -ceq $id0.serial) } else { $false })
+      # 2.2.20 (Codex 2.2.19 R11, class B): certified only on the SAME device: MAC when one was saved, serial when one was saved -
+      # 2.2.19 compared the serial only and accepted ANY device when no serial had been saved (MAC-only identity)
+      $afterId = Test-NhIdMatch $id0 $after; $afterSame = [bool]$afterId.ok
       $ok = [bool]($after.login -eq 'ok' -and $newFw -and $newFw -ne $fw0 -and $afterSame)
       if ($ok) {
         $res.changed += ($fw0 + ' -> ' + $newFw)
         $res.history = 'Firmware ' + $Ip + ' ' + $fw0 + ' -> ' + $newFw + ' (new version read back)'
         return (& $done $true ('Updated: ' + $fw0 + ' -> ' + $newFw + '.'))
       }
-      $seenFw = $(if ($after.login -ne 'ok') { 'read-back failed' } elseif (-not $afterSame) { 'read back from a device with a different serial' } elseif (-not $newFw) { 'read back: no version' + $(if ($after.released) { ' (only the release date ' + $after.released + ')' } else { '' }) } else { 'read back: ' + $newFw + ', unchanged' })
+      $seenFw = $(if ($after.login -ne 'ok') { 'read-back failed' } elseif (-not $afterSame) { 'read back from a device that is NOT proven to be the same one: ' + $afterId.why } elseif (-not $newFw) { 'read back: no version' + $(if ($after.released) { ' (only the release date ' + $after.released + ')' } else { '' }) } else { 'read back: ' + $newFw + ', unchanged' })
       $res.changed += 'firmware sent (not confirmed)'
       $res.history = 'Firmware update of ' + $Ip + ' sent - NOT confirmed (' + $seenFw + ')'
       return (& $done $false ('Sent, but the new version is NOT confirmed (' + $seenFw + '). Wait 10 minutes and run the Firmware check. Settings export kept: ' + $res.backup))
@@ -557,21 +674,23 @@ function Invoke-NvrFix {
         # 2.2.14 (Codex 2.2.13 F7): a lost / non-OK answer is NOT proof of a refusal - the device may have applied the new password
         # and dropped the connection. Reconcile like FixSite's Resolve-FsPwChange: try the NEW password, then the old one (one try
         # each). Only a working old password with a failing new one is "refused"; nothing working = unknown / maybe changed.
-        $nw = Http -Ip $Ip -Path '/ISAPI/System/deviceInfo' -Credential $NewCredential -Port $t.port
-        if ($nw.code -eq 200) {
+        # 2.2.20 (Codex 2.2.19 R12, class C): a password "works" only when the device answers with ITS OWN DeviceInfo document (the
+        # same device: MAC / serial as saved) - an HTTP 200 login / error / HTML page proves nothing, in this branch and the one below
+        $nw = Test-NhHikLoginAs $t $NewCredential $id0
+        if ($nw.state -eq 'ok') {
           $res.changed += 'password'; $res.history = 'Site password set on ' + $Ip + ' (its answer was ' + $w.code + ', but the new one works)'
-          return (& $done $true ('The device''s answer was not OK (answer ' + $w.code + '), but the NEW password logs in, so the password IS changed. Update it in DW/NVR if they log in to this device.'))
+          return (& $done $true ('The device''s answer was not OK (answer ' + $w.code + '), but the NEW password logs in (its own device information read back), so the password IS changed. Update it in DW/NVR if they log in to this device.'))
         }
-        $od = Http -Ip $Ip -Path '/ISAPI/System/deviceInfo' -Credential $t.cred -Port $t.port
-        if ($od.code -eq 200) { $res.history = 'Site password on ' + $Ip + ' - refused (old one checked: still works)'; return (& $done $false ('The device refused the new password (answer ' + $w.code + '). The old one still works (checked).')) }
+        $od = Test-NhHikLoginAs $t $t.cred $id0
+        if ($od.state -eq 'ok') { $res.history = 'Site password on ' + $Ip + ' - refused (old one checked: still works)'; return (& $done $false ('The device refused the new password (answer ' + $w.code + '). The old one still works (checked).')) }
         $res.changed += 'password (unknown)'
-        $res.history = 'Site password on ' + $Ip + ' - UNKNOWN, maybe changed (answer ' + $w.code + '; neither password logged in: ' + $nw.code + '/' + $od.code + ')'
-        return (& $done $false ('UNKNOWN - the password MAY have changed: the device''s answer was ' + $w.code + ' and now neither the new nor the old password logs in (' + $nw.code + ' / ' + $od.code + '). Wait 2 minutes and try both in its web page. If the new one works, update it in every NVR/DW that records this device.'))
+        $res.history = 'Site password on ' + $Ip + ' - UNKNOWN, maybe changed (answer ' + $w.code + '; neither password proven to log in: new ' + $nw.why + ' / old ' + $od.why + ')'
+        return (& $done $false ('UNKNOWN - the password MAY have changed: the device''s answer was ' + $w.code + ' and now neither the new nor the old password is proven to log in (new: ' + $(if ($nw.why) { $nw.why } else { 'answer ' + $nw.code }) + '; old: ' + $(if ($od.why) { $od.why } else { 'answer ' + $od.code }) + '). Wait 2 minutes and try both in its web page. If the new one works, update it in every NVR/DW that records this device.'))
       }
-      $chk = Http -Ip $Ip -Path '/ISAPI/System/deviceInfo' -Credential $NewCredential -Port $t.port
-      $ok = ($chk.code -eq 200); $res.changed += 'password'
-      $res.history = 'Site password set on ' + $Ip + $(if ($ok) { ' (new one works)' } else { ' (new one not confirmed)' })
-      return (& $done $ok $(if ($ok) { 'The new password works. Update it in DW/NVR if they log in to this device.' } else { 'Changed, but the new password did not log in yet. Try it in the web page.' }))
+      $chk = Test-NhHikLoginAs $t $NewCredential $id0
+      $ok = ($chk.state -eq 'ok'); $res.changed += 'password'
+      $res.history = 'Site password set on ' + $Ip + $(if ($ok) { ' (new one works)' } else { ' (new one NOT confirmed: ' + $chk.why + ')' })
+      return (& $done $ok $(if ($ok) { 'The new password works (the device''s own information read back with it). Update it in DW/NVR if they log in to this device.' } elseif ($chk.state -eq 'refused') { 'Changed, but the new password did not log in yet. Try it in the web page.' } else { 'Sent, but it is NOT confirmed that the new password works (' + $chk.why + '). Try it in the web page before you rely on it.' }))
     }
     'dwpassword' {
       if ($v -ne 'DW') { return (& $done $false 'This fix is for a DW server. Nothing changed.') }
@@ -592,7 +711,7 @@ function Invoke-NvrFix {
       if ($w.code -ne 200) { $res.history = 'DW password for ' + $d.name + ' - refused (' + $w.code + ')'; return (& $done $false ('DW refused it (answer ' + $w.code + ').')) }
       $res.changed += $d.name
       $st = ''; $end = (Get-Date).AddSeconds([math]::Min($WaitSec, 60))
-      do { $x = @(Dw-Devices $t) | Where-Object { $_.ip -eq $CameraIp } | Select-Object -First 1; $st = [string]$x.status; if ($st -eq 'Unauthorized' -and $WaitSec -gt 0) { Start-Sleep -Seconds 10 } } while ($st -eq 'Unauthorized' -and (Get-Date) -lt $end)
+      do { $x = @(Dw-Devices $t) | Where-Object { $_.id -eq $d.id -and $_.ip -eq $CameraIp -and (-not $d.mac -or $_.mac -eq $d.mac) } | Select-Object -First 1; $st = [string]$x.status; if ($st -eq 'Unauthorized' -and $WaitSec -gt 0) { Start-Sleep -Seconds 10 } } while ($st -eq 'Unauthorized' -and (Get-Date) -lt $end)
       # 2.2.18 (sweep, class B): only Online / Recording shows DW now logs in; Offline / empty / anything else is NOT confirmed
       $ok = ($st -in @('Online', 'Recording'))
       $stW = $(if ($st) { $st } else { 'nothing (its camera list could not be read)' })
