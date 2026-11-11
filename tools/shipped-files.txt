@@ -78,6 +78,7 @@ Toolkit/tests/Test-Fix2219Sweep2.ps1
 Toolkit/tests/Test-Fix222.ps1
 Toolkit/tests/Test-Fix2220Classic.ps1
 Toolkit/tests/Test-Fix2220Core.ps1
+Toolkit/tests/Test-Fix2220Cross.ps1
 Toolkit/tests/Test-Fix2220Nvr.ps1
 Toolkit/tests/Test-Fix2220Reset.ps1
 Toolkit/tests/Test-Fix2220Site.ps1
