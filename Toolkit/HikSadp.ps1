@@ -263,7 +263,7 @@ function Import-HikUnlock($dev, $unlock, [string]$NewPassword, [double]$Seconds 
       if ((ConvertTo-SadpMac (Get-SadpTag $a.text 'MAC')) -ne $dev.mac) { continue }
       $r = Get-SadpTag $a.text 'Result'; if (-not $r) { $r = Get-SadpTag $a.text 'Status' }
       Sadp-Log ('  answer: ' + (($a.text -replace '<(Salt|Code|Password|SecurityCode)>[^<]*', '<$1>(hidden)') -replace '\s+', ' ').Substring(0, [Math]::Min(300, ($a.text -replace '\s+', ' ').Length)))
-      if ($r -match '^(?i)success|ok|true') { return [pscustomobject]@{ ok = $true; result = $r; form = $f.name; tries = $tries; error = '' } }
+      if ($r -match '^(?i)\s*(success|ok|true)\s*$') { return [pscustomobject]@{ ok = $true; result = $r; form = $f.name; tries = $tries; error = '' } }   # 2.2.19 (class C): the whole answer, not a word inside it
       if ($r) { $last = $r }
     }
   }
@@ -275,13 +275,13 @@ function Set-HikSadpNet($dev, [string]$Password, [string]$Ip, [string]$Mask, [st
   $p = New-SadpProbe 'update' $dev.mac ([ordered]@{ PWErrorParse = 'true'; Password = $Password; IPv4Address = $Ip; CommandPort = $(if ($dev.cmdPort) { $dev.cmdPort } else { '8000' }); IPv4SubnetMask = $Mask; IPv4Gateway = $Gw; DHCP = 'false' })
   Sadp-Log ('SADP update ' + $dev.mac + ' -> ' + $Ip + ' (password hidden)')
   $ans = Invoke-SadpExchange @($p) $Seconds @(0, 1.5) $null
-  foreach ($a in $ans) { if ((ConvertTo-SadpMac (Get-SadpTag $a.text 'MAC')) -eq $dev.mac) { $r = Get-SadpTag $a.text 'Result'; return ($r -match '^(?i)success|ok|true') } }
+  foreach ($a in $ans) { if ((ConvertTo-SadpMac (Get-SadpTag $a.text 'MAC')) -eq $dev.mac) { $r = Get-SadpTag $a.text 'Result'; return ($r -match '^(?i)\s*(success|ok|true)\s*$') } }
   return $false
 }
 function Set-HikSadpActivate($dev, [string]$Password, [double]$Seconds = 5.0) {
   $p = New-SadpProbe 'activate' $dev.mac ([ordered]@{ Password = $Password })
   Sadp-Log ('SADP activate ' + $dev.mac + ' (password hidden)')
   $ans = Invoke-SadpExchange @($p) $Seconds @(0, 1.5) $null
-  foreach ($a in $ans) { if ((ConvertTo-SadpMac (Get-SadpTag $a.text 'MAC')) -eq $dev.mac) { $r = Get-SadpTag $a.text 'Result'; return ($r -match '^(?i)success|ok|true') } }
+  foreach ($a in $ans) { if ((ConvertTo-SadpMac (Get-SadpTag $a.text 'MAC')) -eq $dev.mac) { $r = Get-SadpTag $a.text 'Result'; return ($r -match '^(?i)\s*(success|ok|true)\s*$') } }
   return $false
 }

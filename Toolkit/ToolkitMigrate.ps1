@@ -25,7 +25,7 @@ function Get-TkRealOps {
     taskExists = { param($n) $null = & schtasks.exe /Query /TN $n 2>$null; return ($LASTEXITCODE -eq 0) }
     taskDelete = { param($n) $null = & schtasks.exe /Delete /TN $n /F 2>$null; return ($LASTEXITCODE -eq 0) }
     icacls     = { param([string[]]$a) $null = & icacls.exe @a 2>&1; return [int]$LASTEXITCODE }
-    isLocked   = { param($p) try { return [bool](Get-Acl -LiteralPath $p).AreAccessRulesProtected } catch { return $false } }
+    isLocked   = { param($p) try { return [bool](Get-Acl -LiteralPath $p).AreAccessRulesProtected } catch { return $null } }   # 2.2.19 (class C): unread = $null, not "not locked"
     adminUsers = { try { return @(Get-LocalGroupMember -SID $script:TkSidAdmins -ErrorAction Stop | Where-Object { $_.ObjectClass -eq 'User' } | ForEach-Object { [string]$_.SID.Value }) } catch { return @() } }
     exists     = { param($p) return (Test-Path -LiteralPath $p) }
     create     = { param($p) New-Item -ItemType Directory -Force -Path $p -ErrorAction Stop | Out-Null }
@@ -50,7 +50,10 @@ function Invoke-TkMigration {
   $secret = @($script:TkSecretDirs | ForEach-Object { & $J $ToolkitDir $_ })
   foreach ($t in @('Toolkit', 'FixNVR', 'CamReset', 'NetCheck')) {
     $d = $(if ($t -eq 'Toolkit') { $ToolkitDir } else { & $J $Root $t })
-    if (-not (& $Ops.exists $d) -or -not (& $Ops.isLocked $d)) { continue }
+    if (-not (& $Ops.exists $d)) { continue }
+    $lk = & $Ops.isLocked $d
+    if ($null -eq $lk) { [void]$warn.Add('Could not read the permissions of ' + $d + ': the old 2.2.x folder lock there is NOT CHECKED. Run the Toolkit installer again as administrator.'); continue }
+    if (-not $lk) { continue }
     $bad = 0
     if ($t -eq 'Toolkit') {
       $bad += [int]((& $Ops.icacls ([string[]]@($d, '/reset', '/C', '/Q'))) -ne 0)

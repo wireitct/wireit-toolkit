@@ -49,7 +49,7 @@ $script:FsTestSecrets = $false
 $cvd = Join-Path $tmp 'cv1'; New-Item -ItemType Directory -Force -Path $cvd | Out-Null
 $job = Start-Job -ScriptBlock { param($tk, $cvd)
   . (Join-Path $tk 'CamViews.ps1') -Lib; $script:CvLogDir = Join-Path $cvd '_logs'; $script:CvPics = $cvd
-  Save-CvLocal 'A B' 'ch1' '10.0.0.5' '20261108-1000' ([byte[]](1, 2, 3)); Save-CvLocal 'A/B' 'ch1' '10.0.0.5' '20261108-1000' ([byte[]](4, 5, 6)); Save-CvLocal 'A?B' 'ch1' '10.0.0.5' '20261108-1000' ([byte[]](7, 8, 9))
+  [void](Save-CvLocal 'A B' 'ch1' '10.0.0.5' '20261108-1000' ([byte[]](1, 2, 3))); [void](Save-CvLocal 'A/B' 'ch1' '10.0.0.5' '20261108-1000' ([byte[]](4, 5, 6))); [void](Save-CvLocal 'A?B' 'ch1' '10.0.0.5' '20261108-1000' ([byte[]](7, 8, 9)))   # 2.2.19: Save-CvLocal returns its status
   @(Get-ChildItem -LiteralPath $cvd -Directory | Where-Object { $_.Name -ne '_logs' }).Count } -ArgumentList $tk, $cvd
 $nCv = Receive-Job -Job $job -Wait -AutoRemoveJob
 Eq $nCv 3 'reproduction: "A B", "A/B", "A?B" camera pictures go to 3 folders (2.2.3: "A/B" and "A?B" shared one)'

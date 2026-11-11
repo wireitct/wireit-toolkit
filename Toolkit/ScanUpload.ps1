@@ -24,10 +24,17 @@ if (-not $CamResetDir) { $CamResetDir = Join-Path (Split-Path -Parent $here) 'Ca
 $box = Join-Path $here 'outbox'
 function Pending-Path([string]$s) { return (Join-Path $box ('scan-' + (Get-CvSiteFolderName $s) + '.json')) }
 function Remove-OlderPendingSite([string]$site, [string]$keep = '') {
-  foreach ($f in @(Get-ChildItem -LiteralPath $box -Filter 'scan-*.json' -ErrorAction SilentlyContinue)) {
+  foreach ($f in @(Get-ChildItem -LiteralPath $box -Filter 'scan-*.json' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'scan-*.json' })) {
     if ($f.FullName -eq $keep) { continue }
+    # a list that cannot be read is NOT removed here (it is not known to be this site's): the waiting-list pass below quarantines it
     try { $v = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json; if ([string]$v.site -eq $site) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop } } catch {}
   }
+}
+# 2.2.19 (Codex 2.2.18 F25, class E): a waiting list that cannot be read, or that the service refused, is never deleted: it is moved to
+# outbox\quarantine\ (Move-CvQuarantine, CamViews.ps1) and named in red, so the technician knows that list was NOT saved to the site page.
+function Set-SuQuarantined([string]$path, [string]$why, [string]$tag) {
+  $kept = Move-CvQuarantine $path $why $tag
+  Write-Output ('!! A waiting camera list (' + (Split-Path -Leaf $path) + ') was NOT saved to the site page: ' + $why + '. ' + $(if ($kept) { 'It is kept as ' + $kept + '.' } else { 'It could not be moved aside, so it stays in the outbox.' }))
 }
 # 2.2.12 (Codex P2-11 / F18): the waiting list is written to a temporary file beside it first and only then put in its place
 # in one step (the same pattern as the Undo file). A write that stops half-way (disk full, power cut) leaves the old list whole.
@@ -52,15 +59,21 @@ Write-Output ''
 Write-Output ('Saving the ' + $what + ' (' + $devs.Count + ' devices, no passwords) to the site page for "' + $Site + '"...')
 $key = Get-CvKey
 # lists that waited for internet (other sites; this site's newest list is the one being sent now)
-if ($key -and (Test-Path $box)) {
-  foreach ($f in @(Get-ChildItem $box -Filter 'scan-*.json' -ErrorAction SilentlyContinue)) {
+# 2.2.19 (F25): a damaged waiting list is quarantined and named even without a key (and the damaged list for THIS site too: it would
+# otherwise be overwritten below without a word)
+if (Test-Path $box) {
+  foreach ($f in @(Get-ChildItem $box -Filter 'scan-*.json' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'scan-*.json' })) {
+    $o = $null; $bad = ''
+    try { $o = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { $bad = 'it is damaged (' + $_.Exception.Message + ')' }
+    if (-not $bad -and (-not $o -or [string]$o.op -ne 'scanPush' -or -not [string]$o.site)) { $bad = 'it is not a camera list for a site' }
+    if ($bad) { Set-SuQuarantined $f.FullName $bad 'corrupt'; continue }
     if ($f.FullName -eq (Pending-Path $Site)) { continue }   # 2.2.3 (Codex #59): replaced only once the new list is sent or kept (below)
-    try { $o = Get-Content $f.FullName -Raw | ConvertFrom-Json } catch { Remove-Item $f.FullName -Force; continue }
     if ([string]$o.site -eq $Site) { continue }   # an old filename for this site is replaced only after this run is sent or saved
+    if (-not $key) { continue }
     $b = @{}; foreach ($p in $o.PSObject.Properties) { $b[$p.Name] = $p.Value }; $b.key = $key
     $r0 = Send-CvBody $b
-    if ($r0 -and $r0.ok) { Remove-Item $f.FullName -Force; Write-Output ('Sent the list that was waiting for ' + [string]$o.site + '.') }
-    elseif ($r0 -and -not $r0.ok -and $r0.msg -notmatch '(?i)busy|too many') { Remove-Item $f.FullName -Force; Write-Output ('A waiting list for ' + [string]$o.site + ' was refused: ' + [string]$r0.msg) }
+    if ($r0 -and $r0.ok) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue; Write-Output ('Sent the list that was waiting for ' + [string]$o.site + '.') }
+    elseif ($r0 -and -not $r0.ok -and $r0.msg -notmatch '(?i)busy|too many') { Set-SuQuarantined $f.FullName ('the site page refused it for ' + [string]$o.site + ': ' + [string]$r0.msg) 'refused' }
   }
 }
 $r = $null

@@ -429,7 +429,8 @@ Check ($t63 -notmatch 'NVR 192\.168\.1\.20 is NOT answering' -and $t63 -match 'p
 Check ($t63 -notmatch 'probably frozen' -and $t63 -match 'ports 80/554 are open') 'a camera with open ports and no ping is not called frozen'
 Write-Host '#60 the outbox sends only camera-picture pushes, with their own fields'
 $cv = Read-Src 'Toolkit/CamViews.ps1'
-Check ($cv -match "if \(\[string\]\`$o\.op -ne 'camPush'\) \{ Remove-Item" -and $cv -match "foreach \(\`$p in @\('op', 'site', 'source', 'pc', 'pics', 'complete'\)\)") 'reproduction: a queued file with another op (or extra fields) is not sent with the upload key (2.2.2 copied every property)'
+# 2.2.19 (Codex 2.2.18 F25): a file with another op is still never sent; it is now kept in outbox\quarantine instead of deleted (Test-Fix2219Sweep runs it)
+Check ($cv -match "\[string\]\`$o\.op -ne 'camPush'\)\) \{ \`$bad = 'it is not a camera-pictures file' \}" -and $cv -match "foreach \(\`$p in @\('op', 'site', 'source', 'pc', 'pics', 'complete'\)\)") 'reproduction: a queued file with another op (or extra fields) is not sent with the upload key (2.2.2 copied every property)'
 Write-Host 'split removed (#1-5, 26, 31-34, 39, 45, 46, 60): Crew is a local admin - no SYSTEM runner, IPC or ACL lock'
 foreach ($gone in @('FixSiteRunner.ps1', 'FixSiteIpc.ps1', 'FixSiteAsk.ps1', 'HikPortalStep.ps1', 'WireItAcl.ps1')) { Check (-not (Test-Path (Join-Path $tk $gone))) ('#1-5/#32: ' + $gone + ' is gone (no SYSTEM runner, no ipc\ folder, no ACL plan)') }
 $all = @(Get-ChildItem -LiteralPath $repo -Recurse -File -Include *.ps1, *.psm1, *.cmd | Where-Object { $_.FullName -notmatch '[\\/]tests[\\/]' })

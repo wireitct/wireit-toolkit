@@ -203,6 +203,11 @@ function Install-TkUpdate($m, [string]$toolkitDir, [scriptblock]$Fetch = $null) 
   # locked or access-denied copy pass as done), and every swapped-in file is checked against its hash before the version is written.
   $ErrorActionPreference = 'Stop'
   $P = Get-TkPaths $toolkitDir
+  # 2.2.19 (Codex 2.2.18 F23, class E): an earlier update or Go back that stopped half-way leaves previous\update-pending.json, and its
+  # saved copy is the only way back. This helper refuses itself (not only the start-up that normally runs first) BEFORE it touches the
+  # staging folder or previous\ - 2.2.18 rebuilt previous\<version> from the half-updated files and the way back was lost.
+  $pendJ = Join-Path $P.Previous 'update-pending.json'
+  if (Test-Path -LiteralPath $pendJ) { throw 'Update refused: an earlier update or Go back is still half-way on this PC (previous\update-pending.json). Nothing was changed. Close the Toolkit and open it again: it finishes that first. If it keeps saying this, run the Toolkit installer again.' }
   $bad = Test-TkManifest $m; if ($bad) { throw ('Update refused: ' + $bad) }
   $cur0 = Get-TkVersion $toolkitDir
   if ((Compare-TkVersion ([string]$m.version) $cur0) -le 0) { throw ('Update refused: version ' + $m.version + ' is not newer than this one (' + $cur0 + ').') }   # 2.2.2: never a downgrade
@@ -261,7 +266,12 @@ function Install-TkUpdate($m, [string]$toolkitDir, [scriptblock]$Fetch = $null) 
       try { $b = Join-Path $prev $rp; if (Test-Path -LiteralPath $b) { Copy-TkAtomicFile $b (Join-Path $P.Root $rp) } elseif ($added -contains $rp) { $ap = Join-Path $P.Root $rp; if (Test-Path -LiteralPath $ap) { Remove-Item -LiteralPath $ap -Force -ErrorAction Stop } } }
       catch { $notBack += $rp }
     }
-    try { if (Test-Path (Join-Path $prev 'version.json.prev')) { Copy-TkAtomicFile (Join-Path $prev 'version.json.prev') $vj } } catch { $notBack += 'version.json' }
+    # 2.2.19 (F26 twin): the version record goes back too. With no saved one (there was no version.json before), a version.json this
+    # update may have written is removed - checked - so the record never names the new version over the old files.
+    try {
+      if (Test-Path (Join-Path $prev 'version.json.prev')) { Copy-TkAtomicFile (Join-Path $prev 'version.json.prev') $vj }
+      elseif (Test-Path -LiteralPath $vj) { $nv = Read-TkJson $vj; if ($nv -and [string]$nv.version -eq [string]$m.version) { Remove-Item -LiteralPath $vj -Force -ErrorAction Stop; if (Test-Path -LiteralPath $vj) { throw 'still there' } } }
+    } catch { $notBack += 'version.json' }
     if (-not $notBack.Count) { Remove-Item -LiteralPath $journal -Force -ErrorAction SilentlyContinue }
     if ($notBack.Count) { throw ('Update could not be installed (' + $why + '), and these files could not be put back: ' + ($notBack -join ', ') + '. Run the Toolkit installer as an admin.') }
     throw ('Update could not be installed, the old version was put back: ' + $why)
@@ -282,6 +292,22 @@ function Undo-TkUpdate([string]$toolkitDir) {
   $prev = Join-Path $P.Previous ([string]$cur.previous)
   $u = Read-TkJson (Join-Path $prev 'undo.json')
   if (-not $u) { throw ('The saved copy of version ' + $cur.previous + ' is missing.') }
+  # 2.2.19 (Codex 2.2.18 F26, class C/E): the saved version record (version.json.prev) must be there and name the version going back
+  # BEFORE anything is changed. 2.2.18 put the old files back without it, kept version.json saying the newer version, deleted the
+  # journal and said "back on <older>". Now: missing / unreadable / another version = refused, nothing changed.
+  # With no saved record (a copy that had no version.json before the update) the record is rebuilt from the saved copy's own undo.json,
+  # but only when that names exactly this update (from = the version going back, to = the version now); otherwise refused here.
+  $vp0 = Join-Path $prev 'version.json.prev'
+  $pv0 = $null; $vpThere = Test-Path -LiteralPath $vp0
+  if ($vpThere) { $pv0 = Read-TkJson $vp0 }
+  $vRebuild = $false
+  if ($vpThere -and -not ($pv0 -and [string]$pv0.version -and [string]$pv0.version -ne [string]$cur.version)) {
+    throw ('Going back is not possible: the saved version record of version ' + $cur.previous + ' (' + $vp0 + ') cannot be read. Nothing was changed - version ' + $cur.version + ' is still in place. To go back, run the installer of version ' + $cur.previous + '.')
+  }
+  if (-not $vpThere) {
+    if ([string]$u.from -eq [string]$cur.previous -and [string]$u.to -eq [string]$cur.version -and [string]$cur.previous -match '^\d+(\.\d+){1,3}$') { $vRebuild = $true }
+    else { throw ('Going back is not possible: the saved copy of version ' + $cur.previous + ' has no version record, and its undo record does not name this update. Nothing was changed - version ' + $cur.version + ' is still in place. To go back, run the installer of version ' + $cur.previous + '.') }
+  }
   # 2.2.15 (Codex 2.2.14 R8): a journal is written BEFORE the first file is swapped. If the process or the power dies half-way, the next
   # start of the Toolkit (Invoke-TkStartupRecovery, before the main window loads) FINISHES the go-back from the saved copy, so a mixed
   # old/new Toolkit never stays. The journal has the same shape as an update's (prev/from/to/added) plus kind = 'undo'.
@@ -314,7 +340,14 @@ function Undo-TkUpdate([string]$toolkitDir) {
   # the journal stays: the next start tries to finish the go-back again (and says so) - never a silent mixed version
   if ($bad.Count) { throw ('Going back did not finish: ' + ($bad -join ', ') + ' could not be put back (locked or not allowed). The Toolkit is half-way between versions; the next time it opens it tries to finish going back. Run it as an admin.') }
   $vp = Join-Path $prev 'version.json.prev'
-  if (Test-Path $vp) { Copy-TkAtomicFile $vp (Join-Path $toolkitDir 'version.json') }
+  # 2.2.19 (F26): the version record is put back and read back; if not, the journal stays (the next start finishes it) and it says so
+  $vjOut = Join-Path $toolkitDir 'version.json'
+  $vOk = $false
+  try {
+    if ($vRebuild) { Save-TkJson ([ordered]@{ version = [string]$cur.previous; previous = ''; note = 'rebuilt by Go back from the saved copy''s undo record (no saved version record)' }) $vjOut; $vr = Read-TkJson $vjOut; $vOk = ($vr -and [string]$vr.version -eq [string]$cur.previous) }
+    else { Copy-TkAtomicFile $vp $vjOut; $vr = Read-TkJson $vjOut; $vOk = ($vr -and [string]$vr.version -and [string]$vr.version -eq [string]$pv0.version -and [string]$vr.version -ne [string]$cur.version) }
+  } catch {}
+  if (-not $vOk) { throw ('Going back did not finish: the old files are back, but the version record (version.json) could not be put back to ' + $cur.previous + '. The next time the Toolkit opens it tries to finish going back. Run it as an admin.') }
   # the next start does not re-install the version we just left: the marker was saved before the first swap (2.2.16 F2)
   if ((Get-TkSkipVersion $toolkitDir) -ne [string]$cur.version) { Write-TkSkipVersion $toolkitDir ([string]$cur.version) }
   Remove-Item -LiteralPath $journal -Force -ErrorAction Stop
@@ -843,11 +876,19 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
     $off = @($chs | Where-Object { $_.online -eq $false } | ForEach-Object { $_.ch }); $sched = @($chs | Where-Object { $_.scheduled -eq $false } | ForEach-Object { $_.ch })
     $notRec = @($chs | Where-Object { -not $_.recording_now -and -not ($_.mode -match '(?i)motion|alarm|event|smart|vmd') } | ForEach-Object { $_.ch })
     $page.rec = [ordered]@{ ok = [bool]$rec.ok; channels = $chs.Count; recording = [int]$rec.recording; offline = $off; scheduleOff = $sched; daysHeld = $rec.days_held; target = $rec.target_days; problems = @($rec.problems) }
-    if ($rec.ok) { & $add ('Recording: all ' + [int]$rec.recording + ' cameras recording, ' + $rec.days_held + ' days kept (target ' + $rec.target_days + ').') 'ok' }
+    if (-not $rec) { & $add 'Recording: NOT CHECKED (no result came back)' 'warn'; $nc.Add('recording'); $page.rec.notChecked = 'no result' }   # 2.2.19 (class C)
+    elseif ($rec.ok) { & $add ('Recording: all ' + [int]$rec.recording + ' cameras recording, ' + $rec.days_held + ' days kept (target ' + $rec.target_days + ').') 'ok' }
     # 2.2.15 (Codex 2.2.14 R9): still filling toward the target = not a fault, but never "target met" (amber)
     elseif ($rec.PSObject.Properties['target_pending'] -and $rec.target_pending -and -not @($rec.problems).Count) { & $add ('Recording: all ' + [int]$rec.recording + ' cameras recording; ' + $rec.days_held + ' days so far, still filling - the ' + $rec.target_days + '-day target is NOT reached yet.') 'warn'; $page.rec.stillFilling = $true; $pendingWhy = ('recorder still filling (' + $rec.days_held + ' of ' + $rec.target_days + ' days)') }
     elseif ($loginWhy -or $recNcWhy) { $rw = $(if ($loginWhy) { $loginWhy } else { $recNcWhy }); & $add ('Recording: NOT CHECKED (' + $rw + ')') 'warn'; $nc.Add('recording'); $page.rec.notChecked = $rw }
-    else { & $add ('Recording: ' + (& $j $rec.problems)) 'red' }
+    # 2.2.19 (class C): red only for a problem that was READ. No recording result, or not-ok with no problem named = NOT CHECKED (amber)
+    elseif (-not @($rec.problems | Where-Object { $_ }).Count) { & $add 'Recording: NOT CHECKED (no result came back)' 'warn'; $nc.Add('recording'); $page.rec.notChecked = 'no result' }
+    else {
+      # a mix: the problems that were read are red; the parts that could not be read are named as NOT CHECKED (amber), not as faults
+      $recReal = @($rec.problems | Where-Object { $_ -and $_ -notmatch $TkNotCheckedRx }); $recNc = @($rec.problems | Where-Object { $_ -and $_ -match $TkNotCheckedRx })
+      if ($recReal.Count) { & $add ('Recording: ' + (& $j $recReal)) 'red' }
+      if ($recNc.Count) { & $add ('Recording, also: ' + (& $j $recNc)) 'warn'; $nc.Add('recording'); $page.rec.notChecked = (& $j $recNc) }
+    }
     $sf = $(if ($rec.streams) { @($rec.streams.flags) } else { @() })
     $page.streams = $(if ($rec.streams -and $rec.streams.checked) { [ordered]@{ checked = [int]$rec.streams.checked; flags = $sf } } else { $null })
     if ($sf.Count) { & $add ('Streams (report only): ' + (& $j ($sf | Select-Object -First 6))) 'warn' } elseif ($page.streams) { & $add ('Streams: sub-stream, bitrate and frame rate normal on ' + $rec.streams.checked + ' cameras.') 'ok' }
@@ -867,8 +908,14 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
     if ($fw.ok -and $fwOld.Count) { & $add ('Firmware: no known security holes; ' + $fwOld.Count + ' device(s) on older firmware (' + (@($fwOld | Select-Object -First 4 | ForEach-Object { [string]$_.label + $(if ($_.latest) { ', latest ' + $_.latest } else { '' }) }) -join '; ') + ').') 'warn' }
     elseif ($fw.ok) { & $add 'Firmware: current, no known security holes.' 'ok' }
     elseif (Test-TkNotChecked $fw) { & $add ('Firmware: not checked (' + $(if ($loginWhy) { $loginWhy } else { Get-TkNotCheckedWhy $fw }) + ')') 'warn'; $nc.Add('firmware') }
+    # 2.2.19 (class C): no firmware result, or not-ok with no problem named = NOT CHECKED (amber), never red and never a firmware fix
+    elseif (-not $fw -or -not @($fw.problems | Where-Object { $_ }).Count) { & $add 'Firmware: not checked (no result came back)' 'warn'; $nc.Add('firmware') }
     elseif ($isDw) { & $add ('Firmware (report only - a DW server is updated with the DW installer, not by the Toolkit): ' + (& $j ($fw.problems | Select-Object -First 4))) 'warn'; $page.fw.reportOnly = $true }   # 1.6.1: never a firmware fix for DW
-    else { & $add ('Firmware: ' + (& $j ($fw.problems | Select-Object -First 4))) 'red'; $fix.Add('firmware') }
+    else {
+      $fwReal = @($fw.problems | Where-Object { $_ -and $_ -notmatch $TkNotCheckedRx }); $fwNc = @($fw.problems | Where-Object { $_ -and $_ -match $TkNotCheckedRx })
+      if ($fwReal.Count) { & $add ('Firmware: ' + (& $j ($fwReal | Select-Object -First 4))) 'red'; $fix.Add('firmware') }
+      if ($fwNc.Count) { & $add ('Firmware, also not checked: ' + (& $j ($fwNc | Select-Object -First 4))) 'warn'; $nc.Add('firmware') }
+    }
     if ($sched.Count) { $fix.Add('recording') }
     # 1.4 (YKW Elm): "Put the camera back on the NVR" is never offered on a DW server (there is no NVR channel), and
     # "Restart the camera" only for a camera that still has a network link (it reboots through the camera's own web page).
