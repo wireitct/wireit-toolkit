@@ -511,15 +511,67 @@ function End-Run([int]$code, [string]$plain) {
   $r = $TK.run; if (-not $r) { return }
   if ($plain) { Add-Out ''; Add-Out $plain }
   switch ($code) { 0 { Set-Pill ($r.Name + ' - done') $cOk } 4 { Set-Pill ($r.Name + ' - done, check the warnings') $cWarn } 3 { Set-Pill ($r.Name + ' - done, still filling (not an all-clear)') $cWarn } default { Set-Pill ($r.Name + ' - problem') $cRed } }
-  $logPath = Write-TkLog $TK.P.Logs $r.Name $r.Log.ToString()
+  # 2.2.19 (sweep2, class F): "Saved to the logs folder" only when the log really was written; a failed log write no longer
+  # stops End-Run half-way (the window stayed busy with the run never cleared)
+  $logPath = $null; try { $logPath = Write-TkLog $TK.P.Logs $r.Name $r.Log.ToString() } catch { $logPath = $null }
   $TK.run = $null
-  Set-Busy $false; Set-Status ($r.Name + ' done. Saved to the logs folder.')
+  Set-Busy $false; Set-Status ($r.Name + ' done. ' + $(if ($logPath) { 'Saved to the logs folder.' } else { 'The log could NOT be saved to the logs folder.' }))
+  $TK.lastRunStarted = $r.Started   # 2.2.19 (sweep2): the after-run step reads only result files THIS run wrote
   if ($r.OnDone) { try { & $r.OnDone $code } catch { Add-Out ('(after-run step failed: ' + $_.Exception.Message + ')') } }
 }
 function Test-Tool([string]$path, [string]$name) {
   if (Test-Path -LiteralPath $path) { return $true }
   Add-Out ($name + ' is not on this PC (' + $path + '). Copy the whole C:\WireIt folder from the other PC, or run Install-Toolkit again.')
   return $false
+}
+
+# 2.2.19 (sweep2, class C): a tool window whose exit code could not be read has NO known result: amber NOT CHECKED, never a green
+# "done" (before, the Fix NVR / recorder windows ended green with "the tool window closed. Results are above.")
+function Get-TkConsoleEnd([int]$code, [string]$name, [bool]$nvr) {
+  if ($code -eq -1) { return [pscustomobject]@{ code = 4; plain = ('NOT CHECKED - ' + $name + ': the tool window closed and its result could not be read. Read the lines above; this is not an all-clear.') } }
+  if ($nvr) { return [pscustomobject]@{ code = $code; plain = (Get-TkNvrPlainEnd $name $code) } }
+  return [pscustomobject]@{ code = $code; plain = (Get-TkPlainEnd $name $code) }
+}
+# 2.2.19 (sweep2, class C/F): a "last result" file counts only when THIS run wrote it (not older than the run's start) and it can be
+# read. Otherwise $null, and the caller says NOT CHECKED - never the PREVIOUS run's "all OK" / "fixed".
+function Read-TkRunResult([string]$path, $since) {
+  if (-not (Test-Path -LiteralPath $path)) { return $null }
+  if ($null -ne $since) {
+    $wt = $null; try { $wt = (Get-Item -LiteralPath $path -ErrorAction Stop).LastWriteTime } catch { return $null }
+    if ($wt -lt ([datetime]$since).AddSeconds(-2)) { return $null }
+  }
+  return (Read-TkJson $path)
+}
+# 2.2.19 (sweep2, class C): what the window shows for a fix / camera doctor result: green only when the tool said ok AND ended with
+# code 0; red only for a confirmed failure (fix ran and did not work, doctor named fixes); anything unknown is amber NOT CHECKED
+function Get-TkResultView([string]$kind, $j, $code) {
+  $c = $(if ($null -eq $code -or "$code" -eq '') { -1 } else { [int]$code })
+  if ($kind -eq 'fix') {
+    if (-not $j) { return [pscustomobject]@{ text = ('FIX: NOT CHECKED - no result came back from this run (code ' + $c + '). Read the lines above.'); tone = 'warn' } }
+    $m = $(if ($j.PSObject.Properties['msg'] -and [string]$j.msg) { [string]$j.msg } else { 'NOT CHECKED - the result had no message' })
+    $okd = [bool]($j.PSObject.Properties['ok'] -and $j.ok -eq $true); $ran = [bool]($j.PSObject.Properties['ran'] -and $j.ran)
+    if ($okd -and $c -ne 0) { $m += ' (but the tool ended with code ' + $c + ' - NOT CHECKED)' }
+    return [pscustomobject]@{ text = ('FIX: ' + $m); tone = $(if ($okd -and $c -eq 0) { 'ok' } elseif ($ran -and -not $okd) { 'red' } else { 'warn' }) }
+  }
+  if (-not $j) { return [pscustomobject]@{ text = ('CAMERA DOCTOR: NOT CHECKED - no result came back from this run (code ' + $c + '). Read the lines above.'); tone = 'warn' } }
+  $fx = @(@($j.fixes) | Where-Object { $_ })
+  $v = $(if ($j.PSObject.Properties['verdict'] -and [string]$j.verdict) { [string]$j.verdict } else { 'NOT CHECKED - the result named no verdict' })
+  return [pscustomobject]@{ text = ('CAMERA DOCTOR ' + [string]$j.ip + ': ' + $v); tone = $(if ($fx.Count) { 'red' } elseif ($c -eq 0 -and $j.PSObject.Properties['verdict'] -and [string]$j.verdict) { 'ok' } else { 'warn' }) }
+}
+function Get-TkToneColor([string]$tone) { if ($tone -eq 'ok') { return $cOk } elseif ($tone -eq 'red') { return $cRed } else { return $cWarn } }
+# 2.2.19 (sweep2, class A/C; decision "classic adapter name unreadable -> refuse"): Restore Network's adapter list must be READ before
+# anything runs. A list that could not be read (tool did not finish, no JSON line, damaged JSON) is a refusal, never a silent
+# "-Auto" run on whatever adapter the tool picks by itself; an adapter with no name is not offered.
+function Get-TkAdapterList([string]$text, [bool]$exited, $exitCode) {
+  $no = { param($why) [pscustomobject]@{ ok = $false; ads = @(); msg = ('Restore Network: ' + $why + ' Nothing was changed. Run "Restore Network.cmd" from the Toolkit folder instead, or try again.') } }
+  if (-not $exited) { return (& $no 'the list of this PC''s network adapters did not come back in time.') }
+  if ($null -ne $exitCode -and "$exitCode" -ne '' -and [int]$exitCode -ne 0) { return (& $no ('the list of this PC''s network adapters could not be read (code ' + $exitCode + ').')) }
+  $m = [regex]::Match([string]$text, '(?m)^JSON=(.+)$')
+  if (-not $m.Success) { return (& $no 'the list of this PC''s network adapters could not be read.') }
+  $ads = @(); try { $ads = @($m.Groups[1].Value.Trim() | ConvertFrom-Json -ErrorAction Stop | ForEach-Object { $_ }) } catch { return (& $no 'the list of this PC''s network adapters was damaged.') }   # 2.2.11: ForEach-Object unrolls PS 5.1's one-item array
+  $ads = @($ads | Where-Object { $_ -and $_.PSObject.Properties['name'] -and ([string]$_.name).Trim() })
+  if (-not $ads.Count) { return (& $no 'no network adapter with a readable name was found.') }
+  return [pscustomobject]@{ ok = $true; ads = $ads; msg = '' }
 }
 
 # hidden run: output streams into the results pane
@@ -565,7 +617,7 @@ function Poll-Run {
       try { $rest = [IO.File]::ReadAllBytes($r.OutFile); if ($rest.Length -gt $x.offset) { Add-Out ($TK.oem.GetString($rest, [int]$x.offset, $rest.Length - [int]$x.offset)) } } catch {}
       $code = -1; try { $code = $r.Proc.ExitCode } catch {}
       Remove-Item -LiteralPath $r.OutFile -Force -ErrorAction SilentlyContinue
-      End-Run $code (Get-TkPlainEnd $r.Name $code)
+      $ce = Get-TkConsoleEnd $code $r.Name $false; End-Run $ce.code $ce.plain
     }
   } else {
     if (-not $r.RunDir) { $d = Get-TkNewRunDir $(if ($r.Root) { $r.Root } else { $TK.P.FixNVR }) $r.Mode $r.Since; if ($d) { $r.RunDir = $d.FullName } }
@@ -582,7 +634,7 @@ function Poll-Run {
         if ($r.Shown -eq 0 -and (Test-Path $s)) { Add-Out (Get-Content $s -Raw) }
         Add-Out ('(Full log: ' + $r.RunDir + ')')
       } elseif ($r.Shown -eq 0) { Add-Out 'The tool window closed before it started its work.' }
-      if ($code -eq -1) { End-Run 0 ($r.Name + ': the tool window closed. Results are above.') } elseif ($r.Nvr) { End-Run $code (Get-TkNvrPlainEnd $r.Name $code) } else { End-Run $code (Get-TkPlainEnd $r.Name $code) }
+      $ce = Get-TkConsoleEnd $code $r.Name ([bool]$r.Nvr); End-Run $ce.code $ce.plain
     }
   }
 }
@@ -642,8 +694,9 @@ function Start-ScanUpload([string]$snapshotFile) {
   $a = '-Site ' + (Q $TK.site.Text.Trim()) + ' -CamResetDir ' + (Q $TK.P.CamReset); if ($snapshotFile) { $a += ' -Snapshot ' + (Q $snapshotFile) }
   [void](Start-Hidden 'Save to site page' $su $a {
     param($code)
-    $j = Read-TkJson (Join-Path $TK.P.Toolkit 'logs\scan-upload-last.json')
+    $j = Read-TkRunResult (Join-Path $TK.P.Toolkit 'logs\scan-upload-last.json') $TK.lastRunStarted   # 2.2.19 (sweep2): this run's result only
     if ($j -and @($j.red).Count) { Add-OutTop @($j.red) $cRed }
+    elseif (-not $j -and $null -ne $code -and [int]$code -ne 0) { Add-Out ('Save to site page: no result came back (code ' + $code + ') - the list is NOT confirmed saved on the site page.') $cWarn }
     Invoke-AfterScan
   } $true)
 }
@@ -666,13 +719,18 @@ function Do-Net {
 function Do-RestoreNet {
   $rn = Join-Path $here 'RestoreNetwork.ps1'
   if (-not (Test-Tool $rn 'Restore Network')) { return }
-  $ads = @()
+  $t = ''; $done = $false; $xc = $null
   try {
     $lo = Join-Path ([IO.Path]::GetTempPath()) ('wireit-rnlist-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
-    $p = [Diagnostics.Process]::Start((New-TkHiddenPsi $TK.psexe $rn '-List' $lo)); [void]$p.WaitForExit(20000)
+    $p = [Diagnostics.Process]::Start((New-TkHiddenPsi $TK.psexe $rn '-List' $lo)); $done = [bool]$p.WaitForExit(20000)
+    if ($done) { try { $xc = $p.ExitCode } catch { $xc = $null } } else { try { $p.Kill() } catch {} }
     $t = [IO.File]::ReadAllText($lo); Remove-Item -LiteralPath $lo -Force -ErrorAction SilentlyContinue
-    $m = [regex]::Match($t, '(?m)^JSON=(.+)$'); if ($m.Success) { $ads = @($m.Groups[1].Value.Trim() | ConvertFrom-Json | ForEach-Object { $_ }) }   # 2.2.11 Office GUI click: PS 5.1 ConvertFrom-Json gives the whole array as ONE item (the pick list was skipped and the adapter came out as "Ethernet Wi-Fi"); ForEach-Object unrolls it
-  } catch {}
+  } catch { $t = '' }
+  # 2.2.11 Office GUI click: PS 5.1 ConvertFrom-Json gives the whole array as ONE item; Get-TkAdapterList unrolls it.
+  # 2.2.19 (sweep2): a list that could not be read is a refusal - before, it ran "-Auto" on the adapter the tool chose by itself
+  $al = Get-TkAdapterList $t $done $xc
+  if (-not $al.ok) { $TK.out.Clear(); Add-Out $al.msg $cWarn; Set-Status 'Restore Network did not run.'; return }
+  $ads = @($al.ads)
   $pick = ''
   if ($ads.Count -gt 1) {
     $f = New-Object Windows.Forms.Form; $f.Text = 'Restore network'; $f.Font = $fNorm; $f.StartPosition = 'CenterParent'; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.AutoSize = $true; $f.AutoSizeMode = 'GrowAndShrink'; $f.Padding = New-Object Windows.Forms.Padding (Px 14)
@@ -687,7 +745,8 @@ function Do-RestoreNet {
     if ($f.ShowDialog($TK.form) -ne 'OK') { return }
     $pick = [string]$ads[$lb.SelectedIndex].name
   } elseif ($ads.Count -eq 1) { $pick = [string]$ads[0].name }
-  $a2 = '-Auto' + $(if ($pick) { ' -Adapter "' + $pick + '"' } else { '' })
+  if (-not $pick) { $TK.out.Clear(); Add-Out 'Restore Network: no adapter was chosen. Nothing was changed.' $cWarn; return }
+  $a2 = '-Auto -Adapter "' + ($pick -replace '"', '') + '"'
   [void](Start-Hidden 'Restore Network' $rn $a2 $null)
   if ($TK.run) { Add-Out 'Restore network: Reset chosen adapter to DHCP (extra addresses off; its old settings are saved first). If Windows asks for permission, click Yes.'; Add-Out '' }
 }
@@ -739,16 +798,18 @@ function Do-Doctor {
   $e = @('-Ip ' + $a.ip); if ($a.dw -match '^\d{1,3}(\.\d{1,3}){3}$') { $e += '-DwIp ' + $a.dw }
   $mk = Get-TkVendorArg $a.maker; if ($mk -in @('Uniview', 'Hikvision')) { $e += '-Maker ' + $mk }
   $mac = Get-TkSavedMac $a.ip; if ($mac) { $e += '-Mac ' + $mac }
-  Start-Nvr 'Camera doctor' 'Doctor' $e { param($code) Show-Doctor }
+  Start-Nvr 'Camera doctor' 'Doctor' $e { param($code) Show-Doctor $code }
 }
 function Get-TkSavedMac([string]$ip) {
   try { foreach ($d in @(Get-TkDevices $TK.P.CamReset)) { if ([string]$d.IP -eq $ip -and $d.MAC) { return ([string]$d.MAC).ToUpper().Replace('-', ':') } } } catch {}
   return ''
 }
-function Show-Doctor {
-  $c = Read-TkJson (Join-Path $TK.P.Toolkit 'logs\doctor-last.json'); if (-not $c) { return }
-  Add-OutTop @('CAMERA DOCTOR ' + $c.ip + ': ' + $c.verdict) $(if (@($c.fixes).Count) { $cRed } else { $cOk })
-  Show-Fixes @($c.fixes)
+function Show-Doctor($code = $null) {
+  # 2.2.19 (sweep2): only the result THIS run wrote; no result / no verdict / a non-zero end is amber NOT CHECKED, never green
+  $c = Read-TkRunResult (Join-Path $TK.P.Toolkit 'logs\doctor-last.json') $TK.lastRunStarted
+  $v = Get-TkResultView 'doctor' $c $code
+  Add-OutTop @($v.text) (Get-TkToneColor $v.tone)
+  if ($c) { Show-Fixes @($c.fixes) }
 }
 function Get-LastNvrIp { $f = Join-Path $TK.P.Logs 'last-nvr-ip.txt'; if (Test-Path $f) { return ([string](Get-Content $f -TotalCount 1)).Trim() }; return '' }
 function Do-Nvr([string]$mode) {
@@ -793,14 +854,15 @@ function Do-SiteCheck {
   $TK.scArgs = $e; Hide-Fixes
   $TK.afterScan = {
     Add-Out ''; Add-Out 'Next: router, recording, clocks and firmware. A tool window opens - type the recorder''s user name and password there (hidden, never saved, ONE try). Leave the password empty to skip the login: nothing is sent and those parts show NOT CHECKED.' $cBlue
-    Start-Nvr 'Check this site' 'Site' $TK.scArgs { param($code) Show-SiteCheck } $true
+    Start-Nvr 'Check this site' 'Site' $TK.scArgs { param($code) Show-SiteCheck $code } $true
   }
   Do-Find
   if (-not $TK.run) { $TK.afterScan = $null }
 }
-function Show-SiteCheck {
-  $c = Read-TkJson (Join-Path $TK.P.Toolkit 'logs\check-site-last.json')
-  if (-not $c) { return }
+function Show-SiteCheck($code = $null) {
+  # 2.2.19 (sweep2, class C): only the check THIS run wrote counts; none (tool stopped, file damaged, an older file) = NOT CHECKED
+  $c = Read-TkRunResult (Join-Path $TK.P.Toolkit 'logs\check-site-last.json') $TK.lastRunStarted
+  if (-not $c) { Add-OutTop @('CHECK THIS SITE: NOT CHECKED - no result came back from this check' + $(if ($null -ne $code) { ' (code ' + $code + ')' } else { '' }) + '. This is not an all-clear.') $cWarn; return }
   $red = @($c.lines | Where-Object { $_.k -eq 'red' } | ForEach-Object { [string]$_.t })
   # 1.6.1: "not checked" parts (login refused / skipped, unreadable clock) are amber and the result is never "all OK"
   $ncl = @($c.lines | Where-Object { $_.k -eq 'warn' -and [string]$_.t -match '(?i)not checked' } | ForEach-Object { [string]$_.t })
@@ -811,7 +873,7 @@ function Show-SiteCheck {
   if ($red.Count) { Add-OutTop (@('CHECK THIS SITE - needs attention:') + $red + $ncl) $cRed }
   elseif ($ncl.Count -or ($c.page -and @($c.page.notChecked).Count)) { Add-OutTop (@('CHECK THIS SITE - NOT everything could be checked (this is not an all-clear):') + $ncl + $(if ($pend) { @('Also: ' + $pend + '.') } else { @() })) $cWarn }
   elseif ($pend) { Add-OutTop @('CHECK THIS SITE: ' + $pend + ', nothing broken found. Not an all-clear yet - check again when it has filled.') $cWarn }
-  elseif ($c.ok) { Add-OutTop @('CHECK THIS SITE: all OK.') $cOk }
+  elseif ($c.ok -eq $true -and ($null -eq $code -or [int]$code -eq 0)) { Add-OutTop @('CHECK THIS SITE: all OK.') $cOk }   # 2.2.19 (sweep2): "all OK" needs the tool's own code 0 too
   else { Add-OutTop @('CHECK THIS SITE: see the details below.') $cWarn }
   Show-Fixes @($c.fixes)
 }
@@ -860,11 +922,13 @@ function Do-FixFailed([string]$key) {
     default { return }
   }
   if ($TK.site.Text) { $e += '-Site ' + (Q $TK.site.Text) }
-  Start-Nvr $TK.fixNames[$key] $key $e { param($code) Show-FixDone } $false 'FixIt.ps1'
+  Start-Nvr $TK.fixNames[$key] $key $e { param($code) Show-FixDone $code } $false 'FixIt.ps1'
 }
-function Show-FixDone {
-  $j = Read-TkJson (Join-Path $TK.P.Toolkit 'logs\fix-last.json'); if (-not $j) { return }
-  Add-OutTop @('FIX: ' + [string]$j.msg) $(if ($j.ok) { $cOk } elseif ($j.ran) { $cRed } else { $cWarn })
+function Show-FixDone($code = $null) {
+  # 2.2.19 (sweep2, class C/F): the PREVIOUS fix's "ok" is never shown for this run; green needs ok AND the tool's code 0
+  $j = Read-TkRunResult (Join-Path $TK.P.Toolkit 'logs\fix-last.json') $TK.lastRunStarted
+  $v = Get-TkResultView 'fix' $j $code
+  Add-OutTop @($v.text) (Get-TkToneColor $v.tone)
 }
 
 function Do-Undo {

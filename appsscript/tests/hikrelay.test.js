@@ -20,7 +20,7 @@ function env() {
     },
     GmailApp: { search: (q) => { g._q = q; return mails.length ? [{ getMessages: () => mails }] : []; } }
   };
-  vm.createContext(g); vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'HikRelay.gs'), 'utf8'), g);
+  vm.createContext(g); vm.runInContext(fs.readFileSync(process.env.HIKRELAY_GS || path.join(__dirname, '..', 'HikRelay.gs'), 'utf8'), g);   // HIKRELAY_GS (tests only): another copy, for the old-code proof
   g._props = props; g._cache = cache; g._files = files; g._trig = trig; g._blob = blob;
   g._mail = (id, from, subject, body, atts, when) => mails.push({ getId: () => id, getFrom: () => from, getSubject: () => subject, getPlainBody: () => body, getAttachments: () => atts || [], getDate: () => new Date(when || NOW) });
   g._now = v => { NOW = v; }; g._t = () => NOW; g._slept = () => slept;
@@ -163,4 +163,63 @@ g._mail('two-content', 'support@hikvision.com', 'Reset '+SER+' and '+ser2, 'Two 
 g.scanHikReplies();
 a = g._post({op:'hikReplyGet',key:KEY,serial:ser2,shortSerial:'K87654321',pc:'B'});
 eq(Buffer.from(a.data,'base64').toString(),'<dev>K87654321</dev> UNLOCK-B','two files: each is matched by the device its content names');
-console.log('hikrelay total: ' + pass + ' ok');
+
+// ---- 2.2.19 (sweep2): a failed property / Drive read is not "no reply"; nothing is marked used or deleted unless it really worked ----
+// These checks count failures instead of stopping, so the old-code run (HIKRELAY_GS=<2.2.18 HikRelay.gs>) shows each one failing.
+let softFail = 0; const soft = (c, m) => { if (c) { pass++; console.log('PASS ' + m); } else { softFail++; console.log('FAIL ' + m); } };
+const tryRun = f => { try { return { v: f() }; } catch (e) { return { err: String(e && e.message || e) }; } };
+const fresh = () => { const h = env(); h._props.STATUS_PUSH_KEY = KEY; h.setupHikRelay(); return h; };
+// 1. a damaged stored record and no other reply: NOT CHECKED, never "no reply"
+g = fresh(); g._props.HIKR_bad = '{not json';
+a = g._post({ op: 'hikReplyGet', key: KEY, serial: SER, shortSerial: SS, pc: 'A' });
+soft(a.ok === false && /could not be read/.test(a.msg || ''), 'sweep2 relay: a damaged stored record is NOT CHECKED (ok:false), not "no reply" (found:false)');
+soft(g.unmatchedHikReplies().some(x => x.kind === 'damaged'), 'sweep2 relay: unmatchedHikReplies lists the damaged record (it was skipped without a word)');
+// control: a damaged record does not stop a real reply for this device
+g._mail('ok1', 'Hikvision <noreply@hikvision.com>', 'Password reset for device ' + SER, 'Please import the attached file.', [g._blob('reset.xml', '<xml>good</xml>', 'application/xml')]);
+g.scanHikReplies();
+a = g._post({ op: 'hikReplyGet', key: KEY, serial: SER, shortSerial: SS, pc: 'A' });
+soft(a.ok === true && a.found === true && Buffer.from(a.data, 'base64').toString() === '<xml>good</xml>', 'sweep2 relay control: a damaged record beside a real reply still hands out the real reply');
+// 2. the stored Drive file reads back empty: not handed out, not marked as given to this PC
+g = fresh();
+g._mail('e1', 'Hikvision <noreply@hikvision.com>', 'Password reset for device ' + SER, 'Please import the attached file.', [g._blob('reset.xml', '<xml>x</xml>', 'application/xml')]);
+g.scanHikReplies();
+{ const rec = JSON.parse(g._props.HIKR_e1); g._files[rec.fileId].bytes = Buffer.from(''); }
+a = g._post({ op: 'hikReplyGet', key: KEY, serial: SER, shortSerial: SS, pc: 'A' });
+soft(a.ok === false, 'sweep2 relay: a stored reply file that reads back empty is refused (ok:false), not handed out as a reply');
+soft(!JSON.parse(g._props.HIKR_e1).servedAt, '...and it is NOT marked as given to this PC (another PC / a later try can still get the real file)');
+// 2b. the Drive read itself fails: an error answer, and not marked used
+g = fresh();
+g._mail('e2', 'Hikvision <noreply@hikvision.com>', 'Password reset for device ' + SER, 'x', [g._blob('reset.xml', '<xml>y</xml>', 'application/xml')]);
+g.scanHikReplies();
+{ const real = g.DriveApp.getFileById; g.DriveApp.getFileById = id => { throw new Error('Drive is not answering'); };
+  a = g._post({ op: 'hikReplyGet', key: KEY, serial: SER, shortSerial: SS, pc: 'A' }); g.DriveApp.getFileById = real; }
+soft(a.ok === false && !JSON.parse(g._props.HIKR_e2).servedAt, 'sweep2 relay control: a Drive read that fails answers ok:false and leaves the reply unmarked');
+// 3. scan: one mail whose Drive copy cannot be made is not filed and not marked seen; the other mail is filed; the scan says it failed
+g = fresh();
+g._mail('d1', 'Hikvision <noreply@hikvision.com>', 'Password reset for device ' + SER, 'x', [g._blob('broken.xml', '<xml>1</xml>', 'application/xml')]);
+g._mail('d2', 'support@hikvision.com', 'Re: reset request serial DS-7608NI-K2/8P20210505CCWRF99887766', 'Your verification code: AB12CD34', []);
+{ const realFolder = g.DriveApp.getFolderById; g.DriveApp.getFolderById = id => { const f = realFolder(id); return { getName: f.getName, createFile: b => { if (b.getName() === 'broken.xml') throw new Error('Drive quota'); return f.createFile(b); } }; };
+  r = tryRun(() => g.scanHikReplies()); g.DriveApp.getFolderById = realFolder; }
+soft(!r.err && r.v.ok === false && r.v.failed === 1, 'sweep2 relay: a scan where one mail could not be kept says so (ok:false, failed 1) instead of stopping', JSON.stringify(r));
+soft(!g._props.HIKR_d1, '...that mail is NOT marked seen, so the next scan files it');
+soft(!!g._props.HIKR_d2 && JSON.parse(g._props.HIKR_d2).code === 'AB12CD34', '...and the other mail in the same scan is still filed');
+r = tryRun(() => g.scanHikReplies());
+soft(!r.err && r.v.ok === true && !!g._props.HIKR_d1, '...the next scan (Drive working again) files it');
+// 4. scan: the record save fails after the Drive copy was made: the copy goes back to the bin (no orphan), the mail is tried again
+g = fresh();
+g._mail('s1', 'Hikvision <noreply@hikvision.com>', 'Password reset for device ' + SER, 'x', [g._blob('reset.xml', '<xml>2</xml>', 'application/xml')]);
+{ const realPS = g.PropertiesService.getScriptProperties; g.PropertiesService.getScriptProperties = () => { const o = realPS(); const sp = o.setProperty; o.setProperty = (k, v) => { if (k === 'HIKR_s1') throw new Error('property store full'); sp(k, v); }; return o; };
+  r = tryRun(() => g.scanHikReplies()); g.PropertiesService.getScriptProperties = realPS; }
+soft(!r.err && r.v.ok === false && !g._props.HIKR_s1 && Object.values(g._files).every(f => f.trashed), 'sweep2 relay: a record that could not be saved leaves no Drive copy behind (it went back to the bin) and is not marked seen', JSON.stringify(r));
+// 5. clean-up after 30 days: the record stays when its Drive copy could not be put in the bin
+g = fresh();
+g._mail('o1', 'Hikvision <noreply@hikvision.com>', 'Password reset for device ' + SER, 'x', [g._blob('reset.xml', '<xml>3</xml>', 'application/xml')]);
+g.scanHikReplies();
+g._now(g._t() + 31 * 86400000);
+{ const real = g.DriveApp.getFileById; g.DriveApp.getFileById = id => ({ setTrashed: () => { throw new Error('Drive is not answering'); } });
+  r = tryRun(() => g.scanHikReplies()); g.DriveApp.getFileById = real; }
+soft(!r.err && !!g._props.HIKR_o1, 'sweep2 relay: an old record whose Drive copy could not be put in the bin is KEPT (tried again), not deleted');
+r = tryRun(() => g.scanHikReplies());
+soft(!r.err && !g._props.HIKR_o1, 'sweep2 relay: once the Drive copy does go to the bin, the old record is removed');
+if (softFail) { console.log('hikrelay sweep2: ' + softFail + ' FAILED'); process.exitCode = 1; }
+console.log('hikrelay total: ' + pass + ' ok' + (softFail ? ' (' + softFail + ' failed)' : ''));

@@ -82,6 +82,7 @@ Say ('Gateway ' + $gw + ' | subnet ' + $Subnet + '.0/24')
 # loop / storm check: what reaches this PC's port in 10 s (an L2 loop shows as hundreds+ broadcasts per second)
 $pn = ($nics | Select-Object -First 1).Name
 $a = Get-NetAdapterStatistics -Name $pn -ErrorAction SilentlyContinue; Start-Sleep 10; $b = Get-NetAdapterStatistics -Name $pn -ErrorAction SilentlyContinue
+if (-not ($a -and $b)) { Say 'Traffic into this PC: NOT CHECKED (the network adapter''s counters could not be read)' }   # 2.2.19 (sweep2)
 if ($a -and $b) {
   $bc = ($b.ReceivedBroadcastPackets - $a.ReceivedBroadcastPackets) / 10; $mc = ($b.ReceivedMulticastPackets - $a.ReceivedMulticastPackets) / 10
   $kb = [int](($b.ReceivedBytes - $a.ReceivedBytes) / 1024 / 10)
@@ -149,13 +150,33 @@ function Post-Isapi($base, $path, $xml) {
   try { $a = Get-NcIsapiArgs ($base + $path); $r = Invoke-WebRequest @a -Method Post -Body $xml -ContentType 'application/xml' -TimeoutSec 15; return @{ code = 200; body = $r.Content } }
   catch { $c = 0; try { $c = [int]$_.Exception.Response.StatusCode } catch {}; return @{ code = $c; body = '' } }
 }
+# 2.2.19 (sweep2, class C): the NVR channel list. A failed read (HTTP not 200) or an answer with no channel in it is NOT CHECKED, never
+# "0 of 0 channels online"; a channel with no online true/false is NOT CHECKED, never counted as offline.
+function Get-NcChannelSummary($code, [string]$body) {
+  $off = New-Object System.Collections.Generic.List[string]; $unk = New-Object System.Collections.Generic.List[string]
+  if ([int]$code -ne 200) { return [pscustomobject]@{ note = ('NVR: channel status NOT CHECKED (the channel list could not be read' + $(if ([int]$code) { ', HTTP ' + $code } else { '' }) + ')'); off = $off; unknown = $unk; read = $false } }
+  $chs = [regex]::Matches([string]$body, '(?s)<InputProxyChannelStatus[^>]*>(.*?)</InputProxyChannelStatus>')
+  if (-not $chs.Count) { return [pscustomobject]@{ note = 'NVR: channel status NOT CHECKED (the answer had no channel in it)'; off = $off; unknown = $unk; read = $false } }
+  $on = 0
+  foreach ($ch in $chs) { $b = $ch.Groups[1].Value; $cid = Tag $b 'id'; $cip = Tag $b 'ipAddress'; $o = ([string](Tag $b 'online')).Trim().ToLower(); $det = Tag $b 'chanDetectResult'
+    if ($o -eq 'true') { $on++ } elseif ($o -eq 'false') { $off.Add('D' + $cid + ' ' + $cip + ' ' + $det) } else { $unk.Add('D' + $cid + ' ' + $cip) } }
+  return [pscustomobject]@{ note = ('NVR: ' + $on + ' of ' + $chs.Count + ' channels online' + $(if ($unk.Count) { ', ' + $unk.Count + ' NOT CHECKED (no online state)' } else { '' })); off = $off; unknown = $unk; read = $true }
+}
+# 2.2.19 (sweep2, class C): who pulls video from a device. A failed read is NOT CHECKED, never "nobody".
+function Get-NcStreamsText($ss) {
+  if (-not $ss -or [int]$ss.code -ne 200) { return ('NOT CHECKED' + $(if ($ss -and [int]$ss.code) { ' (HTTP ' + $ss.code + ')' } else { '' })) }
+  return (([regex]::Matches([string]$ss.body, '<ipAddress>([^<]*)</ipAddress>') | ForEach-Object { $_.Groups[1].Value }) -join ' ')
+}
+function Format-NcStreamsTo([string]$streams) { if ($streams -like 'NOT CHECKED*') { return $streams }; if ($streams) { return (($streams -split ' ' | Select-Object -Unique) -join '/') }; return 'nobody' }
 function Tag($xml, $t) { $m = [regex]::Match($xml, '<' + $t + '>([^<]*)</' + $t + '>'); if ($m.Success) { return $m.Groups[1].Value } else { return '' } }
 function Up($sec) { if (-not $sec) { return '' }; $ts = [TimeSpan]::FromSeconds([double]$sec); return ('{0}d{1}h{2}m' -f $ts.Days, $ts.Hours, $ts.Minutes) }
 function Read-Logs($base, $ip) {
   $st = (Get-Date).ToUniversalTime().AddDays(-$LogDays).ToString('yyyy-MM-ddTHH:mm:ssZ'); $en = (Get-Date).ToUniversalTime().AddHours(14).ToString('yyyy-MM-ddTHH:mm:ssZ')
   $xml = '<?xml version="1.0" encoding="UTF-8"?><CMSearchDescription><searchID>' + [guid]::NewGuid().ToString().ToUpper() + '</searchID><metaId>log.std-cgi.com</metaId><timeSpanList><timeSpan><startTime>' + $st + '</startTime><endTime>' + $en + '</endTime></timeSpan></timeSpanList><maxResults>200</maxResults><searchResultPostion>0</searchResultPostion></CMSearchDescription>'
   $r = Post-Isapi $base '/ISAPI/ContentMgmt/logSearch' $xml
-  if ($r.code -eq 200) { $r.body | Set-Content (Join-Path $OutDir ('raw\log-' + $ip + '.xml')) }
+  # 2.2.19 (sweep2, class C): a log search that failed is NOT CHECKED, never an empty "no events" answer
+  if ([int]$r.code -ne 200) { return ('NOT CHECKED (log search failed' + $(if ([int]$r.code) { ', HTTP ' + $r.code } else { '' }) + ')') }
+  $r.body | Set-Content (Join-Path $OutDir ('raw\log-' + $ip + '.xml'))
   $ms = [regex]::Matches($r.body, '<metaId>log\.std-cgi\.com/([^<]+)</metaId>')
   $cnt = @{}; foreach ($m in $ms) { $k = $m.Groups[1].Value; if ($k -match 'net|Net|disconn|broken|ipc|IPC|offline|Offline|power|Power|reboot|Reboot|start|Start') { if ($cnt.ContainsKey($k)) { $cnt[$k]++ } else { $cnt[$k] = 1 } } }
   return (($cnt.Keys | ForEach-Object { $_ + '=' + $cnt[$_] }) -join ' ')
@@ -184,17 +205,15 @@ foreach ($i in $ips) {
       if ($l.code -ne 200) { $l = Get-Isapi $base '/ISAPI/System/Network/interfaces' }
       $row.link_speed = Tag $l.body 'speed'; $row.link_duplex = Tag $l.body 'duplex'; $row.link_auto = Tag $l.body 'autoNegotiation'
       $ss = Get-Isapi $base '/ISAPI/Streaming/status'   # who is pulling video from this device right now
-      if ($ss.code -eq 200) { $row.streams_to = (([regex]::Matches($ss.body, '<ipAddress>([^<]*)</ipAddress>') | ForEach-Object { $_.Groups[1].Value }) -join ' ') }
+      $row.streams_to = Get-NcStreamsText $ss   # 2.2.19 (sweep2): a failed read says NOT CHECKED, not "nobody"
       ($d.body + "`r`n" + $s.body + "`r`n" + $l.body) | Set-Content (Join-Path $OutDir ('raw\' + $i + '.xml'))
       if ($LogDays -gt 0) { $row.logs = Read-Logs $base $i }
       if ($isNvr) {
         $c = Get-Isapi $base '/ISAPI/ContentMgmt/InputProxy/channels/status'
         $c.body | Set-Content (Join-Path $OutDir 'raw\nvr-channels.xml')
-        $chs = [regex]::Matches($c.body, '(?s)<InputProxyChannelStatus[^>]*>(.*?)</InputProxyChannelStatus>')
-        $on = 0; $off = New-Object System.Collections.Generic.List[string]
-        foreach ($ch in $chs) { $b = $ch.Groups[1].Value; $cid = Tag $b 'id'; $cip = Tag $b 'ipAddress'; $o = Tag $b 'online'; $det = Tag $b 'chanDetectResult'; if ($o -eq 'true') { $on++ } else { $off.Add('D' + $cid + ' ' + $cip + ' ' + $det) } }
-        $row.note = 'NVR: ' + $on + ' of ' + $chs.Count + ' channels online'
-        $script:nvrOff = $off
+        $cs = Get-NcChannelSummary $c.code $c.body
+        $row.note = $cs.note
+        $script:nvrOff = $cs.off; $script:nvrUnknown = $cs.unknown
       }
     } elseif ($d.code -eq 401) { $row.auth = 'REFUSED (stopped, no retry)' } else { $row.auth = 'no answer (' + $d.code + ')' }
   } elseif ($Exclude -contains $i) { $row.auth = 'excluded' }
@@ -214,18 +233,20 @@ if ($lk.Count) { Say ('Link speed reported by devices: ' + (($lk | Group-Object 
 $young = @($rows | Where-Object { $_.up_sec -and [double]$_.up_sec -lt 172800 })
 if ($young.Count) { Say ('Rebooted in last 48h: ' + (($young | ForEach-Object { ($_.ip -split '\.')[3] + '(' + $_.uptime + ')' }) -join ' ')) }
 $st2 = @($rows | Where-Object { $_.auth -eq 'ok' -and $_.note -notlike 'NVR*' })
-if ($st2.Count) { Say ('Video pulled by: ' + (($st2 | ForEach-Object { ($_.ip -split '\.')[3] + '->' + $(if ($_.streams_to) { ($_.streams_to -split ' ' | Select-Object -Unique) -join '/' } else { 'nobody' }) }) -join '  ')) }
+if ($st2.Count) { Say ('Video pulled by: ' + (($st2 | ForEach-Object { ($_.ip -split '\.')[3] + '->' + (Format-NcStreamsTo ([string]$_.streams_to)) }) -join '  ')) }
 foreach ($n in $Nvr) { $nr = $rows | Where-Object { $_.ip -eq $n }; $pulled = @($st2 | Where-Object { $_.streams_to -match [regex]::Escape($n) }).Count
   if ((-not $nr -or $nr.replies -like '0/*') -and $pulled) { Say ('HINT: NVR ' + $n + ' does not answer this PC, yet ' + $pulled + ' cameras are streaming to it -> the NVR is alive; PC and NVR are separated (switch port isolation / VLAN-Extend DIP mode, or a different switch path).') } }
 $ten = @($rows | Where-Object { $_.link_speed -eq '10' }); if ($ten.Count -ge 3) { Say ('HINT: ' + $ten.Count + ' devices report a 10 Mbps link. Check PoE switches for an Extend/CCTV/VLAN DIP switch (forces 10 Mbps / isolates ports) or bad cable.') }
 $ref = @($rows | Where-Object { $_.auth -like 'REFUSED*' }); if ($ref.Count) { Say ('Login refused (wrong password?): ' + (($ref | ForEach-Object { ($_.ip -split '\.')[3] }) -join ' ')) }
 if ($script:nvrOff) { Say ('NVR offline channels: ' + ($script:nvrOff -join '; ')) }
+if ($script:nvrUnknown) { Say ('NVR channels NOT CHECKED (no online state in the answer): ' + ($script:nvrUnknown -join '; ')) }
 # hints
 $pc = $nics | Select-Object -First 1
 if ($pc -and $pc.LinkSpeed -notmatch 'Gbps') { Say ('HINT: this PC links at ' + $pc.LinkSpeed + ' - bad cable/port or 100M switch between PC and network.') }
 $g0 = $rows | Where-Object { $_.ip -eq $gw }
 if ($g0 -and $g0.rtt_med -gt 10) { Say ('HINT: gateway answers in ' + $g0.rtt_med + ' ms (should be 1-2). The PC itself sits behind a congested/slow link.') }
-if (-not $g0 -or $g0.replies -like '0/*') { Say 'HINT: gateway not answering - this PC is cut off from the router side.' }
+if (-not $gw) { Say 'Gateway: NOT CHECKED (this PC has no default route that could be read).' }   # 2.2.19 (sweep2): unknown is not "cut off"
+elseif (-not $g0 -or $g0.replies -like '0/*') { Say 'HINT: gateway not answering - this PC is cut off from the router side.' }
 $slowShare = @($rows | Where-Object { $_.band -like '*SLOW*' }).Count
 if ($slowShare -ge 5) { Say ('HINT: ' + $slowShare + ' devices answer slowly. Devices in the same band usually hang off the same switch/uplink; the slow band is behind a saturated, 10/100 or looping link.') }
 $sum | Set-Content (Join-Path $OutDir 'summary.txt')

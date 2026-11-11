@@ -218,8 +218,9 @@ function ConvertFrom-ScHikStatus([string]$statusXml, [string]$namesXml) {
   $out = @()
   foreach ($m in [regex]::Matches([string]$statusXml, '(?s)<InputProxyChannelStatus(?:\s[^>]*)?>(.*?)</InputProxyChannelStatus>')) {
     $b = $m.Groups[1].Value; $id = Get-ScXml $b 'id'
-    $online = (Get-ScXml $b 'online') -eq 'true'
-    $out += [pscustomobject]@{ Ch = [int]$id; Ip = (Get-ScXml $b 'ipAddress'); Online = $online; Detail = (Get-ScXml $b 'chanDetectResult'); Name = $(if ($names.ContainsKey($id)) { $names[$id] } else { '' }); Protocol = (Get-ScXml $b 'proxyProtocol'); Model = (Get-ScXml $b 'model') }
+    # 2.2.19 (sweep2, class C): a channel whose answer has no online true/false is NOT CHECKED (Known false), never "OFFLINE"
+    $ov = ([string](Get-ScXml $b 'online')).Trim().ToLower(); $online = ($ov -eq 'true')
+    $out += [pscustomobject]@{ Ch = [int]$id; Ip = (Get-ScXml $b 'ipAddress'); Online = $online; Known = ($ov -eq 'true' -or $ov -eq 'false'); Detail = (Get-ScXml $b 'chanDetectResult'); Name = $(if ($names.ContainsKey($id)) { $names[$id] } else { '' }); Protocol = (Get-ScXml $b 'proxyProtocol'); Model = (Get-ScXml $b 'model') }
   }
   return @($out | Sort-Object Ch)
 }
@@ -238,7 +239,7 @@ function ConvertFrom-ScDahuaStatus([string]$stateText, [string]$remoteText, [str
     $state = [string]$c['connectionState']
     if ($en.ContainsKey([string]$chIdx) -and $en[[string]$chIdx] -eq 'false' -and $state -ne 'Connected') { continue }
     $name = ''; $tk = 'table.ChannelTitle[' + $chIdx + '].Name'; if ($ti.ContainsKey($tk)) { $name = $ti[$tk] }
-    $out += [pscustomobject]@{ Ch = $chIdx + 1; Ip = $(if ($addr.ContainsKey([string]$chIdx)) { $addr[[string]$chIdx] } else { '' }); Online = ($state -eq 'Connected'); Detail = $state; Name = $name; Protocol = 'Dahua'; Model = '' }
+    $out += [pscustomobject]@{ Ch = $chIdx + 1; Ip = $(if ($addr.ContainsKey([string]$chIdx)) { $addr[[string]$chIdx] } else { '' }); Online = ($state -eq 'Connected'); Known = [bool]$state.Trim(); Detail = $state; Name = $name; Protocol = 'Dahua'; Model = '' }   # 2.2.19 (sweep2): no state = NOT CHECKED
   }
   return @($out | Sort-Object Ch)
 }
@@ -390,7 +391,10 @@ function Get-ScDiagnosis($R) {
   }
   if ($R.nvrRead -and -not $R.nvrRead.ok) { $find += [pscustomobject]@{ Level = 'warn'; Text = ('NVR login: ' + $R.nvrRead.msg) } }
   # channels from the NVR
-  $off = @($chs | Where-Object { -not $_.Online })
+  # 2.2.19 (sweep2, class C): a channel the NVR gave no state for is NOT CHECKED (amber), not OFFLINE (red) - red only for a state READ as down
+  $unk = @($chs | Where-Object { $_.PSObject.Properties['Known'] -and -not $_.Known })
+  $off = @($chs | Where-Object { -not $_.Online -and -not ($_.PSObject.Properties['Known'] -and -not $_.Known) })
+  foreach ($c in $unk) { $find += [pscustomobject]@{ Level = 'warn'; Text = ('ch ' + $c.Ch + $(if ($c.Ip) { '  ' + $c.Ip } else { '' }) + $(if ($c.Name) { '  "' + $c.Name + '"' } else { '' }) + ' - NOT CHECKED: the NVR''s answer had no online/offline state for this channel.') } }
   $deadCount = 0
   foreach ($c in $off) {
     $ip = [string]$c.Ip; $d = $null; if ($ip) { $d = $byIp[$ip] }
@@ -424,7 +428,8 @@ function Get-ScDiagnosis($R) {
     if (($cam -or $d.Vendor -match 'Ubiquiti|DrayTek') -and $d.Sent -ge 10 -and $d.Ok -gt 0 -and $d.LossPct -ge 10) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($d.Ip + ' ' + $(if ($d.Vendor) { '(' + $d.Vendor + ') ' } else { '' }) + 'drops ' + $d.LossPct + '% of pings - flaky cable/port.') } }
     if ($cam -and $d.DiffSubnet) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($d.Ip + ' ' + $d.Model + ' is on a DIFFERENT IP scheme than the NVR (' + $nvr + '), so the NVR can''t reach it. Change its address to the NVR''s scheme.') } }
   }
-  foreach ($x in $dups) { if (-not ($chs | Where-Object { $_.Ip -eq $x.ip -and -not $_.Online })) { $find += [pscustomobject]@{ Level = 'bad'; Text = ('IP CONFLICT at ' + $x.ip + ': answered from ' + (@($x.macs) -join ' and ') + '. Two devices share this address.') } } }
+  # 2.2.19 (sweep2): only a channel READ as offline already names the conflict in its own line
+  foreach ($x in $dups) { if (-not ($off | Where-Object { $_.Ip -eq $x.ip })) { $find += [pscustomobject]@{ Level = 'bad'; Text = ('IP CONFLICT at ' + $x.ip + ': answered from ' + (@($x.macs) -join ' and ') + '. Two devices share this address.') } } }
   # comparison with the previous run on this PC
   if ($R.previous) {
     $now = @{}; foreach ($d in $devs) { if ($d.Ok -gt 0) { $now[[string]$d.Ip] = 1 } }
@@ -434,8 +439,9 @@ function Get-ScDiagnosis($R) {
   # headline
   $camsSeen = @($devs | Where-Object { $_.Ok -gt 0 -and (($_.Kind -match 'camera') -or ($_.Vendor -match 'Hikvision|Dahua|Uniview')) -and $_.Ip -ne $nvr }).Count
   if ($chs.Count) {
-    if ($off.Count -eq 0) { $head = 'All ' + $chs.Count + ' cameras on the NVR are online.' }
-    else { $head = '' + $off.Count + ' of ' + $chs.Count + ' cameras are NOT working: ' + ((@($off | ForEach-Object { 'ch ' + $_.Ch }) | Select-Object -First 12) -join ', ') }
+    if ($off.Count -eq 0 -and $unk.Count -eq 0) { $head = 'All ' + $chs.Count + ' cameras on the NVR are online.' }
+    elseif ($off.Count -eq 0) { $head = '' + ($chs.Count - $unk.Count) + ' of ' + $chs.Count + ' cameras on the NVR are online; ' + $unk.Count + ' NOT CHECKED (no state in the NVR''s answer) - not an all-clear.' }
+    else { $head = '' + $off.Count + ' of ' + $chs.Count + ' cameras are NOT working: ' + ((@($off | ForEach-Object { 'ch ' + $_.Ch }) | Select-Object -First 12) -join ', ') + $(if ($unk.Count) { '; ' + $unk.Count + ' NOT CHECKED' } else { '' }) }
   } elseif ($R.nvrRead) { $head = 'Could not read the camera list from the NVR. ' + $camsSeen + ' cameras answer on this network.' }
   else { $head = '' + $camsSeen + ' cameras answer on this network.' + $(if ($nvr) { ' Type the NVR password and run again to see exactly which channels are down.' } else { ' Type the NVR address + password to see which channels are down.' }) }
   $bad = @($find | Where-Object { $_.Level -eq 'bad' }).Count; $warn = @($find | Where-Object { $_.Level -eq 'warn' }).Count
@@ -454,7 +460,7 @@ function Format-ScReport($R, $D) {
   if (@($R.channels).Count) {
     $L.Add(''); $L.Add('NVR CHANNELS')
     foreach ($c in @($R.channels)) { $dv = $null; foreach ($x in @($R.devices)) { if ($x.Ip -eq $c.Ip) { $dv = $x } }
-      $L.Add(('  ch {0,-3} {1,-16} {2,-8} {3,-22} {4}' -f $c.Ch, $c.Ip, $(if ($c.Online) { 'online' } else { 'OFFLINE' }), $(if ($dv) { 'ping ' + (100 - $dv.LossPct) + '% ok ' + $(if ($dv.Median -ne $null) { '' + $dv.Median + 'ms' } else { '' }) } else { 'not pingable here' }), $c.Name)) }
+      $L.Add(('  ch {0,-3} {1,-16} {2,-8} {3,-22} {4}' -f $c.Ch, $c.Ip, $(if ($c.Online) { 'online' } elseif ($c.PSObject.Properties['Known'] -and -not $c.Known) { 'NOT CHKD' } else { 'OFFLINE' }), $(if ($dv) { 'ping ' + (100 - $dv.LossPct) + '% ok ' + $(if ($dv.Median -ne $null) { '' + $dv.Median + 'ms' } else { '' }) } else { 'not pingable here' }), $c.Name)) }
   }
   $L.Add(''); $L.Add('DEVICES THAT ANSWERED (' + @($R.devices).Count + ')')
   $L.Add('  IP               MAC                VENDOR                 KIND       PINGS   LOSS  MS(med/max) PORTS          MODEL')
@@ -501,7 +507,7 @@ function Send-ScReport($R, $D, [string]$siteCode, [string]$uploadCode) {
   $clean = { param($t) $t = [string]$t; foreach ($n in $names) { $t = $t.Replace('  "' + $n + '"', '').Replace('"' + $n + '"', '') }; $t }
   $body = [ordered]@{ op = 'siteCheckPush'; site = $siteCode; code = $uploadCode; pc = $R.pc; version = $R.version; when = $R.started; headline = (& $clean $D.Headline)
     findings = @($D.Findings | ForEach-Object { [ordered]@{ level = $_.Level; text = (& $clean $_.Text) } })
-    channels = @($R.channels | ForEach-Object { [ordered]@{ ch = $_.Ch; ip = $_.Ip; online = [bool]$_.Online; detail = $_.Detail } })
+    channels = @($R.channels | ForEach-Object { [ordered]@{ ch = $_.Ch; ip = $_.Ip; online = $(if ($_.PSObject.Properties['Known'] -and -not $_.Known) { $null } else { [bool]$_.Online }); detail = $_.Detail } })   # 2.2.19 (sweep2): null = NOT CHECKED, not offline
     devices = @($R.devices | ForEach-Object { [ordered]@{ ip = $_.Ip; mac = $_.Mac; vendor = $_.Vendor; kind = $_.Kind; loss = $_.LossPct; ms = $_.Median; ports = @($_.Ports) } }) }
   $json = $body | ConvertTo-Json -Depth 5 -Compress
   try {

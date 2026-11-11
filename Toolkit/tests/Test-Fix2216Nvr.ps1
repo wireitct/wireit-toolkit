@@ -165,6 +165,7 @@ foreach ($fn in @('Show-SiteCheck', 'End-Run')) {
 $TK = @{ P = @{ Toolkit = $tmp; Logs = $tmp } }; $cOk = 'green'; $cWarn = 'amber'; $cRed = 'red'
 $script:Top = @(); $script:Pill = $null
 function Read-TkJson { return $script:check }
+function Read-TkRunResult { return $script:check }   # 2.2.19 (sweep2): Show-SiteCheck now reads this run's result through Read-TkRunResult (the file layer is stood in for here)
 function Add-OutTop($lines, $colour) { $script:Top += [pscustomobject]@{ text = (@($lines) -join ' | '); colour = $colour } }
 function Show-Fixes {}
 function Add-Out { }

@@ -3,7 +3,8 @@ title WireIt - NVR Snapshot (install record)
 cd /d "%~dp0"
 net session >nul 2>&1
 if errorlevel 1 (
-  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  rem 2.2.19 (sweep2): wait for the elevated window and end with ITS exit code; plain exit /b keeps that code
+  powershell -NoProfile -Command "try { $p = Start-Process -FilePath '%~f0' -Verb RunAs -Wait -PassThru -ErrorAction Stop; exit $p.ExitCode } catch { Write-Host 'Windows did not give administrator rights, so nothing ran.'; exit 5 }"
   exit /b
 )
 set SITE=
@@ -16,6 +17,9 @@ set ARGS=-Mode Snapshot
 if not "%SITE%"=="" set ARGS=%ARGS% -Site "%SITE%"
 if not "%RMODEL%"=="" set ARGS=%ARGS% -RouterModel "%RMODEL%"
 if not "%RRANGE%"=="" set ARGS=%ARGS% -DhcpRange "%RRANGE%"
+rem 2.2.19 (sweep2): keep the tool's exit code - the window still pauses, then this .cmd ends with that code (it used to end 0)
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0FixNVR.ps1" %ARGS%
+set "WIREIT_RC=%ERRORLEVEL%"
 echo.
 pause
+exit /b %WIREIT_RC%
