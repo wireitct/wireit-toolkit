@@ -1,9 +1,9 @@
 {
-  "version": "2.2.18",
+  "version": "2.2.19",
   "released": "2026-11-11",
-  "commit": "e6f2cb5063145b32ebfb6cff96e50dc2f14a8e79",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/e6f2cb5063145b32ebfb6cff96e50dc2f14a8e79/",
-  "notes": "2.2.18: fixes for the Codex review of 2.2.17 (classic Undo and Fix check the device by MAC before every change and read the settings back; Fix this site Undo leaves a channel another camera now uses alone; network changes are fixed only when every setting reads back; firmware needs a new version read back; an unreadable recovery record keeps blocking until a checked recovery; a failed storage read is NOT CHECKED; repair backups must be saved before any change) plus a repo-wide sweep.",
+  "commit": "fa4bd3308a2f7bab3dc5d96d712974975b870dbc",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/fa4bd3308a2f7bab3dc5d96d712974975b870dbc/",
+  "notes": "2.2.19: fixes for the Codex review of 2.2.18 (27 findings), by pattern across the whole repo: every device or adapter write needs a fresh identity match (MAC, or the saved serial when only a serial was saved) right before it, and a move needs a free destination; anything read before a YES is read again after it; a value that could not be read is NOT CHECKED, never ok / already right / none / done; DHCP modes are normalized and empty saved values are written back; recovery records, limits, login counts, reset steps and queued uploads are saved and checked before the risky step, and damaged ones are kept and block instead of being deleted; Go back and updates refuse to work over a half-finished update.",
   "files": [
     {
       "path": "CamReset/Find Cameras.cmd",
@@ -12,8 +12,8 @@
     },
     {
       "path": "CamReset/Find-Cameras.ps1",
-      "sha256": "df2c56a2df6cd1dddaecb1b1ad62664127046cdbaa8029e5163aaa10580846e7",
-      "size": 37529
+      "sha256": "4b7815985b6a8c51fd3e4c8c038b462ead7670b3c8e34aa5cafa8ae55446a6f1",
+      "size": 38777
     },
     {
       "path": "CamReset/Install-CamReset.ps1",
@@ -42,8 +42,8 @@
     },
     {
       "path": "FixNVR/FixNVR.ps1",
-      "sha256": "d2d5de9b6a4a946b2a40d751e98d8a1da00052a11c7f50dd966010181d3aa30d",
-      "size": 140154
+      "sha256": "cc7ee297afe8b3e0e8b4454345959d67b5c598bcb6be7055e0eeb4cc4206e141",
+      "size": 169196
     },
     {
       "path": "FixNVR/NVR Snapshot.cmd",
@@ -72,33 +72,33 @@
     },
     {
       "path": "Toolkit/CamViews.ps1",
-      "sha256": "e526b739d7e3adc39f332571bfacaf2ec2ce19efef08adea242e44be0efea8b6",
-      "size": 38416
+      "sha256": "651e4374099210bc3a27bf231571dff9e71a2b1b6e38b59e5937be3d6fadb1e2",
+      "size": 43694
     },
     {
       "path": "Toolkit/FixIt.ps1",
-      "sha256": "5073f0e5d009b2c0af7f85c9d2591a53fb958cd140d607e36e6b0dd35bbb2d43",
-      "size": 5873
+      "sha256": "f24d2e4f80a5e9d9a028f8b646af6a045831c4859ac8ec473f89ef5c3639a8a2",
+      "size": 6336
     },
     {
       "path": "Toolkit/FixSite.ps1",
-      "sha256": "f8fa16d47a35052bbefb6960ad50ae872160e61105f15224ecde3c0891ec9e4b",
-      "size": 134182
+      "sha256": "49604622f6114958df97dea6868fdc3f0bedffbc1a437a10934457eb06cf6278",
+      "size": 150642
     },
     {
       "path": "Toolkit/FixSiteBw.ps1",
-      "sha256": "bbc8231adf93c8c11417c2da311597696a35641a41bf4abeba286937a5361bd1",
+      "sha256": "17088e3959b32a0ff1b6271ff5937a41d21c9c98a54d2896f3b5bc981041a5eb",
       "size": 12082
     },
     {
       "path": "Toolkit/FixSiteCore.ps1",
-      "sha256": "a40929f83abb587cb44e3c9ef134ac55dab0e1848bbb5f3b4254dfda1cea95d3",
-      "size": 87925
+      "sha256": "c0a21ebda1a9f64d818d506c7ddb53b2bb6569eaab0a739bcc9584d556979886",
+      "size": 90172
     },
     {
       "path": "Toolkit/FixSiteDevices.ps1",
-      "sha256": "3429536ed38ae9edc52440ed32cf5b859c8e5905c72e07cb0d816b583d6f059b",
-      "size": 122292
+      "sha256": "96ec41c7b6ea259daaa292784e89bd2a2d2826adc63cd93485420fa538ea3692",
+      "size": 154097
     },
     {
       "path": "Toolkit/FixSiteWindow.ps1",
@@ -122,23 +122,23 @@
     },
     {
       "path": "Toolkit/HikReset.ps1",
-      "sha256": "c8348ae398edd3c48f7f17012122a4e137d6da29e2d6c8bdba9a21c11e82b7e8",
-      "size": 9866
+      "sha256": "7144da66d73b8784e246d3ae5ba447386112f5e0e45f5d4ae9affb4df5e00b6f",
+      "size": 9926
     },
     {
       "path": "Toolkit/HikResetFlow.ps1",
-      "sha256": "2f80a710d622ae236bd88355212fa786e98df884492ca76e95192b271305277b",
-      "size": 66631
+      "sha256": "6a7dfa479fbb92b4be816a4066bb50795f51d6011def5b08ff0f4dce8b7745dc",
+      "size": 75986
     },
     {
       "path": "Toolkit/HikSadp.ps1",
-      "sha256": "e5508c39c80a316940370b52cbcc6dc4829872366847533f8b3787c90ed5e31c",
-      "size": 22960
+      "sha256": "f67e8fa2c87100ec556e53690990408f48d630c33884f3dc81f5511438d86166",
+      "size": 23048
     },
     {
       "path": "Toolkit/Install-Toolkit.ps1",
-      "sha256": "a60751adc9c205b1b32febad20da05a78805aa28c4fcc18a1fd33fc541ed02ad",
-      "size": 14459
+      "sha256": "86253a56cb0981882f8a0cef82cd54287e59ed18bb078336652a4aaa40567c6b",
+      "size": 15261
     },
     {
       "path": "Toolkit/modules/NvrHealth/firmware-latest.json",
@@ -147,13 +147,13 @@
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrFix.ps1",
-      "sha256": "17cd930ea89e9ace08bed8a68f7f1acf382477553a790182ebf51e1e53025f87",
-      "size": 48518
+      "sha256": "4cbb132c660cd28e48e12b62294264d4999c13d8d7ddd751954bbb93d2dd5b6d",
+      "size": 63415
     },
     {
       "path": "Toolkit/modules/NvrHealth/NvrHealth.psm1",
-      "sha256": "3a19bfd98dcd56a0710cb3289a24d47a9065113a8df3dc3cd1eb25b9af0da1a7",
-      "size": 135301
+      "sha256": "1aeb952d33de26d5489f44b48d79b08b15d1a3c5bd633042c320a8de8f21a3d5",
+      "size": 151740
     },
     {
       "path": "Toolkit/modules/NvrHealth/tests/mock_devices.py",
@@ -167,8 +167,8 @@
     },
     {
       "path": "Toolkit/NvrCheck.ps1",
-      "sha256": "2945ee91c1efba79bf812475b53c420c239dcbf9d63d5819cced9b43ce4267b4",
-      "size": 17620
+      "sha256": "dbd0eea1f77063f793fece9427b709cee9334839606c529d82b923c606ded616",
+      "size": 18075
     },
     {
       "path": "Toolkit/README.txt",
@@ -182,13 +182,13 @@
     },
     {
       "path": "Toolkit/RestoreNetwork.ps1",
-      "sha256": "29c9e46498297e6eece78ca0b9813f254da3c4a12c9ed9e41c3c31c5032ceb71",
-      "size": 60155
+      "sha256": "9e03a844ab7882336119818dfb195057466d68f33415e13da75ff61d25b4bdd5",
+      "size": 66958
     },
     {
       "path": "Toolkit/ScanUpload.ps1",
-      "sha256": "500aa076b04e44e2224d424fa53413caabddf039fc2bb6956dc49106dd498ed8",
-      "size": 7134
+      "sha256": "557e60fece66b29c6a7efaad96d50c822658cf68870ad565d7f1894abe1ca883",
+      "size": 8549
     },
     {
       "path": "Toolkit/Set upload key.cmd",
@@ -219,6 +219,11 @@
       "path": "Toolkit/tests/fix2218site/scenarios.py",
       "sha256": "1be28572885fda93fb70cef3165038ce0ea1a37f5f0dc2b342c84a718c5de803",
       "size": 17662
+    },
+    {
+      "path": "Toolkit/tests/fix2219site/scenarios.py",
+      "sha256": "c302dd5b6813217f4a94529f0ebdb55a28ef7267e0c9aa23d59422292ceff497",
+      "size": 22923
     },
     {
       "path": "Toolkit/tests/fix226/ok_server.py",
@@ -357,8 +362,8 @@
     },
     {
       "path": "Toolkit/tests/repro-2.2.14/reproduce-readd-hostname.ps1",
-      "sha256": "57acc4026cc4ad9967c7416ecc41cd51f511fb79952d1830639df09e6225e795",
-      "size": 3919
+      "sha256": "793e075d29155fe38b5369fd12dc4840727651ff1a06c9b49dcef25de6eff2ee",
+      "size": 4316
     },
     {
       "path": "Toolkit/tests/repro-2.2.14/reproduce-recording.ps1",
@@ -422,8 +427,8 @@
     },
     {
       "path": "Toolkit/tests/repro-2.2.15/reproduce-recording-disappears.ps1",
-      "sha256": "7f9b5217b443716d08168172495a06bf13f2e5df5c7448be81dd14fc7ca67219",
-      "size": 4171
+      "sha256": "4fc86c5b840750178d6109ddf6cf3fa9183dbd2dede7fce37ba55e6d51b18407",
+      "size": 4568
     },
     {
       "path": "Toolkit/tests/repro-2.2.15/reproduce-reset-second-unread.ps1",
@@ -467,33 +472,33 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix221.ps1",
-      "sha256": "ff60a9f7bd239a29721304f85fd301c8c67c73aae3d909216e86a47e9b3cb020",
-      "size": 40829
+      "sha256": "26610f69bf3d9c8791cc4d6d38cc544a71693e4e6dc47a9e1434ef6b7de1a923",
+      "size": 41767
     },
     {
       "path": "Toolkit/tests/Test-Fix2210.ps1",
-      "sha256": "6ea9dc210a5a26359ea54a514b0d24bf85a27bb75453b148ad26a5aa751e9817",
-      "size": 30000
+      "sha256": "74c4077a116046489df38b2a9c801c8c40a9ed26d4bf8957e4ae59a7a900ff4f",
+      "size": 30474
     },
     {
       "path": "Toolkit/tests/Test-Fix2211.ps1",
-      "sha256": "b0c4a471399e6f27d851fdc6dccce22e94447b1494694dd495059efec6eba392",
-      "size": 44868
+      "sha256": "6ffc9fee839eba649f95255074caef2fe8631a7be90adb48c263f87722b0af27",
+      "size": 44994
     },
     {
       "path": "Toolkit/tests/Test-Fix2212.ps1",
-      "sha256": "53e96d6ed51bd2b6dd6cfba7ac40a007443665b60dcf60bf714d4e82b153d5c4",
-      "size": 19603
+      "sha256": "62db7d7691fc60b09943446f050b77741954934fa1bbad01fcaeac94d8a2a958",
+      "size": 19692
     },
     {
       "path": "Toolkit/tests/Test-Fix2212Net.ps1",
-      "sha256": "bf136bb423b83bf55cba099dc039bbbd76d1fb6d66dd7cba57f17149fa69331b",
-      "size": 40098
+      "sha256": "baaa7cfe62d7d60b1a369b1d7d66c64cbe4bded4fed6f5738827719cde042044",
+      "size": 40540
     },
     {
       "path": "Toolkit/tests/Test-Fix2212Nvr.ps1",
-      "sha256": "da7d181cf6a2ec806cd83b6915ab563dfc3f8462e0c4f2751d14e4aea3f24f9e",
-      "size": 27240
+      "sha256": "cacb63d734a030258e2f4d6998a9246c9f83714171a45f192c46df45632d6ccb",
+      "size": 27522
     },
     {
       "path": "Toolkit/tests/Test-Fix2212Site.ps1",
@@ -512,8 +517,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2213Nvr.ps1",
-      "sha256": "005dd54a3456a2da30d48f85f3da8b60dcdbd467ffebb14119a26c1c0fa94986",
-      "size": 25106
+      "sha256": "3496739aefdc734ff0846ded11b6c15cf253875eb9aa8cc64b361b94afa986fe",
+      "size": 25900
     },
     {
       "path": "Toolkit/tests/Test-Fix2213Site.ps1",
@@ -527,8 +532,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2214Nvr.ps1",
-      "sha256": "db9089ff34e1d45e3c360afb12fdb171318f8fe5a5a0bbfd247ae829ff6a2e15",
-      "size": 26507
+      "sha256": "de5bcaeef661a7abab021c741499947569d511a0effe62a718efc92d20a3dac9",
+      "size": 27766
     },
     {
       "path": "Toolkit/tests/Test-Fix2214Site.ps1",
@@ -542,8 +547,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2215Nvr.ps1",
-      "sha256": "439398eb160b3ffa7023df5542b5f42a0f50b7aacb58ae6d92ffa2dac6b83a8b",
-      "size": 24565
+      "sha256": "7242fd2aba9073dcb43d2ff2c7442e5a6935c4e03fe116bfdeef1d00177af49c",
+      "size": 24962
     },
     {
       "path": "Toolkit/tests/Test-Fix2215Site.ps1",
@@ -557,8 +562,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2216Nvr.ps1",
-      "sha256": "5967ea628d27f74c6520bfed3e518d406c732262a3de7c61a13dd5820479f20c",
-      "size": 20896
+      "sha256": "216b0743a1335bf3cb90c501cfcf0904619bdf803932370bf6f456df94ec1e3c",
+      "size": 21690
     },
     {
       "path": "Toolkit/tests/Test-Fix2216Site.ps1",
@@ -567,28 +572,28 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2217Nvr.ps1",
-      "sha256": "645c594e27bd6edc863be75f96de63a6878d30a8aa82bc16ac6aab7bc040f69f",
-      "size": 11536
+      "sha256": "689e1b5887fdb032717cf98ec717c176b5624e25b588ca9b8dd83999595de3bc",
+      "size": 12330
     },
     {
       "path": "Toolkit/tests/Test-Fix2217Site.ps1",
-      "sha256": "83903948d433aea027503cca5d532e99dd46ba3bcc04476d9559e1a14c84b1c8",
-      "size": 9876
+      "sha256": "df30615760c2c02fa9cc08258c4f241ae6a71ab640826565f34be706cdb35921",
+      "size": 10193
     },
     {
       "path": "Toolkit/tests/Test-Fix2218Classic.ps1",
-      "sha256": "2c5fbb9ba30157dbb14cceb9f654851224dee1739e16b0eec406b5058fa92fb3",
-      "size": 33212
+      "sha256": "7093af891a1ec22779c0da2cbd3d698d6760f06d213b9ee906dd5a6bfe7f55d4",
+      "size": 33567
     },
     {
       "path": "Toolkit/tests/Test-Fix2218Nvr.ps1",
-      "sha256": "8cee659b8eb63f991507d162842693655882d9808a411609b527c9c4fba49f90",
-      "size": 32981
+      "sha256": "9cbc07f0c24e7871b43c6fba413eec3a3535775bb949147bfb9263e5cc423330",
+      "size": 33378
     },
     {
       "path": "Toolkit/tests/Test-Fix2218Site.ps1",
-      "sha256": "fbfd591d87eabb84a982b96292ae7d4caa889d884c18ffcce438ef311d5e3838",
-      "size": 15422
+      "sha256": "3ab474f83c0bdad5b58b28d5c0fe6af0d43413d6bb5cce27cc3bc9c511ee0e5d",
+      "size": 15807
     },
     {
       "path": "Toolkit/tests/Test-Fix2218Sweep.ps1",
@@ -596,19 +601,44 @@
       "size": 27565
     },
     {
+      "path": "Toolkit/tests/Test-Fix2219Classic.ps1",
+      "sha256": "29b374b8974a976f93a5e19d28858ab38165165e629cec556882cb7bafe1d8af",
+      "size": 36727
+    },
+    {
+      "path": "Toolkit/tests/Test-Fix2219Nvr.ps1",
+      "sha256": "0723dae6541f75abf135ce9d5f44d80fc57b90c5b2aa6a002c83c25d8b4ae3e6",
+      "size": 42027
+    },
+    {
+      "path": "Toolkit/tests/Test-Fix2219PcNet.ps1",
+      "sha256": "c7dfa14048affb32f3f6faf3b41a97a34dff1c446d70bc2cb99926aee7268b0b",
+      "size": 46776
+    },
+    {
+      "path": "Toolkit/tests/Test-Fix2219Site.ps1",
+      "sha256": "a65f4e8d728449ede255437ccadfc25c3d1204e67e5b7a4556f24c7e75017c6f",
+      "size": 13704
+    },
+    {
+      "path": "Toolkit/tests/Test-Fix2219Sweep.ps1",
+      "sha256": "ef6e5ec7aef9fbcc9021cbe1e4fd75e17463f21d31b3bd5fd8668d0f9112d7ec",
+      "size": 46474
+    },
+    {
       "path": "Toolkit/tests/Test-Fix222.ps1",
-      "sha256": "b263d58695a6291f1361faf5726fdcf0469982767ba33eb7e0cc229a0328e2ca",
-      "size": 43270
+      "sha256": "f6d0241defe2a48cf3f7f233010a3f75a3075c26b4f4efd1edd724b144dec805",
+      "size": 43833
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
-      "sha256": "c22f372c10146b78b4d2955481a92a2eaa7c2615f061503398b2328b99c7fdc3",
-      "size": 57401
+      "sha256": "ed44fdec00720130254cc7b10b8251d2473446fcd13d82f7342f1d761fd53c02",
+      "size": 57780
     },
     {
       "path": "Toolkit/tests/Test-Fix224.ps1",
-      "sha256": "78b8df1e68dc78d761656ee8c293d29e6438a92226b89fe46247503b030bdac8",
-      "size": 26905
+      "sha256": "c935333f0b4b47c0bad44e22d672e63343d4ce097db98f5a90e9cbcd1e87c343",
+      "size": 26973
     },
     {
       "path": "Toolkit/tests/Test-Fix225.ps1",
@@ -627,12 +657,12 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix228.ps1",
-      "sha256": "9d102e83502efd99dc93b12b4e28a834fc116e06c4916ef1b6fcd694f827a92c",
+      "sha256": "9974fa6719636fd441b81751382b117646b63513f00dfc14749f383102ed06a4",
       "size": 26952
     },
     {
       "path": "Toolkit/tests/Test-Fix229.ps1",
-      "sha256": "4af585ccfcd81c4a4c0fe98a03276a9336f55b413122a937f477d0a8b4497470",
+      "sha256": "340879aa143cf0a7a55df07337a135e95b8411a2091b63280c58bb4df6b7791b",
       "size": 28857
     },
     {
@@ -677,18 +707,18 @@
     },
     {
       "path": "Toolkit/ToolkitCore.ps1",
-      "sha256": "cbc7f71c3d45ca698c732a9785653b89bf84b7223f1a4decd3f3aea0502f9d14",
-      "size": 74090
+      "sha256": "9f5d08b7f24697c30798bf9c9e96e6079a1d5cb642380308b6ad35dabc21fcf8",
+      "size": 79483
     },
     {
       "path": "Toolkit/ToolkitMigrate.ps1",
-      "sha256": "bf99e9f2fe283b7a80c0b17f009c7cca4bc95983bcd1833604a8a395ff2bbf26",
-      "size": 6570
+      "sha256": "5a76588b7fddd1daf251e2f47288d5b8b6399095f50ad370484e149b5265087b",
+      "size": 6854
     },
     {
       "path": "Toolkit/ToolkitRecover.ps1",
-      "sha256": "d487bd7f7f7fa5614c54014e2868fd44af72c716b1dcc2821a3a9ed6b623d013",
-      "size": 4499
+      "sha256": "038a6341b46bbf165fda40802764cca2e8d103c186547dc509f1efa1b5c93f73",
+      "size": 6074
     },
     {
       "path": "Toolkit/WireIt Toolkit.cmd",
