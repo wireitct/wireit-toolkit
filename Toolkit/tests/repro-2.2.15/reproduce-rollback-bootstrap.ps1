@@ -38,8 +38,10 @@ function Run-Case([string]$kill) {
   $tk = New-Fixture $root
   & $pwshExe -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Child -Repo $Repo -KillAt $kill -Root $root | Out-Null
   $killed = $LASTEXITCODE
-  $res = & $pwshExe -NoProfile -ExecutionPolicy Bypass -Command {
-    param($tk)
+  # the start-up side runs as a script FILE (-File), never -Command / -EncodedCommand
+  $sf = Join-Path $root 'startup.ps1'
+  [IO.File]::WriteAllText($sf, @'
+param([string]$tk)
     $notice = ''; $err = ''
     try { . (Join-Path $tk 'ToolkitRecover.ps1'); $notice = [string](Invoke-TkStartupRecovery $tk) } catch { $err = $_.Exception.Message }
     . (Join-Path $tk 'ToolkitCore.ps1')
@@ -48,7 +50,9 @@ function Run-Case([string]$kill) {
     [pscustomobject]@{ notice = $notice; err = $err; version = (Get-TkVersion $tk); skip = $skip; updateState = $u.state; autoUpdate = $cfg.autoUpdate
       wouldReinstall = ($u.state -eq 'available' -and $cfg.autoUpdate -and [string]$u.manifest.version -ne $skip)
       journal = (Test-Path -LiteralPath (Join-Path $tk 'previous/update-pending.json')) } | ConvertTo-Json -Compress
-  } -args $tk
+  
+'@)
+  $res = & $pwshExe -NoProfile -ExecutionPolicy Bypass -File $sf -tk $tk
   try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue } catch {}
   $o = $null; try { $o = (@($res) -join '') | ConvertFrom-Json } catch {}
   return @{ killed = $killed; o = $o; raw = (@($res) -join '') }
