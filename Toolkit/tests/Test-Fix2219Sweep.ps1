@@ -415,6 +415,20 @@ Run-Safe 'migration ACL unread' {
   Check (@($m.warnings | Where-Object { $_ -match 'NOT CHECKED' }).Count -ge 1) 'ToolkitMigrate twin (class C): folder permissions that cannot be read are reported NOT CHECKED, not taken as "no old lock" (2.2.18: skipped silently)' ((@($m.warnings) + @($m.log)) -join ' | ')
 }
 
+Run-Safe 'Install-Toolkit pending guard' {
+  # 2.2.19 (lead, F23 twin in the installer): a real run of Install-Toolkit.ps1 onto a PC whose earlier update is still half-way
+  $isrc = Join-Path $tmp 'inst-src'; New-Item -ItemType Directory -Force -Path $isrc | Out-Null
+  foreach ($d in @('Toolkit', 'FixNVR', 'CamReset', 'NetCheck')) { Copy-Item -LiteralPath (Join-Path $repo $d) -Destination $isrc -Recurse -Force }
+  $iroot = Join-Path $tmp 'inst-root/WireIt'; $itk = Join-Path $iroot 'Toolkit'; New-Item -ItemType Directory -Force -Path (Join-Path $itk 'previous') | Out-Null
+  [IO.File]::WriteAllText((Join-Path $itk 'ToolkitCore.ps1'), 'ORIGINAL-HALF-WAY'); [IO.File]::WriteAllText((Join-Path (Join-Path $itk 'previous') 'update-pending.json'), '{"from":"2.2.18","to":"2.2.19"}')
+  $psx = (Get-Process -Id $PID).Path
+  $io = & $psx -NoProfile -File (Join-Path $isrc 'Toolkit/Install-Toolkit.ps1') -Root $iroot -NoShortcut 2>&1 | Out-String; $ic = $LASTEXITCODE
+  Check ($ic -eq 5 -and $io -match 'INSTALL STOPPED - nothing was changed' -and [IO.File]::ReadAllText((Join-Path $itk 'ToolkitCore.ps1')) -eq 'ORIGINAL-HALF-WAY' -and (Test-Path (Join-Path (Join-Path $itk 'previous') 'update-pending.json'))) 'F23 twin (Install-Toolkit.ps1): with an update still half-way (previous\update-pending.json) the installer stops, changes no file and keeps the record (2.2.18 copied over it)' ('exit ' + $ic + ' ' + ($io -replace '\s+', ' '))
+  Remove-Item -LiteralPath (Join-Path (Join-Path $itk 'previous') 'update-pending.json') -Force
+  $io2 = & $psx -NoProfile -File (Join-Path $isrc 'Toolkit/Install-Toolkit.ps1') -Root $iroot -NoShortcut -PlanOnly 2>&1 | Out-String; $ic2 = $LASTEXITCODE
+  Check ($ic2 -eq 0 -and $io2 -match '"updatePending":\s*false') 'control: with no half-way record the installer plan goes ahead (exit 0)' ('exit ' + $ic2 + ' ' + ($io2 -replace '\s+', ' '))
+}
+
 Deferred 'real devices: the SADP reset resume / import on real Hikvision cameras (MAC/serial as SADP reports them)'
 Deferred 'Windows: a reset record / pictures / outbox folder that Windows refuses to write (ACLs, a full disk), Windows PowerShell 5.1'
 }

@@ -29,7 +29,13 @@ $optional = @('config.json', 'version.json')   # version.json: a copy of the rep
 $missing = @($files | Where-Object { $optional -notcontains $_ -and -not (Test-Path -LiteralPath (Join-Path $here $_)) })
 if (-not (Test-Path -LiteralPath (Join-Path (Join-Path (Join-Path $here 'modules') 'NvrHealth') 'NvrHealth.psm1'))) { $missing += 'modules\NvrHealth\NvrHealth.psm1' }
 foreach ($t in @($need.Keys)) { if (-not (Test-Path -LiteralPath (Join-Path $Root (Join-Path $t $need[$t])))) { if (-not $src[$t] -or -not (Test-Path -LiteralPath (Join-Path $src[$t] $need[$t]))) { $missing += ($t + '\' + $need[$t]) } } }
-if ($PlanOnly) { [ordered]@{ toolkitFrom = $here; tools = $src; missing = @($missing) } | ConvertTo-Json -Depth 3; exit $(if ($missing.Count) { 3 } else { 0 }) }
+# 2.2.19 (Codex 2.2.18 F23 twin, class E): an update or Go back that is still half-way on this PC (previous\update-pending.json) is
+# finished or undone by the Toolkit's own start-up recovery from the files it saved. Copying files over it first would mix versions and
+# could make that recovery put the wrong files back: the installer changes nothing until the record is gone.
+$pendingRec = Join-Path (Join-Path $tk 'previous') 'update-pending.json'
+$pendingNow = [bool](Test-Path -LiteralPath $pendingRec)
+if ($PlanOnly) { [ordered]@{ toolkitFrom = $here; tools = $src; missing = @($missing); updatePending = $pendingNow } | ConvertTo-Json -Depth 3; exit $(if ($missing.Count) { 3 } elseif ($pendingNow) { 5 } else { 0 }) }
+if ($pendingNow) { 'INSTALL STOPPED - nothing was changed. An update or "Go back" on this PC is still half-way (' + $pendingRec + '). Open the WireIt Toolkit once (it finishes or undoes that step on start), then run this again.'; exit 5 }
 if ($missing.Count) { 'INSTALL STOPPED - nothing was changed. These files are missing from what you are installing from: ' + ($missing -join ', ') + '. Copy the whole WireIt Toolkit folder (with FixNVR, CamReset and NetCheck beside it, or in .\bundle) and run this again.'; exit 3 }
 New-Item -ItemType Directory -Force -Path $tk, (Join-Path $tk 'logs'), (Join-Path $tk 'previous') | Out-Null
 if ((Resolve-Path $here).Path.TrimEnd('\') -ne (Resolve-Path $tk).Path.TrimEnd('\')) {
