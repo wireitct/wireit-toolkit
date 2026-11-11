@@ -15,7 +15,7 @@ $script:TkCurVersion = ''
 # 2.2.2 (re-review NEW-2): the version these files ARE. Get-TkVersion never reads lower than this, so a copy installed from the
 # repository (no Toolkit\version.json) is not "0.0.0", and an update is only taken when the published one is NEWER (never a downgrade).
 # Same number as FixSiteCore.ps1 $FsVersion and the release manifest (version.json); Test-Fix222 checks all three.
-$script:TkBuiltVersion = '2.2.17'
+$script:TkBuiltVersion = '2.2.18'
 . (Join-Path $PSScriptRoot 'ToolkitRecover.ps1')
 
 function Get-TkPaths([string]$toolkitDir) {
@@ -347,6 +347,17 @@ function Write-TkSkipVersion([string]$toolkitDir, [string]$version) {
   if ((Get-TkSkipVersion $toolkitDir) -ne $version) { throw ('Could not save the "do not re-install ' + $version + '" note. Nothing was changed.') }
 }
 function Get-TkSkipVersion([string]$toolkitDir) { $p = Join-Path $toolkitDir 'skip-version.txt'; if (Test-Path $p) { return (Get-Content $p -Raw).Trim() } ; return '' }
+# 2.2.18 (sweep D): the "do not re-install" note decides whether the start-up installs an update on its own. A note that is there but
+# cannot be read (locked, no access) is NOT "no note": the automatic update waits (the tech can still update by hand).
+# $true = do not install this version on its own.
+function Test-TkSkipUpdate([string]$toolkitDir, [string]$version) {
+  $p = Join-Path $toolkitDir 'skip-version.txt'
+  if (-not (Test-Path -LiteralPath $p)) { return $false }
+  $t = $null; try { $t = [IO.File]::ReadAllText($p) } catch { return $true }
+  if ($null -eq $t) { return $true }
+  $t = $t.Trim(); if (-not $t) { return $false }   # an empty note names no version (Write-TkSkipVersion never writes one)
+  return ($t -eq [string]$version)
+}
 
 # ---------------- passwords ----------------
 function New-TkPassword([int]$length = 14) {
@@ -384,7 +395,10 @@ function Test-TkFreshScan([string]$camResetDir, $code, [datetime]$startedUtc) {
   if ($null -eq $code -or [int]$code -ne 0) { return $false }
   $f = Join-Path $camResetDir 'out\latest.json'; if (-not (Test-Path -LiteralPath $f)) { $f = Join-Path (Join-Path $camResetDir 'out') 'latest.json' }
   if (-not (Test-Path -LiteralPath $f)) { return $false }
-  return ((Get-Item -LiteralPath $f).LastWriteTimeUtc -ge $startedUtc.AddSeconds(-1))
+  if ((Get-Item -LiteralPath $f).LastWriteTimeUtc -lt $startedUtc.AddSeconds(-1)) { return $false }
+  # 2.2.18 (sweep C): a fresh list that cannot be read (half written, damaged) is NOT a scan that found nothing: the scan did not work
+  $l = Read-TkJson $f
+  return [bool]($l -and $l.PSObject.Properties['devices'])
 }
 function Get-TkDevices([string]$camResetDir) {
   $l = Read-TkJson (Join-Path $camResetDir 'out\latest.json')
@@ -804,6 +818,10 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
   $pendingWhy = ''
   $isDw = ($Health -and [string]$Health.vendor -eq 'DW')
   $loginWhy = ''; if ($Health -and $Health.recording -and (Test-TkNotChecked $Health.recording)) { $loginWhy = Get-TkNotCheckedWhy $Health.recording }
+  # 2.2.18 (sweep C): a recording result that is NOT CHECKED for a reason other than the login (e.g. "storage NOT CHECKED (HTTP 500)"
+  # from a storage list that could not be read) is said with that reason, amber, never OK and never "no hard drive". It is not a login
+  # problem, so it does not mark the DW camera list as not checked when that list was read.
+  $recNcWhy = ''; if ($loginWhy -eq 'could not read it') { $recNcWhy = ((@($Health.recording.problems) | Where-Object { $_ }) -join '; '); $loginWhy = '' }
   # cameras (the list Find cameras just saved)
   $sa = $(if ($Scan) { $Scan.answer } else { $null })
   if ($sa -and $sa.ok) {
@@ -828,7 +846,7 @@ function New-TkSiteCheck($Health, $Scan, $Upnp, [string]$Site = '', [string]$Ip 
     if ($rec.ok) { & $add ('Recording: all ' + [int]$rec.recording + ' cameras recording, ' + $rec.days_held + ' days kept (target ' + $rec.target_days + ').') 'ok' }
     # 2.2.15 (Codex 2.2.14 R9): still filling toward the target = not a fault, but never "target met" (amber)
     elseif ($rec.PSObject.Properties['target_pending'] -and $rec.target_pending -and -not @($rec.problems).Count) { & $add ('Recording: all ' + [int]$rec.recording + ' cameras recording; ' + $rec.days_held + ' days so far, still filling - the ' + $rec.target_days + '-day target is NOT reached yet.') 'warn'; $page.rec.stillFilling = $true; $pendingWhy = ('recorder still filling (' + $rec.days_held + ' of ' + $rec.target_days + ' days)') }
-    elseif ($loginWhy) { & $add ('Recording: NOT CHECKED (' + $loginWhy + ')') 'warn'; $nc.Add('recording'); $page.rec.notChecked = $loginWhy }
+    elseif ($loginWhy -or $recNcWhy) { $rw = $(if ($loginWhy) { $loginWhy } else { $recNcWhy }); & $add ('Recording: NOT CHECKED (' + $rw + ')') 'warn'; $nc.Add('recording'); $page.rec.notChecked = $rw }
     else { & $add ('Recording: ' + (& $j $rec.problems)) 'red' }
     $sf = $(if ($rec.streams) { @($rec.streams.flags) } else { @() })
     $page.streams = $(if ($rec.streams -and $rec.streams.checked) { [ordered]@{ checked = [int]$rec.streams.checked; flags = $sf } } else { $null })

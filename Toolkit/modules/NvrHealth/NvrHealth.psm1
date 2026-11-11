@@ -377,19 +377,28 @@ function Hik-Time($t) {
   $dt = Parse-DeviceTime (XText $x 'localTime') $tz
   $n = Http -Ip $t.ip -Path '/ISAPI/System/time/ntpServers' -Credential $t.cred -Port $t.port
   $nx = Xml $n.body; $ntp = @()
+  # 2.2.18 (sweep, class C): a time-server list that could not be read is NOT "no time server" (ntpRead says which it was)
+  $ntpRead = [bool]($n.code -eq 200 -and $nx -and $nx.DocumentElement -and $nx.DocumentElement.LocalName -match '(?i)^NTPServer(List)?$')
   foreach ($s in (XFind $nx 'NTPServer')) {
     $fmt = XText $s 'addressingFormatType'
     $ntp += [pscustomobject]@{ id = (XText $s 'id'); host = $(if ($fmt -eq 'ipaddress') { XText $s 'ipAddress' } else { XText $s 'hostName' }); port = (XText $s 'portNo'); interval = (XText $s 'synchronizeInterval') }
   }
-  return @{ raw = $r.body; mode = (XText $x 'timeMode'); tz = $tz; time = $dt; ntp = $ntp; ntpRaw = $n.body }
+  return @{ raw = $r.body; mode = (XText $x 'timeMode'); tz = $tz; time = $dt; ntp = $ntp; ntpRaw = $n.body; ntpRead = $ntpRead }
 }
-function Hik-Channels($t) {
-  $out = @()
+function Hik-Channels($t) { return @((Hik-ReadChannels $t).list) }
+function Hik-ReadChannels($t) {
+  # 2.2.18 (Codex F6 twin): @{ ok; list }. ok = at least one of the recorder's channel lists was a real 200 list answer, so an
+  # empty list really means "no channels". A failed / error / non-list answer everywhere = could NOT be read (never "no cameras").
+  $out = @(); $read = $false
   $r = Http -Ip $t.ip -Path '/ISAPI/ContentMgmt/InputProxy/channels' -Credential $t.cred -Port $t.port
+  $rx = $(if ($r.code -eq 200) { Xml $r.body } else { $null })
+  if ($rx -and $rx.DocumentElement -and $rx.DocumentElement.LocalName -match '(?i)^InputProxyChannelList$') { $read = $true }
   foreach ($c in (XFind (Xml $r.body) 'InputProxyChannel')) {
     $out += [pscustomobject]@{ ch = [int](XText $c 'id'); name = (XText $c 'name'); ip = (XText $c 'ipAddress'); online = $null; kind = 'ip'; detect = '' }
   }
   $s = Http -Ip $t.ip -Path '/ISAPI/ContentMgmt/InputProxy/channels/status' -Credential $t.cred -Port $t.port
+  $sx0 = $(if ($s.code -eq 200) { Xml $s.body } else { $null })
+  if ($sx0 -and $sx0.DocumentElement -and $sx0.DocumentElement.LocalName -match '(?i)^InputProxyChannelStatusList$') { $read = $true }
   foreach ($c in (XFind (Xml $s.body) 'InputProxyChannelStatus')) {
     $id = [int](XText $c 'id'); $o = $out | Where-Object { $_.ch -eq $id } | Select-Object -First 1
     if (-not $o) { $o = [pscustomobject]@{ ch = $id; name = ''; ip = ''; online = $null; kind = 'ip'; detect = '' }; $out += $o }
@@ -398,9 +407,11 @@ function Hik-Channels($t) {
   }
   if (-not $out.Count) {
     $a = Http -Ip $t.ip -Path '/ISAPI/System/Video/inputs/channels' -Credential $t.cred -Port $t.port
+    $ax0 = $(if ($a.code -eq 200) { Xml $a.body } else { $null })
+    if ($ax0 -and $ax0.DocumentElement -and $ax0.DocumentElement.LocalName -match '(?i)^VideoInputChannelList$') { $read = $true }
     foreach ($c in (XFind (Xml $a.body) 'VideoInputChannel')) { $out += [pscustomobject]@{ ch = [int](XText $c 'id'); name = (XText $c 'name'); ip = ''; online = ((XText $c 'resDesc') -ne 'NO VIDEO'); kind = 'analog'; detect = '' } }
   }
-  return @($out | Sort-Object ch)
+  return @{ ok = ($read -or [bool]$out.Count); list = @($out | Sort-Object ch) }
 }
 function Hik-Search($t, [int]$trackId, [DateTime]$fromLocal, [DateTime]$toLocal, [int]$max = 1) {
   # NVRs read the search times as their own local time (the trailing Z is not UTC on Hikvision recorders).
@@ -561,8 +572,13 @@ function Hik-UpTime($t, [int]$timeout = 5) {
   return @{ code = [int]$r.code; up = $up }
 }
 function Hik-Storage($t) {
+  # 2.2.18 (Codex F6): @{ ok; why; disks }. ok ONLY for a 200 answer that is the recorder's storage list; a failed / error /
+  # non-storage answer is "storage NOT CHECKED" (2.2.17 made it an empty list = "No hard drive found"). A real list with no
+  # drives (ok, 0 disks) is the only case that may say "no hard drive".
   $r = Http -Ip $t.ip -Path '/ISAPI/ContentMgmt/Storage' -Credential $t.cred -Port $t.port
-  $x = Xml $r.body; if ($r.code -ne 200 -or -not $x) { return $null }
+  if ($r.code -ne 200) { return @{ ok = $false; why = ('answer ' + $r.code); disks = @() } }
+  $x = Xml $r.body
+  if (-not $x -or -not $x.DocumentElement -or $x.DocumentElement.LocalName -notmatch '(?i)^(storage|hddList)$') { return @{ ok = $false; why = 'the answer was not a storage list'; disks = @() } }
   $hdds = @()
   foreach ($h in (XFind $x 'hdd')) {
     $id = XText $h 'id'
@@ -579,13 +595,15 @@ function Hik-Storage($t) {
     $hdds += $o
   }
   $nas = @(); foreach ($n in (XFind $x 'nas')) { $nas += [pscustomobject]@{ id = ('NAS ' + (XText $n 'id')); status = (XText $n 'status'); capMB = [double]('0' + (XText $n 'capacity')); freeMB = [double]('0' + (XText $n 'freeSpace')); property = ''; smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null } }
-  return @($hdds + $nas)
+  return @{ ok = $true; why = ''; disks = @($hdds + $nas) }
 }
 function Hik-Recording($t) {
   $tm = Hik-Time $t
   $nowLocal = $(if ($tm -and $tm.time) { $tm.time.local } else { Get-Date })
-  $chans = @(Hik-Channels $t)
-  $tracks = Hik-Tracks $t
+  $rc = Hik-ReadChannels $t; $chans = @($rc.list)
+  $rtk = Hik-ReadTracks $t; $tracks = $rtk.map
+  # 2.2.18 (Codex F6 twin): the camera list is known only when a channel list or the track list was really read
+  $chanRead = [bool]($rc.ok -or $rtk.ok)
   if (-not $chans.Count) { foreach ($k in ($tracks.Keys | Sort-Object)) { if ($k % 100 -eq 1) { $chans += [pscustomobject]@{ ch = [int][math]::Floor($k / 100); name = ''; ip = ''; online = $null; kind = 'ip'; detect = '' } } } }
   $res = @()
   foreach ($c in $chans) {
@@ -598,8 +616,11 @@ function Hik-Recording($t) {
     # counts every camera with unknown retention as NOT CHECKED, whichever search failed)
     elseif ($null -eq $old) { Log ('ch ' + $c.ch + ': oldest-clip search failed - days held unknown'); $o | Add-Member -NotePropertyName days_note -NotePropertyValue 'unknown (search failed)' -Force }
     $new = Hik-Search $t $tid $nowLocal.AddHours(-2) $nowLocal.AddMinutes(5) 50
+    $wkRun = $false; $wk = $null
     if ($new -and $new.segs.Count) { $o.newest = ($new.segs | Sort-Object end | Select-Object -Last 1).end }
-    elseif ($o.oldest -or $null -eq $old) { $wk = Hik-Search $t $tid $nowLocal.AddDays(-7) $nowLocal 200; if ($wk -and $wk.segs.Count) { $o.newest = ($wk.segs | Sort-Object end | Select-Object -Last 1).end } }
+    elseif ($o.oldest -or $null -eq $old) { $wkRun = $true; $wk = Hik-Search $t $tid $nowLocal.AddDays(-7) $nowLocal 200; if ($wk -and $wk.segs.Count) { $o.newest = ($wk.segs | Sort-Object end | Select-Object -Last 1).end } }
+    # 2.2.18 (Codex F6 twin): no footage found BECAUSE a search failed is "footage NOT CHECKED", never "NO footage found at all"
+    if (-not $o.newest -and ($null -eq $old -or ($null -eq $new -and (-not $wkRun -or $null -eq $wk)))) { $o | Add-Member -NotePropertyName search_failed -NotePropertyValue $true -Force }
     if ($o.newest) { $o.recording_now = (($nowLocal - $o.newest).TotalMinutes -le [double]$script:Opt.FreshMinutes) }
     if (-not $o.oldest -and $o.newest -and -not $o.PSObject.Properties['days_note']) { Log ('ch ' + $c.ch + ': recent clips but the oldest-clip search found none - days held unknown'); $o | Add-Member -NotePropertyName days_note -NotePropertyValue 'unknown (oldest clip not found)' -Force }
     if ($o.oldest) {
@@ -616,7 +637,8 @@ function Hik-Recording($t) {
     }
     $res += $o
   }
-  return @{ now = $nowLocal; channels = $res; disks = @(Hik-Storage $t) }
+  $st = Hik-Storage $t
+  return @{ now = $nowLocal; channels = $res; disks = @($st.disks); storage = $st; chanRead = $chanRead; chanWhy = $(if ($chanRead) { '' } else { 'the channel list and the recording list could not be read' }) }
 }
 
 # ================= ONVIF (Uniview time + recordings; any other brand) =================
@@ -756,15 +778,36 @@ function Dw-Time($t) {
   $offMin = $null; if ($null -ne $j.timeZoneOffset) { $offMin = [math]::Round([double]$j.timeZoneOffset / 60000) }
   return @{ utc = $utc; tzId = [string]$j.timezoneId; offMin = $offMin }
 }
+function Dw-ReadJson($t, [string]$path) {
+  # 2.2.18 (Codex F6): @{ ok; j; empty; why } - ok only for a 200 answer that parses as JSON; empty = the answer was a real "[]"
+  $r = Http -Ip $t.ip -Path $path -Headers @{ Authorization = ('Bearer ' + $t.token) } -Port (Dw-Port $t) -Scheme (Dw-Scheme) -ContentType 'application/json'
+  if ($r.code -ne 200) { return @{ ok = $false; j = $null; empty = $false; why = ('answer ' + $r.code) } }
+  $b = [string]$r.body
+  if ($b -match '^\s*\[\s*\]\s*$') { return @{ ok = $true; j = $null; empty = $true; why = '' } }
+  $j = $null; try { $j = ($b | ConvertFrom-Json) } catch { return @{ ok = $false; j = $null; empty = $false; why = 'the answer was not readable' } }
+  if ($null -eq $j) { return @{ ok = $false; j = $null; empty = $false; why = 'the answer was empty' } }
+  return @{ ok = $true; j = $j; empty = $false; why = '' }
+}
+function Dw-StorageRow($s, [string]$id) {
+  return [pscustomobject]@{ id = $id; status = $(if ($s.isOnline -eq $false) { 'offline' } else { 'ok' }); capMB = [double]$s.totalSpace / 1MB; freeMB = [double]$s.freeSpace / 1MB; property = $(if ($s.isBackup) { 'backup' } elseif ($s.isUsedForWriting -eq $false) { 'not used' } else { 'RW' }); smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null }
+}
 function Dw-Storage($t) {
-  $out = @()
-  $j = Dw-Get $t '/rest/v3/servers/this/storages/*/status'
-  foreach ($s in @($j)) { if ($s -and ($null -ne $s.totalSpace)) { $out += [pscustomobject]@{ id = [string]$(if ($s.url) { $s.url } else { $s.path }); status = $(if ($s.isOnline -eq $false) { 'offline' } else { 'ok' }); capMB = [double]$s.totalSpace / 1MB; freeMB = [double]$s.freeSpace / 1MB; property = $(if ($s.isBackup) { 'backup' } elseif ($s.isUsedForWriting -eq $false) { 'not used' } else { 'RW' }); smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null } } }
-  if (-not $out.Count) {
-    $j = Dw-Get $t '/api/storageSpace'
-    if ($j -and $j.reply) { foreach ($s in @($j.reply.storages)) { $out += [pscustomobject]@{ id = [string]$s.url; status = $(if ($s.isOnline -eq $false) { 'offline' } else { 'ok' }); capMB = [double]$s.totalSpace / 1MB; freeMB = [double]$s.freeSpace / 1MB; property = $(if ($s.isBackup) { 'backup' } elseif ($s.isUsedForWriting -eq $false) { 'not used' } else { 'RW' }); smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null } } }
+  # 2.2.18 (Codex F6): @{ ok; why; disks }. A failed / unreadable storage answer (both DW endpoints) is "storage NOT CHECKED",
+  # never "No hard drive found"; only a real storage list with no storage in it (ok, 0 disks) may say "no hard drive".
+  $out = @(); $v3 = Dw-ReadJson $t '/rest/v3/servers/this/storages/*/status'; $v3List = $false
+  if ($v3.ok -and $v3.empty) { $v3List = $true }
+  elseif ($v3.ok) {
+    $items = @($v3.j); $bad = @($items | Where-Object { -not $_ -or $null -eq $_.PSObject.Properties['totalSpace'] -or $null -eq $_.totalSpace })
+    if (-not $bad.Count) { $v3List = $true; foreach ($s in $items) { $out += Dw-StorageRow $s ([string]$(if ($s.url) { $s.url } else { $s.path })) } }
   }
-  return $out
+  if ($out.Count) { return @{ ok = $true; why = ''; disks = $out } }
+  $old = Dw-ReadJson $t '/api/storageSpace'
+  if ($old.ok -and $old.j -and $old.j.PSObject.Properties['reply'] -and $old.j.reply -and $old.j.reply.PSObject.Properties['storages']) {
+    foreach ($s in @($old.j.reply.storages)) { if ($s -and $null -ne $s.totalSpace) { $out += Dw-StorageRow $s ([string]$s.url) } }
+    return @{ ok = $true; why = ''; disks = $out }
+  }
+  if ($v3List) { return @{ ok = $true; why = ''; disks = @() } }   # a real, empty storage list
+  return @{ ok = $false; why = $(if (-not $v3.ok) { $v3.why } else { 'the answer was not a storage list' }); disks = @() }
 }
 function Dw-ParseSched($d) {
   # 2.2.14 (Codex 2.2.13 F6/F9): only an explicit true/false recording flag is known; anything else = $null (UNKNOWN, never "on")
@@ -798,12 +841,15 @@ function Dw-ReadDevices($t) {
 }
 function Dw-Devices($t) {
   # read-only callers: an unreadable list gives no cameras (they then say "no cameras found" / not in the list - never green)
-  $rd = Dw-ReadDevices $t
+  # 2.2.18 (Codex F6 twin): the last read is kept, so the recording check can tell "no cameras" from "list could not be read"
+  $rd = Dw-ReadDevices $t; $script:NhDwDevRead = $rd
   return @($rd.devs)
 }
 function Dw-Periods($t, [string]$id, [DateTime]$nowUtc) {
-  $j = Dw-Get $t ('/ec2/recordedTimePeriods?cameraId=' + [uri]::EscapeDataString($id) + '&startTime=0&endTime=' + (Utc-ToMs $nowUtc) + '&detail=60000&flat=true')
-  $p = @(); if ($j -and $j.reply) { $p = @($j.reply) } elseif ($j) { $p = @($j) }
+  # 2.2.18 (Codex F6 twin): $script:NhDwPeriodsFailed = the footage list could not be read (vs. read, and no footage in it)
+  $rj = Dw-ReadJson $t ('/ec2/recordedTimePeriods?cameraId=' + [uri]::EscapeDataString($id) + '&startTime=0&endTime=' + (Utc-ToMs $nowUtc) + '&detail=60000&flat=true')
+  $script:NhDwPeriodsFailed = (-not $rj.ok); $j = $rj.j
+  $p = @(); if ($j -and $j.PSObject.Properties['reply'] -and $j.reply) { $p = @($j.reply) } elseif ($j -and -not $j.PSObject.Properties['reply']) { $p = @($j) }
   $p = @($p | Where-Object { $_ -and $null -ne $_.startTimeMs } | Sort-Object { [double]$_.startTimeMs })
   if (-not $p.Count) { return $null }
   $last = $p[$p.Count - 1]
@@ -884,6 +930,8 @@ function Get-RecordingStatus {
   $result = [ordered]@{ check = 'recording'; ip = $Ip; vendor = $t.vendor; streams = $null; target_days = $TargetDays; ok = $false; days_held = $null; shortest_days = $null; short_cameras = @(); target_pending = $false; recording = 0; channels = @(); disks = @(); problems = @(); log = $script:LogFile }
   $problems = New-Object System.Collections.Generic.List[string]
   $chans = @(); $disks = @(); $now = $null; $diskApi = $true
+  # 2.2.18 (Codex F6): whether the storage list was really READ is kept apart from how many drives it holds ($storeWhy = why not)
+  $storeOk = $true; $storeWhy = ''; $chanRead = $true; $chanWhy = ''
   $blk = Login-Blocked $t
   if ($blk) {
     # 1.6.1: no login sent (empty password) or already refused in this run -> NOT CHECKED, never an all-clear
@@ -898,6 +946,9 @@ function Get-RecordingStatus {
       if ($di.login -ne 'ok') { Bad ('No answer from ' + $Ip + '. Is this PC on the same network as the recorder?'); $result.problems = @('no answer'); return [pscustomobject]$result }
       Info ($di.model + '  serial ' + $di.serial + '  firmware ' + $di.firmware)
       $hr = Hik-Recording $t; $now = $hr.now; $chans = @($hr.channels); $disks = @($hr.disks | Where-Object { $_ })
+      if ($hr.ContainsKey('storage') -and $hr.storage -is [hashtable]) { $storeOk = [bool]$hr.storage.ok; $storeWhy = [string]$hr.storage.why }
+      elseif (-not $disks.Count) { $storeOk = $false; $storeWhy = 'no storage answer' }
+      if ($hr.ContainsKey('chanRead') -and -not $hr.chanRead) { $chanRead = $false; $chanWhy = [string]$hr.chanWhy }
     }
     'DW' {
       $info = Dw-Info $t
@@ -905,13 +956,15 @@ function Get-RecordingStatus {
       if ($info) { Info ('DW Spectrum ' + $info.version + '  server "' + $info.name + '"') }
       $tm = Dw-Time $t; $now = $(if ($tm -and $tm.utc) { $tm.utc } else { [DateTime]::UtcNow })
       $i = 0
-      foreach ($d in (Dw-Devices $t)) {
-        $i++; $p = Dw-Periods $t $d.id $now
+      $script:NhDwDevRead = $null; $dwDevs = @(Dw-Devices $t)
+      if (-not $dwDevs.Count -and -not ($script:NhDwDevRead -and $script:NhDwDevRead.ok)) { $chanRead = $false; $chanWhy = 'DW''s camera list could not be read' + $(if ($script:NhDwDevRead -and $script:NhDwDevRead.why) { ' (' + $script:NhDwDevRead.why + ')' } else { '' }) }
+      foreach ($d in $dwDevs) {
+        $i++; $script:NhDwPeriodsFailed = $false; $p = Dw-Periods $t $d.id $now; $pFailed = [bool]$script:NhDwPeriodsFailed
         $online = ($d.status -eq 'Online' -or $d.status -eq 'Recording')
         $recNow = ($d.status -eq 'Recording') -or ($p -and ($p.live -or (($now - $p.newest).TotalMinutes -le [double]$script:Opt.FreshMinutes)))
-        $chans += [pscustomobject]@{ ch = $i; ip = $d.ip; online = $online; scheduled = $d.scheduled; recording_now = [bool]$recNow; mode = ''; newest = $(if ($p) { $p.newest } else { $null }); oldest = $(if ($p) { $p.oldest } else { $null }); days_held = $(if ($p) { [int][math]::Floor(($now - $p.oldest).TotalDays) } else { $null }); detect = $d.status; name = $d.name; mac = $d.mac; model = $d.model; vendor = $d.vendor }
+        $chans += [pscustomobject]@{ ch = $i; ip = $d.ip; online = $online; scheduled = $d.scheduled; recording_now = [bool]$recNow; mode = ''; newest = $(if ($p) { $p.newest } else { $null }); oldest = $(if ($p) { $p.oldest } else { $null }); days_held = $(if ($p) { [int][math]::Floor(($now - $p.oldest).TotalDays) } else { $null }); detect = $d.status; name = $d.name; mac = $d.mac; model = $d.model; vendor = $d.vendor; search_failed = [bool]($pFailed -and -not $p) }
       }
-      $disks = @(Dw-Storage $t)
+      $ds = Dw-Storage $t; $disks = @($ds.disks); $storeOk = [bool]$ds.ok; $storeWhy = [string]$ds.why
     }
     default {
       $recs = Onvif-Recordings $t
@@ -927,6 +980,9 @@ function Get-RecordingStatus {
 
   Say ''; Say 'Hard drives:' 'Cyan'
   if (-not $diskApi) { Info 'Drive health is not available through the standard (ONVIF) interface. Look at the recorder''s Storage page.' }
+  # 2.2.18 (Codex F6): a storage list that could not be read is NOT CHECKED (never "No hard drive found", never "healthy");
+  # only a storage list really read with no drive in it says no hard drive.
+  elseif (-not $storeOk) { Warn ('The recorder''s storage list could NOT be read (' + $storeWhy + '), so the hard drives are NOT CHECKED. Look at the recorder''s Storage page, or run the check again.'); $problems.Add('storage NOT CHECKED (' + $storeWhy + ')') }
   elseif (-not $disks.Count) { Bad 'No hard drive found. This recorder is NOT saving footage.'; $problems.Add('no hard drive') }
   $capT = 0.0; $freeT = 0.0
   foreach ($d in $disks) {
@@ -952,7 +1008,7 @@ function Get-RecordingStatus {
   if ($capT -gt 0) { Info ('Total ' + [math]::Round($capT / 1024) + ' GB, ' + [math]::Round(100 * ($capT - $freeT) / $capT) + '% used.') }
 
   Say ''; Say 'Cameras:' 'Cyan'
-  $rec = 0; $notRec = @(); $minDays = $null; $maxDays = $null; $schedUnk = @()
+  $rec = 0; $notRec = @(); $minDays = $null; $maxDays = $null; $schedUnk = @(); $footUnk = @()
   foreach ($c in ($chans | Sort-Object ch)) {
     # 1.4: a DW camera is named by its DW name + IP (the running number is only DW's list order, it means nothing on site)
     $label = $(if ($t.vendor -eq 'DW' -and $c.name) { [string]$c.name + $(if ($c.ip) { ' (' + $c.ip + ')' } else { '' }) } else { 'Camera ' + $c.ch + $(if ($c.ip) { ' (' + $c.ip + ')' } else { '' }) })
@@ -973,9 +1029,14 @@ function Get-RecordingStatus {
     elseif ($c.recording_now) { $rec++; Ok ($label + ': recording' + $held) }
     elseif ($c.mode -match '(?i)motion|alarm|event|smart|vmd' -and $c.newest -and ($now - $c.newest).TotalHours -lt 24) { $rec++; Ok ($label + ': motion recording, last clip ' + (Fmt-Local $c.newest) + $held) }
     elseif ($c.newest) { Bad ($label + ': NOT recording - last footage ' + (Fmt-Local $c.newest) + $held); $notRec += $tag }
+    # 2.2.18 (Codex F6 twin): the footage search failed - that is NOT CHECKED, not "no footage"
+    elseif ($c.PSObject.Properties['search_failed'] -and $c.search_failed) { Warn ($label + ': the recorder''s footage search failed, so its footage is NOT CHECKED. Run the check again.'); $footUnk += $tag }
     else { Bad ($label + ': NO footage found at all'); $notRec += $tag }
   }
-  if (-not $chans.Count) { Warn 'No camera channels found on this recorder.'; $problems.Add('no channels') }
+  if ($footUnk.Count) { $problems.Add(('footage NOT CHECKED on ' + $footUnk.Count + ' camera(s): ' + (@($footUnk | Select-Object -First 10) -join ', ') + $(if ($footUnk.Count -gt 10) { ' and ' + ($footUnk.Count - 10) + ' more (see the log)' } else { '' }))) }
+  # 2.2.18 (Codex F6 twin): a camera list that could not be read is NOT CHECKED, not "no camera channels"
+  if (-not $chans.Count -and -not $chanRead) { Warn ('The recorder''s camera list could NOT be read (' + $chanWhy + '), so recording is NOT CHECKED. Run the check again.'); $problems.Add('camera list NOT CHECKED') }
+  elseif (-not $chans.Count) { Warn 'No camera channels found on this recorder.'; $problems.Add('no channels') }
   # 2.2.4; 2.2.14 (Codex 2.2.13 F5): EVERY camera whose days held are unknown (any failed search, or footage with no measured
   # oldest clip) is NOT CHECKED and keeps the result from being green, even when another camera meets the target
   $unk = @($chans | Where-Object { $null -eq $_.days_held -and (($_.PSObject.Properties['days_note'] -and $_.days_note) -or $_.newest -or $_.recording_now) })
@@ -1000,7 +1061,7 @@ function Get-RecordingStatus {
   if ($short.Count) { Warn ('' + $short.Count + ' camera(s) have less footage than the ' + $TargetDays + '-day target (' + (($short | ForEach-Object { $(if ($t.vendor -eq 'DW' -and $_.name) { [string]$_.name } else { 'cam ' + $_.ch }) + ': ' + $_.days_held + ' days' }) -join ', ') + '): not recording before, or added later. Check they were not off.'); $problems.Add(('' + $short.Count + ' camera(s) below the ' + $TargetDays + '-day target')) }
   if ($null -ne $maxDays) {
     if ($maxDays -ge $TargetDays) { Say ('DAYS HELD: ' + $maxDays + ' days on the deepest camera (target ' + $TargetDays + ')' + $(if ($short.Count) { '; ' + $short.Count + ' camera(s) below it (above).' } else { '. OK.' })) $(if ($short.Count) { 'Yellow' } else { 'Green' }) }
-    elseif (-not $diskApi) { Say ('DAYS HELD: only ' + $maxDays + ' days (target ' + $TargetDays + '). Could not read whether the drives are full - check the recorder''s Storage page.') 'Yellow'; $problems.Add('only ' + $maxDays + ' of ' + $TargetDays + ' days (drive fill unknown)') }
+    elseif (-not $diskApi -or -not $storeOk) { Say ('DAYS HELD: only ' + $maxDays + ' days (target ' + $TargetDays + '). Could not read whether the drives are full - check the recorder''s Storage page.') 'Yellow'; $problems.Add('only ' + $maxDays + ' of ' + $TargetDays + ' days (drive fill unknown)') }
     # 2.2.15 (Codex 2.2.14 R9): a recorder that is still filling its drives is not a fault, but its target is NOT met yet:
     # never "target met", never ok. The result says how far it is (target_pending).
     elseif ($filling) { $pending = $true; Say ('DAYS HELD: ' + $maxDays + ' days so far (target ' + $TargetDays + '), still filling: the drives are not full yet, so this keeps growing. Target NOT reached yet. Check again after they fill.') 'Yellow' }
@@ -1008,7 +1069,7 @@ function Get-RecordingStatus {
   } elseif ($chans.Count) { Say 'DAYS HELD: unknown (no footage found to measure).' 'Red'; $problems.Add('days held unknown') }
   Say $(if ($problems.Count) { 'RESULT: ' + $problems.Count + ' problem(s): ' + ($problems -join '; ') } elseif ($pending) { 'RESULT: all ' + $rec + ' cameras recording, drives healthy; ' + $maxDays + ' days so far, still filling, ' + $TargetDays + '-day target not reached yet (not a fault).' } else { 'RESULT: all ' + $rec + ' cameras recording, drives healthy, ' + $TargetDays + '-day target met.' }) $(if ($problems.Count) { 'Red' } elseif ($pending) { 'Yellow' } else { 'Green' })
   $result.target_pending = [bool]($pending -and -not $problems.Count)
-  $result.streams = $streams; $result.ok = ($problems.Count -eq 0 -and -not $pending); $result.days_held = $maxDays; $result.shortest_days = $minDays; $result.short_cameras = @($short | ForEach-Object { $_.ch }); $result.recording = $rec; $result.channels = $chans; $result.disks = $disks; $result.problems = @($problems); $result.log = $script:LogFile
+  $result.streams = $streams; $result.ok = ($problems.Count -eq 0 -and -not $pending); $result.days_held = $maxDays; $result.shortest_days = $minDays; $result.short_cameras = @($short | ForEach-Object { $_.ch }); $result.recording = $rec; $result.channels = $chans; $result.disks = $disks; $result.storage_checked = [bool]($diskApi -and $storeOk); $result.problems = @($problems); $result.log = $script:LogFile
   return [pscustomobject]$result
 }
 
@@ -1021,7 +1082,7 @@ function Get-RetentionShort($chans, [int]$TargetDays, $maxDays) {
 # ================= Get-ClockStatus =================
 function Clock-Of($t) {
   switch ($t.vendor) {
-    'Hikvision' { $h = Hik-Time $t; if (-not $h) { return $null }; return @{ utc = $(if ($h.time) { $h.time.utc } else { $null }); mode = $h.mode; tz = $h.tz; ntp = @($h.ntp | ForEach-Object { $_.host }) } }
+    'Hikvision' { $h = Hik-Time $t; if (-not $h) { return $null }; return @{ utc = $(if ($h.time) { $h.time.utc } else { $null }); mode = $h.mode; tz = $h.tz; ntp = @($h.ntp | ForEach-Object { $_.host }); ntpRead = $(if ($h.ContainsKey('ntpRead')) { [bool]$h.ntpRead } else { $true }) } }
     'DW' { if (-not (Dw-Login $t)) { return $null }; $d = Dw-Time $t; if (-not $d) { return $null }; return @{ utc = $d.utc; mode = 'Windows clock'; tz = $null; tzId = $d.tzId; ntp = @() } }
     default {
       $o = Onvif-Time $t; if (-not $o) { return $null }
@@ -1048,6 +1109,7 @@ function Judge-Clock([string]$label, $c, $ref, [string]$why = '') {
     return $p
   }
   if ($c.mode -notmatch '(?i)^ntp$') { Bad ($label + ': time is set by hand ("' + $c.mode + '"), not synced to an internet time server. It will drift.'); $p += 'NTP off' }
+  elseif ($c -is [hashtable] -and $c.ContainsKey('ntpRead') -and -not $c.ntpRead) { Warn ($label + ': NTP is on, but its time-server list could NOT be read - time server NOT CHECKED.'); $p += 'time server not checked' }
   elseif (-not @($c.ntp | Where-Object { $_ }).Count) { Bad ($label + ': NTP is on but no time server is filled in.'); $p += 'no NTP server' }
   else { Ok ($label + ': syncs to ' + (@($c.ntp | Where-Object { $_ }) -join ', ') + '.') }
   if ($c.tz -and $c.tz.ok) {
@@ -1136,6 +1198,8 @@ function Get-ClockStatus {
 # ================= Set-NtpTime: THE ONLY WRITE =================
 function Hik-NtpPlan($t, [string]$server) {
   $h = Hik-Time $t; if (-not $h) { return @{ ok = $false; why = 'could not read its time settings' } }
+  # 2.2.18 (sweep, class C): an unreadable time-server list is not "none" - no plan (and no "was none") from it
+  if ($h.ContainsKey('ntpRead') -and -not $h.ntpRead) { return @{ ok = $false; why = 'could not read its time-server list' } }
   $first = $h.ntp | Select-Object -First 1
   $needNtp = (-not $first) -or ($first.host -ne $server) -or ($first.interval -and [int]$first.interval -gt [int]$script:Opt.NtpIntervalMin)
   $needMode = $h.mode -ne 'NTP'; $needTz = -not ($h.tz -and $h.tz.isUsEastern)

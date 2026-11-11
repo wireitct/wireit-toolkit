@@ -67,6 +67,7 @@ function Read-Dev($d) {
   $script:sim.reads++
   $n = @($script:sim.nvrs | Where-Object { $_.ip -eq $d.ip })[0]
   if ($script:sim.phase -eq 'before') { Set-NvrState $d $n.before } else { Set-NvrState $d $n.after }
+  if ($d.login -eq 'ok') { SetP $d 'id_mac' $n.mac }   # 2.2.18: the real readers record the MAC the device itself reported (identity before a write)
 }
 function Http([string]$ip, [string]$method, [string]$path) {
   $n = @($script:sim.nvrs | Where-Object { $_.ip -eq $ip })[0]

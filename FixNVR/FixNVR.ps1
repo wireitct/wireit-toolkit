@@ -236,6 +236,12 @@ function Remove-OneTemp([string]$ip, $ifIndex) {
 }
 function Restore-PcSettings($pcc, $ifIndex, [ref]$problems) {
   if ($null -eq $ifIndex) { return }
+  # 2.2.18 (sweep A): the saved adapter number must still be the saved adapter (Windows can give the number to another adapter after
+  # a restart or a driver change). A name that reads back DIFFERENT stops the restore before any setting is written.
+  if ($pcc.alias) {
+    $nowName = $null; try { $nowName = [string](Get-NetAdapter -InterfaceIndex $ifIndex -ErrorAction Stop).Name } catch { $nowName = $null; Log ('adapter name not readable for ifIndex ' + $ifIndex + ': ' + $_.Exception.Message) }
+    if ($nowName -and $nowName -ne [string]$pcc.alias) { $problems.Value += ('the network adapter number ' + $ifIndex + ' is now "' + $nowName + '", not "' + $pcc.alias + '" as recorded, so its settings were NOT put back automatically'); return }
+  }
   if ($pcc.coexistence_before -ne $null -and [string]$pcc.coexistence_before -notmatch 'enabled') {
     netsh interface ipv4 set interface ([string]$ifIndex) dhcpstaticipcoexistence=disabled | Out-Null
     $co = ((netsh interface ipv4 show interface ([string]$ifIndex)) -join "`n"); $m = [regex]::Match($co, '(?i)DHCP/Static IP coexistence\s*:\s*(\w+)')
@@ -304,13 +310,51 @@ function Remove-AllTemp {
   if ($left.Count) { Log ('WARNING possible leftover temp addresses: ' + (($left | ForEach-Object { $_.IPAddress }) -join ', ')) }
   return $true
 }
+# 2.2.18 (Codex 2.2.17 #5): an unreadable record is NOT forgotten. The renamed file (temp-ips.unreadable-<when>.json) IS the durable
+# "recovery not done" marker: every start finds it and stops before any change, until a CHECKED recovery clears it: this PC was
+# restarted after the record was found (the temporary addresses are memory-only), none of this tool's temporary addresses is on any
+# adapter, and the PC has a working connection with a router. Only then is the file renamed .resolved-<when>.json. 2.2.17 kept the
+# "blocked" flag only in memory, so the next start found no journal and carried on.
+function Get-FnBootTime { try { return [datetime](Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime } catch { return $null } }
+function Get-FnUnreadableStamp($file) {
+  $m = [regex]::Match([string]$file.Name, 'unreadable-(\d{8}-\d{6})')
+  if ($m.Success) { try { return [datetime]::ParseExact($m.Groups[1].Value, 'yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture) } catch {} }
+  return $file.LastWriteTime
+}
+function Get-FnUnreadableClearWhy($file) {
+  $boot = Get-FnBootTime
+  if (-not $boot) { return 'the tool could not read when this PC last started' }
+  if ($boot -le (Get-FnUnreadableStamp $file)) { return 'this PC has not been restarted since then' }
+  $left = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_ -and $_.SkipAsSource -and ($cfg.temp_ip_hosts -contains (Last ([string]$_.IPAddress))) } | ForEach-Object { [string]$_.IPAddress })
+  if ($left.Count) { return ('a temporary address is still on this PC (' + ($left -join ', ') + ')') }
+  $pcn = Get-PcNet
+  if (-not $pcn -or -not $pcn.ip -or -not $pcn.gw) { return 'this PC has no working network connection with a router yet' }
+  return ''
+}
+function Get-FnUnreadableRecords {
+  $dir = Split-Path -Parent $tempFile; $leaf = [IO.Path]::GetFileNameWithoutExtension($tempFile)
+  if (-not (Test-Path -LiteralPath $dir)) { return @() }
+  try { return @(Get-ChildItem -LiteralPath $dir -Filter ($leaf + '.unreadable-*.json') -File -ErrorAction Stop) } catch { return @([pscustomobject]@{ Name = '(the tool''s state folder could not be listed)'; FullName = ''; LastWriteTime = (Get-Date) }) }
+}
 function Invoke-LeftoverCleanup {
-  if ($Mock -or -not (Test-Path $tempFile)) { return $true }
-  $o = $null; try { $o = Get-Content $tempFile -Raw | ConvertFrom-Json } catch { $o = $null }
+  if ($Mock) { return $true }
+  foreach ($ev in @(Get-FnUnreadableRecords)) {
+    $why = $(if ($ev.FullName) { Get-FnUnreadableClearWhy $ev } else { 'the record could not be checked' })
+    if ($why) {
+      Say-CleanupFailed @('an earlier run''s record of its temporary address could not be read (kept as ' + $ev.Name + '), so the tool cannot check this PC''s network was put back; ' + $why + '. Restart this PC, then run again')
+      return $false
+    }
+    $done = $ev.FullName -replace '\.unreadable-', '.resolved-'
+    try { Move-Item -LiteralPath $ev.FullName -Destination $done -Force -ErrorAction Stop } catch { Say-CleanupFailed @('the unreadable record ' + $ev.Name + ' could not be marked as cleared (' + $_.Exception.Message + ')'); return $false }
+    Log ('unreadable record ' + $ev.Name + ' cleared: PC restarted since, no temporary address left, connection working')
+    Write-Host ('An earlier unreadable record was cleared: this PC was restarted since, no temporary address is left and the connection works. (If that run had switched on the DHCP+static coexistence setting, it could not be checked from that record.)') -ForegroundColor Yellow
+  }
+  if (-not (Test-Path $tempFile)) { return $true }
+  $o = $null; try { $o = Get-Content $tempFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { $o = $null }
   if (-not $o) {
-    # unreadable: kept (renamed) as evidence, the safety task stays, and this run says FAILED
-    $keep = $tempFile -replace '\.json$', ('.unreadable-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json'); try { Move-Item -LiteralPath $tempFile -Destination $keep -Force } catch {}
-    Say-CleanupFailed @('the record of an earlier run''s temporary address could not be read (kept as ' + (Split-Path -Leaf $keep) + '); restart this PC to clear it')
+    # unreadable: kept (renamed) as evidence = the durable marker above; the safety task stays, and this run says FAILED
+    $keep = $tempFile -replace '\.json$', ('.unreadable-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json'); try { Move-Item -LiteralPath $tempFile -Destination $keep -Force -ErrorAction Stop } catch { $keep = $tempFile }
+    Say-CleanupFailed @('the record of an earlier run''s temporary address could not be read (kept as ' + (Split-Path -Leaf $keep) + '); restart this PC, then run again (every run stops here until that is checked)')
     return $false
   }
   $problems = @(); $still = New-Object System.Collections.Generic.List[object]
@@ -567,15 +611,19 @@ function Set-FnHikPlatform($dev, $ez) {
 }
 # 2.2.14 (Codex F4): before the after-fix reread, forget everything the earlier read filled, so nothing from before the fix can pass as checked
 function Clear-FnReadState($dev) {
-  foreach ($k in 'login','model','serial','firmware','mask','gw','dns1','dns2','addressing','net_xml','net_json','dns_json','platform_xml','platform_json') { SetP $dev $k '' }
+  foreach ($k in 'login','model','serial','firmware','mask','gw','dns1','dns2','addressing','net_xml','net_json','dns_json','platform_xml','platform_json','id_mac','net_ip') { SetP $dev $k '' }
   foreach ($k in 'platform_enabled','platform_online','platform_has_code','platform_read','net_read','dns_read','channels','channels_read','status_read') { SetP $dev $k $null }
 }
 function Hik-Read($dev) {
   $cred = Cred-For $dev
   $d = Http $dev.ip 'GET' '/ISAPI/System/deviceInfo' '' 'application/xml' $cred
   if ($d.code -ne 200) { $dev.login = $(if ($d.code -eq 401) { 'REFUSED (wrong password? not retried)' } else { 'no answer (' + $d.code + ')' }); return $false }
+  # 2.2.18 (Codex 2.2.17 #1): the MAC this device reports is checked against the MAC on record. A different MAC is a DIFFERENT
+  # device at this address: it is rejected (not read, never written to), and the record keeps the MAC it had (2.2.17 overwrote it).
+  $m = NormMac (XVal $d.body 'macAddress'); SetP $dev 'id_mac' ''
+  if (Test-FnMacConflict $dev $m) { Set-FnDifferentDevice $dev $m; return $false }
   $dev.login = 'ok'; $dev.brand = 'hik'
-  $dev.model = XVal $d.body 'model'; $dev.serial = XVal $d.body 'serialNumber'; $m = XVal $d.body 'macAddress'; if ($m) { $dev.mac = NormMac $m }
+  $dev.model = XVal $d.body 'model'; $dev.serial = XVal $d.body 'serialNumber'; if ($m) { $dev.mac = $m; $dev.id_mac = $m }
   $dt = XVal $d.body 'deviceType'; if ($dt -match '(?i)NVR|DVR|HVR|recorder') { $dev.kind = 'nvr' } elseif ($dt) { $dev.kind = 'camera' }
   $dev.firmware = XVal $d.body 'firmwareVersion'
   $ifs = Http $dev.ip 'GET' '/ISAPI/System/Network/interfaces' '' 'application/xml' $cred
@@ -589,7 +637,7 @@ function Hik-Read($dev) {
     $doc = $null; try { $doc = [xml]$ipx.body } catch { Log ('network settings answer could not be read: ' + $_.Exception.Message) }
     if ($doc -and $doc.DocumentElement -and $doc.DocumentElement.LocalName -eq 'IPAddress') {
       $dev.net_xml = $ipx.body
-      $dev.addressing = XGet $doc 'addressingType'; $dev.mask = XGet $doc 'subnetMask'; $dev.gw = XGet $doc 'DefaultGateway/ipAddress'
+      $dev.addressing = XGet $doc 'addressingType'; $dev.mask = XGet $doc 'subnetMask'; $dev.gw = XGet $doc 'DefaultGateway/ipAddress'; SetP $dev 'net_ip' (XGet $doc 'ipAddress')
       $dev.dns1 = XGet $doc 'PrimaryDNS/ipAddress'; $dev.dns2 = XGet $doc 'SecondaryDNS/ipAddress'
       SetP $dev 'net_read' $true
     }
@@ -627,10 +675,17 @@ function Hik-EnablePlatform($dev) {
   $r = Http $dev.ip 'PUT' '/ISAPI/System/Network/EZVIZ' $doc.OuterXml 'application/xml' $script:credNvr 15
   return @{ ok = (Hik-Ok $r); note = ((Hik-Status $r.body).text + ' ' + $r.err).Trim() }
 }
-function Hik-SetChannel($nvr, [string]$id, [string]$newIp) {
+# 2.2.18 (Codex 2.2.17 #1/#2 twin): the channel is read right before the write and changed only while it still points at the camera
+# this step expects ($expectIp: the old address going forward, the address this run wrote going back). A channel that now points at
+# another camera is left alone. After the write the channel is read back: it must point at $newIp.
+function Hik-SetChannel($nvr, [string]$id, [string]$newIp, [string]$expectIp = '') {
   $g = Http $nvr.ip 'GET' ('/ISAPI/ContentMgmt/InputProxy/channels/' + $id) '' 'application/xml' $script:credNvr
-  if ($g.code -ne 200) { return @{ ok = $false; note = 'could not read channel ' + $id } }
-  $doc = [xml]$g.body
+  if ($g.code -ne 200) { return @{ ok = $false; note = 'could not read channel ' + $id + ' (left alone)' } }
+  $doc = $null; try { $doc = [xml]$g.body } catch { $doc = $null }
+  if (-not $doc -or -not $doc.DocumentElement) { return @{ ok = $false; note = 'channel ' + $id + ' answer could not be read (left alone)' } }
+  $cur = XGet $doc 'sourceInputPortDescriptor/ipAddress'
+  if ($cur -eq $newIp) { return @{ ok = $true; note = 'channel D' + $id + ' already points at ' + $newIp + ' (read now)' } }
+  if ($expectIp -and $cur -ne $expectIp) { return @{ ok = $false; refused = $true; note = ('channel D' + $id + ' now points at ' + $(if ($cur) { $cur } else { 'nothing' }) + ', not ' + $expectIp + ': it belongs to another camera now, so it was LEFT ALONE') } }
   $sd = XNode $doc.DocumentElement 'sourceInputPortDescriptor'
   XSet $doc 'sourceInputPortDescriptor/ipAddress' $newIp
   $pw = XNode $sd 'password'
@@ -638,7 +693,12 @@ function Hik-SetChannel($nvr, [string]$id, [string]$newIp) {
   $pw.InnerText = $script:credCam.GetNetworkCredential().Password
   $r = Http $nvr.ip 'PUT' ('/ISAPI/ContentMgmt/InputProxy/channels/' + $id) $doc.OuterXml 'application/xml' $script:credNvr 15
   $pw.InnerText = ''; $doc = $null
-  return @{ ok = (Hik-Ok $r); note = ((Hik-Status $r.body).text + ' ' + $r.err).Trim() }
+  $note = ((Hik-Status $r.body).text + ' ' + $r.err).Trim()
+  if (-not (Hik-Ok $r)) { return @{ ok = $false; note = $note } }
+  $g2 = Http $nvr.ip 'GET' ('/ISAPI/ContentMgmt/InputProxy/channels/' + $id) '' 'application/xml' $script:credNvr
+  $now = ''; if ($g2.code -eq 200) { try { $now = XGet ([xml]$g2.body) 'sourceInputPortDescriptor/ipAddress' } catch { $now = '' } }
+  if ($now -ne $newIp) { return @{ ok = $false; note = ($note + ' accepted, but channel D' + $id + ' reads back ' + $(if ($now) { $now } else { '(could not be read)' }) + ', not ' + $newIp + ' - NOT confirmed').Trim() } }
+  return @{ ok = $true; note = $note }
 }
 function Hik-RebootNow($dev) { $r = Http $dev.ip 'PUT' '/ISAPI/System/reboot' '' 'application/xml' (Cred-For $dev) 15; return (Hik-Ok $r) }
 
@@ -650,7 +710,9 @@ function Unv-Read($dev) {
   $d = Http $dev.ip 'GET' '/LAPI/V1.0/System/DeviceBasicInfo' '' 'application/json' $cred
   if ($d.code -ne 200) { if ($d.code -eq 401) { $dev.login = 'REFUSED (wrong password? not retried)' }; return $false }
   $x = Unv-Data $d.body; if (-not $x) { return $false }
-  $dev.login = 'ok'; $dev.brand = 'unv'; $dev.model = $x.DeviceModel; $dev.serial = $x.SerialNumber; if ($x.MAC) { $dev.mac = NormMac $x.MAC }
+  $um = NormMac ([string]$x.MAC); SetP $dev 'id_mac' ''
+  if (Test-FnMacConflict $dev $um) { Set-FnDifferentDevice $dev $um; return $false }   # 2.2.18 (Codex 2.2.17 #1), as Hik-Read
+  $dev.login = 'ok'; $dev.brand = 'unv'; $dev.model = $x.DeviceModel; $dev.serial = $x.SerialNumber; if ($um) { $dev.mac = $um; $dev.id_mac = $um }
   $dev.firmware = $x.FirmwareVersion; if ($x.Netmask) { $dev.mask = $x.Netmask }; if ($x.Gateway) { $dev.gw = $x.Gateway }
   if ($dev.model -match '(?i)^NVR|^VMS|^DVR') { $dev.kind = 'nvr' } elseif (-not $dev.kind) { $dev.kind = 'camera' }
   if ($dev.kind -eq 'nvr') {
@@ -711,7 +773,9 @@ function Onvif-Read($dev) {
   if ($r.code -ne 200) { if (-not $dev.login) { $dev.login = 'ONVIF no answer/refused (' + $r.code + ')' }; return $false }
   $m = [regex]::Match($r.body, '<(?:\w+:)?NetworkInterfaces[^>]*token="([^"]+)"'); $dev.onvif_token = $(if ($m.Success) { $m.Groups[1].Value } else { 'eth0' })
   $pl = XVal $r.body 'PrefixLength'; if ($pl) { $dev.mask = PrefixToMask ([int]$pl) }
-  $hw = XVal $r.body 'HwAddress'; if ($hw -and -not $dev.mac) { $dev.mac = NormMac $hw }
+  $hw = NormMac (XVal $r.body 'HwAddress'); SetP $dev 'id_mac' ''
+  if (Test-FnMacConflict $dev $hw) { Set-FnDifferentDevice $dev $hw; return $false }   # 2.2.18 (Codex 2.2.17 #1), as Hik-Read
+  if ($hw) { $dev.mac = $hw; $dev.id_mac = $hw }
   $dev.onvif = $true; if (-not $dev.login) { $dev.login = 'ok (ONVIF)' }
   return $true
 }
@@ -726,6 +790,10 @@ function Onvif-SetNet($dev, [string]$ip, [int]$prefix, [string]$gw, [string]$d1,
   $ok2 = $false
   for ($k = 0; $k -lt [int]$cfg.camera_wait_seconds; $k += 5) {
     Start-Sleep -Seconds 5
+    # 2.2.18 (sweep A): gateway + DNS go to the new address only when the device answering there is this camera (same MAC)
+    $hw = Onvif $ip '<tds:GetNetworkInterfaces/>' $c
+    if ($hw.code -ne 200) { continue }
+    $hwm = NormMac (XVal $hw.body 'HwAddress'); if ($dev.mac -and $hwm -and $hwm -ne (NormMac ([string]$dev.mac))) { return @{ ok = $false; reboot = $reboot; note = ('a DIFFERENT device (MAC ' + $hwm + ') answers on ' + $ip + ': gateway / DNS NOT set') } }
     $g = Onvif $ip ('<tds:SetNetworkDefaultGateway><tds:IPv4Address>' + $gw + '</tds:IPv4Address></tds:SetNetworkDefaultGateway>') $c
     if ($g.code -eq 200) { $ok2 = $true; break }
   }
@@ -778,11 +846,100 @@ function Get-FnHealthProblems($nvrList) {
   return $out.ToArray()
 }
 function Read-Dev($d) {
-  if ($d.login -eq 'ok' -or $d.login -like 'REFUSED*') { return }
+  if ($d.login -eq 'ok' -or $d.login -like 'REFUSED*' -or $d.login -like 'DIFFERENT DEVICE*') { return }
   if ($d.brand -ne 'unv') { if (Hik-Read $d) { return } }
-  if ($d.login -like 'REFUSED*') { return }
+  if ($d.login -like 'REFUSED*' -or $d.login -like 'DIFFERENT DEVICE*') { return }
   if ($d.brand -ne 'hik') { if (Unv-Read $d) { [void](Onvif-Read $d); return } }
+  if ($d.login -like 'DIFFERENT DEVICE*') { return }
   if ($d.kind -ne 'nvr' -and -not $d.login) { [void](Onvif-Read $d) }
+}
+# ---------------- 2.2.18 (Codex 2.2.17 #1): device identity before every write, and settings read back after it ----------------
+# A write (camera / NVR network, NVR camera list) goes only to a device whose OWN answer, read right before the write, gives the MAC
+# saved for it (and the serial, when the undo file has one). There is no fall-back to "whatever answers at the saved address".
+function Test-FnMacConflict($dev, [string]$got) {
+  if (-not $got -or -not $dev.mac) { return $false }
+  return ((NormMac ([string]$dev.mac)) -ne (NormMac $got))
+}
+function Set-FnDifferentDevice($dev, [string]$got) {
+  SetP $dev 'id_mismatch' $got
+  $dev.login = 'DIFFERENT DEVICE (it says MAC ' + $got + ', expected ' + $dev.mac + ')'
+  Log ('device at ' + $dev.ip + ' says MAC ' + $got + ', expected ' + $dev.mac + ': a different device, not read and not changed')
+}
+# a fresh, separate record for reading the device at an address right before a write (never the record of another device there)
+function New-FnProbe([string]$ip, [string]$mac, [string]$kind, [string]$brand) {
+  $p = New-Dev $ip $mac 'identity check'; [void]$script:devs.Remove($p)
+  $p.kind = $kind; if ($brand) { $p.brand = $brand }
+  return $p
+}
+# '' = this is the device; otherwise the reason (plain words) why the tool cannot be sure it is
+function Get-FnIdentityWhy($d, [string]$expMac, [string]$expSerial) {
+  if (-not $expMac) { return 'the tool has no MAC saved for this device, so it cannot check it is the same one' }
+  if ([string]$d.login -like 'DIFFERENT DEVICE*') { return ('a DIFFERENT device answers at ' + $d.ip + ' (it says MAC ' + $d.id_mismatch + ', expected ' + (NormMac $expMac) + ')') }
+  if ([string]$d.login -notlike 'ok*') { return ('the device at ' + $d.ip + ' could not be read (' + $(if ($d.login) { $d.login } else { 'no answer' }) + ')') }
+  if (-not $d.id_mac) { return ('the device at ' + $d.ip + ' did not say its MAC, so the tool cannot check it is the same one') }
+  if ((NormMac ([string]$d.id_mac)) -ne (NormMac $expMac)) { return ('a DIFFERENT device answers at ' + $d.ip + ' (MAC ' + $d.id_mac + ', expected ' + (NormMac $expMac) + ')') }
+  if ($expSerial -and $d.serial -and [string]$d.serial -ne $expSerial) { return ('a DIFFERENT device answers at ' + $d.ip + ' (serial ' + $d.serial + ', expected ' + $expSerial + ')') }
+  return ''
+}
+function Read-FnIdentity([string]$ip, [string]$mac, [string]$kind, [string]$brand, [string]$serial) {
+  $p = New-FnProbe $ip $mac $kind $brand; Read-Dev $p
+  return @{ dev = $p; why = (Get-FnIdentityWhy $p $mac $serial) }
+}
+# ONVIF settings read back: address + prefix, default gateway, DNS (each '' when it could not be read)
+function Onvif-ReadNet($dev) {
+  $c = Cred-For $dev; $o = @{ ip = ''; mask = ''; gw = ''; dns = @(); read = $false }
+  $r = Onvif $dev.ip '<tds:GetNetworkInterfaces/>' $c
+  if ($r.code -ne 200) { return $o }
+  $m = [regex]::Match($r.body, '(?s)<(?:\w+:)?Manual>.*?<(?:\w+:)?Address>([^<]+)</(?:\w+:)?Address>.*?<(?:\w+:)?PrefixLength>(\d+)<')
+  if ($m.Success) { $o.ip = $m.Groups[1].Value.Trim(); $o.mask = PrefixToMask ([int]$m.Groups[2].Value) }
+  $g = Onvif $dev.ip '<tds:GetNetworkDefaultGateway/>' $c; if ($g.code -eq 200) { $o.gw = XVal $g.body 'IPv4Address' }
+  $dn = Onvif $dev.ip '<tds:GetDNS/>' $c
+  if ($dn.code -eq 200) { $o.dns = @([regex]::Matches($dn.body, '(?s)<(?:\w+:)?DNSManual>.*?<(?:\w+:)?IPv4Address>([^<]+)<') | ForEach-Object { $_.Groups[1].Value.Trim() }) }
+  $o.read = ($o.ip -and $g.code -eq 200 -and $dn.code -eq 200)
+  return $o
+}
+# 2.2.18 (Codex 2.2.17 #3 twin): a network change counts only when the device, identified by its MAC at the NEW address, reads back
+# every requested setting (address, mask, gateway, DNS, static). An answer at the address, or an accepted request, is not enough.
+function Get-FnNetReadBackWhy([string]$ip, [string]$mac, [string]$kind, [string]$brand, [string]$mask, [string]$gw, [string]$d1, [string]$d2, [string]$serial = '') {
+  $id = Read-FnIdentity $ip $mac $kind $brand $serial
+  if ($id.why) { return $id.why }
+  $d = $id.dev; $bad = @()
+  if ($d.brand -eq 'hik' -and $d.net_read -ne $true) { return ('its network settings could not be read back on ' + $ip + ' - NOT CHECKED') }
+  if ($d.brand -eq 'hik') {
+    if ($d.net_ip -and $d.net_ip -ne $ip) { $bad += ('address ' + $d.net_ip) }
+    if ($d.addressing -and $d.addressing -ne 'static') { $bad += ('addressing ' + $d.addressing + ' (set static)') }
+    if ($mask -and $d.mask -ne $mask) { $bad += ('mask ' + $d.mask + ' (set ' + $mask + ')') }
+    if ($gw -and $d.gw -ne $gw) { $bad += ('gateway ' + $d.gw + ' (set ' + $gw + ')') }
+    if ($d1 -and $d.dns1 -ne $d1) { $bad += ('DNS ' + $d.dns1 + ' (set ' + $d1 + ')') }
+    if ($d2 -and $d.dns2 -ne $d2) { $bad += ('DNS 2 ' + $d.dns2 + ' (set ' + $d2 + ')') }
+  } elseif ($d.brand -eq 'unv' -and $d.login -eq 'ok' -and $d.kind -eq 'nvr') {
+    if ($d.net_read -ne $true -or $d.dns_read -ne $true) { return ('its network settings could not be read back on ' + $ip + ' - NOT CHECKED') }
+    if ($mask -and $d.mask -ne $mask) { $bad += ('mask ' + $d.mask + ' (set ' + $mask + ')') }
+    if ($gw -and $d.gw -ne $gw) { $bad += ('gateway ' + $d.gw + ' (set ' + $gw + ')') }
+    if ($d1 -and $d.dns1 -ne $d1) { $bad += ('DNS ' + $d.dns1 + ' (set ' + $d1 + ')') }
+    if ($d2 -and $d.dns2 -ne $d2) { $bad += ('DNS 2 ' + $d.dns2 + ' (set ' + $d2 + ')') }
+  } elseif ($d.onvif -or (Onvif-Read $d)) {
+    $o = Onvif-ReadNet $d
+    if (-not $o.read) { return ('its network settings could not be read back on ' + $ip + ' - NOT CHECKED') }
+    if ($o.ip -ne $ip) { $bad += ('address ' + $o.ip) }
+    if ($mask -and $o.mask -ne $mask) { $bad += ('mask ' + $o.mask + ' (set ' + $mask + ')') }
+    if ($gw -and $o.gw -ne $gw) { $bad += ('gateway ' + $o.gw + ' (set ' + $gw + ')') }
+    if ($d1 -and @($o.dns) -notcontains $d1) { $bad += ('DNS ' + (@($o.dns) -join ' ') + ' (set ' + $d1 + ')') }
+    if ($d2 -and @($o.dns) -notcontains $d2) { $bad += ('DNS 2 missing (set ' + $d2 + ')') }
+  } else { return ('its network settings could not be read back on ' + $ip + ' - NOT CHECKED') }
+  if ($bad.Count) { return ('the settings read back are NOT what was set: ' + ($bad -join ', ')) }
+  return ''
+}
+function Wait-FnNetReadBack([string]$ip, [string]$mac, [string]$kind, [string]$brand, [string]$mask, [string]$gw, [string]$d1, [string]$d2, [string]$serial, [int]$seconds) {
+  $why = 'no answer on ' + $ip
+  $tries = [math]::Max(1, [int][math]::Ceiling($seconds / 10)); if ($Mock) { $tries = [math]::Min($tries, 2) }
+  for ($k = 0; $k -lt $tries; $k++) {
+    if ($k -gt 0) { Start-Sleep -Seconds $(if ($Mock) { 0 } else { 10 }) }
+    $why = Get-FnNetReadBackWhy $ip $mac $kind $brand $mask $gw $d1 $d2 $serial
+    if (-not $why) { return '' }
+    if ($why -like 'the settings read back*' -or $why -like 'a DIFFERENT device*') { return $why }
+  }
+  return $why
 }
 function Wait-Answer([string]$ip, [int]$seconds, $cred) {
   $end = (Get-Date).AddSeconds($seconds)
@@ -911,7 +1068,11 @@ function Invoke-Main {
   if ($snap) {
     foreach ($s in @($snap.nvrs) + @($snap.cameras)) { if (-not $s) { continue }; $d = Dev-ByMac $s.mac; if (-not $d) { $d = New-Dev $s.ip $s.mac 'snapshot' }; $d.snap_ip = $s.ip; if (-not $d.kind) { $d.kind = $(if (@($snap.nvrs) -contains $s) { 'nvr' } else { 'camera' }) }; if (-not $d.brand -and $s.brand) { $d.brand = $s.brand }; if ($s.channel) { $d.channel_id = [string]$s.channel } }
   }
-  if ($rb) { foreach ($st in @($rb.steps)) { if ($st.done -and $st.dev_mac) { $d = Dev-ByMac $st.dev_mac; if (-not $d) { $d = New-Dev $st.new_ip $st.dev_mac 'rollback file' }; $d.kind = $st.kind; $d.brand = $st.brand } } }
+  # 2.2.18: an NVR camera-list step records the NVR at the NVR's address (2.2.17 put it at the camera's new address)
+  if ($rb) {
+    $rbAt = @{}; foreach ($st in @($rb.steps)) { if ($st -and $st.done -and $st.dev_mac -and $st.type -match '^(cam|nvr)-net$') { $rbAt[(NormMac ([string]$st.dev_mac))] = [string]$st.new_ip } }
+    foreach ($st in @($rb.steps)) { if ($st.done -and $st.dev_mac) { $d = Dev-ByMac $st.dev_mac; if (-not $d) { $k = NormMac ([string]$st.dev_mac); $at = $(if ($rbAt.ContainsKey($k)) { $rbAt[$k] } elseif ($st.nvr_ip) { [string]$st.nvr_ip } else { [string]$st.new_ip }); $d = New-Dev $at $st.dev_mac 'rollback file' }; $d.kind = $st.kind; $d.brand = $st.brand } }
+  }
   if ($Nvr) { $d = Dev-ByIp $Nvr; if (-not $d) { $d = New-Dev $Nvr '' 'given' }; $d.kind = 'nvr' }
   # ---------- 2. old schemes -> temporary PC address ----------
   $old = [ordered]@{}
@@ -1053,7 +1214,7 @@ function Invoke-Main {
     if (-not $t) { Say ('  No free address for camera ' + $c.ip + ' in the camera block. Skipped.') 'Yellow'; continue }
     $c.target_ip = $t; $camMap[$c.ip] = $t
     if ($c.login -eq 'ok' -and $c.brand -eq 'hik' -and $c.net_xml) { $how = 'isapi' } elseif ($c.onvif) { $how = 'onvif' } else { $how = 'manual' }
-    $plan.Add([pscustomobject]@{ type = 'cam-net'; how = $how; kind = 'camera'; brand = $c.brand; dev_mac = $c.mac; channel = $c.channel_id; old_ip = $c.ip; new_ip = $t; old_mask = $c.mask; new_mask = $newMask; old_gw = $c.gw; new_gw = $pc.gw; old_dns1 = $c.dns1; old_dns2 = $c.dns2; old_addressing = $c.addressing; done = $false; result = '' })
+    $plan.Add([pscustomobject]@{ type = 'cam-net'; how = $how; kind = 'camera'; brand = $c.brand; dev_mac = $c.mac; dev_serial = $c.serial; channel = $c.channel_id; old_ip = $c.ip; new_ip = $t; old_mask = $c.mask; new_mask = $newMask; old_gw = $c.gw; new_gw = $pc.gw; old_dns1 = $c.dns1; old_dns2 = $c.dns2; old_addressing = $c.addressing; done = $false; result = '' })
    }
    # 2.2.12 (Codex P1-5): a recorder the tool could not log in to is NOT CHECKED, never "looks right"
    if (-not $nvrs.Count) { $notChecked.Add('no NVR was found or identified, so no recorder was checked') }
@@ -1069,11 +1230,11 @@ function Invoke-Main {
         }
         if ($newIp -and $newIp -ne $ch.ip) {
           $how = $(if ($n.brand -eq 'hik') { 'isapi' } else { 'manual' })
-          $plan.Add([pscustomobject]@{ type = 'nvr-channel'; how = $how; kind = 'nvr'; brand = $n.brand; dev_mac = $n.mac; nvr_ip = $n.ip; channel = $ch.id; old_ip = $ch.ip; new_ip = $newIp; done = $false; result = '' })
+          $plan.Add([pscustomobject]@{ type = 'nvr-channel'; how = $how; kind = 'nvr'; brand = $n.brand; dev_mac = $n.mac; dev_serial = $n.serial; nvr_ip = $n.ip; channel = $ch.id; old_ip = $ch.ip; new_ip = $newIp; done = $false; result = '' })
         }
       }
     }
-    if ($n.platform_enabled -eq $false) { $how = $(if ($n.brand -eq 'hik') { 'isapi' } elseif ($AllowUnverifiedUniview -and $n.platform_json) { 'lapi' } else { 'manual' }); $plan.Add([pscustomobject]@{ type = 'nvr-platform'; how = $how; kind = 'nvr'; brand = $n.brand; dev_mac = $n.mac; nvr_ip = $n.ip; done = $false; result = '' }) }
+    if ($n.platform_enabled -eq $false) { $how = $(if ($n.brand -eq 'hik') { 'isapi' } elseif ($AllowUnverifiedUniview -and $n.platform_json) { 'lapi' } else { 'manual' }); $plan.Add([pscustomobject]@{ type = 'nvr-platform'; how = $how; kind = 'nvr'; brand = $n.brand; dev_mac = $n.mac; dev_serial = $n.serial; nvr_ip = $n.ip; done = $false; result = '' }) }
     $wrong = -not (InNet $n.ip $pc.ip $pc.prefix)
     $target = $n.ip
     if ($wrong -or $n.addressing -eq 'dhcp') {
@@ -1084,7 +1245,7 @@ function Invoke-Main {
     $needNet = ($target -ne $n.ip) -or ($n.mask -and $n.mask -ne $newMask) -or ($n.gw -ne $pc.gw) -or ($n.dns1 -ne $cfg.dns1) -or ($n.dns2 -ne $cfg.dns2) -or ($n.addressing -eq 'dhcp')
     if ($needNet) {
       $how = $(if ($n.brand -eq 'hik' -and $n.net_xml) { 'isapi' } elseif ($n.brand -eq 'unv' -and $AllowUnverifiedUniview -and $n.net_json) { 'lapi' } else { 'manual' })
-      $plan.Add([pscustomobject]@{ type = 'nvr-net'; how = $how; kind = 'nvr'; brand = $n.brand; dev_mac = $n.mac; old_ip = $n.ip; new_ip = $target; old_mask = $n.mask; new_mask = $newMask; old_gw = $n.gw; new_gw = $pc.gw; old_dns1 = $n.dns1; old_dns2 = $n.dns2; new_dns1 = $cfg.dns1; new_dns2 = $cfg.dns2; old_addressing = $n.addressing; done = $false; result = '' })
+      $plan.Add([pscustomobject]@{ type = 'nvr-net'; how = $how; kind = 'nvr'; brand = $n.brand; dev_mac = $n.mac; dev_serial = $n.serial; old_ip = $n.ip; new_ip = $target; old_mask = $n.mask; new_mask = $newMask; old_gw = $n.gw; new_gw = $pc.gw; old_dns1 = $n.dns1; old_dns2 = $n.dns2; new_dns1 = $cfg.dns1; new_dns2 = $cfg.dns2; old_addressing = $n.addressing; done = $false; result = '' })
     }
    }
   }
@@ -1146,6 +1307,7 @@ function Invoke-Main {
     Say ('Rollback info saved first: ' + $rbPath)
   }
   $failedTo = @{}   # 2.2.7 (F05): addresses a camera move did NOT reach
+  $netUnchecked = New-Object System.Collections.Generic.List[string]   # 2.2.18: changes sent that the tool cannot read back (DHCP)
 
   # ---------- 8. apply ----------
   $pfx = $pc.prefix
@@ -1162,13 +1324,25 @@ function Invoke-Main {
       $st.attempted = $true
       try { Save-Json $rbObj $rbPath } catch { Say ('STOPPED: the rollback (undo) file could not be saved (' + $_.Exception.Message + '). Nothing more was changed.') 'Red'; $script:exitCode = 7; return }
     }
-    if ($rev -and $st.type -eq 'cam-net' -and -not $st.done -and (Wait-Answer $to 5 $script:credCam)) { $res = @{ ok = $true; note = ('it never moved: already on ' + $to) } }
-    else {
+    # 2.2.18 (Codex 2.2.17 #1): EVERY write below (forward and Undo) first reads the device at the address it is about to change,
+    # on a fresh record, and goes ahead only when the device's own answer gives the MAC saved for it (and the serial, when saved).
+    # A different device, no MAC, or no answer = NOT restored / NOT changed, nothing is sent. No fall-back to "the device at the saved
+    # address" and no "first NVR" stand-in. After the write the settings are read back from the device (by MAC) at the new address.
+    $stMac = [string]$st.dev_mac; $stSer = $(if ($st.PSObject.Properties['dev_serial']) { [string]$st.dev_serial } else { '' })
+    $word = $(if ($rev) { 'NOT restored' } else { 'NOT changed' })
+    if ($rev -and $st.type -eq 'cam-net' -and -not $st.done) {
+      $idTo = Read-FnIdentity $to $stMac 'camera' ([string]$st.brand) $stSer
+      if (-not $idTo.why) { $res = @{ ok = $true; note = ('it never moved: it is still on ' + $to + ' (checked: same MAC)') } }
+    }
+    if (-not $res) {
     switch ($st.type) {
       'cam-net' {
-        $d = Dev-ByMac $st.dev_mac; if (-not $d) { $d = Dev-ByIp $from }; if (-not $d) { $d = New-Dev $from $st.dev_mac 'rollback' }
-        $d.ip = $from; $d.kind = 'camera'; if (-not $d.brand) { $d.brand = $st.brand }
-        if ($rev -or -not $d.login) { $d.login = ''; $d.net_xml = ''; Read-Dev $d }
+        $d0 = Dev-ByMac $stMac
+        $id = Read-FnIdentity $from $stMac 'camera' ([string]$st.brand) $stSer; $d = $id.dev
+        if ($id.why) { $res = @{ ok = $false; refused = $true; note = ($word + ': ' + $id.why + '. Nothing was sent to ' + $from + '.') }; break }
+        # 2.2.18 (sweep A): Undo moves a device back only onto a FREE address (forward picks free targets already); another device that
+        # took the old address meanwhile would otherwise end up with an address conflict
+        if ($rev -and [string]$st.old_addressing -ne 'dhcp' -and -not (Test-IpFree $to)) { $res = @{ ok = $false; refused = $true; note = ($word + ': the old address ' + $to + ' is now used by another device. Nothing was sent.') }; break }
         $mask = $(if ($rev -and $st.old_mask) { $st.old_mask } else { $newMask }); $gw = $(if ($rev) { $st.old_gw } else { $pc.gw })
         $d1 = $(if ($rev) { $st.old_dns1 } else { $cfg.dns1 }); $d2 = $(if ($rev) { $st.old_dns2 } else { $cfg.dns2 })
         Write-Host ('Moving camera ' + $st.channel + ' ' + $from + ' -> ' + $to + ' ...'); $toDhcp = $false
@@ -1178,38 +1352,56 @@ function Invoke-Main {
           if ($res.ok -and $res.reboot) { [void](Hik-RebootNow $d) }
         } elseif ($d.onvif -or (Onvif-Read $d)) { $res = Onvif-SetNet $d $to (MaskToPrefix $mask) $gw $d1 $d2 }
         else { $res = @{ ok = $false; note = 'could not log in to the camera' } }
-        if ($res.ok -and $toDhcp) { $res.note = ($res.note + ' back on DHCP (the router gives its address)').Trim() }
-        elseif ($res.ok) { $ans2 = Wait-Answer $to ([int]$cfg.camera_wait_seconds) $script:credCam; if (-not $ans2) { $res.ok = $false; $res.note = ($res.note + ' camera did not answer on ' + $to).Trim() } }
-        if ($res.ok) { $d.ip = $to }
+        if ($res.ok -and $toDhcp) { $res.note = ($res.note + ' back on DHCP (the router gives its address)').Trim(); $res.unchecked = ('camera ' + $from + ' (' + $stMac + ') was put back on DHCP: the tool cannot see which address the router gave it, so it is NOT CHECKED - check it is online') }
+        elseif ($res.ok) {
+          $ans2 = Wait-Answer $to ([int]$cfg.camera_wait_seconds) $script:credCam
+          if (-not $ans2) { $res.ok = $false; $res.note = ($res.note + ' camera did not answer on ' + $to).Trim() }
+          else { $rbw = Wait-FnNetReadBack $to $stMac 'camera' ([string]$d.brand) $mask $gw $d1 $d2 $stSer 30; if ($rbw) { $res.ok = $false; $res.note = ($res.note + ' answers on ' + $to + ', but ' + $rbw).Trim() } }
+        }
+        if ($res.ok) { $d.ip = $to; if ($d0) { $d0.ip = $to } }
       }
       'nvr-channel' {
-        $n = Dev-ByMac $st.dev_mac; if (-not $n) { $n = $nvrs | Select-Object -First 1 }
+        $n0 = Dev-ByMac $stMac
+        $nAt = $(if ($n0 -and $n0.ip) { [string]$n0.ip } elseif ($st.nvr_ip) { [string]$st.nvr_ip } else { '' })
         Write-Host ('NVR camera list D' + $st.channel + ' -> ' + $to + ' ...')
-        if (-not $n.login -or $n.login -ne 'ok') { Read-Dev $n }
-        $res = Hik-SetChannel $n $st.channel $to
+        if (-not $nAt) { $res = @{ ok = $false; refused = $true; note = ($word + ': the NVR for this channel (' + $stMac + ') was not found. Nothing was sent.') }; break }
+        $id = Read-FnIdentity $nAt $stMac 'nvr' ([string]$st.brand) $stSer
+        if ($id.why) { $res = @{ ok = $false; refused = $true; note = ($word + ': ' + $id.why + '. Nothing was sent to the NVR.') }; break }
+        $res = Hik-SetChannel $id.dev $st.channel $to $from
+        if (-not $res.ok -and $res.refused) { $res.note = $word + ': ' + $res.note }
       }
       'nvr-platform' {
-        $n = Dev-ByMac $st.dev_mac
+        $n0 = Dev-ByMac $stMac
         Write-Host 'Turning platform access on ...'
+        $id = $(if ($n0) { Read-FnIdentity $n0.ip $stMac 'nvr' ([string]$st.brand) $stSer } else { @{ dev = $null; why = 'the NVR (' + $stMac + ') was not found' } })
+        if ($id.why) { $res = @{ ok = $false; refused = $true; note = ($word + ': ' + $id.why + '. Nothing was sent.') }; break }
+        $n = $id.dev
         if ($st.how -eq 'isapi') { $res = Hik-EnablePlatform $n } else { $res = Unv-Put $n $cfg.uniview.cloud_path (Unv-PlanCloud $n) }
         if (-not $res.ok -and $n.platform_has_code -eq $false) { $res.note = ($res.note + ' (the NVR may need a Hik-Connect verification code set in its web page first)').Trim() }
       }
       'nvr-net' {
-        $n = Dev-ByMac $st.dev_mac; if (-not $n) { $n = Dev-ByIp $from }; if (-not $n) { $n = New-Dev $from $st.dev_mac 'rollback'; $n.kind = 'nvr'; $n.brand = $st.brand }
-        $n.ip = $from; if ($rev -or -not $n.net_xml -and -not $n.net_json) { $n.login = ''; Read-Dev $n }
+        $n0 = Dev-ByMac $stMac
+        $id = Read-FnIdentity $from $stMac 'nvr' ([string]$st.brand) $stSer; $n = $id.dev
+        if ($id.why) { $res = @{ ok = $false; refused = $true; note = ($word + ': ' + $id.why + '. Nothing was sent to ' + $from + '.') }; break }
+        if ($rev -and [string]$st.old_addressing -ne 'dhcp' -and $to -ne $from -and -not (Test-IpFree $to)) { $res = @{ ok = $false; refused = $true; note = ($word + ': the old address ' + $to + ' is now used by another device. Nothing was sent.') }; break }   # 2.2.18 (sweep A)
         $mask = $(if ($rev -and $st.old_mask) { $st.old_mask } else { $newMask }); $gw = $(if ($rev) { $st.old_gw } else { $pc.gw })
         $d1 = $(if ($rev) { $st.old_dns1 } else { $cfg.dns1 }); $d2 = $(if ($rev) { $st.old_dns2 } else { $cfg.dns2 })
         Write-Host ('Moving the NVR ' + $from + ' -> ' + $to + ' (DNS ' + $d1 + ' / ' + $d2 + ') ...')
         $toDhcpN = ($rev -and [string]$st.old_addressing -eq 'dhcp')
         if ($st.how -eq 'isapi') { $res = Hik-SetNet $n $to $mask $gw $d1 $d2 -Dhcp:$toDhcpN; if ($res.ok -and $res.reboot) { Write-Host '  NVR asked for a restart; restarting it now (about 2 min).'; [void](Hik-RebootNow $n) } }
         else { $r1 = Unv-Put $n $cfg.uniview.dns_path (Unv-PlanDns $n $d1 $d2); $r2 = Unv-Put $n $cfg.uniview.net_path (Unv-PlanNet $n $to $mask $gw); $res = @{ ok = ($r1.ok -and $r2.ok); note = ($r1.note + ' ' + $r2.note).Trim() } }
-        if ($res.ok -and $toDhcpN -and $st.how -eq 'isapi') { $res.note = ($res.note + ' back on DHCP (the router gives its address)').Trim() }
+        if ($res.ok -and $toDhcpN -and $st.how -eq 'isapi') { $res.note = ($res.note + ' back on DHCP (the router gives its address)').Trim(); $res.unchecked = ('NVR ' + $from + ' (' + $stMac + ') was put back on DHCP: the tool cannot see which address the router gave it, so it is NOT CHECKED - check it is online') }
         elseif ($res.ok -and $toDhcpN) { $res.ok = $false; $res.note = ($res.note + ' it was on DHCP before: set DHCP back in its own menu').Trim() }
-        elseif ($res.ok) { Write-Host ('  waiting for the NVR on ' + $to + ' ...'); if (Wait-Answer $to ([int]$cfg.verify_wait_seconds) $script:credNvr) { $n.ip = $to } else { $res.ok = $false; $res.note = ($res.note + ' NVR did not answer on ' + $to + ' yet').Trim() } }
+        elseif ($res.ok) {
+          Write-Host ('  waiting for the NVR on ' + $to + ' ...')
+          if (-not (Wait-Answer $to ([int]$cfg.verify_wait_seconds) $script:credNvr)) { $res.ok = $false; $res.note = ($res.note + ' NVR did not answer on ' + $to + ' yet').Trim() }
+          else { $rbw = Wait-FnNetReadBack $to $stMac 'nvr' ([string]$n.brand) $mask $gw $d1 $d2 $stSer 30; if ($rbw) { $res.ok = $false; $res.note = ($res.note + ' answers on ' + $to + ', but ' + $rbw).Trim() } }
+        }
+        if ($res.ok) { $n.ip = $to; if ($n0) { $n0.ip = $to } }
       }
     }
     }
-    if ($res) { $st.done = [bool]$res.ok; $st.result = $(if ($res.ok) { 'done' } else { 'FAILED ' + $res.note }) }
+    if ($res) { $st.done = [bool]$res.ok; $st.result = $(if ($res.ok) { 'done' + $(if ($res.note -match 'already|never moved') { ' (' + $res.note + ')' } else { '' }) } elseif ($res.refused) { $res.note } else { 'FAILED ' + $res.note }); if ($res.ok -and $res.unchecked) { $netUnchecked.Add([string]$res.unchecked) } }
     if (-not $rev -and $st.type -eq 'cam-net' -and -not $st.done) { $failedTo[[string]$st.new_ip] = $true }
     $applied.Add($st)
     Say ('  ' + $st.type + ' ' + $from + ' -> ' + $to + ': ' + $st.result) $(if ($st.done) { 'Green' } else { 'Red' })
@@ -1306,11 +1498,17 @@ function Invoke-Main {
   $fails += @($manual | ForEach-Object { [pscustomobject]@{ type = $_.type; done = $false; result = 'by hand' } })
   if ($rev) { foreach ($pp in @($rb.steps | Where-Object { $_.done -and $_.type -eq 'nvr-platform' })) { Say ('Undo does not turn platform access (Hik-Connect / EZCloud) back off: turn it off in the NVR''s own menu if it was off before.') 'Yellow'; $fails += [pscustomobject]@{ type = 'nvr-platform'; done = $false; result = 'by hand' } } }
   $nSteps = $fails.Count
+  foreach ($u in $netUnchecked) { $verify.Add($u) }   # 2.2.18: sent but not read back (DHCP) is never a clean finish
   $fails += @($verify | ForEach-Object { [pscustomobject]@{ type = 'check'; done = $false; result = $_ } })
   if ($fails.Count) { $script:exitCode = 4 }
   Say ''
   if ($verify.Count) { Say 'After the fix, NOT OK or NOT CHECKED:' 'Red'; foreach ($v in $verify) { Say ('  - ' + $v) 'Red' } }
-  Say $(if ($fails.Count) { 'NOT DONE - see the red lines. ' + $(if ($nSteps) { '' + $nSteps + ' step(s) not done or not confirmed (failed, by hand, or not undoable). ' } else { '' }) + $(if ($verify.Count) { '' + $verify.Count + ' check(s) after the fix not OK or not checked. ' } else { '' }) + 'Fix what is listed and run again, or undo everything with: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { 'Done.' + $(if (-not $rev) { ' Undo if needed: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { '' }) }) $(if ($fails.Count) { 'Red' } else { 'Green' })
+  # 2.2.18 (Codex 2.2.17 #1): an Undo that left anything not put back says NOT RESTORED (never "Done.", never exit 0)
+  if ($rev -and $fails.Count) {
+    Say ('NOT RESTORED - see the red lines. ' + $nSteps + ' step(s) not put back. Nothing was sent to a device the tool could not identify by its MAC. Check the devices named above (an address may now belong to a different device), then run Undo again or fix them by hand.') 'Red'
+  } else {
+    Say $(if ($fails.Count) { 'NOT DONE - see the red lines. ' + $(if ($nSteps) { '' + $nSteps + ' step(s) not done or not confirmed (failed, by hand, or not undoable). ' } else { '' }) + $(if ($verify.Count) { '' + $verify.Count + ' check(s) after the fix not OK or not checked. ' } else { '' }) + 'Fix what is listed and run again, or undo everything with: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { 'Done.' + $(if (-not $rev) { ' Undo if needed: FixNVR.ps1 -Mode Rollback -RollbackFile "' + $rbPath + '"' } else { '' }) }) $(if ($fails.Count) { 'Red' } else { 'Green' })
+  }
   if (-not $rev -and $Mode -eq 'Fix' -and -not $fails.Count) { Invoke-CamViews $nvrs }
   if (-not $rev) { Say 'Tip: run "NVR Snapshot.cmd" now so the site has a known-good record.' }
 }

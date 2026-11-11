@@ -255,7 +255,8 @@ function Get-ScNvrChannels([string]$nvr, $cred, [int[]]$openPorts) {
       $r.Brand = 'Hikvision'; $r.Model = Get-ScXml $di.Body 'model'; $r.Scheme = $sc
       $s = Invoke-ScHttpGet ($base + '/ISAPI/ContentMgmt/InputProxy/channels/status') $cred
       $n = Invoke-ScHttpGet ($base + '/ISAPI/ContentMgmt/InputProxy/channels') $cred
-      if ($s.Code -eq 200) { $r.Channels = ConvertFrom-ScHikStatus $s.Body $n.Body; $r.Ok = $true; $r.Msg = 'Read ' + @($r.Channels).Count + ' camera channels from the NVR.' } else { $r.Msg = 'Logged in, but the NVR did not give its channel list (HTTP ' + $s.Code + ').' }
+      # 2.2.18 (sweep C): an answer with no channel in it is NOT "0 cameras": it is said as not read (amber), never an empty all-clear
+      if ($s.Code -eq 200) { $r.Channels = @(ConvertFrom-ScHikStatus $s.Body $n.Body); $r.Ok = [bool]@($r.Channels).Count; $r.Msg = $(if ($r.Ok) { 'Read ' + @($r.Channels).Count + ' camera channels from the NVR.' } else { 'Logged in, but the NVR''s channel list had no channel in it that could be read - channel status NOT CHECKED.' }) } else { $r.Msg = 'Logged in, but the NVR did not give its channel list (HTTP ' + $s.Code + ').' }
       return $r
     }
     $dt = Invoke-ScHttpGet ($base + '/cgi-bin/magicBox.cgi?action=getDeviceType') $cred
@@ -265,7 +266,7 @@ function Get-ScNvrChannels([string]$nvr, $cred, [int[]]$openPorts) {
       $st = Invoke-ScHttpGet ($base + '/cgi-bin/LogicDeviceManager.cgi?action=getCameraState&uniqueChannels[0]=-1') $cred
       $rd = Invoke-ScHttpGet ($base + '/cgi-bin/configManager.cgi?action=getConfig&name=RemoteDevice') $cred
       $ti = Invoke-ScHttpGet ($base + '/cgi-bin/configManager.cgi?action=getConfig&name=ChannelTitle') $cred
-      if ($st.Code -eq 200) { $r.Channels = ConvertFrom-ScDahuaStatus $st.Body $rd.Body $ti.Body; $r.Ok = $true; $r.Msg = 'Read ' + @($r.Channels).Count + ' camera channels from the NVR.' } else { $r.Msg = 'Logged in, but the NVR did not give its camera states (HTTP ' + $st.Code + ').' }
+      if ($st.Code -eq 200) { $r.Channels = @(ConvertFrom-ScDahuaStatus $st.Body $rd.Body $ti.Body); $r.Ok = [bool]@($r.Channels).Count; $r.Msg = $(if ($r.Ok) { 'Read ' + @($r.Channels).Count + ' camera channels from the NVR.' } else { 'Logged in, but the NVR''s camera states had no camera in them that could be read - channel status NOT CHECKED.' }) } else { $r.Msg = 'Logged in, but the NVR did not give its camera states (HTTP ' + $st.Code + ').' }
       $rd = $null
       return $r
     }

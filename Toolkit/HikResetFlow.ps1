@@ -22,13 +22,35 @@ $script:HkValidHours = 48
 
 # ---------------- state ----------------
 function Read-HikState([string]$Path) {
-  if (Test-Path -LiteralPath $Path) { try { $o = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json; if ($o -and $o.PSObject.Properties['devices']) { $o.devices = @($o.devices | Where-Object { $null -ne $_ }); if ($o.PSObject.Properties['exports']) { $o.exports = @($o.exports | Where-Object { $null -ne $_ }) } else { $o | Add-Member -NotePropertyName exports -NotePropertyValue @() -Force }; return $o } } catch {} }
+  # 2.2.18 (sweep C/D): this record holds what keeps a reset safe (which unlock file a device REFUSED and must not get again, which
+  # request file is in force, how many reboot-retries were used). A record that is there but cannot be read is NOT an empty record:
+  # 2.2.17 started over with an empty one (and saved it over the damaged file), so a refused file could be tried again and a Retry
+  # said "nothing to retry". Now the reset stops with the reason; the damaged file is left as it is.
+  if (Test-Path -LiteralPath $Path) {
+    $o = $null; $why = ''
+    try { $raw = [IO.File]::ReadAllText($Path); if (-not ([string]$raw).Trim()) { $why = 'the file is empty' } else { $o = $raw | ConvertFrom-Json -ErrorAction Stop } } catch { $why = $_.Exception.Message }
+    if ($o -and $o.PSObject.Properties['devices']) { $o.devices = @($o.devices | Where-Object { $null -ne $_ }); if ($o.PSObject.Properties['exports']) { $o.exports = @($o.exports | Where-Object { $null -ne $_ }) } else { $o | Add-Member -NotePropertyName exports -NotePropertyValue @() -Force }; return $o }
+    if (-not $why) { $why = 'it has no device list' }
+    throw ('The Hikvision reset record on this PC (' + $Path + ') could not be read (' + $why + '). Nothing was sent to any device. It says which unlock files a device refused and which request file is in force, so the reset does not start over without it. Check in SADP that no reset is half-way, then move that file away and run again.')
+  }
   return [pscustomobject]@{ version = 1; site = ''; created = (Get-Date -Format 's'); devices = @(); exports = @() }
 }
 function Save-HikState([string]$Path, $State) {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
-  ($State | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $Path -Encoding UTF8
+  # 2.2.18 (sweep D): written to a temp file, read back, then swapped in whole, so a stop half-way never leaves a damaged record
+  $tmp = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+  try {
+    [IO.File]::WriteAllText($tmp, [string]($State | ConvertTo-Json -Depth 8))
+    $fs = [IO.File]::Open($tmp, 'Open', 'Write', 'None'); try { $fs.Flush($true) } finally { $fs.Dispose() }
+    $chk = [IO.File]::ReadAllText($tmp) | ConvertFrom-Json -ErrorAction Stop
+    if (-not $chk -or -not $chk.PSObject.Properties['devices']) { throw 'the saved copy did not read back' }
+    if ([IO.File]::Exists($Path)) { [IO.File]::Replace($tmp, $Path, [System.Management.Automation.Language.NullString]::Value) } else { [IO.File]::Move($tmp, $Path) }
+  } catch {
+    $w = ('  WARNING: the reset record ' + $Path + ' could not be saved (' + $_.Exception.Message + '). Do not start another reset of these devices until it saves.')
+    try { Hk-Say $w 'Red' } catch { Write-Warning $w }
+  } finally { if ([IO.File]::Exists($tmp)) { try { [IO.File]::Delete($tmp) } catch {} } }
 }
+
 function Get-HikStateDevice($State, [string]$Serial) { foreach ($d in @($State.devices)) { if ($d.serial -eq $Serial) { return $d } }; return $null }
 function Set-HikStateField($d, [string]$Name, $Value) { if ($d.PSObject.Properties[$Name]) { $d.$Name = $Value } else { $d | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force } }
 # 2.2.8: every request file made (or registered) is recorded: serial, when, an export id (the first 12 hex of the file's SHA-256),
@@ -435,7 +457,11 @@ function Receive-HikReplies($State, [string]$StatePath, $Cfg, [string]$ToolkitDi
       continue
     }
     if ($d.status -eq 'replied' -and (Test-Path -LiteralPath $dest)) { try { if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($dest)) -eq [Convert]::ToBase64String([byte[]]$x.bytes)) { if (& $isDrop $x.src) { Remove-Item -LiteralPath $x.src -Force -ErrorAction SilentlyContinue }; continue } } catch {} }
-    [IO.File]::WriteAllBytes($dest, $x.bytes)
+    # 2.2.18 (sweep B/D): the reply counts as saved only when the saved copy reads back the same; otherwise the device stays waiting
+    # and a dropped file is NOT removed (2.2.17 marked it replied and deleted the drop even when the save had failed)
+    $saveWhy = ''
+    try { [IO.File]::WriteAllBytes($dest, [byte[]]$x.bytes); if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($dest)) -ne [Convert]::ToBase64String([byte[]]$x.bytes)) { $saveWhy = 'the saved copy does not match' } } catch { $saveWhy = $_.Exception.Message }
+    if ($saveWhy) { Hk-Say ('  Reply for ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ') could NOT be saved to ' + $dest + ' (' + $saveWhy + '). It was left where it was; nothing was imported.') 'Yellow'; continue }
     Set-HikStateField $d 'status' 'replied'; Set-HikStateField $d 'replyFile' $dest; Set-HikStateField $d 'replyFrom' ([string]$x.mail)
     Set-HikStateField $d 'replyAt' $(if ($at) { $at.ToString('s') } else { '' }); Set-HikStateField $d 'replyForExport' $(if ($d.PSObject.Properties['exportId']) { [string]$d.exportId } else { '' })
     $got += $d
@@ -625,7 +651,8 @@ function Invoke-HikResetStage {
   $statePath = Join-Path $StateDir 'state.json'; $reqDir = Join-Path $StateDir 'requests'
   $repDir = $(if ($Config.replyDir) { $Config.replyDir } else { Join-Path $StateDir 'replies' })
   New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
-  $state = Read-HikState $statePath
+  # 2.2.18 (sweep C/D): a reset record that cannot be read stops the reset here (nothing sent); every target is pending with the reason
+  $state = $null; try { $state = Read-HikState $statePath } catch { $rsWhy = $_.Exception.Message; Hk-Say ('  ' + $rsWhy) 'Red'; return [pscustomobject]@{ fixed = @(); pending = @(@($Targets) | ForEach-Object { [pscustomobject]@{ mac = (ConvertTo-SadpMac ([string]$_.mac)); reason = 'reset not started: the reset record on this PC could not be read (see above)' } }) } }
   $want = @{}; foreach ($t in @($Targets)) { $m = ConvertTo-SadpMac ([string]$t.mac); if ($m) { $want[$m] = $t } }
   Hk-Say 'Finding the Hikvision devices (any IP range)...'
   $devs = @(Find-HikSadp 4 | Where-Object { $want.ContainsKey($_.mac) })

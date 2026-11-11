@@ -509,6 +509,29 @@ function Set-FsNet([string]$ip, [string]$brand, $cred, $net, [string]$newIp, [st
   $r = Fs-Http -Ip $ip -Method 'PUT' -Path ('/ISAPI/System/Network/interfaces/' + $net.iface + '/ipAddress') -Body $x.OuterXml -Cred $cred
   return [pscustomobject]@{ ok = (Fs-HikOk $r); reboot = (Fs-HikNeedsReboot $r) }
 }
+# 2.2.18 (Codex F3): an accepted network write, and a device that logs in afterwards, is not proof the settings took (a recorder can
+# acknowledge a new router and keep its old one). Read the WHOLE network config back where the device answers now ($ip) and compare
+# every field Set-FsNet was asked for: address, mask, router, DNS 1 / 2, fixed or DHCP. $before = Get-FsNet's read before the write
+# (a DNS field the device never had stays out of the check). -Dhcp: only "DHCP is on" is checked (the router picks the rest).
+# Returns '' when everything reads back as asked, otherwise the fields that do not, in plain words.
+function Get-FsNetMismatch([string]$ip, [string]$brand, $cred, $before, [string]$wantIp, [string]$mask, [string]$gw, [string]$dns1 = '8.8.8.8', [string]$dns2 = '1.1.1.1', [switch]$Dhcp) {
+  $rd = $null; try { $rd = Get-FsNet $ip $brand $cred } catch { $rd = $null }
+  if (-not $rd) { return ('its network settings could not be read back (' + $(if ($script:FsNetWhy) { $script:FsNetWhy } else { 'no answer' }) + ')') }
+  if (-not $mask) { $mask = '255.255.255.0' }
+  $bad = @()
+  if ($Dhcp) {
+    if ($rd.dhcp -ne $true) { $bad += 'it still has a fixed address (DHCP is off)' }
+    return ($bad -join '; ')
+  }
+  if ($rd.dhcp -ne $false) { $bad += 'it is still on DHCP (not a fixed address)' }
+  if ([string]$rd.ip -ne $wantIp) { $bad += ('address is ' + $rd.ip + ', not ' + $wantIp) }
+  if ([string]$rd.mask -ne $mask) { $bad += ('mask is ' + $rd.mask + ', not ' + $mask) }
+  if ([string]$rd.gw -ne $gw) { $bad += ('router (gateway) is ' + $(if ($rd.gw) { $rd.gw } else { 'empty' }) + ', not ' + $(if ($gw) { $gw } else { 'empty' })) }
+  $b1 = ''; $b2 = ''; if ($before) { $b1 = [string]$before.dns1; $b2 = [string]$before.dns2 }
+  if (($b1 -or [string]$rd.dns1) -and [string]$rd.dns1 -ne $dns1) { $bad += ('DNS 1 is ' + $(if ($rd.dns1) { $rd.dns1 } else { 'empty' }) + ', not ' + $(if ($dns1) { $dns1 } else { 'empty' })) }
+  if (($b2 -or [string]$rd.dns2) -and [string]$rd.dns2 -ne $dns2) { $bad += ('DNS 2 is ' + $(if ($rd.dns2) { $rd.dns2 } else { 'empty' }) + ', not ' + $(if ($dns2) { $dns2 } else { 'empty' })) }
+  return ($bad -join '; ')
+}
 
 # ---------------- password ----------------
 function Resolve-FsPwChange([string]$ip, [string]$brand, [string]$newPw, [string]$oldPw) {
@@ -756,6 +779,34 @@ function Remove-FsNvrChannel([string]$nvrIp, $nvrCred, [int]$ch) {
   $w = Fs-Http -Ip $nvrIp -Method 'DELETE' -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $ch) -Cred $nvrCred
   return (Fs-HikOk $w)
 }
+# 2.2.18 (Codex F2): before Undo deletes or puts back an NVR channel: WHICH camera is on that channel NOW? Read fresh, just before the
+# write. Undo may only touch it while it still points at THIS camera (an address this run gave it: $OwnIps) or, for a saved channel,
+# at the camera the saved copy names ($AlsoOk: an earlier Undo already put it back). Another camera on it, a channel set up by name /
+# IPv6, or an answer that cannot be read = Undo leaves it alone (the other camera keeps recording). When the channel's address is not
+# where Undo just checked this camera's MAC ($VerifiedIp) and a device answers there on this camera's password, its MAC / serial must
+# be this camera's (another camera may have taken the address since the run). Returns { state ('mine'|'gone'|'other'|'unread'); ip; why }.
+# 'gone' = the NVR says there is no such channel (HTTP 404).
+function Get-FsUndoChannelOwner([string]$nvrIp, $nvrCred, [int]$ch, [string[]]$OwnIps, [string[]]$AlsoOk = @(), [string]$VerifiedIp = '', [string]$Brand = 'Hikvision', [string]$Pw = '', [string]$Mac = '', [string]$Serial = '') {
+  $r = $null; try { $r = Fs-Http -Ip $nvrIp -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $ch) -Cred $nvrCred } catch { $r = $null }
+  if ($r -and [int]$r.code -eq 404) { return [pscustomobject]@{ state = 'gone'; ip = ''; why = ('NVR ' + $nvrIp + ' has no ch ' + $ch + ' now') } }
+  if (-not $r -or [int]$r.code -ne 200) { return [pscustomobject]@{ state = 'unread'; ip = ''; why = ('NVR ' + $nvrIp + ' ch ' + $ch + ' could not be read now (answer ' + $(if ($r -and [int]$r.code) { [string]$r.code } else { 'none' }) + '), so it is NOT known which camera is on it') } }
+  $x = Fs-XmlDoc $r.body
+  $whyR = Get-FsNvrChannelReadBlock $x $nvrIp $ch; if ($whyR) { return [pscustomobject]@{ state = 'unread'; ip = ''; why = $whyR } }
+  $ad = Get-FsChannelAddressing $x
+  if (-not $ad.isIp) { return [pscustomobject]@{ state = 'other'; ip = ''; why = ('NVR ' + $nvrIp + ' ch ' + $ch + ' is now set up ' + $ad.how + ', not with this camera''s address') } }
+  $own = @($OwnIps | Where-Object { $_ } | ForEach-Object { ([string]$_) -replace ':\d+$', '' })
+  $also = @($AlsoOk | Where-Object { $_ } | ForEach-Object { ([string]$_) -replace ':\d+$', '' })
+  if (-not ($own -contains $ad.ip) -and -not ($also -contains $ad.ip)) {
+    return [pscustomobject]@{ state = 'other'; ip = $ad.ip; why = ('NVR ' + $nvrIp + ' ch ' + $ch + ' now shows ANOTHER camera (' + $ad.ip + '), not this one (' + (($own | Select-Object -Unique) -join ' / ') + ')') }
+  }
+  if (($own -contains $ad.ip) -and $Pw -and ($Mac -or $Serial) -and $ad.ip -ne (([string]$VerifiedIp) -replace ':\d+$', '')) {
+    if ((Test-FsLogin $ad.ip $Brand $Pw) -eq 'ok') {
+      $idw = Get-FsUndoIdentityBlock $ad.ip $Brand (Fs-Cred $Pw) $Mac $Serial
+      if ($idw) { return [pscustomobject]@{ state = 'other'; ip = $ad.ip; why = ('NVR ' + $nvrIp + ' ch ' + $ch + ' points at ' + $ad.ip + ', and ' + $idw) } }
+    }
+  }
+  return [pscustomobject]@{ state = 'mine'; ip = $ad.ip; why = '' }
+}
 function Test-FsVideo([string]$nvrIp, $nvrCred, [int]$ch, [string]$camIp, [string]$camBrand, $camCred) {
   # video is back = NVR says the channel is online AND hands out a picture of it (or, with no NVR, the camera itself does)
   if ($nvrIp -and $ch -gt 0) {
@@ -808,6 +859,9 @@ function Invoke-FsNetOp([string]$op, [hashtable]$a) {
     }
     'addroute' { New-NetRoute -InterfaceIndex $ix -DestinationPrefix '0.0.0.0/0' -NextHop $a.gw -ErrorAction Stop | Out-Null; return $true }
     'renew' { if ($a.name) { $null = & ipconfig.exe /renew ([string]$a.name) 2>&1 }; return $true }   # 2.2.2 (H4): ask DHCP for the address now
+    # 2.2.18 (Codex F5): for the verified-recovery check: when Windows last started (UTC), and every "skip as source" IPv4 address now
+    'boottime' { try { return ([datetime](Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime).ToUniversalTime() } catch { try { $os = Get-WmiObject -Class Win32_OperatingSystem -ErrorAction Stop; return ([Management.ManagementDateTimeConverter]::ToDateTime([string]$os.LastBootUpTime)).ToUniversalTime() } catch { return $null } } }
+    'skipaddrs' { try { $l = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.SkipAsSource -eq $true -and [string]$_.IPAddress -notlike '169.254.*' } | ForEach-Object { [string]$_.IPAddress }); return [pscustomobject]@{ ips = $l } } catch { return $null } }
   }
   return $null
 }
@@ -995,18 +1049,86 @@ function Remove-FsTempIps([string]$stateFile) {
     if ($script:FsNetBlocked) { $script:FsLastRestore = [pscustomobject]@{ ok = $false; problems = @($script:FsNetBlocked) }; return $script:FsLastRestore }   # 2.2.10 (Codex R03)
     $script:FsLastRestore = [pscustomobject]@{ ok = $true; problems = @() }; return $script:FsLastRestore
   }
-  return (Restore-FsPcNet $stateFile)
+  $rr = Restore-FsPcNet $stateFile
+  # 2.2.18 (Codex F5): while an unresolved recovery stands, the clean-up never says "back to normal"
+  if ($script:FsNetBlocked -and $rr -and $rr.ok) { $rr = [pscustomobject]@{ ok = $false; problems = @(@($rr.problems) + @($script:FsNetBlocked)) }; $script:FsLastRestore = $rr }
+  return $rr
+}
+# 2.2.18 (Codex F5): "an earlier run left this PC's network changed and its record could not be read" is kept ON DISK, not only in
+# this run's memory (2.2.10-2.2.17 renamed the unreadable record away and kept the block in memory, so the next start found nothing
+# and changed the adapter again). The marker is <journal>.recovery-needed.json beside the journal: { version = 1; created (local time);
+# createdUtcTicks (UTC ticks); kept (the renamed unreadable record); why }. Every start reads it FIRST and blocks every adapter change
+# while it is there - a new window, a second run, a fresh PowerShell all see it. Only a VERIFIED recovery clears it: this PC has
+# restarted since the marker was written (a temporary address lives only in the adapter's memory, so a restart takes it off) AND no
+# adapter shows a temporary address now (IPv4 "skip as source", the kind the Toolkit adds). Cleared = the marker is renamed
+# .recovery-cleared-<time>.json and the unreadable records .cleared-unreadable-<time>.json (kept, never deleted). An unreadable record
+# left by 2.2.10-2.2.17 (.unreadable-*.json with no marker) gets a marker at the next start (its own file time = when it was written).
+function Get-FsNetMarkerPath([string]$stateFile) { return ($stateFile -replace '\.json$', '.recovery-needed.json') }
+function Set-FsNetRecoveryMarker([string]$stateFile, [string]$kept, [datetime]$whenUtc) {
+  $mk = Get-FsNetMarkerPath $stateFile
+  if (Test-Path -LiteralPath $mk) { return $mk }   # the FIRST marker's time stands: the restart must come after the first problem
+  $o = [ordered]@{ version = 1; created = $whenUtc.ToLocalTime().ToString('s'); createdUtcTicks = [int64]$whenUtc.Ticks; kept = $kept; why = 'the record of an earlier run''s changes to this PC''s network could not be read' }
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $mk) | Out-Null
+  $tmp = $mk + '.tmp'; [IO.File]::WriteAllText($tmp, ($o | ConvertTo-Json)); Move-Item -LiteralPath $tmp -Destination $mk -Force
+  return $mk
+}
+# '' = the recovery is verified now, else what is still missing (plain words)
+function Test-FsNetRecoveryVerified($createdUtc) {
+  if (-not $createdUtc) { return 'it is not known when the problem was written down' }
+  $boot = $null; try { $boot = Invoke-FsNetOp 'boottime' @{} } catch { $boot = $null }
+  if (-not ($boot -is [datetime])) { return 'it could not be read when this PC last restarted' }
+  if ($boot.ToUniversalTime() -le ([datetime]$createdUtc)) { return 'this PC has not been restarted since' }
+  $sk = $null; try { $sk = Invoke-FsNetOp 'skipaddrs' @{} } catch { $sk = $null }
+  if (-not $sk -or -not $sk.PSObject.Properties['ips']) { return 'this PC''s network addresses could not be read' }
+  if (@($sk.ips | Where-Object { $_ }).Count) { return ('a temporary address is still on this PC (' + (@($sk.ips | Where-Object { $_ }) -join ', ') + ')') }
+  return ''
+}
+# '' = no unresolved recovery (or it was just verified and cleared); otherwise the block, in plain words
+function Test-FsNetRecoveryMarker([string]$stateFile) {
+  if (-not $stateFile) { return '' }
+  $dir = Split-Path -Parent $stateFile; $base = [IO.Path]::GetFileNameWithoutExtension($stateFile)
+  if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { return '' }
+  $mk = Get-FsNetMarkerPath $stateFile
+  $ev = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ($base + '.unreadable-*.json') } | Sort-Object LastWriteTimeUtc)
+  $hasMk = Test-Path -LiteralPath $mk
+  if (-not $hasMk -and -not $ev.Count) { return '' }
+  $created = $null; $kept = ''
+  if (-not $hasMk) { $created = $ev[-1].LastWriteTimeUtc; $kept = $ev[-1].Name; try { [void](Set-FsNetRecoveryMarker $stateFile $kept $created) } catch { Fs-LogLine ('the network recovery reminder could not be written: ' + $_.Exception.Message) } }
+  else {
+    try { $mj = Get-Content -LiteralPath $mk -Raw -ErrorAction Stop | ConvertFrom-Json; if ($mj -and $mj.PSObject.Properties['createdUtcTicks']) { $created = New-Object DateTime ([int64]$mj.createdUtcTicks), ([DateTimeKind]::Utc) }; if ($mj -and $mj.PSObject.Properties['kept']) { $kept = [string]$mj.kept } } catch {}
+    if (-not $created) { try { $created = (Get-Item -LiteralPath $mk).LastWriteTimeUtc } catch {} }   # an unreadable marker still blocks
+    if ($ev.Count -and $ev[-1].LastWriteTimeUtc -gt $created) { $created = $ev[-1].LastWriteTimeUtc }
+  }
+  $why = Test-FsNetRecoveryVerified $created
+  if (-not $why) {
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    try { if (Test-Path -LiteralPath $mk) { Move-Item -LiteralPath $mk -Destination ($stateFile -replace '\.json$', ('.recovery-cleared-' + $stamp + '.json')) -Force } } catch {}
+    foreach ($f in $ev) { try { Move-Item -LiteralPath $f.FullName -Destination (Join-Path $dir ($f.Name -replace '\.unreadable-', '.cleared-unreadable-')) -Force } catch {} }
+    Fs-LogLine 'the earlier unreadable network record is sorted out: this PC restarted since, and no temporary address is on it'
+    return ''
+  }
+  return ('an earlier run left this PC''s network changed and its record could not be read' + $(if ($kept) { ' (kept as ' + $kept + ')' } else { '' }) + '; no change is made to this PC''s network until that is sorted out - ' + $why + '. Restart this PC, then run again')
 }
 function Clear-FsLeftoverTemps([string]$stateFile) {
   # a run that crashed or was stopped left this PC changed: put it back at the next start (and from the "Fix this site" task's finally)
-  if (($script:FsMockUrl -and -not $script:FsNetOps) -or -not $stateFile -or -not (Test-Path -LiteralPath $stateFile)) { return $null }
+  if (($script:FsMockUrl -and -not $script:FsNetOps) -or -not $stateFile) { return $null }
+  # 2.2.18 (Codex F5): an unresolved recovery written down by an earlier start blocks this one too, until it is verified
+  $mb = Test-FsNetRecoveryMarker $stateFile
+  if ($mb) {
+    $script:FsNetBlocked = $mb; Fs-LogLine ('NETWORK NOT BACK TO NORMAL: ' + $mb)
+    $script:FsLastRestore = [pscustomobject]@{ ok = $false; problems = @($mb) }
+    return $script:FsLastRestore
+  }
+  if (-not (Test-Path -LiteralPath $stateFile)) { return $null }
   $tj = $null; try { $tj = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json } catch {}
   if (-not $tj) {
     # 2.2.10 (Codex R03): an unreadable journal is an unsolved recovery, not "nothing to do". It is kept (renamed, so the PC can be
     # put back by hand from it), no adapter change happens in this run, and the run ends FAILED - Run again.
     $keep = $stateFile -replace '\.json$', ('.unreadable-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')
     try { Move-Item -LiteralPath $stateFile -Destination $keep -Force } catch { $keep = $stateFile }
-    $script:FsNetBlocked = ('the record of an earlier run''s changes to this PC''s network could not be read (kept as ' + (Split-Path -Leaf $keep) + '); restart this PC to clear any temporary address')
+    # 2.2.18 (Codex F5): ...and written down on disk, so the next start is blocked too (see Test-FsNetRecoveryMarker)
+    $mw = ''; try { [void](Set-FsNetRecoveryMarker $stateFile (Split-Path -Leaf $keep) ((Get-Date).ToUniversalTime())) } catch { $mw = ' (the reminder file could not be written: ' + $_.Exception.Message + ')' }
+    $script:FsNetBlocked = ('the record of an earlier run''s changes to this PC''s network could not be read (kept as ' + (Split-Path -Leaf $keep) + '); restart this PC to clear any temporary address, then run again' + $mw)
     Fs-LogLine ('NETWORK NOT BACK TO NORMAL: ' + $script:FsNetBlocked)
     $script:FsLastRestore = [pscustomobject]@{ ok = $false; problems = @($script:FsNetBlocked) }
     return $script:FsLastRestore

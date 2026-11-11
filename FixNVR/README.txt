@@ -62,6 +62,9 @@ SAFETY
   - Full log of every request (passwords blanked) + before.json / plan.json / rollback.json / after.json in
     runs\<mode>-<time>\.
   - Undo:  powershell -ExecutionPolicy Bypass -File FixNVR.ps1 -Mode Rollback -RollbackFile "runs\Fix-...\rollback.json"
+    2.2.18: Undo (and every change in Fix) first reads the device at the address and changes it only when it reports the MAC saved
+    for it. A different device there, a device that does not say its MAC, or an old address now used by another device = "NOT restored",
+    nothing is sent, and the run ends "NOT RESTORED" (never "Done."). A move counts only when the settings read back match.
   - Official interfaces only: Hikvision ISAPI + SADP search (read), ONVIF (open standard), Uniview LiteAPI.
   - "Done." only when the check after the fix read every NVR and found platform access online and every camera
     online. Anything it could not read (wrong NVR password, NVR not answering, camera status) is a red NOT CHECKED

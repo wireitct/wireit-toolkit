@@ -33,7 +33,15 @@ function Save-HikEmailDrop([string]$InboxDir, [string]$Serial, [string]$File = '
     if ($fi.Extension -match '(?i)^\.(json|exe|bat|cmd|ps1|lnk|dll|vbs|js)$') { return (& $no 'that is not Hikvision''s reply file') }
     $ext = $(if ($fi.Extension -match '^\.[A-Za-z0-9]{1,5}$') { $fi.Extension.ToLower() } else { '.xml' })
     $dst = Join-Path $InboxDir ('drop-' + $fileSerial + '-' + $stamp + $ext)
-    [IO.File]::WriteAllBytes($dst + '.tmp', [IO.File]::ReadAllBytes($fi.FullName)); Move-Item -LiteralPath ($dst + '.tmp') -Destination $dst -Force
+    # 2.2.18 (sweep B): "saved" only when the file in the inbox reads back the same (2.2.17 said ok even when the copy had failed)
+    # (checked on the temp copy BEFORE it is moved in: a running Fix this site may take the drop away seconds after it lands)
+    $why = ''
+    try {
+      $srcB = [IO.File]::ReadAllBytes($fi.FullName); [IO.File]::WriteAllBytes($dst + '.tmp', $srcB)
+      if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($dst + '.tmp')) -ne [Convert]::ToBase64String($srcB)) { $why = 'the saved copy does not match' }
+      else { Move-Item -LiteralPath ($dst + '.tmp') -Destination $dst -Force -ErrorAction Stop }
+    } catch { $why = $_.Exception.Message }
+    if ($why) { Remove-Item -LiteralPath ($dst + '.tmp') -Force -ErrorAction SilentlyContinue; return (& $no ('it could not be saved here (' + $why + ')')) }
     # 2.2.8: the drop keeps the time the file was downloaded, so a reply older than the latest request is seen as stale (not as new)
     try { if ($fi.LastWriteTime -lt (Get-Date)) { (Get-Item -LiteralPath $dst).LastWriteTime = $fi.LastWriteTime } } catch {}
     return [pscustomobject]@{ ok = $true; why = ''; path = $dst }
@@ -41,7 +49,10 @@ function Save-HikEmailDrop([string]$InboxDir, [string]$Serial, [string]$File = '
   $c = ConvertTo-HikCode $Code
   if (-not $c) { return (& $no 'paste the code from Hikvision''s email (letters and digits only)') }
   $dst = Join-Path $InboxDir ('drop-' + $fileSerial + '-' + $stamp + '-code.txt')
-  [IO.File]::WriteAllText($dst + '.tmp', $c); Move-Item -LiteralPath ($dst + '.tmp') -Destination $dst -Force
+  # 2.2.18 (sweep B): the code counts as saved only when the temp copy reads back the same and the move worked
+  $why = ''
+  try { [IO.File]::WriteAllText($dst + '.tmp', $c); if ([IO.File]::ReadAllText($dst + '.tmp') -ne $c) { $why = 'the saved copy does not match' } else { Move-Item -LiteralPath ($dst + '.tmp') -Destination $dst -Force -ErrorAction Stop } } catch { $why = $_.Exception.Message }
+  if ($why) { Remove-Item -LiteralPath ($dst + '.tmp') -Force -ErrorAction SilentlyContinue; return (& $no ('the code could not be saved here (' + $why + ')')) }
   return [pscustomobject]@{ ok = $true; why = ''; path = $dst }
 }
 # the dialog. $Devices: objects with serial, shortSerial, model, ip. $OnSave: { param($serial, $file, $code) -> { ok; why; message } }.

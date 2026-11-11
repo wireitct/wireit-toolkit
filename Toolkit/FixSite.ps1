@@ -443,7 +443,10 @@ if ($Mode -eq 'Rollback') {
         $w = Set-FsNet $ip $c.brand $cr $net ([string]$nb.ip) ([string]$nb.mask) ([string]$nb.gw) ([string]$nb.dns1) ([string]$nb.dns2) -Dhcp:([bool]$nb.dhcp)
         if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $ip $c.brand $cr) }
         $back = $w.ok -and (Wait-FsDevice ([string]$nb.ip) $c.brand $pw ([int]$opts.moveWaitSec))
-        if ($back) { & $markDone ($ck + '|net'); $ip = [string]$nb.ip; $res += [pscustomobject]@{ text = $(if ($nb.dhcp) { 'back on DHCP (answers on ' + $nb.ip + ')' } else { 'address back to ' + $nb.ip }); ok = $true } }
+        # 2.2.18 (Codex F3): answering on the old address is not proof every setting went back: read them back and compare with the saved ones
+        $nmU = $(if ($back) { Get-FsNetMismatch ([string]$nb.ip) $c.brand (Fs-Cred $pw) $net ([string]$nb.ip) ([string]$nb.mask) ([string]$nb.gw) ([string]$nb.dns1) ([string]$nb.dns2) -Dhcp:([bool]$nb.dhcp) } else { '' })
+        if ($back -and $nmU) { $ip = [string]$nb.ip; $res += [pscustomobject]@{ text = ('answers on ' + $nb.ip + ' again, but its network settings are NOT back: ' + $nmU); ok = $false } }
+        elseif ($back) { & $markDone ($ck + '|net'); $ip = [string]$nb.ip; $res += [pscustomobject]@{ text = $(if ($nb.dhcp) { 'back on DHCP (answers on ' + $nb.ip + ')' } else { 'address back to ' + $nb.ip }); ok = $true } }
         elseif ($w.ok -and $nb.dhcp) { & $markDone ($ck + '|net'); $res += [pscustomobject]@{ text = ('back on DHCP: the router picks its address now (not on ' + $nb.ip + ' yet - use Find cameras to see it)'); ok = $null } }
         else { $res += [pscustomobject]@{ text = ('address back to ' + $nb.ip); ok = $false } }
       }
@@ -454,29 +457,61 @@ if ($Mode -eq 'Rollback') {
       if ($nv -ne $nv0) { if (-not $nvrPwR.ContainsKey($nv) -and $nvrPwR.ContainsKey($nv0)) { $nvrPwR[$nv] = $nvrPwR[$nv0] }; if (-not (Test-FsOnScheme $nv $pcScheme)) { [void](Add-FsTempIp (Get-FsP3 $nv) $pc $tempState) } }
       if (-not $nvrPwR.ContainsKey($nv)) { $res += [pscustomobject]@{ text = ('NVR ' + $nv + ': no saved login - put ch ' + $c.nvr.channel + ' back by hand'); ok = $false } }
       else {
+        # 2.2.18 (Codex F2): what this run wrote on the channel = one of this camera's addresses; where Undo checked its MAC just now
+        $chOwn = @($ip, [string]$c.ip_before, [string]$c.ip_after, [string]$(if ($c.PSObject.Properties['ip_target']) { $c.ip_target } else { '' })) | Where-Object { $_ }
+        $chVer = $(if ($pwLogged) { $ip } else { '' }); $chSer = $(if ($c.PSObject.Properties['serial']) { [string]$c.serial } else { '' })
         $ncr = Fs-Cred $nvrPwR[$nv]; $bfile = $(if ($c.nvr.PSObject.Properties['before_file'] -and [string]$c.nvr.before_file) { Join-Path $RollbackDir (([string]$c.nvr.before_file) -replace '[\\/]', [string][IO.Path]::DirectorySeparatorChar) } else { '' })
         if ([string]$c.nvr.action -eq 'refused') { $ok = $true; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ': not changed by the run (it showed another live camera)'); ok = $true } }   # 2.2.10 (Codex R06)
         elseif ([string]($idw = Get-FsUndoNvrBlock $nv $ncr $c.nvr 'nvr_mac' 'nvr_serial')) { $ok = $false; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' NOT put back: ' + $idw + '. Nothing was written to it - check which NVR is there and put the channel back by hand'); ok = $false } }   # 2.2.16 (Codex 2.2.15 F3)
         elseif ([string]$c.nvr.action -eq 'pending' -and -not ($bfile -and (Test-Path -LiteralPath $bfile))) {
           # 2.2.7 (F01): the run stopped while it changed this channel and no saved copy exists = the channel did not exist before
           # (it was being ADDED). Removed again only when it is there and points at this camera; otherwise nothing was changed.
-          $cur = @(Get-FsNvrChannels $nv $ncr | Where-Object { [int]$_.channel -eq [int]$c.nvr.channel })
-          $mine = @($cur | Where-Object { [string]$_.ip -in @([string]$c.ip_before, [string]$c.ip_after, [string]$(if ($c.PSObject.Properties['ip_target']) { $c.ip_target } else { '' })) })
-          if ($mine.Count) { $ok = Remove-FsNvrChannel $nv $ncr ([int]$c.nvr.channel); $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' that the stopped run was adding: removed'); ok = $ok } }
-          elseif ($cur.Count) { $ok = $true; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ': not changed by the stopped run'); ok = $true } }
-          else { $ok = $true; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ': was never added'); ok = $true } }
+          # 2.2.18 (Codex F2): read with Get-FsUndoChannelOwner (one channel, fresh): a channel that could NOT be read is no longer
+          # "was never added" (2.2.17 read a failed list as no channel), and an address this camera had is checked for its MAC
+          $ow = Get-FsUndoChannelOwner $nv $ncr ([int]$c.nvr.channel) @($chOwn) @() $chVer ([string]$c.brand) $pw ([string]$c.mac) $chSer
+          if ($ow.state -eq 'mine') { $ok = Remove-FsNvrChannel $nv $ncr ([int]$c.nvr.channel); if ($ok) { $ok = ((Get-FsUndoChannelOwner $nv $ncr ([int]$c.nvr.channel) @($chOwn)).state -eq 'gone') }; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' that the stopped run was adding: ' + $(if ($ok) { 'removed (the NVR no longer has it)' } else { 'NOT confirmed removed - check ch ' + $c.nvr.channel + ' in the NVR' })); ok = $ok } }
+          elseif ($ow.state -eq 'other') { $ok = $true; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ': not changed by the stopped run'); ok = $true } }
+          elseif ($ow.state -eq 'gone') { $ok = $true; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ': was never added'); ok = $true } }
+          else { $ok = $false; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' NOT checked: ' + $ow.why + '. Nothing was written - press Undo again'); ok = $false } }
         }
-        elseif ([string]$c.nvr.action -eq 'added') { $ok = Remove-FsNvrChannel $nv $ncr ([int]$c.nvr.channel); $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' that the run added: removed'); ok = $ok } }
+        elseif ([string]$c.nvr.action -eq 'added') {
+          # 2.2.18 (Codex F2): a channel this run ADDED is deleted again ONLY while it still shows this camera. Another camera on it now
+          # (someone set it up since), or a channel that cannot be read = left alone, NOT undone, Undo incomplete. Gone already = back.
+          $ow = Get-FsUndoChannelOwner $nv $ncr ([int]$c.nvr.channel) @($chOwn) @() $chVer ([string]$c.brand) $pw ([string]$c.mac) $chSer
+          if ($ow.state -eq 'gone') { $ok = $true; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' that the run added: already gone'); ok = $true } }
+          elseif ($ow.state -ne 'mine') { $ok = $false; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' that the run added NOT removed: ' + $ow.why + '. Nothing was written to it (that camera keeps recording) - check ch ' + $c.nvr.channel + ' in the NVR by hand'); ok = $false } }
+          else {
+            $ok = Remove-FsNvrChannel $nv $ncr ([int]$c.nvr.channel)
+            if ($ok) { $ok = ((Get-FsUndoChannelOwner $nv $ncr ([int]$c.nvr.channel) @($chOwn)).state -eq 'gone') }   # 2.2.18: an accepted DELETE counts once the NVR reads no such channel
+            $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' that the run added: ' + $(if ($ok) { 'removed' } else { 'NOT confirmed removed - check ch ' + $c.nvr.channel + ' in the NVR' })); ok = $ok }
+          }
+        }
         elseif ($bfile -and (Test-Path -LiteralPath $bfile)) {
           # 2.2.14 (Codex 2.2.13 F8): back = video on it again from the camera the saved copy names; a DIFFERENT original camera never
           # gets this camera's password (only one that logs in to it), otherwise its password is NOT confirmed (by hand).
           # Restore-FsUndoChannel writes the saved copy with Restore-FsNvrChannel, then checks the video.
           $origC = @(@($sec.password) + @($sec.known) + @($old.Keys | Where-Object { $_ -like ('*|' + (Get-FsChannelXmlIp ([IO.File]::ReadAllText($bfile)))) } | ForEach-Object { $old[$_] }) | Where-Object { $_ } | ForEach-Object { [string]$_ } | Select-Object -Unique | Select-Object -First ([int]$opts.maxPasswordTries))
           $own = @($ip, [string]$c.ip_before, [string]$c.ip_after, [string]$(if ($c.PSObject.Properties['ip_target']) { $c.ip_target } else { '' })) | Where-Object { $_ }
-          $w = Restore-FsUndoChannel $nv $ncr ([int]$c.nvr.channel) ([IO.File]::ReadAllText($bfile)) @($own) $pw $c.brand @($origC) $(if ($MockUrl) { 6 } else { 90 })
-          $ok = [bool]$w.ok; $res += [pscustomobject]@{ text = [string]$w.text; ok = $ok }
+          # 2.2.18 (Codex F2): the saved copy goes back ONLY while the channel still shows this camera (what this run wrote) or already the
+          # camera the saved copy names (an earlier Undo). Another camera on it now = left alone (it keeps recording), Undo incomplete.
+          $ow = Get-FsUndoChannelOwner $nv $ncr ([int]$c.nvr.channel) @($own) @(Get-FsChannelXmlIp ([IO.File]::ReadAllText($bfile))) $chVer ([string]$c.brand) $pw ([string]$c.mac) $chSer
+          if ($ow.state -ne 'mine') { $ok = $false; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' NOT put back: ' + $(if ($ow.state -eq 'gone') { 'the NVR no longer has that channel' } else { $ow.why }) + '. Nothing was written to it - check ch ' + $c.nvr.channel + ' in the NVR by hand'); ok = $false } }
+          else {
+            $w = Restore-FsUndoChannel $nv $ncr ([int]$c.nvr.channel) ([IO.File]::ReadAllText($bfile)) @($own) $pw $c.brand @($origC) $(if ($MockUrl) { 6 } else { 90 })
+            $ok = [bool]$w.ok; $res += [pscustomobject]@{ text = [string]$w.text; ok = $ok }
+          }
         }
-        else { $w = Set-FsNvrChannel $nv $ncr ([int]$c.nvr.channel) ([string]$c.ip_before) $pw $c.brand '' @([string]$c.ip_after, [string]$(if ($c.PSObject.Properties['ip_target']) { $c.ip_target } else { '' })); $ok = [bool]$w.ok; $res += [pscustomobject]@{ text = $(if ($w.why) { [string]$w.why } else { 'NVR ch ' + $c.nvr.channel + ' back to ' + $c.ip_before + ' (no saved copy of the channel)' }); ok = $ok } }   # 2.2.10 (Codex R06): the camera's own addresses may be moved off
+        else {
+          # 2.2.18 (Codex F2): no saved copy: the channel is pointed back at the camera's old address only while it still shows this camera
+          $ow = Get-FsUndoChannelOwner $nv $ncr ([int]$c.nvr.channel) @($chOwn) @() $chVer ([string]$c.brand) $pw ([string]$c.mac) $chSer
+          if ($ow.state -ne 'mine') { $ok = $false; $res += [pscustomobject]@{ text = ('NVR ch ' + $c.nvr.channel + ' NOT put back: ' + $(if ($ow.state -eq 'gone') { 'the NVR no longer has that channel' } else { $ow.why }) + '. Nothing was written to it - check ch ' + $c.nvr.channel + ' in the NVR by hand'); ok = $false } }
+          else {
+            $w = Set-FsNvrChannel $nv $ncr ([int]$c.nvr.channel) ([string]$c.ip_before) $pw $c.brand '' @([string]$c.ip_after, [string]$(if ($c.PSObject.Properties['ip_target']) { $c.ip_target } else { '' })); $ok = [bool]$w.ok   # 2.2.10 (Codex R06): the camera's own addresses may be moved off
+            # 2.2.18 (Codex F3 twin): an accepted channel write is not proof: back = the NVR reads ch N back pointing at the old address
+            $rbk = $null; if ($ok) { $rbk = Get-FsUndoChannelOwner $nv $ncr ([int]$c.nvr.channel) @([string]$c.ip_before); $ok = ($rbk.state -eq 'mine') }
+            $res += [pscustomobject]@{ text = $(if ($w.why) { [string]$w.why } elseif ($rbk -and -not $ok) { 'NVR ch ' + $c.nvr.channel + ': the NVR accepted ' + $c.ip_before + ', but reads back ' + $(if ($rbk.ip) { $rbk.ip } else { $rbk.why }) + ' - NOT back, check ch ' + $c.nvr.channel + ' in the NVR' } else { 'NVR ch ' + $c.nvr.channel + ' back to ' + $c.ip_before + ' (no saved copy of the channel)' }); ok = $ok }
+          }
+        }
         Say-PlainWarning $nv
         if ($ok) { & $markDone ($ck + '|nvr') }
       }
@@ -530,8 +565,10 @@ if ($Mode -eq 'Rollback') {
     # 2.2.3 (Codex #20): done only when the NVR answers on its old address (after the restart it may need); DHCP = the router picks it
     if ($w.ok -and $w.reboot) { [void](Restart-FsDevice ([string]$n.target) 'Hikvision' $cr) }
     $backN = $w.ok -and ([bool]$n.old.dhcp -or (Wait-FsDevice ([string]$n.old.ip) 'Hikvision' $nvrPwR[[string]$n.target] ([int]$opts.rebootWaitSec)))
+    # 2.2.18 (Codex F3): answering on the old address is not proof: every saved setting (mask, router, DNS, fixed / DHCP) must read back
+    $nmN = ''; if ($backN -and -not [bool]$n.old.dhcp) { $nmN = Get-FsNetMismatch ([string]$n.old.ip) 'Hikvision' (Fs-Cred $nvrPwR[[string]$n.target]) $net ([string]$n.old.ip) ([string]$n.old.mask) ([string]$n.old.gw) ([string]$n.old.dns1) ([string]$n.old.dns2); if ($nmN) { $backN = $false } }
     if ($backN) { & $markDone ('nvrmove|' + [string]$n.ip) } else { $bad++ }
-    Say ('  NVR: back to ' + $n.old.ip + $(if ($n.old.dhcp) { ' (DHCP)' } else { '' }) + $(if ($w.ok -and -not $backN) { ' - accepted, but it does not answer there' } else { '' }) + ' ' + $(if ($backN) { $script:FsOk } else { $script:FsBad }))
+    Say ('  NVR: back to ' + $n.old.ip + $(if ($n.old.dhcp) { ' (DHCP)' } else { '' }) + $(if ($nmN) { ' - it answers there, but its network settings are NOT back: ' + $nmN } elseif ($w.ok -and -not $backN) { ' - accepted, but it does not answer there' } else { '' }) + ' ' + $(if ($backN) { $script:FsOk } else { $script:FsBad }))
   }
   Say-NetRestore (Remove-FsTempIps $tempState)
   try { Save-FsSecrets $SecretsDir $sec } catch {}
@@ -903,10 +940,14 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'move' })) {
   if (-not $sec.nvr.ContainsKey($n.target)) { $sec.nvr[$n.target] = $nvrPw[$n.ip]; Save-FsSecrets $SecretsDir $sec }
   $w = Set-FsNet $n.ip 'Hikvision' $cr $net $n.target $devNet.mask $devNet.gw
   if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $n.ip 'Hikvision' $cr) }
-  $back = $w.ok -and (Wait-FsDevice $n.target 'Hikvision' $nvrPw[$n.ip] ([int]$opts.rebootWaitSec))
-  $l = Format-FsCheckLine ('NVR ' + $n.ip) @([pscustomobject]@{ text = $(if (-not $w.ok) { 'the NVR refused the new address settings' } elseif ($n.target -eq $n.ip) { 'network settings fixed (router ' + $devNet.gw + ', fixed address)' } else { 'moved -> ' + (Get-FsShort $n.target) }); ok = $back })
+  $answers = $w.ok -and (Wait-FsDevice $n.target 'Hikvision' $nvrPw[$n.ip] ([int]$opts.rebootWaitSec))
+  # 2.2.18 (Codex F3): logging in at the address is not proof the settings took (an in-place router / DNS / mask / DHCP fix already
+  # logged in before): the whole network config is read back and every field asked for must match before it says "fixed"
+  $nmF = $(if ($answers) { Get-FsNetMismatch $n.target 'Hikvision' (Fs-Cred $nvrPw[$n.ip]) $net $n.target $devNet.mask $devNet.gw } else { '' })
+  $back = $answers -and -not $nmF
+  $l = Format-FsCheckLine ('NVR ' + $n.ip) @([pscustomobject]@{ text = $(if (-not $w.ok) { 'the NVR refused the new address settings' } elseif ($nmF) { $(if ($n.target -eq $n.ip) { 'network settings NOT fixed' } else { 'moved -> ' + (Get-FsShort $n.target) + ', but its network settings are NOT confirmed' }) + ' - the NVR accepted them, but reads back: ' + $nmF } elseif ($n.target -eq $n.ip) { 'network settings fixed (router ' + $devNet.gw + ', fixed address)' } else { 'moved -> ' + (Get-FsShort $n.target) }); ok = $back })
   Say $l $(if ($back) { 'Green' } else { 'Red' }); $results += $l
-  if ($back) { $okCount++; $nvrPw[$n.target] = $nvrPw[$n.ip]; $sec.nvr[$n.target] = $nvrPw[$n.ip]; Save-FsSecrets $SecretsDir $sec }; if ($back) { $okCount = $okCount } else { $badCount++ }; $n | Add-Member -NotePropertyName moved -NotePropertyValue ([bool]$back) -Force
+  if ($answers) { $nvrPw[$n.target] = $nvrPw[$n.ip]; $sec.nvr[$n.target] = $nvrPw[$n.ip]; Save-FsSecrets $SecretsDir $sec }; if ($back) { $okCount++ } else { $badCount++ }; $n | Add-Member -NotePropertyName moved -NotePropertyValue ([bool]$answers) -Force   # 2.2.18: moved = it answers there (the cameras follow it); fixed = also every setting read back
 }
 # 2.0.3: NVR password -> the site password (factory password at a new site, or the option ticked). Channels keep the camera logins.
 $rb.nvr_passwords = @()
@@ -1100,7 +1141,10 @@ foreach ($c in $ordered) {
             $back = Wait-FsDevice $t $c.brand $pw ([int]$opts.rebootWaitSec)
           }
         }
-        if ($back) { & $step $(if ($t -ne $ip) { 'moved ' + (Get-FsShort $ip) + ' -> ' + (Get-FsShort $t) } else { 'address set fixed' }) $true; $ip = $t; $rbc.ip_after = $t; $c.target = $t; $c | Add-Member -NotePropertyName ipNow -NotePropertyValue $t -Force }
+        # 2.2.18 (Codex F3 twin): answering on the new address is not proof every setting took: address, mask, router, DNS and fixed read back
+        $nmC = $(if ($back) { Get-FsNetMismatch $t $c.brand $cr $net $t $devNet.mask $devNet.gw } else { '' })
+        if ($back -and $nmC) { & $step ($(if ($t -ne $ip) { 'moved ' + (Get-FsShort $ip) + ' -> ' + (Get-FsShort $t) + ', but its network settings are NOT confirmed' } else { 'network settings NOT fixed' }) + ' - the camera accepted them, but reads back: ' + $nmC) $false; $ip = $t; $rbc.ip_after = $t; $c.target = $t; $c | Add-Member -NotePropertyName ipNow -NotePropertyValue $t -Force }
+        elseif ($back) { & $step $(if ($t -ne $ip) { 'moved ' + (Get-FsShort $ip) + ' -> ' + (Get-FsShort $t) } else { 'address set fixed' }) $true; $ip = $t; $rbc.ip_after = $t; $c.target = $t; $c | Add-Member -NotePropertyName ipNow -NotePropertyValue $t -Force }
         elseif ($w.ok) { & $step ('moved to ' + (Get-FsShort $t) + ' but it does not answer there yet') $false; $stop = $true; $rbc.ip_after = $t }
         else { & $step 'the camera refused the new address' $false }
       }
@@ -1174,8 +1218,14 @@ foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'missing' })) {
     $pr = Invoke-FsPoeCycle $siteId $c.mac $portMapDir
     if ($pr.state -eq 'done') {
       $back = $false; if ($c.listIp) { $back = Wait-FsDevice $c.listIp $c.brand $sitePw 120 }
-      $nidM = $(if ($back -and $c.nvr -and $nvrCred.ContainsKey($c.nvr) -and $c.channel) { Get-FsNvrIdRecord $c.nvr $nvrCred[$c.nvr] } else { $null })
-      if ($nidM -and -not $nidM.mac -and -not $nidM.serial) {
+      # 2.2.18 (sweep A): the device that answers on the list address after the power cycle must be THIS camera (its MAC) before its
+      # NVR channel is pointed there; a site password that logs in is not identity (another camera on the same password can hold it)
+      $camWhyM = $(if ($back -and $c.nvr -and $nvrCred.ContainsKey($c.nvr) -and $c.channel) { Get-FsUndoIdentityBlock $c.listIp $c.brand (Fs-Cred $sitePw) $c.mac '' 'this camera' } else { '' })
+      $nidM = $(if ($back -and -not $camWhyM -and $c.nvr -and $nvrCred.ContainsKey($c.nvr) -and $c.channel) { Get-FsNvrIdRecord $c.nvr $nvrCred[$c.nvr] } else { $null })
+      if ($camWhyM) {
+        $line = $c.name + ': power-cycled ' + $c.switch + ' port ' + $c.port + ', something answers on ' + $c.listIp + ', but NOT put on NVR ' + $c.nvr + ' ch ' + $c.channel + ': ' + $camWhyM + ' - check ch ' + $c.channel + ' by hand ' + $script:FsBad
+      }
+      elseif ($nidM -and -not $nidM.mac -and -not $nidM.serial) {
         # 2.2.17: no NVR identity = no channel write (Undo could not check it is the same NVR)
         $line = $c.name + ': power-cycled ' + $c.switch + ' port ' + $c.port + ', answers again, but NOT put on NVR ' + $c.nvr + ' ch ' + $c.channel + ': the NVR did not tell its MAC / serial, so Undo could not check later that it is the same NVR - check ch ' + $c.channel + ' by hand ' + $script:FsBad
       }

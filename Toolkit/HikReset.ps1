@@ -43,7 +43,8 @@ $logFile = Join-Path $StateDir 'hikreset.log'
 $script:HkLogPath = $logFile   # 2.2.9: named in "call Hik support with the serial and the SADP log"
 $script:SadpLog = { param($l) try { Add-Content -LiteralPath $logFile -Value ((Get-Date -Format 's') + ' ' + $l) } catch {} }
 $script:HkSay = { param($t, $c) $col = switch ($c) { 'Green' { 'Green' } 'Yellow' { 'Yellow' } 'Red' { 'Red' } 'Cyan' { 'Cyan' } default { 'Gray' } }; Write-Host $t -ForegroundColor $col; try { Add-Content -LiteralPath $logFile -Value ((Get-Date -Format 's') + ' ' + $t) } catch {} }
-$state = Read-HikState $statePath
+# 2.2.18 (sweep C/D): a reset record that cannot be read is said as that (exit 3), never read as "no device" / "nothing to retry"
+$state = $null; try { $state = Read-HikState $statePath } catch { Hk-Say $_.Exception.Message 'Red'; exit 3 }
 function Show-Devices($devs) {
   foreach ($d in $devs) { Hk-Say ('{0,-6} {1,-14} {2,-18} {3,-17} {4,-16} {5}  {6}' -f $d.kind, $d.model, $d.serial, $d.mac, $d.ip, $d.firmware.Split(' ')[0], $(if ($d.activated) { 'activated (password set)' } else { 'NOT activated' })) }
 }

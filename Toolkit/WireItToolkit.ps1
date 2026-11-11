@@ -375,7 +375,8 @@ if (-not $Screenshot) {
 if (-not $NoUpdate -and -not $Screenshot) {
   $u = Get-TkUpdateInfo $TK.cfg $here
   $TK.updateMsg = $u.message
-  if ($u.state -eq 'available' -and $TK.cfg.autoUpdate -and ([string]$u.manifest.version -ne (Get-TkSkipVersion $here))) {
+  # 2.2.18 (sweep D): Test-TkSkipUpdate - an unreadable "do not re-install" note holds the automatic update (was: read as no note)
+  if ($u.state -eq 'available' -and $TK.cfg.autoUpdate -and -not (Test-TkSkipUpdate $here ([string]$u.manifest.version))) {
     try {
       if (Test-TkCanWrite $here) { $old = Install-TkUpdate $u.manifest $here }
       else { throw $script:TkNoWriteMsg }

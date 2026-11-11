@@ -65,6 +65,10 @@ Toolkit/tests/Test-Fix2216Nvr.ps1
 Toolkit/tests/Test-Fix2216Site.ps1
 Toolkit/tests/Test-Fix2217Nvr.ps1
 Toolkit/tests/Test-Fix2217Site.ps1
+Toolkit/tests/Test-Fix2218Classic.ps1
+Toolkit/tests/Test-Fix2218Nvr.ps1
+Toolkit/tests/Test-Fix2218Site.ps1
+Toolkit/tests/Test-Fix2218Sweep.ps1
 Toolkit/tests/Test-Fix222.ps1
 Toolkit/tests/Test-Fix223.ps1
 Toolkit/tests/Test-Fix224.ps1
@@ -85,6 +89,7 @@ Toolkit/tests/fix2212site/scenarios.py
 Toolkit/tests/fix2213net/sim-2212.ps1.txt
 Toolkit/tests/fix2213site/scenarios.py
 Toolkit/tests/fix2214site/scenarios.py
+Toolkit/tests/fix2218site/scenarios.py
 Toolkit/tests/fix226/ok_server.py
 Toolkit/tests/fix226/scenarios.py
 Toolkit/tests/fix227/auth_server.py
