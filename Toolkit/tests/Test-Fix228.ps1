@@ -192,7 +192,10 @@ try {
   function Find-HikSadp($s) { return @([pscustomobject]@{ mac = $MAC; ip = '10.243.1.7'; bootTime = '2026-11-08 21:08:00'; serial = $SN }) }
   function Read-HikUnlock([string]$f) { return [pscustomobject]@{ kind = 'file'; code = 'Ab3dE5fG'; file = $f } }
   function Import-HikUnlock($l, $u, $pw) { return [pscustomobject]@{ ok = $false; result = 'failed'; form = ''; tries = 2; error = 'the device answered "failed"' } }
-  $d = Get-HikStateDevice $st $SN; $d.status = 'replied'; $d.bootTime = '2026-11-08 21:08:00'; $d.replyFile = (Join-Path $rep2 'x.xml'); Save-HikState $sp $st
+  $d = Get-HikStateDevice $st $SN; $d.status = 'replied'; $d.bootTime = '2026-11-08 21:08:00'; $d.replyFile = (Join-Path $rep2 'x.xml')
+  # 2.2.20 (class D): the record keeps the SHA-256 of the reply it matched; this fixture points it at another file, so it records that one's
+  if ($d.PSObject.Properties['replySha'] -and (Get-Command Get-HikFileSha -ErrorAction SilentlyContinue)) { $d.replySha = Get-HikFileSha $d.replyFile }
+  Save-HikState $sp $st
   $script:said.Clear()
   $done = @(Import-HikReplies $st $sp 'Site-Pass-1234' { param($ip, $p) $false })
   $all = ($script:said) -join ' | '
@@ -204,8 +207,10 @@ try {
   $live2 = [pscustomobject]@{ serial = $SN; shortSerial = $SH; mac = $MAC; model = 'ECI-T44F2'; ip = '10.243.1.7'; kind = 'camera'; activated = $true; bootTime = '2026-11-08 21:30:00'; salt = ''; encrypt = $false }
   $null = Export-HikRequests @($live2) $rq $st $sp
   Check ((Get-HikStateDevice $st $SN).status -eq 'exported' -and -not @(Said '(?i)void').Count) 'HF4 after the power-cycle the next run makes ONE fresh export, with no "void" warning (nothing valid was pending)' (($script:said) -join ' | ')
-  # an import that got no answer at all is not a refusal: the old SADP hint stays
-  function Import-HikUnlock($l, $u, $pw) { return [pscustomobject]@{ ok = $false; result = ''; form = ''; tries = 1; error = 'the device did not answer the reset' } }
+  # an import that got no answer at all is not a refusal: the old SADP hint stays.
+  # 2.2.20 (Codex 2.2.19 R13 twin): only when nothing reached the device (sent = false, e.g. no key exchange answer) does the reply stay
+  # usable; an import that was SENT with no answer is NOT CONFIRMED and stays "importing" (Test-Fix2220Reset)
+  function Import-HikUnlock($l, $u, $pw) { return [pscustomobject]@{ ok = $false; result = ''; form = ''; tries = 1; error = 'the device did not answer the key exchange (nothing was sent)'; sent = $false } }
   $d = Get-HikStateDevice $st $SN; $d.status = 'replied'; $d.bootTime = '2026-11-08 21:08:00'; Save-HikState $sp $st
   $script:said.Clear(); $null = @(Import-HikReplies $st $sp 'Site-Pass-1234' { param($ip, $p) $false })
   Check ((Get-HikStateDevice $st $SN).status -eq 'replied' -and @(Said 'Finish this one in SADP').Count -eq 1) 'HF4 a device that did not answer at all keeps its reply (not marked refused) and gets the SADP hint as before'

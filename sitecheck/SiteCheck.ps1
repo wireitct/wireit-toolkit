@@ -170,8 +170,9 @@ function Invoke-ScPingRounds([string[]]$ips, [int]$rounds, [int]$timeoutMs = 100
     foreach ($i in $ips) { $p = New-Object System.Net.NetworkInformation.Ping; $pingers += $p; try { $tasks[$i] = $p.SendPingAsync($i, $timeoutMs) } catch {} }
     try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($tasks.Values), $timeoutMs + 3000) } catch {}
     foreach ($i in $ips) {
-      $res[$i].Sent++
       $t = $tasks[$i]
+      if (-not $t) { continue }   # 2.2.20 (class C): a ping that could not even be sent is not a ping that was lost (not counted as Sent)
+      $res[$i].Sent++
       if ($t -and $t.Status -eq 'RanToCompletion' -and $t.Result.Status -eq 'Success') { $res[$i].Ok++; $res[$i].Rtt.Add([int]$t.Result.RoundtripTime) }
     }
     foreach ($p in $pingers) { try { $p.Dispose() } catch {} }
@@ -180,9 +181,13 @@ function Invoke-ScPingRounds([string[]]$ips, [int]$rounds, [int]$timeoutMs = 100
   }
   return $res
 }
+# 2.2.20 (class C): $script:ScArpWhy = why the last ARP read failed ('' = it was read). A table that could not be read is not an empty one:
+# the scan says ARP NOT CHECKED and never gives the "No network problems found" all-clear on it.
+$script:ScArpWhy = ''
 function Get-ScArp([string[]]$prefixes) {
-  $h = @{}
-  Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Unreachable' -and $_.State -ne 'Incomplete' -and $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' -and $_.LinkLayerAddress -ne 'FF-FF-FF-FF-FF-FF' } | ForEach-Object {
+  $h = @{}; $script:ScArpWhy = ''
+  $nb = $null; try { $nb = @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop) } catch { $script:ScArpWhy = [string]$_.Exception.Message; return $h }
+  @($nb) | Where-Object { $_ } | Where-Object { $_.State -ne 'Unreachable' -and $_.State -ne 'Incomplete' -and $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' -and $_.LinkLayerAddress -ne 'FF-FF-FF-FF-FF-FF' } | ForEach-Object {
     $ip = $_.IPAddress; foreach ($p in $prefixes) { if ($ip.StartsWith($p + '.')) { $h[$ip] = ConvertTo-ScMac $_.LinkLayerAddress; break } }
   }
   return $h
@@ -308,6 +313,7 @@ function Invoke-SiteCheck([string]$Nvr = '', $Cred = $null, [int]$Pings = 20, [s
   $mine = @($locals | ForEach-Object { $_.Ip })
   $sweep = Invoke-ScPingRounds $all 2 800 200
   $arp1 = Get-ScArp $prefixes
+  if ($script:ScArpWhy) { $R.arpRead = $false; $R.notes += ('ARP table NOT CHECKED (' + $script:ScArpWhy + '): devices that do not answer ping may be missing from this report.') } else { $R.arpRead = $true }
   $live = New-Object System.Collections.Generic.HashSet[string]
   foreach ($i in $all) { if ($sweep[$i].Ok -gt 0 -or $arp1.ContainsKey($i)) { [void]$live.Add($i) } }
   foreach ($d in $disc) { if ($d.Ip -and (Test-ScIp $d.Ip)) { foreach ($p in $prefixes) { if ($d.Ip.StartsWith($p + '.')) { [void]$live.Add($d.Ip) } } } }
@@ -332,6 +338,7 @@ function Invoke-SiteCheck([string]$Nvr = '', $Cred = $null, [int]$Pings = 20, [s
   & $Say 'Checking which camera/NVR ports answer...'
   $ports = Invoke-ScPorts $targets @(80, 443, 554, 8000, 37777)
   $arp = Get-ScArp $prefixes
+  if ($script:ScArpWhy -and $R.arpRead) { $R.arpRead = $false; $R.notes += ('ARP table NOT CHECKED (' + $script:ScArpWhy + ').') }
 
   # duplicate IPs: one IP answering from 2+ MACs (ARP changes during the test, or 2 SADP answers)
   $macsByIp = @{}
@@ -445,6 +452,8 @@ function Get-ScDiagnosis($R) {
   } elseif ($R.nvrRead) { $head = 'Could not read the camera list from the NVR. ' + $camsSeen + ' cameras answer on this network.' }
   else { $head = '' + $camsSeen + ' cameras answer on this network.' + $(if ($nvr) { ' Type the NVR password and run again to see exactly which channels are down.' } else { ' Type the NVR address + password to see which channels are down.' }) }
   $bad = @($find | Where-Object { $_.Level -eq 'bad' }).Count; $warn = @($find | Where-Object { $_.Level -eq 'warn' }).Count
+  # 2.2.20 (class C): an ARP table that could not be read is a NOT CHECKED (amber), never the all-clear below
+  if ($R.Contains('arpRead') -and $R.arpRead -eq $false) { $find += [pscustomobject]@{ Level = 'warn'; Text = 'ARP table NOT CHECKED: this PC''s neighbour table could not be read, so devices that do not answer ping (and duplicate IPs) may be missing - not an all-clear.' }; $warn++ }
   if (-not $find.Count) { $find += [pscustomobject]@{ Level = 'ok'; Text = 'No network problems found: everything that answered did so on every ping.' } }
   return [pscustomobject]@{ Headline = $head; Findings = $find; Bad = $bad; Warn = $warn }
 }
@@ -512,7 +521,9 @@ function Send-ScReport($R, $D, [string]$siteCode, [string]$uploadCode) {
   $json = $body | ConvertTo-Json -Depth 5 -Compress
   try {
     $r = Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($json)) -TimeoutSec 20 -UseBasicParsing
-    if ($r.ok) { return 'Results posted to the site page.' } else { return ('Not posted: ' + $r.msg) }
+    # 2.2.20 (class C): only the page's own ok = true is "posted" (2.2.19 took any truthy ok, e.g. the text "false")
+    $okv = $null; $msg = ''; if ($r -is [Collections.IDictionary]) { $okv = $r['ok']; $msg = [string]$r['msg'] } elseif ($r) { $okv = $r.ok; $msg = [string]$r.msg }
+    if ($okv -is [bool] -and $okv) { return 'Results posted to the site page.' } else { return ('Not posted: ' + $(if ($msg) { $msg } else { 'the site page did not say it took them' })) }
   } catch { return ('Not posted (no internet or the site page did not answer): ' + $_.Exception.Message) }
 }
 $script:SC_UPLOAD_URL = 'https://wireit-api.wireitct.workers.dev/'   # the WireIt service log (Cloudflare); op siteCheckPush + per-site upload code

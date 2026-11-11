@@ -103,7 +103,10 @@ for ($r = 0; $r -lt $Rounds; $r++) {
 
 # ---------- ARP ----------
 $arp = @{}
-Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -like ($Subnet + '.*') -and $_.State -ne 'Unreachable' -and $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' } | ForEach-Object { $arp[$_.IPAddress] = $_.LinkLayerAddress.ToUpper() }
+# 2.2.20 (class C): an ARP table that could not be read is said as NOT CHECKED (hosts that do not answer ping are then not seen), never
+# silently an empty table
+$nbr = $null; try { $nbr = @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop) } catch { Say ('ARP table: NOT CHECKED (' + $_.Exception.Message + ') - devices that do not answer ping are not listed') }
+@($nbr) | Where-Object { $_ } | Where-Object { $_.IPAddress -like ($Subnet + '.*') -and $_.State -ne 'Unreachable' -and $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' } | ForEach-Object { $arp[$_.IPAddress] = $_.LinkLayerAddress.ToUpper() }
 $oui = @{ 'DC-07-F8'='Hikvision'; '28-57-BE'='Hikvision'; '44-19-B6'='Hikvision'; '4C-BD-8F'='Hikvision'; '54-C4-15'='Hikvision'; '58-03-FB'='Hikvision'; 'BC-AD-28'='Hikvision'; 'C0-56-E3'='Hikvision'; 'C4-2F-90'='Hikvision'; 'E0-50-8B'='Hikvision'; '18-68-CB'='Hikvision'; '24-48-45'='Hikvision'; '80-BE-AF'='Hikvision'; 'A4-14-37'='Hikvision'; '8C-E7-48'='Hikvision'; '94-E1-AC'='Hikvision'; 'BC-BA-C2'='Hikvision'; '64-DB-8B'='Hikvision'; '98-DF-82'='Hikvision'; 'E0-CA-3C'='Hikvision'; '08-A1-89'='Hikvision'; '24-0F-9B'='Hikvision'; '2C-A5-9C'='Hikvision'; '40-AC-BF'='Hikvision'; '44-47-CC'='Hikvision'; '4C-F5-DC'='Hikvision'; '68-6D-BC'='Hikvision'; '84-94-37'='Hikvision'; 'AC-B9-2F'='Hikvision'; 'B4-A3-82'='Hikvision'; 'C8-A7-02'='Hikvision'; '1C-6A-1B'='Ubiquiti'; '24-5A-4C'='Ubiquiti'; '74-83-C2'='Ubiquiti'; '78-8A-20'='Ubiquiti'; '80-2A-A8'='Ubiquiti'; 'B4-FB-E4'='Ubiquiti'; 'D0-21-F9'='Ubiquiti'; 'E0-63-DA'='Ubiquiti'; 'F0-9F-C2'='Ubiquiti'; 'FC-EC-DA'='Ubiquiti'; '68-D7-9A'='Ubiquiti'; '18-E8-29'='Ubiquiti'; 'AC-8B-A9'='Ubiquiti'; '9C-05-D6'='Ubiquiti'; '60-22-32'='Ubiquiti' }
 function Vendor($mac) {
   if (-not $mac) { return '' }
@@ -156,21 +159,83 @@ function Get-NcChannelSummary($code, [string]$body) {
   $off = New-Object System.Collections.Generic.List[string]; $unk = New-Object System.Collections.Generic.List[string]
   if ([int]$code -ne 200) { return [pscustomobject]@{ note = ('NVR: channel status NOT CHECKED (the channel list could not be read' + $(if ([int]$code) { ', HTTP ' + $code } else { '' }) + ')'); off = $off; unknown = $unk; read = $false } }
   $chs = [regex]::Matches([string]$body, '(?s)<InputProxyChannelStatus[^>]*>(.*?)</InputProxyChannelStatus>')
-  if (-not $chs.Count) { return [pscustomobject]@{ note = 'NVR: channel status NOT CHECKED (the answer had no channel in it)'; off = $off; unknown = $unk; read = $false } }
+  if (-not $chs.Count) { $cw = ''; $esc = ([regex]::Match([string]$body, '(?s)<ResponseStatus[\s>].*?<statusCode>\s*([^<]*?)\s*</statusCode>')).Groups[1].Value; if ($esc -and $esc -ne '1') { $cw = 'the device answered an error, statusCode ' + $esc } elseif ([string]$body -match '(?is)<html[\s>]') { $cw = 'a web page, not a device answer' }; return [pscustomobject]@{ note = ('NVR: channel status NOT CHECKED (the answer had no channel in it' + $(if ($cw) { ': ' + $cw } else { '' }) + ')'); off = $off; unknown = $unk; read = $false } }
   $on = 0
   foreach ($ch in $chs) { $b = $ch.Groups[1].Value; $cid = Tag $b 'id'; $cip = Tag $b 'ipAddress'; $o = ([string](Tag $b 'online')).Trim().ToLower(); $det = Tag $b 'chanDetectResult'
     if ($o -eq 'true') { $on++ } elseif ($o -eq 'false') { $off.Add('D' + $cid + ' ' + $cip + ' ' + $det) } else { $unk.Add('D' + $cid + ' ' + $cip) } }
   return [pscustomobject]@{ note = ('NVR: ' + $on + ' of ' + $chs.Count + ' channels online' + $(if ($unk.Count) { ', ' + $unk.Count + ' NOT CHECKED (no online state)' } else { '' })); off = $off; unknown = $unk; read = $true }
 }
+# 2.2.20 (Codex 2.2.19 R18, class C): HTTP 200 alone proves nothing. A device answers errors with HTTP 200 and an ISAPI <ResponseStatus>
+# document (statusCode 4 "Invalid Operation", 3 device error, ...); a box or proxy can answer 200 with a login/HTML page. Such an answer
+# is NOT the document asked for: '' = the answer is a usable document with one of $Roots as an element; otherwise why it is not.
+function Get-NcIsapiProblem($r, [string[]]$Roots) {
+  if (-not $r) { return 'no answer' }
+  $code = 0; try { $code = [int]$r.code } catch {}
+  if ($code -ne 200) { return $(if ($code) { 'HTTP ' + $code } elseif ($r.err) { [string]$r.err } else { 'no answer' }) }
+  $b = [string]$r.body
+  if (-not $b.Trim()) { return 'HTTP 200 with an empty answer' }
+  if ($b -cmatch '(?s)<ResponseStatus[\s>]') {   # the ISAPI error root (case as the device writes it; a search result's own <responseStatus> is not it)
+    $sc = ([regex]::Match($b, '(?is)<statusCode>\s*([^<]*?)\s*</statusCode>')).Groups[1].Value
+    $ss = ([regex]::Match($b, '(?is)<statusString>\s*([^<]*?)\s*</statusString>')).Groups[1].Value
+    $sub = ([regex]::Match($b, '(?is)<subStatusCode>\s*([^<]*?)\s*</subStatusCode>')).Groups[1].Value
+    if ($sc -ne '1') { return ('the device answered an error (statusCode ' + $(if ($sc) { $sc } else { '?' }) + $(if ($ss) { ' ' + $ss } else { '' }) + $(if ($sub) { ', ' + $sub } else { '' }) + ')') }
+  }
+  if ($b -match '(?is)<html[\s>]|<!doctype\s+html') { return 'HTTP 200 with a web page (a login page?), not a device answer' }
+  foreach ($root in @($Roots)) { if ($b -match ('(?is)<(?:\w+:)?' + [regex]::Escape($root) + '[\s>/]')) { return '' } }
+  return ('HTTP 200 but not the expected ' + (@($Roots) -join ' / ') + ' document')
+}
 # 2.2.19 (sweep2, class C): who pulls video from a device. A failed read is NOT CHECKED, never "nobody".
+# 2.2.20 (R18): an error document / login page / any answer that is not a streaming-status document is NOT CHECKED too. "nobody" needs a
+# streaming-status document with no client in it (and, when the device says how many sessions it has, that number must be 0).
 function Get-NcStreamsText($ss) {
+  # the same check as Get-NcIsapiProblem above, kept inside so this reader stands on its own (the tests and reviews take it out alone)
+  function Get-NcIsapiProblem($r, [string[]]$Roots) {
+    if (-not $r) { return 'no answer' }
+    $code = 0; try { $code = [int]$r.code } catch {}
+    if ($code -ne 200) { return $(if ($code) { 'HTTP ' + $code } elseif ($r.err) { [string]$r.err } else { 'no answer' }) }
+    $b = [string]$r.body
+    if (-not $b.Trim()) { return 'HTTP 200 with an empty answer' }
+    if ($b -cmatch '(?s)<ResponseStatus[\s>]') {   # the ISAPI error root (case as the device writes it; a search result's own <responseStatus> is not it)
+      $sc = ([regex]::Match($b, '(?is)<statusCode>\s*([^<]*?)\s*</statusCode>')).Groups[1].Value
+      $ss = ([regex]::Match($b, '(?is)<statusString>\s*([^<]*?)\s*</statusString>')).Groups[1].Value
+      $sub = ([regex]::Match($b, '(?is)<subStatusCode>\s*([^<]*?)\s*</subStatusCode>')).Groups[1].Value
+      if ($sc -ne '1') { return ('the device answered an error (statusCode ' + $(if ($sc) { $sc } else { '?' }) + $(if ($ss) { ' ' + $ss } else { '' }) + $(if ($sub) { ', ' + $sub } else { '' }) + ')') }
+    }
+    if ($b -match '(?is)<html[\s>]|<!doctype\s+html') { return 'HTTP 200 with a web page (a login page?), not a device answer' }
+    foreach ($root in @($Roots)) { if ($b -match ('(?is)<(?:\w+:)?' + [regex]::Escape($root) + '[\s>/]')) { return '' } }
+    return ('HTTP 200 but not the expected ' + (@($Roots) -join ' / ') + ' document')
+  }
   if (-not $ss -or [int]$ss.code -ne 200) { return ('NOT CHECKED' + $(if ($ss -and [int]$ss.code) { ' (HTTP ' + $ss.code + ')' } else { '' })) }
-  return (([regex]::Matches([string]$ss.body, '<ipAddress>([^<]*)</ipAddress>') | ForEach-Object { $_.Groups[1].Value }) -join ' ')
+  $why = Get-NcIsapiProblem $ss @('StreamingStatus', 'StreamingSessionStatusList', 'StreamingSessionStatus')
+  $ips = @([regex]::Matches([string]$ss.body, '<ipAddress>([^<]*)</ipAddress>') | ForEach-Object { $_.Groups[1].Value } | Where-Object { $_ })
+  if ($why -and ($why -match '^the device answered an error|web page|empty answer' -or -not $ips.Count)) { return ('NOT CHECKED (' + $why + ')') }
+  if (-not $ips.Count) {
+    $tot = ([regex]::Match([string]$ss.body, '(?is)<totalStreamingSessions>\s*([^<]*?)\s*</totalStreamingSessions>')).Groups[1].Value
+    if ($tot -and $tot -ne '0') { return ('NOT CHECKED (the device says ' + $tot + ' sessions but names no client)') }
+  }
+  return ($ips -join ' ')
 }
 function Format-NcStreamsTo([string]$streams) { if ($streams -like 'NOT CHECKED*') { return $streams }; if ($streams) { return (($streams -split ' ' | Select-Object -Unique) -join '/') }; return 'nobody' }
 function Tag($xml, $t) { $m = [regex]::Match($xml, '<' + $t + '>([^<]*)</' + $t + '>'); if ($m.Success) { return $m.Groups[1].Value } else { return '' } }
 function Up($sec) { if (-not $sec) { return '' }; $ts = [TimeSpan]::FromSeconds([double]$sec); return ('{0}d{1}h{2}m' -f $ts.Days, $ts.Hours, $ts.Minutes) }
 function Read-Logs($base, $ip) {
+  # the same check as Get-NcIsapiProblem above, kept inside so this reader stands on its own (the tests and reviews take it out alone)
+  function Get-NcIsapiProblem($r, [string[]]$Roots) {
+    if (-not $r) { return 'no answer' }
+    $code = 0; try { $code = [int]$r.code } catch {}
+    if ($code -ne 200) { return $(if ($code) { 'HTTP ' + $code } elseif ($r.err) { [string]$r.err } else { 'no answer' }) }
+    $b = [string]$r.body
+    if (-not $b.Trim()) { return 'HTTP 200 with an empty answer' }
+    if ($b -cmatch '(?s)<ResponseStatus[\s>]') {   # the ISAPI error root (case as the device writes it; a search result's own <responseStatus> is not it)
+      $sc = ([regex]::Match($b, '(?is)<statusCode>\s*([^<]*?)\s*</statusCode>')).Groups[1].Value
+      $ss = ([regex]::Match($b, '(?is)<statusString>\s*([^<]*?)\s*</statusString>')).Groups[1].Value
+      $sub = ([regex]::Match($b, '(?is)<subStatusCode>\s*([^<]*?)\s*</subStatusCode>')).Groups[1].Value
+      if ($sc -ne '1') { return ('the device answered an error (statusCode ' + $(if ($sc) { $sc } else { '?' }) + $(if ($ss) { ' ' + $ss } else { '' }) + $(if ($sub) { ', ' + $sub } else { '' }) + ')') }
+    }
+    if ($b -match '(?is)<html[\s>]|<!doctype\s+html') { return 'HTTP 200 with a web page (a login page?), not a device answer' }
+    foreach ($root in @($Roots)) { if ($b -match ('(?is)<(?:\w+:)?' + [regex]::Escape($root) + '[\s>/]')) { return '' } }
+    return ('HTTP 200 but not the expected ' + (@($Roots) -join ' / ') + ' document')
+  }
   $st = (Get-Date).ToUniversalTime().AddDays(-$LogDays).ToString('yyyy-MM-ddTHH:mm:ssZ'); $en = (Get-Date).ToUniversalTime().AddHours(14).ToString('yyyy-MM-ddTHH:mm:ssZ')
   $xml = '<?xml version="1.0" encoding="UTF-8"?><CMSearchDescription><searchID>' + [guid]::NewGuid().ToString().ToUpper() + '</searchID><metaId>log.std-cgi.com</metaId><timeSpanList><timeSpan><startTime>' + $st + '</startTime><endTime>' + $en + '</endTime></timeSpan></timeSpanList><maxResults>200</maxResults><searchResultPostion>0</searchResultPostion></CMSearchDescription>'
   $r = Post-Isapi $base '/ISAPI/ContentMgmt/logSearch' $xml
@@ -178,6 +243,13 @@ function Read-Logs($base, $ip) {
   if ([int]$r.code -ne 200) { return ('NOT CHECKED (log search failed' + $(if ([int]$r.code) { ', HTTP ' + $r.code } else { '' }) + ')') }
   $r.body | Set-Content (Join-Path $OutDir ('raw\log-' + $ip + '.xml'))
   $ms = [regex]::Matches($r.body, '<metaId>log\.std-cgi\.com/([^<]+)</metaId>')
+  # 2.2.20 (Codex 2.2.19 R18 twin, class C): an HTTP 200 that is an error document / login page, a search result that says it failed
+  # (responseStatus false), or anything that is not a search result is NOT CHECKED - never an empty "no events" answer.
+  $why = Get-NcIsapiProblem $r @('CMSearchResult')
+  if ($why -and ($why -match '^the device answered an error|web page|empty answer' -or -not $ms.Count)) { return ('NOT CHECKED (log search: ' + $why + ')') }
+  $rs = ([regex]::Match([string]$r.body, '(?is)<responseStatus>\s*([^<]*?)\s*</responseStatus>')).Groups[1].Value
+  if ($rs -and $rs -ne 'true') { return ('NOT CHECKED (log search: the device answered responseStatus ' + $rs + ')') }
+  if (-not $ms.Count) { return 'none in the last ' + $LogDays + ' days (the search was read)' }
   $cnt = @{}; foreach ($m in $ms) { $k = $m.Groups[1].Value; if ($k -match 'net|Net|disconn|broken|ipc|IPC|offline|Offline|power|Power|reboot|Reboot|start|Start') { if ($cnt.ContainsKey($k)) { $cnt[$k]++ } else { $cnt[$k] = 1 } } }
   return (($cnt.Keys | ForEach-Object { $_ + '=' + $cnt[$_] }) -join ' ')
 }
@@ -198,12 +270,20 @@ foreach ($i in $ips) {
   if ($cred -and ($row.http -or $row.https) -and ($i -ne $gw) -and -not ($Exclude -contains $i) -and ($row.sdk8000 -or $isNvr)) {
     $base = if ($isNvr -or -not $row.http) { 'https://' + $i } else { 'http://' + $i }
     $d = Get-Isapi $base '/ISAPI/System/deviceInfo'   # the ONE login attempt for this device
-    if ($d.code -eq 200) {
+    # 2.2.20 (Codex 2.2.19 R18 twin, class C): "logged in" needs the device's own <DeviceInfo> document. An HTTP 200 error document or
+    # login page is NOT CHECKED, and nothing more is asked of that device (no more password-bearing requests to it).
+    $dw = $(if ($d.code -eq 200) { Get-NcIsapiProblem $d @('DeviceInfo') } else { '' })
+    if ($d.code -eq 200 -and $dw) { $row.auth = 'NOT CHECKED (' + $dw + ')' }
+    elseif ($d.code -eq 200) {
       $row.auth = 'ok'; $row.model = Tag $d.body 'model'; $row.serial = Tag $d.body 'serialNumber'; $row.firmware = (Tag $d.body 'firmwareVersion') + ' ' + (Tag $d.body 'firmwareReleasedDate')
-      $s = Get-Isapi $base '/ISAPI/System/status'; $row.up_sec = Tag $s.body 'deviceUpTime'; $row.uptime = Up $row.up_sec
+      $s = Get-Isapi $base '/ISAPI/System/status'
+      $sw = Get-NcIsapiProblem $s @('DeviceStatus')
+      if ($sw) { $row.up_sec = ''; $row.uptime = 'NOT CHECKED (' + $sw + ')' } else { $row.up_sec = Tag $s.body 'deviceUpTime'; $row.uptime = $(if ($row.up_sec) { Up $row.up_sec } else { 'NOT CHECKED (no deviceUpTime in the answer)' }) }
       $l = Get-Isapi $base '/ISAPI/System/Network/interfaces/1/link'
-      if ($l.code -ne 200) { $l = Get-Isapi $base '/ISAPI/System/Network/interfaces' }
-      $row.link_speed = Tag $l.body 'speed'; $row.link_duplex = Tag $l.body 'duplex'; $row.link_auto = Tag $l.body 'autoNegotiation'
+      if ($l.code -ne 200 -or (Get-NcIsapiProblem $l @('Link'))) { $l = Get-Isapi $base '/ISAPI/System/Network/interfaces' }
+      $lw = Get-NcIsapiProblem $l @('Link', 'NetworkInterface', 'NetworkInterfaceList')
+      if ($lw) { $row.link_speed = 'NOT CHECKED'; $row.link_duplex = ''; $row.link_auto = ''; $row.note = (([string]$row.note + ' link NOT CHECKED (' + $lw + ')').Trim()) }
+      else { $row.link_speed = Tag $l.body 'speed'; $row.link_duplex = Tag $l.body 'duplex'; $row.link_auto = Tag $l.body 'autoNegotiation' }
       $ss = Get-Isapi $base '/ISAPI/Streaming/status'   # who is pulling video from this device right now
       $row.streams_to = Get-NcStreamsText $ss   # 2.2.19 (sweep2): a failed read says NOT CHECKED, not "nobody"
       ($d.body + "`r`n" + $s.body + "`r`n" + $l.body) | Set-Content (Join-Path $OutDir ('raw\' + $i + '.xml'))
@@ -212,7 +292,7 @@ foreach ($i in $ips) {
         $c = Get-Isapi $base '/ISAPI/ContentMgmt/InputProxy/channels/status'
         $c.body | Set-Content (Join-Path $OutDir 'raw\nvr-channels.xml')
         $cs = Get-NcChannelSummary $c.code $c.body
-        $row.note = $cs.note
+        $row.note = (($cs.note + ' ' + $(if ([string]$row.note -ne 'NVR') { [string]$row.note } else { '' })).Trim())
         $script:nvrOff = $cs.off; $script:nvrUnknown = $cs.unknown
       }
     } elseif ($d.code -eq 401) { $row.auth = 'REFUSED (stopped, no retry)' } else { $row.auth = 'no answer (' + $d.code + ')' }
@@ -237,6 +317,7 @@ if ($st2.Count) { Say ('Video pulled by: ' + (($st2 | ForEach-Object { ($_.ip -s
 foreach ($n in $Nvr) { $nr = $rows | Where-Object { $_.ip -eq $n }; $pulled = @($st2 | Where-Object { $_.streams_to -match [regex]::Escape($n) }).Count
   if ((-not $nr -or $nr.replies -like '0/*') -and $pulled) { Say ('HINT: NVR ' + $n + ' does not answer this PC, yet ' + $pulled + ' cameras are streaming to it -> the NVR is alive; PC and NVR are separated (switch port isolation / VLAN-Extend DIP mode, or a different switch path).') } }
 $ten = @($rows | Where-Object { $_.link_speed -eq '10' }); if ($ten.Count -ge 3) { Say ('HINT: ' + $ten.Count + ' devices report a 10 Mbps link. Check PoE switches for an Extend/CCTV/VLAN DIP switch (forces 10 Mbps / isolates ports) or bad cable.') }
+$nck = @($rows | Where-Object { $_.auth -like 'NOT CHECKED*' }); if ($nck.Count) { Say ('Login NOT CHECKED (the device answered, but not with its device information - an error or a login page): ' + (($nck | ForEach-Object { ($_.ip -split '\.')[3] }) -join ' ')) }   # 2.2.20 (R18 twin)
 $ref = @($rows | Where-Object { $_.auth -like 'REFUSED*' }); if ($ref.Count) { Say ('Login refused (wrong password?): ' + (($ref | ForEach-Object { ($_.ip -split '\.')[3] }) -join ' ')) }
 if ($script:nvrOff) { Say ('NVR offline channels: ' + ($script:nvrOff -join '; ')) }
 if ($script:nvrUnknown) { Say ('NVR channels NOT CHECKED (no online state in the answer): ' + ($script:nvrUnknown -join '; ')) }

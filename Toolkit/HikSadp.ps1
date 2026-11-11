@@ -151,10 +151,18 @@ function Save-HikResetFile($dev, $exp, [string]$OutDir) {
     Sadp-Log ('SADP: no request code to save for ' + $(if ($dev) { [string]$dev.mac } else { 'an unknown device' }) + ' - no file written'); return $null
   }
   New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-  $name = (([string]$dev.model) -replace '[^A-Za-z0-9\-]+', '_') + '-' + (([string]$dev.serial) -replace '[^A-Za-z0-9\-]+', '_') + '.xml'
-  $path = Join-Path $OutDir $name
-  [IO.File]::WriteAllText($path, (([string]$exp.request.value).Trim() + [string]$dev.serial), (New-Object Text.UTF8Encoding($false)))
+  $path = Get-HikResetFilePath $dev $OutDir
+  $text = (([string]$exp.request.value).Trim() + [string]$dev.serial)
+  [IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding($false)))
+  # 2.2.20 (class A): the file counts as saved only when it reads back exactly as written
+  if ([IO.File]::ReadAllText($path) -ne $text) { Sadp-Log ('SADP: the request file ' + $path + ' did not read back as written'); return $null }
   return $path
+}
+# 2.2.20 (Codex 2.2.19 R14): where Save-HikResetFile puts a device's request file. The reset record names it BEFORE the device is asked,
+# so a run that stops after the export (or cannot save its result) finds that exact file next time instead of exporting again.
+function Get-HikResetFilePath($dev, [string]$OutDir) {
+  $name = (([string]$dev.model) -replace '[^A-Za-z0-9\-]+', '_') + '-' + (([string]$dev.serial) -replace '[^A-Za-z0-9\-]+', '_') + '.xml'
+  return (Join-Path $OutDir $name)
 }
 
 # ---------------- import the unlock file / key ----------------
@@ -226,35 +234,45 @@ function Invoke-SadpKeyExchange($dev, [double]$Seconds = 4.0) {
 }
 function Import-HikUnlockReset($dev, $unlock, [string]$NewPassword, [double]$Seconds = 5.0) {
   # SADP's real way. At most 2 layouts; a "failed" answer does not use up Hikvision's key (seen on the wire: failed, then success with the same key).
-  $last = ''; $tries = 0
+  # 2.2.20 (Codex 2.2.19 R13 twin, class F): $sent says whether a reset was sent to the device. A reset with NO answer is NOT CONFIRMED (it
+  # may have worked): the second layout is NOT sent after it (2.2.19 sent it, and its "failed" - the key already used - was then recorded
+  # as "the device refused the file"). Only an answer that says no lets the second layout go.
+  $last = ''; $tries = 0; $sent = $false; $kxNo = $false
   foreach ($layout in 1, 2) {
     $tries++
-    $kx = Invoke-SadpKeyExchange $dev; if (-not $kx.ok) { $last = 'no key exchange answer'; break }
+    $kx = Invoke-SadpKeyExchange $dev; if (-not $kx.ok) { $kxNo = $true; break }
     $enc = Protect-SadpPassword $NewPassword $kx.key $layout
     $p = New-SadpProbe 'reset' $dev.mac ([ordered]@{ Password = $enc; Code = $unlock.code })
     Sadp-Log ('SADP reset (layout ' + $layout + ') -> ' + $dev.mac + ' (code and password hidden)')
+    $sent = $true
     $ans = Invoke-SadpExchange @($p) $Seconds @(0, 1.5) $null ({ param($r) @($r | Where-Object { $_.text -match '<Types>reset</Types>' }).Count -gt 0 })
+    $thisR = ''
     foreach ($a in $ans) {
       if ((ConvertTo-SadpMac (Get-SadpTag $a.text 'MAC')) -ne $dev.mac) { continue }
       $r = Get-SadpTag $a.text 'Result'; Sadp-Log ('  answer: ' + $r)
-      if ($r -match '^(?i)success') { return [pscustomobject]@{ ok = $true; result = $r; form = ('reset/layout' + $layout); tries = $tries; error = '' } }
-      if ($r) { $last = $r }
+      if ($r -match '^(?i)success') { return [pscustomobject]@{ ok = $true; result = $r; form = ('reset/layout' + $layout); tries = $tries; error = ''; sent = $true } }
+      if ($r) { $last = $r; $thisR = $r }
     }
+    if (-not $thisR) { $last = ''; break }   # no answer to THIS reset: stop, NOT CONFIRMED
   }
-  $why = $(if ($last) { 'the device answered "' + $last + '"' } else { 'the device did not answer the reset' })
-  return [pscustomobject]@{ ok = $false; result = $last; form = ''; tries = $tries; error = $why }
+  $why = $(if ($kxNo -and -not $sent) { 'no key exchange answer (nothing was sent)' } elseif ($last) { 'the device answered "' + $last + '"' } else { 'the device did not answer the reset - NOT CONFIRMED (it may have worked)' })
+  return [pscustomobject]@{ ok = $false; result = $last; form = ''; tries = $tries; error = $why; sent = $sent }
 }
 
 function Import-HikUnlock($dev, $unlock, [string]$NewPassword, [double]$Seconds = 5.0) {
   # Returns { ok; result; form; tries; error }. Code and password are never logged.
   # SADP's own way first: the key Hikvision mailed (8 characters, also what the mailed file holds), after a key exchange
-  if ($unlock.code -match '^[0-9A-Za-z]{8}$' -and -not $script:SadpOldForms) { $rr = Import-HikUnlockReset $dev $unlock $NewPassword $Seconds; if ($rr.ok -or $rr.result -or $script:SadpNoLegacy -or -not $script:SadpAllowPlainPassword) { return $rr } }
+  if ($unlock.code -match '^[0-9A-Za-z]{8}$' -and -not $script:SadpOldForms) { $rr = Import-HikUnlockReset $dev $unlock $NewPassword $Seconds; if ($rr.ok -or $rr.result -or $rr.sent -or $script:SadpNoLegacy -or -not $script:SadpAllowPlainPassword) { return $rr } }
   # 2.2.3 (Codex #6): the old import forms put the NEW password in the multicast packet in plain text (anyone on the network, or on
   # another connected interface, can read it). They are off unless config fixSite.sadpLegacyPlainPassword = true (Admin's choice).
-  if (-not $script:SadpAllowPlainPassword) { return [pscustomobject]@{ ok = $false; result = ''; form = ''; tries = 0; error = 'this unlock file needs the old SADP form, which would send the new password unencrypted over the network: not used. Import it in Hikvision SADP by hand.' } }
-  $tries = 0; $last = ''
+  if (-not $script:SadpAllowPlainPassword) { return [pscustomobject]@{ ok = $false; result = ''; form = ''; tries = 0; error = 'this unlock file needs the old SADP form, which would send the new password unencrypted over the network: not used. Import it in Hikvision SADP by hand.'; sent = $false } }
+  $tries = 0; $last = ''; $sent = $false; $thisR = ''
   foreach ($f in $script:SadpImportForms) {
-    if ($tries -ge $script:SadpImportMax) { break }; $tries++
+    if ($tries -ge $script:SadpImportMax) { break }
+    # 2.2.20: the old forms are each one firmware generation's import type; a device silently ignores a type it does not know (seen on
+    # the wire and in the test device), so silence to one form is "not this form" and the next is tried. If NO form got any answer the
+    # result is NOT CONFIRMED (sent, no result), never a refusal, and the caller does not import again on its own (class F).
+    $tries++; $sent = $true; $thisR = ''
     $code = $unlock.code; if ($f.withSerial -and $code -notlike ('*' + $dev.serial)) { $code = $code + [string]$dev.serial }
     $p = New-SadpProbe $f.type $dev.mac ([ordered]@{ ($f.codeTag) = $code; Password = $NewPassword })
     Sadp-Log ('SADP ' + $f.name + ' -> ' + $dev.mac + ' (code and password hidden)')
@@ -263,12 +281,12 @@ function Import-HikUnlock($dev, $unlock, [string]$NewPassword, [double]$Seconds 
       if ((ConvertTo-SadpMac (Get-SadpTag $a.text 'MAC')) -ne $dev.mac) { continue }
       $r = Get-SadpTag $a.text 'Result'; if (-not $r) { $r = Get-SadpTag $a.text 'Status' }
       Sadp-Log ('  answer: ' + (($a.text -replace '<(Salt|Code|Password|SecurityCode)>[^<]*', '<$1>(hidden)') -replace '\s+', ' ').Substring(0, [Math]::Min(300, ($a.text -replace '\s+', ' ').Length)))
-      if ($r -match '^(?i)\s*(success|ok|true)\s*$') { return [pscustomobject]@{ ok = $true; result = $r; form = $f.name; tries = $tries; error = '' } }   # 2.2.19 (class C): the whole answer, not a word inside it
-      if ($r) { $last = $r }
+      if ($r -match '^(?i)\s*(success|ok|true)\s*$') { return [pscustomobject]@{ ok = $true; result = $r; form = $f.name; tries = $tries; error = ''; sent = $true } }   # 2.2.19 (class C): the whole answer, not a word inside it
+      if ($r) { $last = $r; $thisR = $r }
     }
   }
-  $why = $(if ($last) { 'the device answered "' + $last + '"' + $(if ($last -match 'denied|fail') { ' (the file is only good for this exact request, for 48 hours, and only if the device has not restarted since)' } else { '' }) } else { 'the device did not answer the import' })
-  return [pscustomobject]@{ ok = $false; result = $last; form = ''; tries = $tries; error = $why }
+  $why = $(if ($last) { 'the device answered "' + $last + '"' + $(if ($last -match 'denied|fail') { ' (the file is only good for this exact request, for 48 hours, and only if the device has not restarted since)' } else { '' }) } else { 'the device did not answer the import - NOT CONFIRMED (it may have worked)' })
+  return [pscustomobject]@{ ok = $false; result = $last; form = ''; tries = $tries; error = $why; sent = $sent }
 }
 # SADP "update": set the address (needs the device password). Used only after the reset, to move a device before it has a reachable address.
 function Set-HikSadpNet($dev, [string]$Password, [string]$Ip, [string]$Mask, [string]$Gw, [double]$Seconds = 5.0) {

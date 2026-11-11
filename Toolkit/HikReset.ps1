@@ -54,7 +54,7 @@ $retryDevs = $null
 if ($Mode -eq 'Retry') {
   Hk-Say 'Retry after "device refused": one fresh cycle (export once, submit, import only the reply to it)' 'Cyan'
   $seenR = @(Find-HikSadp 4); $retryDevs = @()
-  $refused = @(@($state.devices) | Where-Object { [string]$_.status -eq 'refused' -and (-not $Only -or [string]$_.serial -like ('*' + $Only + '*') -or [string]$_.ip -eq $Only -or [string]$_.mac -eq $Only) })
+  $refused = @(@($state.devices) | Where-Object { ([string]$_.status -eq 'refused' -or [string]$_.status -eq 'exporting') -and (-not $Only -or [string]$_.serial -like ('*' + $Only + '*') -or [string]$_.ip -eq $Only -or [string]$_.mac -eq $Only) })
   if (-not $refused.Count) { Hk-Say 'No camera here has refused Hikvision''s file - nothing to retry.'; Format-HikStatus $state | ForEach-Object { Hk-Say ('  ' + $_) }; exit 0 }
   foreach ($d in $refused) {
     $live = Find-HikLiveDevice $d $seenR   # 2.2.19 (class A): the same device by MAC (serial only when no MAC was saved)
