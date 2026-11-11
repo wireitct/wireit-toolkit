@@ -510,7 +510,7 @@ function Save-ScReport($R, $D, [string]$dir) {
   $ls = Join-Path $dir 'last-scan.json'; $lsJson = [string]([ordered]@{ when = $R.started; nets = @(Get-ScNetKeys $R.nets); devices = $prev } | ConvertTo-Json -Depth 4)
   $lsOk = $true; $tmp = $ls + '.tmp'
   try { [IO.File]::WriteAllText($tmp, $lsJson); Move-Item -LiteralPath $tmp -Destination $ls -Force -ErrorAction Stop; if ([IO.File]::ReadAllText($ls) -cne $lsJson) { throw 'it does not read back as written' } }
-  catch { $lsOk = $false; try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction Stop } } catch {}; try { if (Test-Path -LiteralPath $ls) { Remove-Item -LiteralPath $ls -Force -ErrorAction Stop } } catch {} }
+  catch { $lsOk = $false; try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction Stop } } catch {}; try { if (Test-Path -LiteralPath $ls -PathType Leaf) { Remove-Item -LiteralPath $ls -Force -Confirm:$false -ErrorAction Stop } } catch {} }
   return [pscustomobject]@{ Txt = $base + '.txt'; Json = $base + '.json'; Text = $txt; LastScanSaved = $lsOk }
 }
 # 2.2.3 (Codex #44): the previous scan is compared only when it was taken on the SAME network(s): another site's devices are not "missing" here

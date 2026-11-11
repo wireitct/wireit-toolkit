@@ -7,6 +7,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+import re
 import shutil
 from pathlib import Path
 import subprocess
@@ -135,7 +136,9 @@ def main():
                     d = mock.S['devices']['192.168.1.20']
                     results['journal_exit'] = proc.returncode
                     results['journal_password_untouched'] = d['password'] == 'Oldpass123' and not d.get('pw_changes')
-                    results['journal_says_why'] = 'undo file could not be saved' in (case / 'forward.log').read_text(errors='replace')
+                    _jl = (case / 'forward.log').read_text(errors='replace')
+                    # 2.2.20: the run folder is gone before the first record write, so the checked scan.json save (before the undo file) now stops it first
+                    results['journal_says_why'] = 'undo file could not be saved' in _jl or bool(re.search(r"STOPPED: this run's (scan record|plan) \(.*\) could not be saved\. Nothing was changed", _jl))
                     results['journal_out'] = (case / 'forward.log').read_text(errors='replace')[-1500:]
                 else:
                     with open(case / 'forward.log', 'w') as log:

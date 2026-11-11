@@ -76,7 +76,7 @@ function Split-HikQuarantine($State, [string]$Path, [string]$Raw) {
   foreach ($d in @($State.devices)) {
     $why = Get-HikDeviceRowWhy $d
     if ($why) {
-      $sr = ''; $mr = ''; if ($d -is [pscustomobject]) { if ($d.PSObject.Properties['serial'] -and $d.serial -is [string]) { $sr = ([string]$d.serial).Trim() }; if ($d.PSObject.Properties['mac'] -and $d.mac -is [string]) { $mr = ConvertTo-SadpMac ([string]$d.mac) } }
+      $sr = ''; $mr = ''; if ($d -is [pscustomobject]) { if ($d.PSObject.Properties['serial'] -and ($d.serial -is [string] -or $d.serial -is [ValueType])) { $sr = ([string]$d.serial).Trim() }; if ($d.PSObject.Properties['mac'] -and $d.mac -is [string]) { $mr = ConvertTo-SadpMac ([string]$d.mac) } }
       $new += [pscustomobject]@{ serial = $sr; mac = $mr; why = $why; at = (Get-Date -Format 's'); row = $d }
     } else { $keep += $d }
   }

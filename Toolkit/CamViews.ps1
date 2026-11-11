@@ -460,7 +460,8 @@ function Save-CvSite([string]$nvr, [string]$site, [string]$user, [string]$vendor
   $sp = Join-Path $script:CvHere 'camviews-sites.json'; $sj = [string](ConvertTo-Json -InputObject $flat -Depth 3); $stmp = $sp + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
   try {
     [IO.File]::WriteAllText($stmp, $sj, (New-Object Text.UTF8Encoding($true)))
-    Move-Item -LiteralPath $stmp -Destination $sp -Force -ErrorAction Stop
+    # .NET swap, not Move-Item (2.2.5: Move-Item can be refused on an Office PC run without admin rights)
+    if ([IO.File]::Exists($sp)) { [IO.File]::Replace($stmp, $sp, [NullString]::Value) } else { [IO.File]::Move($stmp, $sp) }
     $back = @(Get-CvSites); if (-not @($back | Where-Object { [string]$_.nvr -eq $nvr -and [string]$_.site -eq $site }).Count -or $back.Count -ne $flat.Count) { throw 'it does not read back as written' }
   } catch { throw ('the NVR login was saved, but the site list (camviews-sites.json) was NOT: ' + $_.Exception.Message) }
   finally { if (Test-Path -LiteralPath $stmp) { Remove-Item -LiteralPath $stmp -Force -ErrorAction SilentlyContinue } }

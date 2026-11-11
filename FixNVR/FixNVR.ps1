@@ -146,10 +146,21 @@ function Save-Json($obj, [string]$path) {
   try { [void]($back | ConvertFrom-Json -ErrorAction Stop) } catch { throw ('the saved file ' + $path + ' does not read back as JSON') }
 }
 # 2.2.20 (Codex 2.2.19 class A, second pass): '' when this run's plan.json AND before.json are saved and read back; else the plain reason
+function Save-FnText([string]$path, [string]$text) {
+  # the same checked install as Save-Json, for text already made (a temp file swapped in, then the FINAL file read back and parsed)
+  $tmp = $path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+  try {
+    [IO.File]::WriteAllText($tmp, $text, (New-Object Text.UTF8Encoding($true)))
+    if ([IO.File]::Exists($path)) { [IO.File]::Replace($tmp, $path, [NullString]::Value) } else { [IO.File]::Move($tmp, $path) }
+  } finally { if ([IO.File]::Exists($tmp)) { try { [IO.File]::Delete($tmp) } catch {} } }
+  $back = [IO.File]::ReadAllText($path); if ($back.Length -gt 0 -and [int][char]$back[0] -eq 0xFEFF) { $back = $back.Substring(1) }
+  if ($back -cne $text) { throw ('the saved file ' + $path + ' does not read back as written') }
+  try { [void]($back | ConvertFrom-Json -ErrorAction Stop) } catch { throw ('the saved file ' + $path + ' does not read back as JSON') }
+}
 function Save-FnRunRecords([string]$runDir, $plan, $before) {
-  try { Save-Json @($plan) (Join-Path $runDir 'plan.json') } catch { return ('this run''s plan (plan.json) could not be saved: ' + $_.Exception.Message) }
-  if (-not @($before).Count) { return '' }   # no device was read: nothing to record (Save-Json of nothing is not a file)
-  try { Save-Json @($before) (Join-Path $runDir 'before.json') } catch { return ('this run''s record of how the devices were (before.json) could not be saved: ' + $_.Exception.Message) }
+  try { Save-FnText (Join-Path $runDir 'plan.json') ([string]($plan | ConvertTo-Json -Depth 6)) } catch { return ('this run''s plan (plan.json) could not be saved: ' + $_.Exception.Message) }
+  if (-not @($before).Count) { return '' }   # no device was read: nothing to record
+  try { Save-FnText (Join-Path $runDir 'before.json') ([string]($before | ConvertTo-Json -Depth 12)) } catch { return ('this run''s record of how the devices were (before.json) could not be saved: ' + $_.Exception.Message) }
   return ''
 }
 # 2.2.7 (F05): Undo takes back every step that was SENT (done, or sent and not confirmed: a timeout, a stopped run), newest first
