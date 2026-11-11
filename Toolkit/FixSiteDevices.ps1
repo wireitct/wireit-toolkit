@@ -321,18 +321,41 @@ function Get-FsIdentity([string]$ip, [string]$brand, $cred) {
 }
 # 2.2.15 (Codex 2.2.14 R2): is the device that answers at $ip the camera the undo file names? '' = yes (same MAC; with no MAC in the
 # file, the same serial). Otherwise the plain reason: another device, or its identity could not be read / the file has none.
-function Get-FsUndoIdentityBlock([string]$ip, [string]$brand, $cred, [string]$wantMac, [string]$wantSerial) {
+function Get-FsUndoIdentityBlock([string]$ip, [string]$brand, $cred, [string]$wantMac, [string]$wantSerial, [string]$What = 'this camera') {
   $wm = ConvertTo-FsMac $wantMac; $ws = ([string]$wantSerial).Trim()
-  if (-not $wm -and -not $ws) { return ('the undo file has no MAC or serial for it, so it cannot be checked that the device at ' + $ip + ' is this camera') }
+  if (-not $wm -and -not $ws) { return ('the undo file has no MAC or serial for it, so it cannot be checked that the device at ' + $ip + ' is ' + $What) }
   $id = Get-FsIdentity $ip $brand $cred
   if ($wm) {
-    if (-not $id.mac) { return ('the device at ' + $ip + ' did not tell its MAC, so it is not certain it is this camera') }
+    if (-not $id.mac) { return ('the device at ' + $ip + ' did not tell its MAC, so it is not certain it is ' + $What) }
     if ($id.mac -ne $wm) { return ('the device at ' + $ip + ' is ANOTHER device (MAC ' + $id.mac + $(if ($id.serial) { ', serial ' + $id.serial } else { '' }) + '; the undo file has MAC ' + $wm + ')') }
     return ''
   }
-  if (-not $id.serial) { return ('the device at ' + $ip + ' did not tell its serial, so it is not certain it is this camera') }
+  if (-not $id.serial) { return ('the device at ' + $ip + ' did not tell its serial, so it is not certain it is ' + $What) }
   if ($id.serial.ToUpperInvariant() -ne $ws.ToUpperInvariant()) { return ('the device at ' + $ip + ' is ANOTHER device (serial ' + $id.serial + '; the undo file has ' + $ws + ')') }
   return ''
+}
+# 2.2.16 (Codex 2.2.15 F3): the NVR's own MAC / serial, read once per address in a run, for the undo file. A site password that logs in
+# is not identity (another NVR on the same password can take the address). mac/serial '' = could not be read.
+function Get-FsNvrIdRecord([string]$ip, $cred) {
+  if (-not $script:FsNvrIds) { $script:FsNvrIds = @{} }
+  if ($script:FsNvrIds.ContainsKey($ip)) { return $script:FsNvrIds[$ip] }
+  $i = Get-FsIdentity $ip 'Hikvision' $cred
+  if ($i.mac -or $i.serial) { $script:FsNvrIds[$ip] = $i }
+  return $i
+}
+# 2.2.16 (Codex 2.2.15 F3): before Undo writes ANYTHING to an NVR (network, password, channel): is the device answering at $ip the NVR
+# the undo file names? '' = yes. An undo file without its MAC / serial (older Toolkit) can never be confirmed = the reason, no write.
+function Get-FsUndoNvrBlock([string]$ip, $cred, $entry, [string]$macField = 'mac', [string]$serField = 'serial') {
+  $m = ''; $s = ''
+  if ($entry -is [System.Collections.IDictionary]) { $m = [string]$entry[$macField]; $s = [string]$entry[$serField] }
+  elseif ($entry) { if ($entry.PSObject.Properties[$macField]) { $m = [string]$entry.$macField }; if ($entry.PSObject.Properties[$serField]) { $s = [string]$entry.$serField } }
+  if (-not $m -and -not $s) { return ('the undo file has no MAC or serial for this NVR (made by an older Toolkit), so it cannot be checked that the device at ' + $ip + ' is that NVR') }
+  if (-not $script:FsNvrIdOk) { $script:FsNvrIdOk = @{} }
+  $k = $ip + '|' + (ConvertTo-FsMac $m) + '|' + $s
+  if ($script:FsNvrIdOk.ContainsKey($k)) { return '' }
+  $why = Get-FsUndoIdentityBlock $ip 'Hikvision' $cred $m $s 'that NVR'
+  if (-not $why) { $script:FsNvrIdOk[$k] = $true }
+  return $why
 }
 # 2.2.4 (Codex re-review): a backup file counts only when its CONTENT is what the device exports: a login or HTML page, an
 # error answer, or a file too small to be a config export is FAILED (2.2.3 counted any non-empty file, so a login page was "backup saved").
@@ -617,14 +640,53 @@ function Get-FsNvrChannelGuard([string]$nvrIp, $nvrCred, [int]$ch, [string]$curI
   if ($online) { return ('NVR ' + $nvrIp + ' ch ' + $ch + ' shows another LIVE camera (' + $curIp + '), not ' + $camIp + ': not overwritten. Check which camera belongs on it and set it by hand.') }
   return ('NVR ' + $nvrIp + ' ch ' + $ch + ' points at another camera (' + $curIp + ') and whether it is live could not be read: not overwritten. Check it by hand.')
 }
+# 2.2.16 (Codex 2.2.15 F4): a 200 answer for one channel must be that channel (root InputProxyChannel, same id). '' = fine.
+function Get-FsNvrChannelReadBlock($x, [string]$nvrIp, [int]$ch) {
+  if (-not $x -or -not $x.DocumentElement -or $x.DocumentElement.LocalName -ne 'InputProxyChannel') { return ('NVR ' + $nvrIp + ' ch ' + $ch + ': the answer was not a channel, so it is NOT known which camera is on it: not changed. Run it again.') }
+  $cid = ''; foreach ($n in @($x.DocumentElement.ChildNodes)) { if ($n.LocalName -eq 'id') { $cid = ([string]$n.InnerText).Trim(); break } }
+  if ($cid -and $cid -ne [string]$ch) { return ('NVR ' + $nvrIp + ' ch ' + $ch + ': the NVR answered for channel ' + $cid + ' instead, so it is NOT known which camera is on ch ' + $ch + ': not changed. Run it again.') }
+  return ''
+}
+# 2.2.16 (Codex 2.2.15 F4): how a configured channel addresses its camera. isIp = a plain IPv4 address (type empty or ipaddress) and no
+# other address form beside it; hostname / IPv6 / unknown type / no readable address = isIp $false with a plain "how" for the crew.
+function Get-FsChannelAddressing($x) {
+  $aft = Fs-XText $x 'addressingFormatType'; $ip = Fs-XText $x 'ipAddress'; $hn = Fs-XText $x 'hostName'; $v6 = Fs-XText $x 'ipv6Address'
+  $isIp = (($aft -eq '' -or $aft -match '^(?i)ip(address)?$') -and $ip -match '^\d{1,3}(\.\d{1,3}){3}$' -and -not $hn -and -not $v6)
+  $how = ''
+  if (-not $isIp) {
+    if ($hn) { $how = 'by name (' + $hn + ')' }
+    elseif ($v6) { $how = 'by IPv6 address (' + $v6 + ')' }
+    elseif ($aft -and $aft -notmatch '^(?i)ip(address)?$') { $how = 'with address type "' + $aft + '"' + $(if ($ip) { ' (' + $ip + ')' } else { '' }) }
+    elseif ($ip) { $how = 'with an address the tool cannot read (' + $ip + ')' }
+    else { $how = 'with no address the tool can read' }
+  }
+  return [pscustomobject]@{ isIp = $isIp; ip = $(if ($isIp) { $ip } else { '' }); type = $aft; host = $hn; how = $how }
+}
 function Set-FsNvrChannel([string]$nvrIp, $nvrCred, [int]$ch, [string]$camIp, [string]$camPw, [string]$camBrand, [string]$backupDir = '', [string[]]$OwnIps = @()) {
   # puts the camera on that channel with its new address + the site password. Updates the channel when it exists, adds it when not.
   # returns { ok; action ('updated'|'added'|'refused'|'failed'); before (xml, no password: the NVR never returns it); why }
   # $OwnIps: other addresses of THIS camera (Undo: its address after the run) - the channel may be moved off them
   $r = Fs-Http -Ip $nvrIp -Path ('/ISAPI/ContentMgmt/InputProxy/channels/' + $ch) -Cred $nvrCred
   $proto = $(if ($camBrand -eq 'Hikvision') { 'HIKVISION' } else { 'ONVIF' }); $port = $(if ($proto -eq 'HIKVISION') { '8000' } else { '80' })
-  if ($r.code -eq 200 -and ($x = Fs-XmlDoc $r.body)) {
-    $why = Get-FsNvrChannelGuard $nvrIp $nvrCred $ch ([string](Fs-XText $x 'ipAddress')) $camIp $OwnIps
+  # 2.2.16 (Codex 2.2.15 F4): a channel the NVR answers for must be READ before it is written. Only "not there" (404) means add it.
+  # An answer that is not this channel, or any other failed read, = refuse (a working camera could be on it).
+  $x = $null; if ($r -and $r.code -eq 200) { $x = Fs-XmlDoc $r.body }
+  if ($r -and $r.code -eq 200) {
+    $whyR = Get-FsNvrChannelReadBlock $x $nvrIp $ch
+    if ($whyR) { Fs-LogLine $whyR; return [pscustomobject]@{ ok = $false; action = 'refused'; before = ''; protocol = $proto; why = $whyR } }
+  } elseif (-not $r -or $r.code -ne 404) {
+    $whyR = ('NVR ' + $nvrIp + ' ch ' + $ch + ' could not be read (answer ' + $(if ($r) { [string]$r.code } else { 'none' }) + '), so it is NOT known which camera is on it: not changed. Run it again.')
+    Fs-LogLine $whyR; return [pscustomobject]@{ ok = $false; action = 'refused'; before = ''; protocol = $proto; why = $whyR }
+  }
+  if ($x) {
+    # 2.2.16 (Codex 2.2.15 F4): check HOW the configured camera is addressed (hostname, IPv6, odd type), not only <ipAddress>.
+    # Only a plain IPv4 address can be checked against the camera and the NVR's live status; anything else is NOT a free slot.
+    $ad = Get-FsChannelAddressing $x
+    if (-not $ad.isIp) {
+      $why = ('NVR ' + $nvrIp + ' ch ' + $ch + ' is already set up ' + $ad.how + '. The tool can only check cameras added by IP address, so it is NOT known whether that camera is working: not changed (a working camera could lose its recording). Check channel ' + $ch + ' in the NVR by hand.')
+      Fs-LogLine $why; return [pscustomobject]@{ ok = $false; action = 'refused'; before = ''; protocol = $proto; why = $why }
+    }
+    $why = Get-FsNvrChannelGuard $nvrIp $nvrCred $ch ([string]$ad.ip) $camIp $OwnIps
     if ($why) { Fs-LogLine $why; return [pscustomobject]@{ ok = $false; action = 'refused'; before = ''; protocol = $proto; why = $why } }
     # 2.2.1: the FIRST state of the channel in this run is kept (a second change in the same run must not overwrite it: undo uses it)
     if ($backupDir) { New-Item -ItemType Directory -Force -Path $backupDir | Out-Null; $bkf = Join-Path $backupDir ('nvr-' + $nvrIp + '-ch' + $ch + '.xml'); if (-not (Test-Path -LiteralPath $bkf)) { [IO.File]::WriteAllText($bkf, $r.body) } }

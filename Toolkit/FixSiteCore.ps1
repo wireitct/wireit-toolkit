@@ -495,6 +495,25 @@ function New-FsPlan($expected, $observed, $opts = $null) {
         steps = @(); login = ''; problem = $false; broken = $true; pwOnly = $false; settings = $null; onList = $false; online = $false; fromNvr = $true }
       $plan.missing += [pscustomobject]$c; $plan.cams += [pscustomobject]$c
     }
+  } else {
+    # 2.2.16 (Codex 2.2.15 F1): with a site list, an NVR channel with no video that points at an address where nothing answers, and that
+    # belongs to no camera of this run, is a problem too: e.g. a second NVR still on a camera's OLD address after the camera was moved
+    # (its recording is lost). Never "Nothing to fix". Nothing is changed on it (the tool cannot tell which camera it should be).
+    $taken = @{}
+    foreach ($gk in @($guess.Keys)) { $gc = $guess[$gk].ch; $taken[[string]$gc.nvr + '|' + [string]$gc.channel] = 1 }
+    foreach ($pcm in @($plan.cams)) {
+      foreach ($x in @(Get-FsCamChannels $pcm)) { $taken[[string]$x.nvr + '|' + [string]$x.channel] = 1 }
+      $po = [string](Get-FsProp $pcm 'nvrOriginal' ''); if ($po) { $taken[$po + '|' + [int](Get-FsProp $pcm 'channel' 0)] = 1 }
+    }
+    foreach ($lc in $lostChs) {
+      $nvT = $(if ($nvrIpMap.ContainsKey([string]$lc.nvr)) { $nvrIpMap[[string]$lc.nvr] } else { [string]$lc.nvr })
+      if ($taken.ContainsKey([string]$lc.nvr + '|' + [string]$lc.channel) -or $taken.ContainsKey($nvT + '|' + [string]$lc.channel)) { continue }
+      $c = [ordered]@{ key = ('nvrch:' + $lc.nvr + ':' + $lc.channel); name = $(if ($lc.name) { [string]$lc.name } else { 'Camera ch ' + $lc.channel }); brand = ''; model = ''; mac = ''; serial = ''; firmware = ''
+        ip = ''; listIp = [string]$lc.ip; target = ''; channel = [int]$lc.channel; nvr = $nvT; nvrOriginal = [string]$lc.nvr; switch = ''; port = $null; state = 'missing'
+        why = @('NVR ' + $nvT + ' ch ' + $lc.channel + ' has NO video and nothing answers at ' + $lc.ip + ' (it is not on the site list). If a camera was moved, this channel still points at its old address: put the camera''s new address on this channel by hand, or check that camera (power, cable)')
+        steps = @(); login = ''; problem = $false; broken = $true; pwOnly = $false; settings = $null; onList = $false; online = $false; fromNvr = $true; orphan = $true }
+      $plan.missing += [pscustomobject]$c; $plan.cams += [pscustomobject]$c
+    }
   }
   # 2.0.2: the router's own range against the standard (router hands out .100 and up). Only named; the Toolkit never changes the router.
   $pcO = Get-FsProp $observed 'pc' $null
@@ -514,10 +533,13 @@ function New-FsPlan($expected, $observed, $opts = $null) {
   $unread = @{}; foreach ($n in @($plan.nvrs)) { if (-not (Get-FsProp $n 'chRead' $true)) { $unread[[string]$n.ip] = [string]$n.ip; if ($n.target) { $unread[[string]$n.target] = [string]$n.ip } } }
   foreach ($c in @($plan.cams)) {
     $u = @()
+    # 2.2.16 (Codex 2.2.15 F1): a camera's KNOWN recorder(s) do not prove that an unread NVR does not ALSO record it (NVR .19 read,
+    # .20 unread: .20 may have a channel on the camera too). Every unread NVR on the site is an unresolved dependency of every camera:
+    # no password change, no move, no official reset in this run. Its own known recorders are named first.
     if ($unread.Count) {
       $recs = @(Get-FsCamRecorders $c)
-      if ($recs.Count) { foreach ($r in $recs) { if ($unread.ContainsKey([string]$r) -and $u -notcontains $unread[[string]$r]) { $u += $unread[[string]$r] } } }
-      else { $u = @($unread.Values | Select-Object -Unique) }
+      foreach ($r in $recs) { if ($unread.ContainsKey([string]$r) -and $u -notcontains $unread[[string]$r]) { $u += $unread[[string]$r] } }
+      foreach ($v in @($unread.Values | Select-Object -Unique)) { if ($u -notcontains $v) { $u += $v } }
     }
     $c | Add-Member -NotePropertyName chUnknown -NotePropertyValue @($u) -Force
   }
@@ -647,7 +669,7 @@ function Get-FsManualLines($plan) {
   foreach ($n in @($plan.nvrs | Where-Object { @($_.steps) -contains 'manual' })) { $out += ('NVR ' + $n.ip + ': needs a person - ' + (@($n.why) -join '; ') + ' ' + $script:FsBad) }
   # 2.2.15 (Codex 2.2.14 R1): an NVR that logged in but whose channel list could not be read: its channels are NOT CHECKED - a
   # problem, never "Nothing to fix" (an NVR with no login is already a problem of its own)
-  foreach ($n in @($plan.nvrs | Where-Object { -not (Get-FsProp $_ 'chRead' $true) -and @($_.steps) -notcontains 'manual' -and [string]$_.login -and [string]$_.login -notin @('unknown', 'locked', 'refused', 'not supported') })) { $out += ('NVR ' + $n.ip + ': its camera channel list could not be read - its channels are NOT CHECKED, and cameras it may record kept their password and address. Run Fix this site again ' + $script:FsBad) }
+  foreach ($n in @($plan.nvrs | Where-Object { -not (Get-FsProp $_ 'chRead' $true) -and @($_.steps) -notcontains 'manual' -and [string]$_.login -and [string]$_.login -notin @('unknown', 'locked', 'refused', 'not supported') })) { $out += ('NVR ' + $n.ip + ': its camera channel list could not be read - its channels are NOT CHECKED. So no camera on this site got a new password, a new address or the official reset in this run (any of them could be on that NVR). Run Fix this site again ' + $script:FsBad) }
   foreach ($c in @($plan.cams | Where-Object { $_.state -eq 'manual' })) { $out += ($c.name + ': needs a person - ' + (@($c.why) -join '; ') + ' ' + $script:FsBad) }
   # 2.2.14 (Codex 2.2.13 F1): ANOTHER channel that records this camera (a second channel on the same NVR, or another NVR) has no
   # video: that recording is lost, whatever the camera's main channel shows - a problem, never "OK, not touched"
