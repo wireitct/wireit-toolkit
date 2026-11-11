@@ -414,9 +414,12 @@ function Get-RnJournals {
       if ($o.PSObject.Properties['pc'] -and $o.pc) { if ($ix -lt 0 -and $o.pc.PSObject.Properties['ifIndex'] -and $null -ne $o.pc.ifIndex) { $ix = [int]$o.pc.ifIndex }; if ($null -eq $dhb -and $o.pc.PSObject.Properties['dhcp'] -and $null -ne $o.pc.dhcp -and $null -ne $o.pc.ifIndex) { $dhb = [bool]$o.pc.dhcp }; if (-not $nm -and $o.pc.PSObject.Properties['name']) { $nm = [string]$o.pc.name } }
       if ($o.PSObject.Properties['pc'] -and $o.pc -and $o.pc.PSObject.Properties['coexistence_before'] -and $o.pc.coexistence_before) { $co = $(if ([string]$o.pc.coexistence_before -match '(?i)enabled') { 'enabled' } else { 'disabled' }) }
       if ($ix -lt 0 -and $temps.Count) { $ix = [int]$temps[0].ifIndex }
-      # 2.2.19 (Codex 2.2.18 F09 twin): a record that reads but does not say which adapter it changed ({} included) is damaged,
-      # not "nothing changed"
-      if ($ix -lt 0) { $bad = 'is damaged (it does not say which adapter it changed)' }
+      # 2.2.19 (Codex 2.2.18 F09 twin): a record that reads but holds none of the Toolkit's record fields ({} included), or lists
+      # temporary addresses / an adapter's old settings without saying which adapter, is damaged - not "nothing changed". (A Fix NVR
+      # record from before any adapter change - no addresses, no adapter yet - is a real empty record.)
+      $shape = ($o -is [array]) -or [bool]$o.PSObject.Properties['temps'] -or [bool]$o.PSObject.Properties['before'] -or [bool]$o.PSObject.Properties['pc']
+      if (-not $shape) { $bad = 'is damaged (it holds none of the Toolkit''s record fields)' }
+      elseif ($ix -lt 0 -and ($temps.Count -or ($o.PSObject.Properties['before'] -and $o.before))) { $bad = 'is damaged (it does not say which adapter it changed)' }
     } elseif (-not $bad) { $bad = 'is empty' }
     $j += [pscustomobject]@{ file = $f; readable = (-not $bad); bad = $bad; ifIndex = $ix; name = $nm; guid = $gd; coexist = $co; dhcpBefore = $dhb; ips = @($temps | ForEach-Object { [string]$_.ip }) }
   }

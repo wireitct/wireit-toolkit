@@ -191,6 +191,7 @@ Run 'rn_damaged' { RnRun 'c' @{ dhcp = $true; coexist = 'disabled'; journal = '{
 Run 'rn_control' { RnRun 'd' @{ dhcp = $true; coexist = 'disabled'; journal = $j2 } }
 Run 'rn_unknown_norecord' { RnRun 'e' @{ dhcp = $true; coexist = 'unknown' } }
 Run 'rn_other_adapter' { RnRun 'f' @{ dhcp = $true; coexist = 'disabled'; journal = '{"version":2,"before":{"ifIndex":5,"name":"Old USB Ethernet","dhcp":true,"coexist":"enabled"},"temps":[]}' } }
+Run 'rn_classic_noadapter' { $script:t0 = 1; $cj = Join-Path $D 'classic-temp-ips.json'; [IO.File]::WriteAllText($cj, '{"version":2,"temps":[],"pc":{"coexistence_before":null,"firewall_rule":false,"cleanup_task":true,"ifIndex":null,"alias":null,"dhcp":null,"ip":null,"gw":null}}'); Set-Variable -Name FixNvrState -Value $cj -Scope Script; $x = RnRun 'h' @{ dhcp = $true; coexist = 'disabled' }; Set-Variable -Name FixNvrState -Value '' -Scope Script; $x }
 Run 'rn_swap' { RnRun 'g' @{ dhcp = $false; coexist = 'disabled'; listSwap = $true } }
 # the production state reader, stand-ins only for the Windows commands
 function Get-NetIPInterface { return [pscustomobject]@{ Dhcp = 'Enabled' } }
@@ -341,6 +342,8 @@ try {
   Check ($r -and [int]$r.code -eq 0 -and $r.said -match 'not checked') 'F18: with no Toolkit record, an unreadable coexistence setting is said as not checked on the DONE run' $r
   $r = P $j 'rn_other_adapter'
   Check ($r -and -not @($r.writes | Where-Object { $_ -eq 'coexist' }).Count -and $r.pending) 'F05 twin: a record naming another adapter at the same number is not applied to this one (no coexistence write) and not marked done' $r
+  $r = P $j 'rn_classic_noadapter'
+  Check ($r -and [int]$r.code -eq 0 -and $r.said -match 'DONE') 'control: a Fix NVR record from before any adapter change (no addresses, no adapter yet) is a real empty record, not "damaged"' $r
   $r = P $j 'rn_swap'
   Check ($r -and -not @($r.writes).Count -and [int]$r.code -ne 0) 'F05 twin: the adapter is identified again right before each change; another adapter answers at the number -> not changed, FAILED' $r
   $r = P $j 'rn_reader'
