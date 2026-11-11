@@ -197,7 +197,7 @@ $c = Get-SuiteCounts @('PASS x', '3 passed, 0 failed')
   Check ($miss.Count -eq 0) ('the reviewer''s 9 reproductions of the 2.2.14 review are committed under Toolkit\tests\repro-2.2.14 (' + ($miss -join ', ') + ')')
   $vj = Get-Content -Raw (Join-Path $repo 'version.json') | ConvertFrom-Json
   $tcv = [regex]::Match([IO.File]::ReadAllText((Join-Path $repo 'Toolkit/ToolkitCore.ps1')), "TkBuiltVersion = '([^']+)'").Groups[1].Value
-  Check ($tcv -eq '2.2.15' -and [string]$vj.version -eq '2.2.15') ('version 2.2.15 in ToolkitCore and version.json (' + $tcv + ', ' + $vj.version + ')')
+  Check ($tcv -and $tcv -eq [string]$vj.version -and ([version]$tcv) -ge ([version]'2.2.15')) ('version 2.2.15 or later, the same in ToolkitCore and version.json (2.2.16: no longer pinned to 2.2.15) (' + $tcv + ', ' + $vj.version + ')')
 }
 finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
 Write-Host ''

@@ -60,6 +60,9 @@ Toolkit/tests/Test-Fix2214Site.ps1
 Toolkit/tests/Test-Fix2215Classic.ps1
 Toolkit/tests/Test-Fix2215Nvr.ps1
 Toolkit/tests/Test-Fix2215Site.ps1
+Toolkit/tests/Test-Fix2216Classic.ps1
+Toolkit/tests/Test-Fix2216Nvr.ps1
+Toolkit/tests/Test-Fix2216Site.ps1
 Toolkit/tests/Test-Fix222.ps1
 Toolkit/tests/Test-Fix223.ps1
 Toolkit/tests/Test-Fix224.ps1
@@ -72,6 +75,7 @@ Toolkit/tests/Test-FixIt.ps1
 Toolkit/tests/Test-FixSite.ps1
 Toolkit/tests/Test-HikReset.ps1
 Toolkit/tests/Test-Repro2214.ps1
+Toolkit/tests/Test-Repro2215.ps1
 Toolkit/tests/Test-Review225.ps1
 Toolkit/tests/Test-Toolkit.ps1
 Toolkit/tests/TestPython.ps1
@@ -112,6 +116,19 @@ Toolkit/tests/repro-2.2.14/reproduce-reset-unread.ps1
 Toolkit/tests/repro-2.2.14/reproduce-undo-wrong-device.py
 Toolkit/tests/repro-2.2.14/reproduce-update-undo-interruption.ps1
 Toolkit/tests/repro-2.2.14/reproduce-wifiwatch-marker.ps1
+Toolkit/tests/repro-2.2.15/old-2.2.14/README.txt
+Toolkit/tests/repro-2.2.15/old-2.2.14/ToolkitCore.ps1.txt
+Toolkit/tests/repro-2.2.15/old-2.2.14/ToolkitRecover.ps1.txt
+Toolkit/tests/repro-2.2.15/reproduce-dw-disappears.ps1
+Toolkit/tests/repro-2.2.15/reproduce-fixsite-hostname.ps1
+Toolkit/tests/repro-2.2.15/reproduce-free-channel-unread.py
+Toolkit/tests/repro-2.2.15/reproduce-pending-headline.ps1
+Toolkit/tests/repro-2.2.15/reproduce-recording-disappears.ps1
+Toolkit/tests/repro-2.2.15/reproduce-reset-second-unread.ps1
+Toolkit/tests/repro-2.2.15/reproduce-rollback-bootstrap.ps1
+Toolkit/tests/repro-2.2.15/reproduce-sadp-state-race.py
+Toolkit/tests/repro-2.2.15/reproduce-undo-wrong-nvr.py
+Toolkit/tests/repro-2.2.15/reproduce-unread-second-nvr.py
 Toolkit/tests/review225/scenarios.py
 Toolkit/wireit-logo.png
 Toolkit/wireit.ico

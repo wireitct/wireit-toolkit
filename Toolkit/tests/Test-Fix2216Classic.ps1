@@ -128,6 +128,9 @@ try { $n = [string](Invoke-TkStartupRecovery $Tk) } catch { $err = $_.Exception.
   Check ($ek -and $(if ($env:OS -ne 'Windows_NT') { $ekr -eq '' } else { $true })) ('Crew-C the window''s standard-user check exists and says nothing off Windows (got "' + $ekr + '")')
   Check ($win -match "\(Get-FsElevationKind\) -eq 'standard'" -and $win -match 'ADMINISTRATOR name and password') 'Crew-D a standard-user login is told before the blue window starts that Windows asks for an ADMINISTRATOR and the window runs as that account'
   Check ($win -match '-Verb RunAs') 'Crew-E behaviour unchanged: the blue window is still started with RunAs (no install/elevation change without Moshe)'
+  $vj = Get-Content -Raw (Join-Path $repo 'version.json') | ConvertFrom-Json
+  $tcv = [regex]::Match([IO.File]::ReadAllText((Join-Path $repo 'Toolkit/ToolkitCore.ps1')), "TkBuiltVersion = '([^']+)'").Groups[1].Value
+  Check ($tcv -eq '2.2.16' -and [string]$vj.version -eq '2.2.16') ('version 2.2.16 in ToolkitCore and version.json (' + $tcv + ', ' + $vj.version + ')')
   Deferred 'Crew: the real standard Crew login - RunAs credential prompt, which account the blue window runs as, and its access to site files, vault and run folder'
 }
 finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
