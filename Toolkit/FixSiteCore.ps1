@@ -261,24 +261,46 @@ function Get-FsWantedSettings($choice, [bool]$problem, $perCam, [bool]$onlyPicke
   return [pscustomobject]$w
 }
 function Get-FsSettingsDiff($current, $wanted) {
-  # current: { codec, fps, width, height, bitrate, gop, smartCodec ('on'|'off'), maxWidth, maxHeight } of the main stream.
-  # returns @(@{ field; from; to }) - empty means nothing to change (safe to re-run).
+  # current: { codec, fps, width, height, bitrate, gop, smartCodec ('on'|'off'|'none' = the camera has no Smart Codec), maxWidth, maxHeight } of the main stream.
+  # returns @(@{ field; from; to; unknown }) - empty means nothing to change (safe to re-run).
+  # 2.2.19 (Codex 2.2.18 F19): a field that was ASKED FOR but the camera did not report (empty codec / Smart Codec, 0 fps, size,
+  # bitrate or I-frame) is NOT "already right": it comes back as an entry with unknown = $true (nothing is written for it; the
+  # caller says NOT CHECKED). Only a field read and compared counts as right.
   $out = @()
   if (-not $current) { return $out }
+  $unk = { param($f, $to) return [pscustomobject]@{ field = $f; from = ''; to = $to; unknown = $true } }
   $cc = [string](Get-FsProp $current 'codec' ''); $cf = [int](Get-FsProp $current 'fps' 0)
-  if ($wanted.codec -ne 'keep' -and $cc -and ($cc -replace '[^0-9A-Za-z]', '') -ne ($wanted.codec -replace '[^0-9A-Za-z]', '')) { $out += [pscustomobject]@{ field = 'codec'; from = $cc; to = $wanted.codec } }
-  $fps = $cf; if ($wanted.fps -gt 0 -and $cf -ne $wanted.fps) { $out += [pscustomobject]@{ field = 'fps'; from = $cf; to = $wanted.fps }; $fps = $wanted.fps }
-  if ($wanted.resolution -ne 'keep') {
+  if ($wanted.codec -ne 'keep' -and [string]$wanted.codec) {
+    if (-not $cc) { $out += (& $unk 'codec' $wanted.codec) }
+    elseif (($cc -replace '[^0-9A-Za-z]', '') -ne ($wanted.codec -replace '[^0-9A-Za-z]', '')) { $out += [pscustomobject]@{ field = 'codec'; from = $cc; to = $wanted.codec; unknown = $false } }
+  }
+  $fps = $cf
+  if ($wanted.fps -gt 0) { if ($cf -le 0) { $out += (& $unk 'fps' $wanted.fps) } elseif ($cf -ne $wanted.fps) { $out += [pscustomobject]@{ field = 'fps'; from = $cf; to = $wanted.fps; unknown = $false } }; $fps = $wanted.fps }
+  if ($wanted.resolution -ne 'keep' -and [string]$wanted.resolution) {
     $tw = 0; $th = 0
     if ($wanted.resolution -eq 'max') { $tw = [int](Get-FsProp $current 'maxWidth' 0); $th = [int](Get-FsProp $current 'maxHeight' 0) }
     else { $m = [regex]::Match($wanted.resolution, '(\d+)\s*x\s*(\d+)'); if ($m.Success) { $tw = [int]$m.Groups[1].Value; $th = [int]$m.Groups[2].Value } }
     $cw = [int](Get-FsProp $current 'width' 0); $ch = [int](Get-FsProp $current 'height' 0)
-    if ($tw -gt 0 -and ($cw -ne $tw -or $ch -ne $th)) { $out += [pscustomobject]@{ field = 'resolution'; from = ('' + $cw + 'x' + $ch); to = ('' + $tw + 'x' + $th) } }
+    if ($tw -le 0 -or $th -le 0 -or $cw -le 0 -or $ch -le 0) { $out += (& $unk 'resolution' $(if ($tw -gt 0) { '' + $tw + 'x' + $th } else { [string]$wanted.resolution })) }
+    elseif ($cw -ne $tw -or $ch -ne $th) { $out += [pscustomobject]@{ field = 'resolution'; from = ('' + $cw + 'x' + $ch); to = ('' + $tw + 'x' + $th); unknown = $false } }
   }
-  $cb = [int](Get-FsProp $current 'bitrate' 0); if ($wanted.bitrate -gt 0 -and $cb -ne $wanted.bitrate) { $out += [pscustomobject]@{ field = 'bitrate'; from = $cb; to = $wanted.bitrate } }
-  $cg = [int](Get-FsProp $current 'gop' 0); if ($wanted.gop -eq -1 -and $fps -gt 0 -and $cg -ne $fps) { $out += [pscustomobject]@{ field = 'gop'; from = $cg; to = $fps } }
-  $cs = [string](Get-FsProp $current 'smartCodec' ''); if ($wanted.smartCodec -eq 'off' -and $cs -eq 'on') { $out += [pscustomobject]@{ field = 'smartCodec'; from = 'on'; to = 'off' } }
+  $cb = [int](Get-FsProp $current 'bitrate' 0)
+  if ($wanted.bitrate -gt 0) { if ($cb -le 0) { $out += (& $unk 'bitrate' $wanted.bitrate) } elseif ($cb -ne $wanted.bitrate) { $out += [pscustomobject]@{ field = 'bitrate'; from = $cb; to = $wanted.bitrate; unknown = $false } } }
+  $cg = [int](Get-FsProp $current 'gop' 0)
+  if ($wanted.gop -eq -1) {
+    if ($fps -le 0 -or $cg -le 0) { $out += (& $unk 'gop' $(if ($fps -gt 0) { $fps } else { 0 })) }
+    elseif ($cg -ne $fps) { $out += [pscustomobject]@{ field = 'gop'; from = $cg; to = $fps; unknown = $false } }
+  }
+  $cs = [string](Get-FsProp $current 'smartCodec' '')
+  if ($wanted.smartCodec -eq 'off') { if (-not $cs) { $out += (& $unk 'smartCodec' 'off') } elseif ($cs -eq 'on') { $out += [pscustomobject]@{ field = 'smartCodec'; from = 'on'; to = 'off'; unknown = $false } } }
   return $out
+}
+# 2.2.19 (Codex 2.2.18 F19): the fields of a diff the camera did not report (nothing is written for them) / the ones to write
+function Get-FsDiffUnknown($diff) { return @(@($diff) | Where-Object { $_ -and $_.PSObject.Properties['unknown'] -and $_.unknown }) }
+function Get-FsDiffKnown($diff) { return @(@($diff) | Where-Object { $_ -and -not ($_.PSObject.Properties['unknown'] -and $_.unknown) }) }
+function Format-FsUnknownFields($diff) {
+  $n = @(); foreach ($d in @(Get-FsDiffUnknown $diff)) { $n += $(switch ([string]$d.field) { 'codec' { 'codec' } 'fps' { 'frame rate' } 'resolution' { 'resolution' } 'bitrate' { 'bitrate' } 'gop' { 'I-frame interval' } 'smartCodec' { 'Smart Codec' } 'smartCodecOn' { 'Smart Codec' } default { [string]$d.field } }) }
+  return (($n | Select-Object -Unique) -join ', ')
 }
 # 2.2.12 (Codex 2.2.11 #4): what the camera REALLY has after a settings write. $after = Get-FsStream read back; returns the plain
 # words for every requested field the camera does not have (empty = all confirmed). No read-back = every field unconfirmed.
@@ -302,12 +324,13 @@ function Get-FsStreamMismatch($after, $diff) {
   return $out
 }
 function Format-FsSettingsDiff($diff) {
-  $p = @(); foreach ($d in @($diff)) {
+  $p = @(); foreach ($d in @(Get-FsDiffKnown $diff)) {
     switch ($d.field) {
       'codec' { $p += ([string]$d.to + ' (was ' + $d.from + ')') } 'fps' { $p += ([string]$d.to + ' fps') } 'resolution' { $p += [string]$d.to }
-      'bitrate' { $p += ([string]$d.to + ' kbps') } 'gop' { $p += ('I-frame ' + $d.to) } 'smartCodec' { $p += 'Smart Codec off' }
+      'bitrate' { $p += ([string]$d.to + ' kbps') } 'gop' { $p += ('I-frame ' + $d.to) } 'smartCodec' { $p += 'Smart Codec off' } 'smartCodecOn' { $p += 'Smart Codec on' }
     }
   }
+  $u = Format-FsUnknownFields $diff; if ($u) { $p += ($u + ' NOT CHECKED (the camera did not report ' + $(if (@(Get-FsDiffUnknown $diff).Count -gt 1) { 'them' } else { 'it' }) + ')') }   # 2.2.19 (F19)
   return ($p -join ', ')
 }
 
