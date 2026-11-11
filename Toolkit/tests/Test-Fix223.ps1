@@ -460,7 +460,7 @@ Check ($o46 -match 'Request ready for') '#46 kept: Make-Request still reports su
 Write-Host 'version: 2.2.8 everywhere'
 $v223 = @(); foreach ($p in @(@('Toolkit/FixSiteCore.ps1', "\`$script:FsVersion = '([^']+)'"), @('Toolkit/ToolkitCore.ps1', "\`$script:TkBuiltVersion = '([^']+)'"), @('Toolkit/FixSiteBw.ps1', "\`$script:FsVersion = '([^']+)'"))) { if ((Read-Src $p[0]) -match $p[1]) { $v223 += $Matches[1] } }
 $v223 += [string]((Read-Src 'version.json') | ConvertFrom-Json).version
-Eq (($v223 | Select-Object -Unique) -join ',') '2.2.15' 'FixSiteCore, ToolkitCore, FixSiteBw and version.json all say 2.2.15 (2.2.15: bumped; 2.2.14 said 2.2.14)'
+Eq (($v223 | Select-Object -Unique) -join ',') '2.2.16' 'FixSiteCore, ToolkitCore, FixSiteBw and version.json all say 2.2.16 (2.2.16: bumped; 2.2.15 said 2.2.15)'
 Write-Host '#62 classic Fix NVR Undo: DHCP back, and unfinished work is not success'
 $fn62 = Read-Src 'FixNVR/FixNVR.ps1'
 $i62 = $fn62.IndexOf('function Hik-SetNet('); $j62 = $fn62.IndexOf("`nfunction ", $i62 + 10); Invoke-Expression $fn62.Substring($i62, $j62 - $i62)
