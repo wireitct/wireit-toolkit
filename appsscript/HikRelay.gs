@@ -86,7 +86,7 @@ function hrUsableAttachment_(a) {
 function scanHikReplies() {
   var lock = LockService.getScriptLock(); if (!lock.tryLock(20000)) return { ok: false, msg: 'busy' };
   try {
-    var p = hrProps_(), all = p.getProperties(), now = Date.now(), filed = 0, unmatched = 0, seen = 0;
+    var p = hrProps_(), all = p.getProperties(), now = Date.now(), filed = 0, unmatched = 0, seen = 0, failed = 0, failures = [], keptBack = 0;
     var folderId = p.getProperty('HIK_FOLDER_ID'); var folder = folderId ? DriveApp.getFolderById(folderId) : null;
     var q = 'to:(' + hrAddress_() + ') newer_than:' + HR.SEARCH_DAYS + 'd';
     // 2.2.3 (Codex #55): every page of the search, not only the newest 50 threads (old processed threads no longer starve new ones)
@@ -95,8 +95,12 @@ function scanHikReplies() {
     for (var t = 0; t < threads.length; t++) {
       var msgs = threads[t].getMessages();
       for (var i = 0; i < msgs.length; i++) {
-        var msg = msgs[i], mid = String(msg.getId()), key = 'HIKR_' + mid;
+        var msg = msgs[i], mid = String(msg.getId()), key = 'HIKR_' + mid, made = [];
         if (all[key]) { seen++; continue; }
+        // 2.2.19 (sweep2, class E/F): one mail that cannot be read or kept (Gmail, Drive or the record save failing) is NOT filed and
+        // NOT marked seen: it is counted as failed, any Drive copy made for it is put back in the bin, and the next scan tries it again.
+        // The other mails still get filed (before, one failure stopped the whole scan, and a Drive copy without its record was left).
+        try {
         var from = String(msg.getFrom() || '');
         if (from.toLowerCase().indexOf(hrAddress_().toLowerCase()) >= 0) { p.setProperty(key, JSON.stringify({ skip: 'own', at: now })); continue; }
         if (!hrTrusted_(from)) { p.setProperty(key, JSON.stringify({ at: now, kind: 'untrusted', from: from.slice(0, 120), subject: String(msg.getSubject() || '').slice(0, 200), receivedAt: new Date(msg.getDate()).toISOString(), serials: [] })); unmatched++; continue; }
@@ -117,7 +121,7 @@ function scanHikReplies() {
             var named = fromName.concat(fromData).filter(function (w, ix, all) { return all.indexOf(w) === ix && mailSerials.some(function (m) { return hrSameDevice_(w, m); }); });
             var own = named.length ? named : (atts.length === 1 && mailSerials.length ? mailSerials : (fromName.length ? fromName : fromData));
             var item = { at: now, receivedAt: rec.receivedAt, subject: rec.subject, serials: own, servedAt: 0, servedTo: '', kind: 'file', name: String(a.getName() || 'reply.bin').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100) };
-            if (folder) { var f = folder.createFile(a.copyBlob ? a.copyBlob() : a); f.setName(((atts.length === 1 ? serials[0] : own[0]) || 'UNMATCHED') + '__' + mid + '__' + (atts.length > 1 ? index + '__' : '') + item.name); item.fileId = f.getId(); }
+            if (folder) { var f = folder.createFile(a.copyBlob ? a.copyBlob() : a); made.push(f.getId()); f.setName(((atts.length === 1 ? serials[0] : own[0]) || 'UNMATCHED') + '__' + mid + '__' + (atts.length > 1 ? index + '__' : '') + item.name); item.fileId = f.getId(); }
             else item.data = Utilities.base64Encode(a.getBytes());
             return item;
           });
@@ -131,24 +135,34 @@ function scanHikReplies() {
         }
         // a code word is not a serial
         if (rec.code) rec.serials = rec.serials.filter(function (s) { return s !== rec.code.toUpperCase(); });
-        if (rec.kind === 'none' || !rec.serials.length || (rec.items || []).some(function (x) { return !x.serials.length; })) unmatched++; else filed++;
         p.setProperty(key, JSON.stringify(rec));
+        if (rec.kind === 'none' || !rec.serials.length || (rec.items || []).some(function (x) { return !x.serials.length; })) unmatched++; else filed++;
+        } catch (errMsg) {
+          failed++; failures.push(mid.slice(-12) + ': ' + String(errMsg && errMsg.message || errMsg).slice(0, 120));
+          made.forEach(function (fid) { try { DriveApp.getFileById(fid).setTrashed(true); } catch (e3) {} });
+        }
       }
     }
     // forget records past KEEP_DAYS (their Drive copy goes to the bin; Gmail keeps the mail)
     for (var k in all) {
       if (k.indexOf('HIKR_') !== 0) continue;
       var r = null; try { r = JSON.parse(all[k]); } catch (e) { r = null; }
-      if (r && now - Number(r.at || 0) > HR.KEEP_DAYS * 86400000) { [r].concat(r.items || []).forEach(function (x) { if (x.fileId) { try { DriveApp.getFileById(x.fileId).setTrashed(true); } catch (e2) {} } }); p.deleteProperty(k); }
+      // 2.2.19 (sweep2, class E): the record goes only when every Drive copy of it really went to the bin; otherwise it is kept and tried next time
+      if (r && now - Number(r.at || 0) > HR.KEEP_DAYS * 86400000) {
+        var gone = true;
+        [r].concat(r.items || []).forEach(function (x) { if (x.fileId) { try { DriveApp.getFileById(x.fileId).setTrashed(true); } catch (e2) { gone = false; } } });
+        if (gone) p.deleteProperty(k); else keptBack++;
+      }
     }
-    return { ok: true, filed: filed, unmatched: unmatched, seen: seen };
+    if (failed) console.error('scanHikReplies: ' + failed + ' mail(s) could not be filed, tried again next scan: ' + failures.join(' | '));
+    return { ok: failed === 0, filed: filed, unmatched: unmatched, seen: seen, failed: failed, failures: failures, keptBack: keptBack };
   } finally { lock.releaseLock(); }
 }
 
 /** For Moshe in the editor: replies the scan could not tie to a serial (forward the mail to a tech; the button takes it). */
 function unmatchedHikReplies() {
   var all = hrProps_().getProperties(), out = [];
-  for (var k in all) { if (k.indexOf('HIKR_') !== 0) continue; try { var r = JSON.parse(all[k]); if (!r.skip && (r.kind === 'none' || r.kind === 'untrusted' || !(r.serials || []).length || (r.items || []).some(function (x) { return !x.serials.length; }))) out.push({ subject: r.subject, receivedAt: r.receivedAt, kind: r.kind, from: r.from || '' }); } catch (e) {} }
+  for (var k in all) { if (k.indexOf('HIKR_') !== 0) continue; try { var r = JSON.parse(all[k]); if (!r.skip && (r.kind === 'none' || r.kind === 'untrusted' || !(r.serials || []).length || (r.items || []).some(function (x) { return !x.serials.length; }))) out.push({ subject: r.subject, receivedAt: r.receivedAt, kind: r.kind, from: r.from || '' }); } catch (e) { out.push({ subject: '(damaged record ' + k + ' - it could not be read)', receivedAt: '', kind: 'damaged', from: '' }); } }
   return out;
 }
 
@@ -187,10 +201,11 @@ function hikReplyGet_(req) {
   since = Math.max(since - 10 * 60000, nowMs - HR.VALID_H * 3600000);   // 10 min of clock skew between the PC and Google
   var lock = LockService.getScriptLock(); if (!lock.tryLock(15000)) return { ok: false, msg: 'Busy - try again in a minute.' };
   try {
-    var p = hrProps_(), all = p.getProperties(), now = Date.now(), best = null, bestKey = '', bestRecord = null;
+    var p = hrProps_(), all = p.getProperties(), now = Date.now(), best = null, bestKey = '', bestRecord = null, damaged = 0;
     for (var key in all) {
       if (key.indexOf('HIKR_') !== 0) continue;
-      var r = null; try { r = JSON.parse(all[key]); } catch (e) { continue; }
+      var r = null; try { r = JSON.parse(all[key]); } catch (e) { damaged++; continue; }
+      if (!r || typeof r !== 'object') { damaged++; continue; }
       if (!r || r.skip) continue;
       var candidates = r.kind === 'files' ? (r.items || []) : [r];
       for (var ci = 0; ci < candidates.length; ci++) {
@@ -201,10 +216,14 @@ function hikReplyGet_(req) {
         if (!best || String(candidate.receivedAt) > String(best.receivedAt)) { best = candidate; bestKey = key; bestRecord = r; }
       }
     }
+    // 2.2.19 (sweep2, class C): a stored record that cannot be read may be this device's reply, so "no reply" would be a guess
+    if (!best && damaged) return { ok: false, msg: damaged + ' stored reply record(s) could not be read - NOT CHECKED. The office runs unmatchedHikReplies in the relay.' };
     if (!best) return { ok: true, found: false };
     var out = { ok: true, found: true, kind: best.kind, subject: best.subject, receivedAt: best.receivedAt };
     if (best.kind === 'code') out.code = best.code;
     else { out.name = best.name; out.data = best.fileId ? Utilities.base64Encode(DriveApp.getFileById(best.fileId).getBlob().getBytes()) : best.data; }
+    // 2.2.19 (sweep2, class C/F): a reply whose stored file or code is empty is not handed out and not marked as given to this PC
+    if (!(best.kind === 'code' ? String(out.code || '') : String(out.data || ''))) return { ok: false, msg: 'The stored reply for this device is empty or could not be read - NOT CHECKED. It was not marked as used.' };
     if (!best.servedAt) { best.servedAt = now; best.servedTo = pc; p.setProperty(bestKey, JSON.stringify(bestRecord)); }
     console.log('hikReplyGet served ' + best.kind + ' for ' + serial.slice(-9) + ' to ' + pc);
     return out;
