@@ -121,6 +121,16 @@ function Ask-Choice([string]$q, [string]$yes, [string]$no) {
 function Remember-Secret([string]$p) { if ($p) { $script:Secrets += $p } }
 # 2.2.1 (review H1): said once per device whose password had to go over plain HTTP (it has no HTTPS)
 $script:PlainWarned = @{}
+# 2.2.20 (Codex 2.2.19 class A, second pass): the site list is what the next visit (and Undo's "what should be here") trusts, so it
+# counts as saved only when it reads back as written (Write-FsFileAtomic). 2.2.19 wrote it with a plain Set-Content under 'Continue'
+# and said "Saved ..." even when the write was refused. @{ local = $true/$false; drive = $true/$false/$null (no Drive folder); why }
+function Save-FsSiteListFiles([string]$json, [string]$local, [string]$drive) {
+  $r = [pscustomobject]@{ local = $false; drive = $null; why = ''; driveWhy = '' }
+  try { New-Item -ItemType Directory -Force -Path (Split-Path $local) -ErrorAction Stop | Out-Null; Write-FsFileAtomic $local $json; $r.local = $true } catch { $r.why = $_.Exception.Message }
+  if ($drive) { try { New-Item -ItemType Directory -Force -Path (Split-Path $drive) -ErrorAction Stop | Out-Null; Write-FsFileAtomic $drive $json; $r.drive = $true } catch { $r.drive = $false; $r.driveWhy = $_.Exception.Message } }
+  return $r
+}
+function Save-FsRunText([string]$path, [string]$text) { try { Write-FsFileAtomic $path $text; return $true } catch { Fs-Log ('not saved: ' + (Split-Path -Leaf $path) + ' - ' + $_.Exception.Message); return $false } }
 function Say-PlainWarning([string]$ip) {
   # 2.2.2 (re-review H1): HTTPS that did not work (timeout, TLS, certificate) is said in red - the password was NOT sent
   $tf = Get-FsTlsFailure $ip
@@ -639,8 +649,9 @@ if ($Mode -eq 'Rollback') {
   Say-NetRestore (Remove-FsTempIps $tempState)
   try { Save-FsSecrets $SecretsDir $sec } catch { Say ('  The site''s saved passwords could not be updated on this PC (' + $_.Exception.Message + ') - the old passwords that went back are not saved here ' + $script:FsBad) 'Red'; $bad++ }   # 2.2.19 (class F)
   if ($script:FsProgFail) { Say ('  Undo''s progress file could not be saved (' + $script:FsProgFail + '), so pressing Undo again would not know what already went back ' + $script:FsBad) 'Red'; $bad++ }
-  if (-not $bad) { [IO.File]::WriteAllText((Join-Path $RollbackDir 'undone.txt'), (Get-Date -Format 's')) }
-  else { [IO.File]::WriteAllText((Join-Path $RollbackDir 'undo-incomplete.txt'), ((Get-Date -Format 's') + ' ' + $bad + ' problem(s); Undo can be pressed again')) }
+  # 2.2.20 (class A): the "undone" mark is written whole and read back; one that cannot be saved is said (Undo itself already ran)
+  if (-not $bad) { if (-not (Save-FsRunText (Join-Path $RollbackDir 'undone.txt') (Get-Date -Format 's'))) { Say 'Undo finished, but the "undone" mark could not be saved in the run folder: the window may still offer Undo for this run.' 'Yellow' } }
+  elseif (-not (Save-FsRunText (Join-Path $RollbackDir 'undo-incomplete.txt') ((Get-Date -Format 's') + ' ' + $bad + ' problem(s); Undo can be pressed again'))) { Say 'The "undo incomplete" mark could not be saved in the run folder.' 'Yellow' }
   Say $(if ($bad) { 'Undo finished with ' + $bad + ' problem(s) above. Press Undo again after fixing them: what already went back is not done twice.' } else { 'Undo finished: everything is back.' }) $(if ($bad) { 'Yellow' } else { 'Green' })
   Done $(if ($bad) { 4 } else { 0 })
 }
@@ -665,7 +676,7 @@ function Resolve-NewSite($devs, [string]$gw) {
   $script:sec = Read-FsSecrets $SecretsDir $script:siteName
   foreach ($p in @($script:sec.password) + @($script:sec.known)) { Remember-Secret $p }
   Stop-IfUnreadable $script:sec
-  if ($k) { try { Set-Content -LiteralPath (Join-Path $runDir 'site.txt') -Value $script:siteName -Encoding UTF8 } catch {} }   # the window fills the site box with it (a new name only once it is saved: Save-NewSite)
+  if ($k) { [void](Save-FsRunText (Join-Path $runDir 'site.txt') $script:siteName) }   # 2.2.20 (class A): written whole and read back   # the window fills the site box with it (a new name only once it is saved: Save-NewSite)
 }
 function Get-NewSiteDefaults([string]$brand) { if ($NewSite -or -not $sec.password) { return @(Get-FsFactoryPasswords $brand) }; return @() }   # old factory passwords, last: a new site, or a site with no site password yet (2.0.3)
 
@@ -712,12 +723,16 @@ if ($Mode -eq 'DryRun') {
       # time tolerance: when the old out\latest.json cannot be moved aside (or is still there), no scan result is used this run
       $lj = Join-Path $camResetDir 'out\latest.json'; $ljAside = $true
       if (Test-Path -LiteralPath $lj) { try { Move-Item -LiteralPath $lj -Destination ($lj + '.prev') -Force -ErrorAction Stop } catch { Fs-Log ('the previous scan result could not be moved aside: ' + $_.Exception.Message) }; if (Test-Path -LiteralPath $lj) { $ljAside = $false } }
-      $fcExit = 0; if ($ljAside) { $null = & $psexe -NoProfile -ExecutionPolicy Bypass -File $fc -NoLogin -LocalIp ([string]$pc.ip) 2>&1; $fcExit = $LASTEXITCODE }
-      $scanOk = $ljAside -and (Test-FsFreshScan $lj $fcExit $runStart)
+      # 2.2.20 (Codex 2.2.19 class D, second pass): the finder gets a new run id and echoes it in latest.json; only a result carrying it is used
+      $fcRun = [guid]::NewGuid().ToString('N')
+      $fcExit = 0; if ($ljAside) { $null = & $psexe -NoProfile -ExecutionPolicy Bypass -File $fc -NoLogin -LocalIp ([string]$pc.ip) -RunId $fcRun 2>&1; $fcExit = $LASTEXITCODE }
+      $fcRead = $(if ($ljAside) { Read-FsScanForRun $lj $fcExit $fcRun } else { [pscustomobject]@{ ok = $false; why = 'the old result is still there'; scan = $null } })
+      $scanOk = $ljAside -and $fcRead.ok -and (Test-FsFreshScan $lj $fcExit $runStart)
       if (-not $ljAside) { Say 'The previous Find cameras result (out\latest.json) could not be moved aside, so no scan result is used this run (only the NVR and the site list) - it could be another site''s.' 'Yellow' }
-      elseif (-not $scanOk) { Say ('Find cameras did not finish a scan on this network' + $(if ($fcExit) { ' (code ' + $fcExit + ')' } else { '' }) + ', so its results are not used (only the NVR and the site list).') 'Yellow' }
-      foreach ($d in @($(if ($scanOk) { Get-TkScanDevices $camResetDir } else { @() }))) { $found += [pscustomobject]@{ brand = $d.brand; model = $d.model; serial = $d.serial; mac = $d.mac; ip = $d.ip; firmware = $d.firmware; kind = $(if ($d.kind -eq 'recorder') { 'nvr' } else { $d.kind }); activated = $true } }
-      if ($scanOk) { try { $raw = Get-Content (Join-Path $camResetDir 'out\latest.json') -Raw | ConvertFrom-Json; foreach ($d in @($raw.devices)) { if ([string]$d.Activated -match '(?i)false|no') { foreach ($f in $found) { if ($f.ip -eq $d.IP) { $f.activated = $false } } } } } catch {} }
+      elseif (-not $scanOk) { Say ('Find cameras did not finish a scan on this network' + $(if ($fcRead.why) { ' (' + $fcRead.why + ')' } elseif ($fcExit) { ' (code ' + $fcExit + ')' } else { '' }) + ', so its results are not used (only the NVR and the site list).') 'Yellow' }
+      $fcDevs = @(); if ($scanOk) { $fcDevs = @(foreach ($sd in @($fcRead.scan.devices)) { if ($null -eq $sd) { continue }; $kd = ''; $kp = $sd.PSObject.Properties['Kind']; if ($kp -and $kp.Value) { $kd = [string]$kp.Value }; $x = ConvertTo-TkScanDevice $sd $kd; if ($x) { $x } }) }   # the same conversion as Get-TkScanDevices, on the object read once
+      foreach ($d in $fcDevs) { $found += [pscustomobject]@{ brand = $d.brand; model = $d.model; serial = $d.serial; mac = $d.mac; ip = $d.ip; firmware = $d.firmware; kind = $(if ($d.kind -eq 'recorder') { 'nvr' } else { $d.kind }); activated = $true } }
+      if ($scanOk) { foreach ($d in @($fcRead.scan.devices)) { if ($d -and [string]$d.Activated -match '(?i)false|no') { foreach ($f in $found) { if ($f.ip -eq $d.IP) { $f.activated = $false } } } } }
     } else { Say 'Find cameras is not on this PC (C:\WireIt\CamReset), so only the NVR''s list and the site list are used.' 'Yellow' }
     foreach ($d in @(Find-FsDahua)) { if (-not @($found | Where-Object { $_.ip -eq $d.ip }).Count) { $found += $d } }
   }
@@ -813,7 +828,12 @@ if ($Mode -eq 'DryRun') {
       else { Say 'That password did not work on them (tried once each). Cameras with a problem get the official reset; ones whose video is fine are left alone.' 'Yellow' }
     }
   }
-  ($observed | ConvertTo-Json -Depth 8) | Set-Content -Path (Join-Path $runDir 'scan.json') -Encoding UTF8   # no passwords in it: logins are labels only
+  # no passwords in it: logins are labels only. 2.2.20 (Codex 2.2.19 class A, second pass): this run's record of what it found is written
+  # whole and read back; in Fix mode a record that cannot be saved stops the run HERE, before any device is changed (exit 7)
+  if (-not (Save-FsRunText (Join-Path $runDir 'scan.json') ([string]($observed | ConvertTo-Json -Depth 8)))) {
+    if ($Mode -eq 'Fix') { Say ('STOPPED: this run''s scan record (' + (Join-Path $runDir 'scan.json') + ') could not be saved. Nothing was changed. Make the runs folder writable (or free some disk space), then run again.') 'Red'; Done 7 }
+    Say ('(this run''s scan record could not be saved in ' + $runDir + ')') 'Yellow'
+  }
 }
 
 # =====================================================================================
@@ -832,7 +852,12 @@ if ($Mode -eq 'Fix' -and -not $opts.passwordAll) {
 }
 $plan.site = $siteName
 if ($NewSite) { $plan.notes += ('It saves this site as "' + $siteName + '" on this PC when it finishes (no passwords in the list), so next time it knows what should be here.') }
-($plan | ConvertTo-Json -Depth 8) | Set-Content -Path (Join-Path $runDir 'plan.json') -Encoding UTF8
+# 2.2.20 (Codex 2.2.19 class A, second pass): the plan (what the YES approves) is written whole and read back; in Fix mode a plan that
+# cannot be saved stops the run before the YES and before any device change (exit 7)
+if (-not (Save-FsRunText (Join-Path $runDir 'plan.json') ([string]($plan | ConvertTo-Json -Depth 8)))) {
+  if ($Mode -eq 'Fix') { Say ('STOPPED: this run''s plan (' + (Join-Path $runDir 'plan.json') + ') could not be saved. Nothing was changed. Make the runs folder writable (or free some disk space), then run again.') 'Red'; Done 7 }
+  Say ('(this run''s plan could not be saved in ' + $runDir + ')') 'Yellow'
+}
 Write-Host ''
 Say '----- What is wrong, and what it will do -----' 'Cyan'
 foreach ($l in (Format-FsPlan $plan)) { Say ('  ' + $l) }
@@ -863,12 +888,13 @@ $work = @($plan.cams | Where-Object { $_.state -eq 'fix' -or ($_.state -eq 'miss
 function Save-NewSite {
   # 2.0.2: a new site is saved without asking (a list on this PC, no passwords; the secrets file under the same name), so the next visit finds it
   $nl = New-FsSiteList $siteName '' $plan $observed
-  $json = $nl | ConvertTo-Json -Depth 6
-  New-Item -ItemType Directory -Force -Path (Split-Path $localList) | Out-Null; $json | Set-Content -LiteralPath $localList -Encoding UTF8
-  if ($listPath) { try { New-Item -ItemType Directory -Force -Path (Split-Path $listPath) | Out-Null; $json | Set-Content -LiteralPath $listPath -Encoding UTF8 } catch { Say ('Could not write the list to Drive (' + $_.Exception.Message + '). It is saved on this PC.') 'Yellow' } }
-  try { Save-FsSecrets $SecretsDir $sec } catch {}
-  try { Set-Content -LiteralPath (Join-Path $runDir 'site.txt') -Value $siteName -Encoding UTF8 } catch {}
-  Say ('Saved this site as "' + $siteName + '" on this PC: ' + @($nl.cameras).Count + ' camera(s), no passwords. Next time pick it in the site box, or press New site again - it recognises the NVR.') 'Green'
+  $json = [string]($nl | ConvertTo-Json -Depth 6)
+  $sv = Save-FsSiteListFiles $json $localList $listPath
+  if ($sv.drive -eq $false) { Say ('Could not write the list to Drive (' + $sv.driveWhy + ').' + $(if ($sv.local) { ' It is saved on this PC.' } else { '' })) 'Yellow' }
+  $secOk = $true; try { Save-FsSecrets $SecretsDir $sec } catch { $secOk = $false; Say ('The site''s secret store was NOT saved (' + $_.Exception.Message + '): the site password is not remembered on this PC. Write it down now (Bitwarden).') 'Red' }
+  if (-not (Save-FsRunText (Join-Path $runDir 'site.txt') $siteName)) { Say 'The window could not be told the new site''s name: type it in the site box next time.' 'Yellow' }
+  if ($sv.local) { Say ('Saved this site as "' + $siteName + '" on this PC: ' + @($nl.cameras).Count + ' camera(s), no passwords. Next time pick it in the site box, or press New site again - it recognises the NVR.') 'Green' }
+  else { Say ('This site was NOT saved on this PC (' + $sv.why + '): the next visit will not know what should be here.' + $(if ($sv.drive) { ' (The copy in the site''s Drive folder was saved.)' } else { '' })) 'Red' }
 }
 function Offer-List {
   if ($NewSite) { if ($Mode -eq 'DryRun') { Say ('(dry run) At the end it would save this site as "' + $siteName + '" on this PC.') } else { Save-NewSite }; return }
@@ -879,10 +905,12 @@ function Offer-List {
   if ((Ask $q) -notmatch '^(?i)y') { return }
   $nl = New-FsSiteList $siteName $siteId $plan $observed
   if ($list -and $listFrom -notlike '*snapshot*') { $nl.cameras = @(Merge-FsSiteListCams @($list.cameras) @($nl.cameras)) }   # 2.2.3 (Codex #38)
-  $json = $nl | ConvertTo-Json -Depth 6
-  New-Item -ItemType Directory -Force -Path (Split-Path $localList) | Out-Null; $json | Set-Content -LiteralPath $localList -Encoding UTF8
-  if ($listPath) { try { New-Item -ItemType Directory -Force -Path (Split-Path $listPath) | Out-Null; $json | Set-Content -LiteralPath $listPath -Encoding UTF8; Say ('Saved the site list to the site''s Drive folder (Docs\WireIt site list.json).') 'Green' } catch { Say ('Could not write to the Drive folder - saved on this PC: ' + $localList) 'Yellow' } }
-  else { Say ('Saved on this PC (no Drive folder found for "' + $Site + '"): ' + $localList + '. Copy it into the site''s Drive folder, Docs.') 'Yellow' }
+  $json = [string]($nl | ConvertTo-Json -Depth 6)
+  $sv = Save-FsSiteListFiles $json $localList $listPath   # 2.2.20 (class A): "Saved" only when the file reads back as written
+  if (-not $sv.local) { Say ('The site list was NOT saved on this PC (' + $sv.why + ').') 'Red' }
+  if ($sv.drive -eq $true) { Say ('Saved the site list to the site''s Drive folder (Docs\WireIt site list.json).') 'Green' }
+  elseif ($sv.drive -eq $false) { Say ('Could not write to the Drive folder (' + $sv.driveWhy + ')' + $(if ($sv.local) { ' - saved on this PC: ' + $localList } else { '' })) 'Yellow' }
+  elseif ($sv.local) { Say ('Saved on this PC (no Drive folder found for "' + $Site + '"): ' + $localList + '. Copy it into the site''s Drive folder, Docs.') 'Yellow' }
 }
 # 2.2.1 (review M5): what Hikvision's official reset needs (form details, reply relay, upload key, a browser) is said on the plan screen, before the YES
 $hikNeed = @(@($plan.nvrs | Where-Object { $_.steps -contains 'reset' }) + @($plan.cams | Where-Object { $_.state -eq 'fix' -and $_.steps -contains 'reset' -and $_.brand -eq 'Hikvision' }))
@@ -973,7 +1001,8 @@ if ($hikFlowOk -and $Mode -ne 'DryRun' -and -not $MockUrl) {
     $script:SadpLog = { param($l) Fs-Log $l }
     $hikCfg = Get-HikConfig $cfgAll $here   # 2.2.0: reply relay (no mail password on this PC) + the "I got Hik's email" button
     $hikState = Join-Path $SecretsDir ('hikreset-' + (Get-FsSiteSlug $siteName))
-    $verify = { param($ip, $p) return ((Test-FsLogin $ip 'Hikvision' $p) -eq 'ok') }
+    # 2.2.20 (Codex 2.2.19 class B/C, second pass): "the site password works" only on the device the reset record names ($D: MAC, else serial)
+    $verify = { param($ip, $p, $D) return [bool](Test-FsHikResetLogin $ip $p $D) }
     $hs = Invoke-HikResetStage -Targets $hikT -SitePassword $sitePw -StateDir $hikState -Config $hikCfg -ToolkitDir $here -VerifyLogin $verify -WaitMinutes ([int]$hikCfg.waitMinutes) -InboxDir (Join-Path $here 'inbox\hik') -Site $siteName
     # 2.2.1 (review H5): the reset module names MACs aa-bb-cc-..., this script aa:bb:cc:...: one form (ConvertTo-FsMac) for every key
     foreach ($m in @($hs.fixed)) { $mk = ConvertTo-FsMac ([string]$m); if ($mk) { $hikFixed[$mk] = $true } }
@@ -1403,7 +1432,7 @@ foreach ($l in $results) { Say ('  ' + $l) $(if ($l -like ('*' + $script:FsBad +
 if (@($plan.healthy).Count) { Say ('  OK, not touched: ' + @($plan.healthy).Count + ' working camera(s).') }
 Say ('Fixed: ' + $okCount + '   Still a problem: ' + $badCount) $(if ($badCount) { 'Yellow' } else { 'Green' })
 Say ('Backups and the undo file: ' + $runDir)
-([ordered]@{ at = (Get-Date -Format 's'); site = $siteName; ok = $okCount; bad = $badCount; lines = $results } | ConvertTo-Json -Depth 4) | Set-Content -Path (Join-Path $runDir 'summary.json') -Encoding UTF8
+if (-not (Save-FsRunText (Join-Path $runDir 'summary.json') ([string]([ordered]@{ at = (Get-Date -Format 's'); site = $siteName; ok = $okCount; bad = $badCount; lines = $results } | ConvertTo-Json -Depth 4)))) { Say ('The run summary (summary.json) could NOT be saved in ' + $runDir + '; the checklist above is the record.') 'Yellow' }   # 2.2.20 (class A)
 Offer-List
 $pwUsed = $newPw -or @($rb.cameras | Where-Object { $_.password_changed }).Count -gt 0 -or @($rb.nvr_passwords | Where-Object { $_.changed }).Count -gt 0
 if ($pwUsed -and -not $sec.bitwardenSaved) { Say ''; Save-SitePasswordAway $sitePw }

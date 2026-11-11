@@ -455,7 +455,15 @@ function Save-CvSite([string]$nvr, [string]$site, [string]$user, [string]$vendor
   $list = @(Get-CvSites | Where-Object { $_.nvr -ne $nvr }) + @([pscustomobject]@{ nvr = $nvr; site = $site; vendor = $vendor; recorder = $rec })
   # 2.2.5 fix 10: one flat entry per NVR, written as a plain array (never a list inside the list)
   $flat = [object[]]@(foreach ($e in $list) { [pscustomobject][ordered]@{ nvr = [string]$e.nvr; site = [string]$e.site; vendor = [string]$e.vendor; recorder = $(if ($e.recorder) { [int]$e.recorder } else { 1 }) } })
-  ConvertTo-Json -InputObject $flat -Depth 3 | Set-Content -Path (Join-Path $script:CvHere 'camviews-sites.json') -Encoding UTF8
+  # 2.2.20 (Codex 2.2.19 class A, second pass): the site list counts as saved only when it reads back with this NVR on it; else THROW
+  # (2.2.19 wrote it with Set-Content under the caller's preference, and "Remembered" was said even when the write was refused)
+  $sp = Join-Path $script:CvHere 'camviews-sites.json'; $sj = [string](ConvertTo-Json -InputObject $flat -Depth 3); $stmp = $sp + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+  try {
+    [IO.File]::WriteAllText($stmp, $sj, (New-Object Text.UTF8Encoding($true)))
+    Move-Item -LiteralPath $stmp -Destination $sp -Force -ErrorAction Stop
+    $back = @(Get-CvSites); if (-not @($back | Where-Object { [string]$_.nvr -eq $nvr -and [string]$_.site -eq $site }).Count -or $back.Count -ne $flat.Count) { throw 'it does not read back as written' }
+  } catch { throw ('the NVR login was saved, but the site list (camviews-sites.json) was NOT: ' + $_.Exception.Message) }
+  finally { if (Test-Path -LiteralPath $stmp) { Remove-Item -LiteralPath $stmp -Force -ErrorAction SilentlyContinue } }
 }
 function Get-CvSiteCred([string]$nvr) {
   $f = Get-CvCredFile $nvr; $legacy = $false

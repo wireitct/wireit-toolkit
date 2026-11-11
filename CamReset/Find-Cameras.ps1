@@ -21,7 +21,7 @@
 #>
 param([switch]$NoLogin, [int]$ListenSeconds = 0, [string]$ConfigPath = '', [switch]$SelfTest,
   [switch]$NoSweep, [switch]$NoMulticast, [string[]]$SweepTargets = @(), [int[]]$SweepPorts = @(80, 554, 8000, 7001),
-  [int]$SweepTimeoutMs = 400, [switch]$NoPing, [string]$TestAnswersFile = '', [int]$OnvifUnicastPort = 3702, [string[]]$LocalIp = @())
+  [int]$SweepTimeoutMs = 400, [switch]$NoPing, [string]$TestAnswersFile = '', [int]$OnvifUnicastPort = 3702, [string[]]$LocalIp = @(), [string]$RunId = '')
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -423,11 +423,25 @@ $rows | Select-Object Brand, Model, Serial, IP, MAC, Firmware, StartTime, Device
 $json = $rows | ConvertTo-Json -Depth 4
 if ($rows.Count -eq 1) { $json = '[' + $json + ']' }
 if ($rows.Count -eq 0) { $json = '[]' }
-Set-Content -Path (Join-Path $out 'devices.json') -Value $json -Encoding UTF8
+# 2.2.20 (Codex 2.2.19 class A/D, second pass): the result files count as written only when they read back as written; a write that fails
+# ends the finder with exit code 5 (FixSite and Check-this-site then use no result instead of a half-written or older one)
+function Save-CrResult([string]$path, [string]$text) {
+  $tmp = $path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+  try {
+    [IO.File]::WriteAllText($tmp, $text, (New-Object Text.UTF8Encoding($true)))
+    Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop
+    $back = [IO.File]::ReadAllText($path); if ($back.Length -and [int][char]$back[0] -eq 0xFEFF) { $back = $back.Substring(1) }
+    if ($back -cne $text) { throw 'it does not read back as written' }
+    [void]($back | ConvertFrom-Json -ErrorAction Stop)
+  } catch { Write-Host ('Find cameras could NOT save ' + $path + ': ' + $_.Exception.Message + '. No result from this scan is used.') -ForegroundColor Red; exit 5 }
+  finally { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }
+}
+Save-CrResult (Join-Path $out 'devices.json') $json
 $otherRows = @($others.ToArray())
 if ($otherRows.Count) { $otherRows | Select-Object IP, MAC, MakerGuess, OpenPorts, Ping, What, Note | Export-Csv -Path (Join-Path $out 'others.csv') -NoTypeInformation -Encoding UTF8 }
-$latest = [ordered]@{ scannedAt = (Get-Date -Format 's'); pc = $env:COMPUTERNAME; folder = $out; devices = $rows; others = $otherRows; sweep = [ordered]@{ nets = @($sweepNets); ports = @($SweepPorts); foundOnlyBySweep = $sweepOnlyCount; multicast = (-not $NoMulticast) } }
-Set-Content -Path (Join-Path $outRoot 'latest.json') -Value ($latest | ConvertTo-Json -Depth 5) -Encoding UTF8
+# 2.2.20 (class D): -RunId (FixSite passes a new one each run) is echoed in latest.json, so the caller can prove the file is THIS run's
+$latest = [ordered]@{ scannedAt = (Get-Date -Format 's'); runId = $RunId; pc = $env:COMPUTERNAME; folder = $out; devices = $rows; others = $otherRows; sweep = [ordered]@{ nets = @($sweepNets); ports = @($SweepPorts); foundOnlyBySweep = $sweepOnlyCount; multicast = (-not $NoMulticast) } }
+Save-CrResult (Join-Path $outRoot 'latest.json') ([string]($latest | ConvertTo-Json -Depth 5))
 Say ''
 Say ('Found ' + $rows.Count + ' device(s): ' + @($rows | Where-Object { $_.Brand -like 'Hikvision*' }).Count + ' Hikvision, ' + @($rows | Where-Object { $_.Brand -eq 'Uniview' }).Count + ' Uniview, ' + @($rows | Where-Object { $_.Brand -notlike 'Hikvision*' -and $_.Brand -ne 'Uniview' }).Count + ' other')
 if ($sweepOnlyCount) { Say ('  ' + $sweepOnlyCount + ' of them were found only by the network sweep (the discovery answers missed them).') }
