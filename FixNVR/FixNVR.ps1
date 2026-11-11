@@ -201,7 +201,10 @@ function Set-SafetyTask {
     $trg = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes([int]$cfg.safety_cleanup_minutes)
     $pr = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest -LogonType ServiceAccount
     Register-ScheduledTask -TaskName $taskName -Action $act -Trigger $trg -Principal $pr -Force -ErrorAction Stop | Out-Null   # 2.2.19 (class F): set only when Windows took it
-    $script:pcChanges.cleanup_task = $true; Log ('safety cleanup task set for +' + $cfg.safety_cleanup_minutes + ' min'); [void](Write-TempState)
+    $script:pcChanges.cleanup_task = $true; Log ('safety cleanup task set for +' + $cfg.safety_cleanup_minutes + ' min')
+    # 2.2.19 (class F): the record of the task must be saved too. A failed save is said, not ignored. The task is KEPT: it is the
+    # safety net that removes the temporary address if this run stops, and the clean-up removes it by its name in any case.
+    if (-not (Write-TempState)) { Log 'safety cleanup task set, but the clean-up record could not be updated to say so'; Say 'Note: the safety clean-up task is set, but the clean-up record on this PC could not be updated. If this window closes early, run "Fix NVR.cmd" again so it can clean up.' 'Yellow' }
   } catch { Log ('safety task not set: ' + $_.Exception.Message) }
 }
 # 2.2.19 (Codex 2.2.18 F08 twin, class C): "gone" only from a query that worked. Windows answers "No matching MSFT_NetIPAddress

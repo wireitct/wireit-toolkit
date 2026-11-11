@@ -1,4 +1,4 @@
-<# Test-Fix2219Classic.ps1 - tests for WireIt Toolkit 2.2.19 (Nov 11 2026), the classic Fix NVR (FixNVR/FixNVR.ps1) and CamReset part of
+﻿<# Test-Fix2219Classic.ps1 - tests for WireIt Toolkit 2.2.19 (Nov 11 2026), the classic Fix NVR (FixNVR/FixNVR.ps1) and CamReset part of
    Codex's NO-GO review of 2.2.18 (head a7ceac8). Each Codex reproduction (evidence classic.ps1) is a check here, plus the twins of each
    class in the classic files:
    F10 (class D)  a real ISAPI DHCP value is 'dynamic': Undo put a DHCP recorder back as a fixed address. 2.2.19: modes are normalised,
@@ -14,6 +14,10 @@
                   right before the write in both directions.
    class C twins  Test-IpFree: a neighbour-table error is "cannot tell" (not free). CamReset: an unreadable / unwritable default-try
                   record = no try.
+   follow-up      (2.2.19 classic2) the twins fixed without a test in the first pass, now RUN: Add-TempIp coexistence read-back,
+                  Set-SafetyTask register failure + record-save failure, Open-Firewall record before the rule, Snapshot Drive copy
+                  verified, platform step re-read after YES, and CamReset's default-try record (Find-Cameras.ps1 run for real
+                  with test discovery answers; its one login try goes to 127.0.0.70:80, nothing on the network is contacted).
    Every check RUNS the real FixNVR.ps1 functions in a child PowerShell; only device web answers, discovery and Windows network
    commands are stood in for. A check marked (code shape) reads the source text instead, and says so.
    NEEDS WINDOWS / REAL DEVICE CHECK (DEFERRED, never PASS): Windows PowerShell 5.1, real Get-NetNeighbor / Get-NetIPAddress error
@@ -109,7 +113,13 @@ function Http([string]$ip, [string]$method, [string]$path, [string]$body = '', [
     if ($to -and $to -ne $ip) { $script:sim.devs.Remove($ip); $script:sim.devs[$to] = $d }
     return (Ok)
   }
-  if ($path -eq '/ISAPI/System/Network/EZVIZ') { return @{ code = 200; body = '<EZVIZ><enabled>true</enabled><registerStatus>true</registerStatus></EZVIZ>'; err = '' } }
+  if ($path -eq '/ISAPI/System/Network/EZVIZ') {
+    # platform access: $d.ezviz = $null/'on' (on + online), 'off', 'fail' (no answer); a PUT is recorded and turns it on
+    if ($method -eq 'PUT') { [void]$script:sim.writes.Add('platform ' + $ip + ' (' + $d.mac + ')'); $d.ezviz = 'on'; return (Ok) }
+    if ($d.ezviz -eq 'fail') { return @{ code = 0; body = ''; err = 'The operation timed out' } }
+    $en = $(if ($d.ezviz -eq 'off') { 'false' } else { 'true' })
+    return @{ code = 200; body = ('<EZVIZ><enabled>' + $en + '</enabled><registerStatus>' + $en + '</registerStatus></EZVIZ>'); err = '' }
+  }
   if ($path -eq '/ISAPI/ContentMgmt/InputProxy/channels') { $b = '<InputProxyChannelList>'; foreach ($c in @($d.channels)) { $b += '<InputProxyChannel><id>' + $c.id + '</id><sourceInputPortDescriptor><proxyProtocol>HIKVISION</proxyProtocol><ipAddress>' + $c.ip + '</ipAddress><managePortNo>8000</managePortNo></sourceInputPortDescriptor></InputProxyChannel>' }; return @{ code = 200; body = ($b + '</InputProxyChannelList>'); err = '' } }
   if ($path -eq '/ISAPI/ContentMgmt/InputProxy/channels/status') { $b = '<InputProxyChannelStatusList>'; foreach ($c in @($d.channels)) { $b += '<InputProxyChannelStatus><id>' + $c.id + '</id><online>' + $(if ($script:sim.devs.ContainsKey($c.ip)) { 'true' } else { 'false' }) + '</online></InputProxyChannelStatus>' }; return @{ code = 200; body = ($b + '</InputProxyChannelStatusList>'); err = '' } }
   $m = [regex]::Match($path, '^/ISAPI/ContentMgmt/InputProxy/channels/(\d+)$')
@@ -305,10 +315,169 @@ Out-Result $res
     Check ($j.D) 'control: Test-IpFree - "no entry for that address" is still free' ([string]$j.D)
   }
 
-  # CamReset default-try record (class E twin). Inline in Find-Cameras' scan loop, so read as source (code shape)
-  $fcText = Get-Content -Raw -LiteralPath (Join-Path (Split-Path -Parent (Split-Path -Parent $fnvPath)) 'CamReset/Find-Cameras.ps1')
-  $blk = [regex]::Match($fcText, '(?s)\$tried = Join-Path.*?\$wc = New-Object Net\.WebClient').Value
-  Check ($blk -match 'Get-Content -LiteralPath \$tried -ErrorAction Stop' -and $blk -match 'Add-Content -LiteralPath \$tried -Value \$todayKey -ErrorAction Stop' -and $blk -match 'if \(-not \$ledgerOk\)') 'CamReset class E twin (code shape): the once-a-day default-try record is read with errors visible and the try is written down BEFORE it is made; unreadable / unwritable = no try' ($blk.Substring(0, [math]::Min(400, $blk.Length)))
+  Write-Host 'follow-up twins (classic2): coexistence read-back, safety task, firewall record, snapshot Drive copy (real functions, Windows commands stood in for)'
+  $o = Invoke-Driver 'pc2' ($fnText + "`n" + '$here = ' + (Q (Join-Path $tmp 'pc2')) + "`n" + @'
+$ErrorActionPreference = 'Continue'; New-Item -ItemType Directory -Force -Path $here | Out-Null
+$Mock = $null; $script:sum = New-Object System.Collections.Generic.List[string]; $logFile = Join-Path $here 'log.txt'
+$cfg = [pscustomobject]@{ temp_ip_hosts = @(253, 252); safety_cleanup_minutes = 30 }
+$taskName = 'WireIt FixNVR cleanup'; $tempFile = Join-Path $here 'temp-ips.json'
+function Say { param($t, $c) $script:sum.Add([string]$t) }
+function Start-Sleep { }
+function Out-Result($o) { 'JSON=' + ($o | ConvertTo-Json -Compress -Depth 6) }
+function Reset-Pc {
+  $script:temps = New-Object System.Collections.Generic.List[object]
+  $script:pcChanges = [ordered]@{ coexistence_before = $null; firewall_rule = $false; cleanup_task = $false; ifIndex = $null; alias = $null; guid = $null; dhcp = $null; ip = $null; gw = $null }
+  $script:coexNotConfirmed = $false; $script:sum.Clear(); $script:calls = New-Object System.Collections.ArrayList
+  $script:coex = 'disabled'; $script:coexTakes = $true; $script:failSave = $false; $script:regFail = $false; $script:fwFail = $false; $script:fwSeen = $null
+  Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+}
+# Windows commands stood in for (each call is recorded)
+function netsh { $a = ($args -join ' '); [void]$script:calls.Add('netsh ' + $a); if ($a -match ' show interface') { return @('Interface Ethernet Parameters', '----', ('DHCP/Static IP coexistence         : ' + $script:coex)) }; if ($a -match 'dhcpstaticipcoexistence=enabled' -and $script:coexTakes) { $script:coex = 'enabled' } }
+function New-NetIPAddress { param($InterfaceIndex, $IPAddress, $PrefixLength, $SkipAsSource, $PolicyStore, $ErrorAction) [void]$script:calls.Add('add ' + $IPAddress) }
+function Get-NetIPAddress { param($InterfaceIndex, $IPAddress, $AddressFamily, $ErrorAction) return [pscustomobject]@{ IPAddress = $IPAddress; AddressState = 'Preferred' } }
+function Remove-NetIPAddress { param($IPAddress, $InterfaceIndex, $PolicyStore, $Confirm, $ErrorAction) [void]$script:calls.Add('remove ' + $IPAddress) }
+function New-ScheduledTaskAction { param($Execute, $Argument) return 'act' }
+function New-ScheduledTaskTrigger { param([switch]$Once, $At) return 'trg' }
+function New-ScheduledTaskPrincipal { param($UserId, $RunLevel, $LogonType) return 'pr' }
+function Register-ScheduledTask { [CmdletBinding()] param($TaskName, $Action, $Trigger, $Principal, [switch]$Force) [void]$script:calls.Add('register ' + $TaskName); if ($script:regFail) { Write-Error -Message 'Access is denied' -Category PermissionDenied } }
+function Unregister-ScheduledTask { param($TaskName, $Confirm, $ErrorAction) [void]$script:calls.Add('unregister ' + $TaskName) }
+function New-NetFirewallRule { [CmdletBinding()] param($DisplayName, $Direction, $Protocol, $LocalPort, $Action, $Profile)
+  $onDisk = $null; try { $onDisk = [bool]((Get-Content -Raw -LiteralPath $tempFile | ConvertFrom-Json).pc.firewall_rule) } catch {}
+  $script:fwSeen = $onDisk; [void]$script:calls.Add('firewall add'); if ($script:fwFail) { Write-Error -Message 'The rule could not be added (policy)' -Category PermissionDenied } }
+$origSaveJson = ${function:Save-Json}
+function Save-Json($obj, [string]$path) { if ($script:failSave) { throw 'disk full (test)' }; & $origSaveJson $obj $path }
+function Saved-Pc { try { return (Get-Content -Raw -LiteralPath $tempFile | ConvertFrom-Json).pc } catch { return $null } }
+$pc = [pscustomobject]@{ ifIndex = 7; alias = 'Ethernet'; guid = '{11111111-2222-3333-4444-555555555555}'; dhcp = $true; ip = '192.168.1.105'; prefix = 24; gw = '192.168.1.1' }
+$res = [ordered]@{}
+# 1. coexistence switched on but Windows does not confirm it -> no temporary address, now or later in the run
+Reset-Pc; $script:coexTakes = $false
+$a1 = Add-TempIp '192.168.0' $pc @(); $a2 = Add-TempIp '10.1.1' $pc @()
+$res.A = @{ ip1 = [string]$a1; ip2 = [string]$a2; adds = @($script:calls | Where-Object { $_ -like 'add *' }).Count; sets = @($script:calls | Where-Object { $_ -match '=enabled' }).Count; said = (@($script:sum) -join ' | ') }
+# 1. control: the setting reads back enabled -> the temporary address is added
+Reset-Pc; $a1 = Add-TempIp '192.168.0' $pc @()
+$res.B = @{ ip1 = [string]$a1; adds = @($script:calls | Where-Object { $_ -like 'add *' }).Count; task = [bool]$script:pcChanges.cleanup_task }
+# 2. Register-ScheduledTask fails (a non-terminating Windows error) -> the task is NOT recorded as set
+Reset-Pc; $script:regFail = $true; Set-SafetyTask
+$res.C = @{ flag = [bool]$script:pcChanges.cleanup_task; saved = [string]((Saved-Pc).cleanup_task) }
+# 7. the task is set but the record cannot be saved afterwards -> said (not ignored), the task is kept (no unregister)
+Reset-Pc; $origWts = ${function:Write-TempState}; function Write-TempState { return $false }
+Set-SafetyTask; Set-Item function:Write-TempState $origWts
+$res.D = @{ flag = [bool]$script:pcChanges.cleanup_task; said = (@($script:sum) -join ' | '); calls = (@($script:calls) -join ', ') }
+# 7. control: register + save both work -> recorded on disk, nothing said
+Reset-Pc; Set-SafetyTask; $res.E = @{ flag = [bool]$script:pcChanges.cleanup_task; saved = [string]((Saved-Pc).cleanup_task); said = (@($script:sum) -join ' | ') }
+# 3. the firewall record cannot be saved -> no rule is added
+Reset-Pc; $script:failSave = $true; Open-Firewall; $script:failSave = $false
+$res.F = @{ adds = @($script:calls | Where-Object { $_ -eq 'firewall add' }).Count; flag = [bool]$script:pcChanges.firewall_rule }
+# 3. the rule add fails -> the flag is reset and saved again
+Reset-Pc; $script:fwFail = $true; Open-Firewall
+$res.G = @{ adds = @($script:calls | Where-Object { $_ -eq 'firewall add' }).Count; flag = [bool]$script:pcChanges.firewall_rule; saved = [string]((Saved-Pc).firewall_rule) }
+# 3. control / order: the record says "rule added" on disk BEFORE the rule is added
+Reset-Pc; Open-Firewall
+$res.H = @{ seenOnDisk = [string]$script:fwSeen; flag = [bool]$script:pcChanges.firewall_rule; saved = [string]((Saved-Pc).firewall_rule) }
+Out-Result $res
+'@)
+  $j = Get-Json $o
+  if (-not $j) { Check $false 'pc2 driver ran' $o } else {
+    Check ($j.A.adds -eq 0 -and -not $j.A.ip1 -and -not $j.A.ip2 -and $j.A.sets -le 1 -and $j.A.said -match 'not confirm') 'class F twin: Add-TempIp - DHCP+static coexistence switched on but Windows does not read it back as enabled: NO temporary address, and none for the rest of the run (2.2.18 added the address anyway)' ('adds ' + $j.A.adds + ' sets ' + $j.A.sets + ' ip1 ' + $j.A.ip1 + ' ip2 ' + $j.A.ip2 + ' | ' + $j.A.said)
+    Check ($j.B.adds -eq 1 -and $j.B.ip1 -eq '192.168.0.253' -and $j.B.task) 'control: Add-TempIp - coexistence reads back enabled: the temporary address is added, safety task set' ('adds ' + $j.B.adds + ' ip ' + $j.B.ip1 + ' task ' + $j.B.task)
+    Check (-not $j.C.flag -and $j.C.saved -ne 'True') 'class F twin: Set-SafetyTask - Register-ScheduledTask fails: the safety task is NOT recorded as set (2.2.18 swallowed the error and recorded it)' ('flag ' + $j.C.flag + ' saved ' + $j.C.saved)
+    Check ($j.D.flag -and $j.D.said -match 'could not be updated' -and $j.D.calls -notmatch 'unregister') 'class F twin: Set-SafetyTask - task set but its record cannot be saved: said on screen (not ignored), the task is kept as the safety net' ('flag ' + $j.D.flag + ' | ' + $j.D.said + ' | ' + $j.D.calls)
+    Check ($j.E.flag -and $j.E.saved -eq 'True' -and -not $j.E.said) 'control: Set-SafetyTask - task set and recorded on disk, nothing to warn about' ('flag ' + $j.E.flag + ' saved ' + $j.E.saved + ' | ' + $j.E.said)
+    Check ($j.F.adds -eq 0 -and -not $j.F.flag) 'class E twin: Open-Firewall - the clean-up record cannot be saved first: NO firewall rule added (2.2.18 added it first, then a failed save left a rule nobody knew about)' ('adds ' + $j.F.adds + ' flag ' + $j.F.flag)
+    Check ($j.G.adds -eq 1 -and -not $j.G.flag -and $j.G.saved -eq 'False') 'class E twin: Open-Firewall - the rule add fails: the flag is reset and the record saved again (says no rule)' ('adds ' + $j.G.adds + ' flag ' + $j.G.flag + ' saved ' + $j.G.saved)
+    Check ($j.H.seenOnDisk -eq 'True' -and $j.H.flag -and $j.H.saved -eq 'True') 'class E twin: Open-Firewall - the record says "rule added" on disk BEFORE the rule is added' ('on disk when added: ' + $j.H.seenOnDisk + ' flag ' + $j.H.flag + ' saved ' + $j.H.saved)
+  }
+
+  Write-Host 'follow-up twins (classic2): snapshot copy to Drive, platform step after YES (real Invoke-Main)'
+  $o = Invoke-Driver 'main2' ($pre + "`n" + @'
+$res = [ordered]@{}
+$cfg | Add-Member -NotePropertyName snapshot_subfolder -NotePropertyValue 'Docs' -Force
+$cfg | Add-Member -NotePropertyName snapshot_roots -NotePropertyValue @() -Force
+$cfg | Add-Member -NotePropertyName safety_cleanup_minutes -NotePropertyValue 30 -Force
+$RouterModel = ''; $DhcpRange = ''; $Site = 'Test Site'
+$drive = Join-Path $here 'drive'; New-Item -ItemType Directory -Force -Path $drive | Out-Null
+function Find-SiteFolder([string]$site) { return $drive }
+function Snap-Run {
+  $d = New-SimDev 'NVR' $A; $script:sim.devs = @{ '192.168.1.20' = $d }
+  Get-ChildItem -LiteralPath $drive -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force
+  $r = Run-Main 'Snapshot' $null
+  return @{ said = $r.said; code = $r.code; copies = @(Get-ChildItem -LiteralPath $drive -Recurse -File -Filter '*.json' -ErrorAction SilentlyContinue).Count }
+}
+$origCopy = Get-Command Copy-Item -CommandType Cmdlet
+# 4. the Drive copy reports an error (Drive not running) -> NOT "Also saved"; the copy-by-hand line
+function Copy-Item { [CmdletBinding()] param([Parameter(Position = 0)]$Path, [Parameter(Position = 1)]$Destination, $LiteralPath) Write-Error -Message 'The cloud file provider is not running' -Category ResourceUnavailable }
+$res.A = Snap-Run
+# 4. the copy "works" with no error, but the file is not there afterwards -> NOT "Also saved"
+function Copy-Item { [CmdletBinding()] param([Parameter(Position = 0)]$Path, [Parameter(Position = 1)]$Destination, $LiteralPath) }
+$res.B = Snap-Run
+Remove-Item function:Copy-Item
+# 4. control: a real copy -> "Also saved", the file is in the Drive folder
+$res.C = Snap-Run
+# 5. platform access OFF at the plan; after YES the setting cannot be read -> nothing sent
+$d = New-SimDev 'NVR' $A; $d.ezviz = 'off'; $script:sim.devs = @{ '192.168.1.20' = $d }
+$script:afterYes = { $script:sim.devs['192.168.1.20'].ezviz = 'fail' }
+$r = Run-Main 'Fix' $null; $script:afterYes = $null
+$res.D = @{ said = $r.said; code = $r.code; puts = @($r.writes | Where-Object { $_ -like 'platform *' }).Count }
+# 5. platform access OFF at the plan; someone turns it on before the step -> read now: already on, no write
+$d = New-SimDev 'NVR' $A; $d.ezviz = 'off'; $script:sim.devs = @{ '192.168.1.20' = $d }
+$script:afterYes = { $script:sim.devs['192.168.1.20'].ezviz = 'on' }
+$r = Run-Main 'Fix' $null; $script:afterYes = $null
+$res.E = @{ said = $r.said; code = $r.code; puts = @($r.writes | Where-Object { $_ -like 'platform *' }).Count }
+# 5. control: platform access off, still off after YES -> turned on (one write)
+$d = New-SimDev 'NVR' $A; $d.ezviz = 'off'; $script:sim.devs = @{ '192.168.1.20' = $d }
+$r = Run-Main 'Fix' $null
+$res.F = @{ said = $r.said; code = $r.code; puts = @($r.writes | Where-Object { $_ -like 'platform *' }).Count; now = [string]$d.ezviz }
+Out-Result $res
+'@)
+  $j = Get-Json $o
+  if (-not $j) { Check $false 'main2 driver ran' $o } else {
+    Check ($j.A.said -notmatch 'Also saved' -and $j.A.said -match 'by hand') 'class F twin: Snapshot copy to the site''s Drive folder fails with an error: NOT "Also saved", says copy it by hand (2.2.18 said "Also saved")' ($j.A.said)
+    Check ($j.B.said -notmatch 'Also saved' -and $j.B.said -match 'by hand' -and $j.B.copies -eq 0) 'class F twin: Snapshot copy gives no error but the file is not in the Drive folder: NOT "Also saved"' ('copies ' + $j.B.copies + ' | ' + $j.B.said)
+    Check ($j.C.said -match 'Also saved' -and $j.C.copies -eq 1) 'control: Snapshot copy really made: "Also saved", file in the Drive folder' ('copies ' + $j.C.copies + ' | ' + $j.C.said)
+    Check ($j.D.puts -eq 0 -and $j.D.said -match 'platform access setting could not be read now' -and $j.D.code -ne 0) 'class B/C twin: platform step - the setting cannot be read after YES: nothing sent, named, not a clean finish (2.2.18 went on to build the change from the empty read and stopped with a script error)' ('puts ' + $j.D.puts + ' code ' + $j.D.code + ' | ' + $j.D.said)
+    Check ($j.E.puts -eq 0 -and $j.E.said -match 'already on') 'class B twin: platform step - already on when read after YES: no write (2.2.18 wrote it again from the plan-time read)' ('puts ' + $j.E.puts + ' code ' + $j.E.code + ' | ' + $j.E.said)
+    Check ($j.F.puts -eq 1 -and $j.F.now -eq 'on') 'control: platform step - still off after YES: turned on (one write)' ('puts ' + $j.F.puts + ' now ' + $j.F.now + ' code ' + $j.F.code + ' | ' + $j.F.said)
+  }
+
+  # CamReset default-try record (class E twin), RUN for real: Find-Cameras.ps1 in a copy of CamReset, discovery answers from a
+  # test file, a local listener so the sweep marks the camera reachable; the one default try goes to 127.0.0.70:80 (nothing
+  # there = "no answer"), so a try that happened is visible in DefaultLoginWorks. Nothing on the network is contacted.
+  Write-Host 'CamReset class E twin: the once-a-day default-try record (Find-Cameras.ps1 run for real)'
+  $crSrc = Join-Path (Split-Path -Parent (Split-Path -Parent $fnvPath)) 'CamReset'
+  $lis = $null
+  try {
+    $lis = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Parse('127.0.0.70'), 0); $lis.Start(); $lport = ([Net.IPEndPoint]$lis.LocalEndpoint).Port
+    $probe = '<?xml version="1.0"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope" xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery"><SOAP-ENV:Body><d:ProbeMatches><d:ProbeMatch><d:Scopes>onvif://www.onvif.org/type/video_encoder onvif://www.onvif.org/name/Uniview onvif://www.onvif.org/hardware/IPC2124LB-SF28KM-G</d:Scopes><d:XAddrs>http://127.0.0.70/onvif/device_service</d:XAddrs></d:ProbeMatch></d:ProbeMatches></SOAP-ENV:Body></SOAP-ENV:Envelope>'
+    function Invoke-Fc([string]$name, [scriptblock]$prep) {
+      $dir = Join-Path $tmp ('cr-' + $name); New-Item -ItemType Directory -Force -Path $dir | Out-Null
+      Copy-Item -Path (Join-Path $crSrc '*') -Destination $dir -Recurse -Force
+      [IO.File]::WriteAllText((Join-Path $dir 'config.json'), '{ "univiewTryDefault": true, "listenSeconds": 9 }')
+      [IO.File]::WriteAllText((Join-Path $dir 'answers.json'), (ConvertTo-Json -InputObject @([ordered]@{ From = '127.0.0.70'; Text = $probe }) -Compress))
+      New-Item -ItemType Directory -Force -Path (Join-Path $dir 'state') | Out-Null
+      $ledger = Join-Path (Join-Path $dir 'state') 'default-tried.txt'   # the file Find-Cameras.ps1 keeps (state\default-tried.txt)
+      if ($prep) { & $prep $ledger }
+      $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+      try { $null = & $exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dir 'Find-Cameras.ps1') -NoMulticast -NoPing -SweepTargets '127.0.0.70' -SweepPorts $lport -TestAnswersFile (Join-Path $dir 'answers.json') 2>&1 | Out-String } finally { $ErrorActionPreference = $prev }
+      $dev = $null; try { $dev = @((Get-Content -Raw -LiteralPath (Join-Path $dir 'out/latest.json') | ConvertFrom-Json).devices | Where-Object { $_.IP -eq '127.0.0.70' })[0] } catch {}
+      $lines = @(); try { if (Test-Path -LiteralPath $ledger -PathType Leaf) { $lines = @(Get-Content -LiteralPath $ledger -ErrorAction Stop) } } catch {}
+      return [pscustomobject]@{ dl = $(if ($dev) { [string]$dev.DefaultLoginWorks } else { 'NO DEVICE IN OUTPUT' }); next = $(if ($dev) { [string]$dev.NextStep } else { '' }); lines = $lines }
+    }
+    $today = '127.0.0.70 ' + (Get-Date -Format 'yyyy-MM-dd')
+    # unreadable record: the record path exists but cannot be read (here: a folder where the file should be)
+    $u = Invoke-Fc 'unreadable' { param($l) New-Item -ItemType Directory -Force -Path $l | Out-Null }
+    Check ($u.dl -match '^NOT CHECKED' -and $u.dl -notmatch 'no answer') 'CamReset class E twin (run): the default-try record exists but cannot be read: NO login try, DefaultLoginWorks NOT CHECKED (2.2.18 read it as "never tried" and tried)' ($u.dl + ' | ' + $u.next)
+    # unwritable record: readable, no try today, but the try cannot be written down first
+    $isWin = ([IO.Path]::DirectorySeparatorChar -eq '\')
+    if ($isWin) { Deferred 'CamReset class E twin (run): read-only default-try record (needs a Windows ACL stand-in)' } else {
+      $w = Invoke-Fc 'unwritable' { param($l) [IO.File]::WriteAllText($l, "10.0.0.9 2020-01-01 no (401)`n"); & chmod 0444 $l }
+      Check ($w.dl -match '^NOT CHECKED' -and @($w.lines | Where-Object { $_ -like ($today + '*') }).Count -eq 0) 'CamReset class E twin (run): the try cannot be written down BEFORE it is made (record read-only): NO login try, NOT CHECKED (2.2.18 tried without a record)' ($w.dl + ' | lines: ' + (@($w.lines) -join ' / '))
+      try { & chmod 0644 (Join-Path (Join-Path (Join-Path $tmp 'cr-unwritable') 'state') 'default-tried.txt') } catch {}
+    }
+    # control: a normal record -> one try, written down (before it, then its result); the next run that day makes no second try
+    $c1 = Invoke-Fc 'normal' $null
+    $c1lines = @($c1.lines | Where-Object { $_ -like ($today + '*') })
+    Check ($c1.dl -match 'no answer' -and $c1lines.Count -ge 1 -and $c1lines[0] -eq $today) 'control (run): normal record - one default try made and written down first (then its result)' ($c1.dl + ' | lines: ' + (@($c1.lines) -join ' / '))
+  } finally { if ($lis) { try { $lis.Stop() } catch {} } }
 
   Deferred 'Windows PowerShell 5.1 running these paths'
   Deferred 'real Get-NetNeighbor / Get-NetIPAddress "not found" error category, real netsh coexistence text'
