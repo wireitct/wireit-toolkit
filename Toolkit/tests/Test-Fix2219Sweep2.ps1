@@ -230,6 +230,10 @@ try {
   Check ($D.Headline -notmatch '^All ' -and $D.Headline -match 'NOT CHECKED' -and $D.Headline -notmatch 'NOT working') 'sweep2 S2: the headline says NOT CHECKED - not "All N online" and not "N NOT working"' $D.Headline
   $txt = Format-ScReport $R $D
   Check ($txt -match 'ch 9 .*NOT CHKD' -and $txt -cnotmatch 'ch 9 .*OFFLINE') 'sweep2 S2: the report''s channel table says NOT CHKD for it, not OFFLINE'
+  $Rd = New-ScMock
+  $Rd.channels = @(@($Rd.channels | Where-Object { $_.Online }) + [pscustomobject]@{ Ch = 9; Ip = [string]@($Rd.duplicates)[0].ip; Online = $false; Known = $false; Detail = ''; Name = 'Roof'; Protocol = 'HIKVISION'; Model = '' })
+  $Dd = Get-ScDiagnosis $Rd
+  Check (@($Rd.duplicates).Count -eq 0 -or @($Dd.Findings | Where-Object { $_.Level -eq 'bad' -and $_.Text -match 'IP CONFLICT' }).Count -ge 1) 'sweep2 S2 guard (passes on 2.2.18 too): an IP conflict on a channel with no state is still reported after the change'
   $R0 = New-ScMock; $D0 = Get-ScDiagnosis $R0
   Check (@($D0.Findings | Where-Object { $_.Level -eq 'bad' }).Count -ge 3) 'control: the mock''s channels READ as offline are still red PROBLEMs'
   $sc = Read-Src 'sitecheck/SiteCheck.ps1'

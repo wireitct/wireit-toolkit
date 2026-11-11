@@ -428,7 +428,8 @@ function Get-ScDiagnosis($R) {
     if (($cam -or $d.Vendor -match 'Ubiquiti|DrayTek') -and $d.Sent -ge 10 -and $d.Ok -gt 0 -and $d.LossPct -ge 10) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($d.Ip + ' ' + $(if ($d.Vendor) { '(' + $d.Vendor + ') ' } else { '' }) + 'drops ' + $d.LossPct + '% of pings - flaky cable/port.') } }
     if ($cam -and $d.DiffSubnet) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($d.Ip + ' ' + $d.Model + ' is on a DIFFERENT IP scheme than the NVR (' + $nvr + '), so the NVR can''t reach it. Change its address to the NVR''s scheme.') } }
   }
-  foreach ($x in $dups) { if (-not ($chs | Where-Object { $_.Ip -eq $x.ip -and -not $_.Online })) { $find += [pscustomobject]@{ Level = 'bad'; Text = ('IP CONFLICT at ' + $x.ip + ': answered from ' + (@($x.macs) -join ' and ') + '. Two devices share this address.') } } }
+  # 2.2.19 (sweep2): only a channel READ as offline already names the conflict in its own line
+  foreach ($x in $dups) { if (-not ($off | Where-Object { $_.Ip -eq $x.ip })) { $find += [pscustomobject]@{ Level = 'bad'; Text = ('IP CONFLICT at ' + $x.ip + ': answered from ' + (@($x.macs) -join ' and ') + '. Two devices share this address.') } } }
   # comparison with the previous run on this PC
   if ($R.previous) {
     $now = @{}; foreach ($d in $devs) { if ($d.Ok -gt 0) { $now[[string]$d.Ip] = 1 } }
