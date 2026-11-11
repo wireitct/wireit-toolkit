@@ -1,8 +1,8 @@
 {
   "version": "2.2.16",
   "released": "2026-11-10",
-  "commit": "fe4493e73f652c362529969073d145e7c90287b9",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/fe4493e73f652c362529969073d145e7c90287b9/",
+  "commit": "0f833a7080cb20e52a74738878608bf30beef026",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/0f833a7080cb20e52a74738878608bf30beef026/",
   "notes": "2.2.16: fixes for Codex review of 2.2.15 (F1-F7 + Crew standard-user note). Branch build, not released.",
   "files": [
     {
@@ -427,8 +427,8 @@
     },
     {
       "path": "Toolkit/tests/repro-2.2.15/reproduce-rollback-bootstrap.ps1",
-      "sha256": "4b6f99ff3cbbda7e53676b9d3254b05d202a4979630d411029bcf91c87dda760",
-      "size": 5341
+      "sha256": "0483087924afa924a7cda3817aa8a93898ba0df9f69507da1ba3e1c788718324",
+      "size": 5503
     },
     {
       "path": "Toolkit/tests/repro-2.2.15/reproduce-sadp-state-race.py",
