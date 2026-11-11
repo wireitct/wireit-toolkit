@@ -127,6 +127,17 @@ Run-Safe 'show site/fix/doctor' {
   Check ($wt -match "Start-Nvr 'Check this site' 'Site' \`$TK\.scArgs \{ param\(\`$code\) Show-SiteCheck \`$code \}" -and $wt -match 'Show-FixDone \$code \}' -and $wt -match 'Show-Doctor \$code \}') 'source check: the three after-run steps are handed the tool''s exit code'
   Check ($wt -match "Read-TkRunResult \(Join-Path \`$TK\.P\.Toolkit 'logs\\scan-upload-last\.json'\) \`$TK\.lastRunStarted" -and $wt -match '\$TK\.lastRunStarted = \$r\.Started') 'source check: "Save to site page" also reads only this run''s result; End-Run records the run''s start'
 }
+Run-Safe 'end-run log' {
+  $global:sw2St = ''; function global:Set-Status($t) { $global:sw2St = [string]$t }; function global:Set-Pill($t, $c) { }; function global:Set-Busy($b) { }
+  function global:Write-TkLog($d, $n, $t) { throw 'disk full' }
+  $em = @(Import-Fn 'Toolkit/WireItToolkit.ps1' @('End-Run'))
+  $global:TK = @{ P = @{ Logs = (Join-Path $tmp 'nologs') }; run = @{ Name = 'Network check'; Log = (New-Object Text.StringBuilder); Started = (Get-Date) } }
+  $stopped = $false; try { End-Run 0 '' } catch { $stopped = $true }
+  Check (-not $stopped -and $null -eq $global:TK.run -and $global:sw2St -notmatch 'done\. Saved to the logs' -and $global:sw2St -match 'could NOT be saved') 'reproduction (sweep2 W7, class F): a log that could not be written is not reported "Saved to the logs folder", and the run still ends (window not left busy)' ('stopped=' + $stopped + ' status=' + $global:sw2St + ' runLeft=' + ($null -ne $global:TK.run) + ' keys=' + (@($global:TK.Keys) -join ','))
+  function global:Write-TkLog($d, $n, $t) { return '/x/log.txt' }
+  $global:TK.run = @{ Name = 'Network check'; Log = (New-Object Text.StringBuilder); Started = (Get-Date) }; End-Run 0 ''
+  Check ($global:sw2St -match 'Saved to the logs folder') 'control: a log that was written says "Saved to the logs folder"'
+}
 Run-Safe 'restore net list' {
   $has = [bool](Get-Command Get-TkAdapterList -ErrorAction SilentlyContinue)
   $two = 'JSON=[{"name":"Ethernet","desc":"Intel","needs":true},{"name":"Wi-Fi","desc":"Realtek","needs":false}]'

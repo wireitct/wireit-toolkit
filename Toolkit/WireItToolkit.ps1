@@ -511,9 +511,11 @@ function End-Run([int]$code, [string]$plain) {
   $r = $TK.run; if (-not $r) { return }
   if ($plain) { Add-Out ''; Add-Out $plain }
   switch ($code) { 0 { Set-Pill ($r.Name + ' - done') $cOk } 4 { Set-Pill ($r.Name + ' - done, check the warnings') $cWarn } 3 { Set-Pill ($r.Name + ' - done, still filling (not an all-clear)') $cWarn } default { Set-Pill ($r.Name + ' - problem') $cRed } }
-  $logPath = Write-TkLog $TK.P.Logs $r.Name $r.Log.ToString()
+  # 2.2.19 (sweep2, class F): "Saved to the logs folder" only when the log really was written; a failed log write no longer
+  # stops End-Run half-way (the window stayed busy with the run never cleared)
+  $logPath = $null; try { $logPath = Write-TkLog $TK.P.Logs $r.Name $r.Log.ToString() } catch { $logPath = $null }
   $TK.run = $null
-  Set-Busy $false; Set-Status ($r.Name + ' done. Saved to the logs folder.')
+  Set-Busy $false; Set-Status ($r.Name + ' done. ' + $(if ($logPath) { 'Saved to the logs folder.' } else { 'The log could NOT be saved to the logs folder.' }))
   $TK.lastRunStarted = $r.Started   # 2.2.19 (sweep2): the after-run step reads only result files THIS run wrote
   if ($r.OnDone) { try { & $r.OnDone $code } catch { Add-Out ('(after-run step failed: ' + $_.Exception.Message + ')') } }
 }

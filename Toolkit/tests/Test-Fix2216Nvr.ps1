@@ -158,9 +158,9 @@ Deferred 'F5 a real Hikvision NVR / DW server answering a partial track / camera
 Write-Host 'F6 Check this site: a recorder still filling toward its target is PENDING (amber), never "all OK"'
 . (Join-Path $tkDir 'ToolkitCore.ps1')
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $tkDir 'WireItToolkit.ps1'), [ref]$null, [ref]$null)
-foreach ($fn in @('Show-SiteCheck', 'End-Run')) {
+foreach ($fn in @('Show-SiteCheck', 'End-Run', 'Read-TkRunResult')) {   # 2.2.19 (sweep2): Show-SiteCheck reads its result through Read-TkRunResult
   $fd = $ast.Find({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $fn }, $true)
-  Invoke-Expression $fd.Extent.Text
+  if ($fd) { Invoke-Expression $fd.Extent.Text }
 }
 $TK = @{ P = @{ Toolkit = $tmp; Logs = $tmp } }; $cOk = 'green'; $cWarn = 'amber'; $cRed = 'red'
 $script:Top = @(); $script:Pill = $null
