@@ -67,6 +67,6 @@ if ($r -and $r.ran -and $r.history) {
 } else { $histSaved = $true }
 $out = [ordered]@{ fix = $Fix; ip = $Ip; site = $Site; code = $code; ran = [bool]($r -and $r.ran); ok = [bool]($r -and $r.ok); msg = $(if ($r) { $r.msg } else { '' }); history = $hist; historySaved = $histSaved; backup = $(if ($r) { $r.backup } else { '' }) }
 foreach ($rp in @((Join-Path $run 'result.json'), (Join-Path $LogsDir 'fix-last.json'))) {
-  try { Save-TkJson ([pscustomobject]$out) $rp } catch { Say2 ('WARNING: the result file could not be saved (' + $rp + '): ' + $_.Exception.Message) 'Yellow' }
+  try { Save-TkRunResult ([pscustomobject]$out) $rp } catch { Say2 ('WARNING: the result file could not be saved (' + $rp + '): ' + $_.Exception.Message) 'Yellow' }
 }
 Done $code

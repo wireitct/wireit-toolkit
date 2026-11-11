@@ -100,7 +100,7 @@ if ($Mode -eq 'Doctor') {
     if ($DwIp -and $dwCred) { $dp.DwIp = $DwIp; $dp.DwCredential = $dwCred }
     $r = Invoke-CameraDoctor @dp
     $j = [ordered]@{ at = (Get-Date).ToString('s'); ip = $Ip; maker = $r.maker; ping = $r.ping; mac = $r.mac; open = @($r.open); web = $r.web; login = $r.login; lockMin = $r.lockMin; rtsp = $r.rtsp; dw = $r.dw; verdict = $r.verdict; fixes = @($r.fixes); steps = @($r.steps) }
-    Save-TkJson ([pscustomobject]$j) (Join-Path $here 'logs\doctor-last.json'); Save-TkJson ([pscustomobject]$j) (Join-Path $run 'doctor.json')
+    Save-TkRunResult ([pscustomobject]$j) (Join-Path $here 'logs\doctor-last.json'); Save-TkJson ([pscustomobject]$j) (Join-Path $run 'doctor.json')
     if (@($r.fixes).Count) { $code = 4 }
   } catch { Say2 ('PROBLEM ' + $_.Exception.Message) 'Red'; $code = 1 }
   finally { try { [void](Close-NvrSessions) } catch {} }   # 1.4: always log out of DW
@@ -190,7 +190,7 @@ if ($recR -and [string]$recR.vendor -eq 'DW') {
 }
 if ($Mode -eq 'Site') {
   $chk = New-TkSiteCheck -Health $r -Scan $scan -Upnp $ux -Site $Site -Ip $Ip -Dw $dwList -DwNotChecked $dwWhy -StopWhy $stopWhy
-  Save-TkJson $chk (Join-Path $here 'logs\check-site-last.json'); Save-TkJson $chk (Join-Path $run 'check.json')
+  Save-TkRunResult $chk (Join-Path $here 'logs\check-site-last.json'); Save-TkJson $chk (Join-Path $run 'check.json')
   Say2 ''; Say2 '===== CHECK THIS SITE: SUMMARY =====' 'Cyan'
   foreach ($l in @($chk.lines)) { Say2 $l.t $(switch ($l.k) { 'red' { 'Red' } 'ok' { 'Green' } 'warn' { 'Yellow' } default { '' } }) }
   if ($chk.pending) { Say2 ('STILL FILLING: ' + $chk.pendingWhy + ' - nothing broken found, but this is not an all-clear yet.') 'Yellow' }

@@ -38,6 +38,36 @@ function Save-TkJson($obj, [string]$path) {
   finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
 }
 
+# 2.2.20 (Codex 2.2.19 R16, class D): a "last result" file proves it belongs to THIS run by echoing the run's own id. The window gives
+# every run a new id in WIREIT_RUN_ID (the tool it starts inherits it); the tool saves its result with Save-TkRunResult, which copies
+# that id into the file and reads the file back; the window accepts a result only with its own run's id (Test-TkRunResult). A result
+# without it - an older run's, one a failed write left behind, one written by a tool started outside the window - is NOT CHECKED.
+function Get-TkRunId { return [string]$env:WIREIT_RUN_ID }
+function Save-TkRunResult($obj, [string]$path) {
+  $id = Get-TkRunId
+  if ($obj -is [Collections.IDictionary]) { $obj['runId'] = $id } else { $obj | Add-Member -NotePropertyName runId -NotePropertyValue $id -Force }
+  Save-TkJson $obj $path
+  $back = Read-TkJson $path
+  if (-not $back -or [string]$back.runId -ne $id) { throw ('the result file ' + $path + ' does not read back') }
+}
+function Test-TkRunResult($j, [string]$runId) { return [bool]($j -and $runId -and $j.PSObject.Properties['runId'] -and [string]$j.runId -eq $runId) }
+# 2.2.20 (R16 twin): what a folder holds before a run starts (name -> creation and last-write time); a run's new folder / file is one
+# that was not there, or that changed, after the start - never "made within a few seconds of the start" (an earlier run's would pass)
+function Get-TkDirStamp([string]$dir, [string]$filter = '*') {
+  $h = @{}
+  if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { return $h }
+  foreach ($x in @(Get-ChildItem -LiteralPath $dir -Filter $filter -ErrorAction Stop)) { $h[$x.Name] = ([string]$x.CreationTimeUtc.Ticks + '|' + [string]$x.LastWriteTimeUtc.Ticks + '|' + $(if ($x.PSIsContainer) { 'd' } else { [string]$x.Length })) }
+  return $h
+}
+function Test-TkNewSince($item, $before) {
+  if (-not $item) { return $false }
+  if ($null -eq $before) { return $false }
+  if (-not $before.ContainsKey($item.Name)) { return $true }
+  return ($before[$item.Name] -ne ([string]$item.CreationTimeUtc.Ticks + '|' + [string]$item.LastWriteTimeUtc.Ticks + '|' + $(if ($item.PSIsContainer) { 'd' } else { [string]$item.Length })))
+}
+function Get-TkFileStamp([string]$path) {
+  try { if (-not (Test-Path -LiteralPath $path)) { return '' }; $x = Get-Item -LiteralPath $path -ErrorAction Stop; return ([string]$x.LastWriteTimeUtc.Ticks + '|' + [string]$x.Length) } catch { return '?' }
+}
 function Get-TkConfig([string]$toolkitDir) {
   $c = Read-TkJson (Join-Path $toolkitDir 'config.json')
   $d = [ordered]@{
@@ -257,7 +287,13 @@ function Install-TkUpdate($m, [string]$toolkitDir, [scriptblock]$Fetch = $null) 
       if ((Get-TkSha256 $live) -ne ([string]$f.sha256).ToLower()) { throw ('after copying, ' + $f.path + ' is not the new file (locked or not allowed?)') }
     }
     Save-TkJson ([ordered]@{ version = [string]$m.version; released = $m.released; commit = $m.commit; previous = $old; installed = (Get-Date -Format 's') }) $vj
-    Remove-Item -LiteralPath $journal -Force -ErrorAction SilentlyContinue
+    # 2.2.20 (Codex 2.2.19 R19, class A): the version record is read back, and the half-way record (update-pending.json) must really be
+    # gone before the update is called installed. 2.2.19 removed it with SilentlyContinue and returned success; the next start then
+    # found it, took it for an interrupted update and put the old version back. Now a record that stays is a failed update: the catch
+    # below puts the old version back NOW, so this run and the next start say the same thing.
+    $vjr = Read-TkJson $vj; if (-not $vjr -or [string]$vjr.version -ne [string]$m.version) { throw 'the new version record (version.json) does not read back' }
+    Remove-Item -LiteralPath $journal -Force -ErrorAction Stop
+    if (Test-Path -LiteralPath $journal) { throw 'the update''s half-way record (previous\update-pending.json) could not be cleared, so the update could not be finished' }
   } catch {
     $why = $_.Exception.Message; $notBack = @()
     # (2.2.1: the loop variable is $rp - PowerShell names are not case-sensitive, so 2.2.0's "$p" overwrote the paths object $P
@@ -272,9 +308,10 @@ function Install-TkUpdate($m, [string]$toolkitDir, [scriptblock]$Fetch = $null) 
       if (Test-Path (Join-Path $prev 'version.json.prev')) { Copy-TkAtomicFile (Join-Path $prev 'version.json.prev') $vj }
       elseif (Test-Path -LiteralPath $vj) { $nv = Read-TkJson $vj; if ($nv -and [string]$nv.version -eq [string]$m.version) { Remove-Item -LiteralPath $vj -Force -ErrorAction Stop; if (Test-Path -LiteralPath $vj) { throw 'still there' } } }
     } catch { $notBack += 'version.json' }
-    if (-not $notBack.Count) { Remove-Item -LiteralPath $journal -Force -ErrorAction SilentlyContinue }
+    $jLeft = ''
+    if (-not $notBack.Count) { try { Remove-Item -LiteralPath $journal -Force -ErrorAction Stop } catch {}; if (Test-Path -LiteralPath $journal) { $jLeft = ' (Its half-way record could not be cleared: the next start of the Toolkit puts version ' + $old + ' back again and says so.)' } }
     if ($notBack.Count) { throw ('Update could not be installed (' + $why + '), and these files could not be put back: ' + ($notBack -join ', ') + '. Run the Toolkit installer as an admin.') }
-    throw ('Update could not be installed, the old version was put back: ' + $why)
+    throw ('Update could not be installed, the old version was put back: ' + $why + $jLeft)
   }
   Remove-Item $P.Staging -Recurse -Force -ErrorAction SilentlyContinue
   return $old
@@ -301,7 +338,16 @@ function Undo-TkUpdate([string]$toolkitDir) {
   $pv0 = $null; $vpThere = Test-Path -LiteralPath $vp0
   if ($vpThere) { $pv0 = Read-TkJson $vp0 }
   $vRebuild = $false
-  if ($vpThere -and -not ($pv0 -and [string]$pv0.version -and [string]$pv0.version -ne [string]$cur.version)) {
+  # 2.2.20 (Codex 2.2.19 R17, class D): the saved record must name EXACTLY the version going back (cur.previous) and the undo record
+  # must be THIS update (from = cur.previous, to = cur.version). 2.2.19 took any version other than the current one (a record saying
+  # 9.9.7 was installed over the 9.9.8 files).
+  if (([string]$u.from -and [string]$u.from -ne [string]$cur.previous) -or ([string]$u.to -and [string]$u.to -ne [string]$cur.version)) {
+    throw ('Going back is not possible: the saved copy''s undo record names the update ' + [string]$u.from + ' -> ' + [string]$u.to + ', not ' + $cur.previous + ' -> ' + $cur.version + '. Nothing was changed - version ' + $cur.version + ' is still in place. To go back, run the installer of version ' + $cur.previous + '.')
+  }
+  if ($vpThere -and $pv0 -and [string]$pv0.version -and [string]$pv0.version -ne [string]$cur.previous) {
+    throw ('Going back is not possible: the saved version record (' + $vp0 + ') says version ' + [string]$pv0.version + ', not ' + $cur.previous + '. Nothing was changed - version ' + $cur.version + ' is still in place. To go back, run the installer of version ' + $cur.previous + '.')
+  }
+  if ($vpThere -and -not ($pv0 -and [string]$pv0.version -and [string]$pv0.version -eq [string]$cur.previous)) {
     throw ('Going back is not possible: the saved version record of version ' + $cur.previous + ' (' + $vp0 + ') cannot be read. Nothing was changed - version ' + $cur.version + ' is still in place. To go back, run the installer of version ' + $cur.previous + '.')
   }
   if (-not $vpThere) {
@@ -345,12 +391,14 @@ function Undo-TkUpdate([string]$toolkitDir) {
   $vOk = $false
   try {
     if ($vRebuild) { Save-TkJson ([ordered]@{ version = [string]$cur.previous; previous = ''; note = 'rebuilt by Go back from the saved copy''s undo record (no saved version record)' }) $vjOut; $vr = Read-TkJson $vjOut; $vOk = ($vr -and [string]$vr.version -eq [string]$cur.previous) }
-    else { Copy-TkAtomicFile $vp $vjOut; $vr = Read-TkJson $vjOut; $vOk = ($vr -and [string]$vr.version -and [string]$vr.version -eq [string]$pv0.version -and [string]$vr.version -ne [string]$cur.version) }
+    else { Copy-TkAtomicFile $vp $vjOut; $vr = Read-TkJson $vjOut; $vOk = ($vr -and [string]$vr.version -eq [string]$cur.previous -and [string]$pv0.version -eq [string]$cur.previous) }   # 2.2.20 (R17): exactly the version going back
   } catch {}
   if (-not $vOk) { throw ('Going back did not finish: the old files are back, but the version record (version.json) could not be put back to ' + $cur.previous + '. The next time the Toolkit opens it tries to finish going back. Run it as an admin.') }
   # the next start does not re-install the version we just left: the marker was saved before the first swap (2.2.16 F2)
   if ((Get-TkSkipVersion $toolkitDir) -ne [string]$cur.version) { Write-TkSkipVersion $toolkitDir ([string]$cur.version) }
   Remove-Item -LiteralPath $journal -Force -ErrorAction Stop
+  # 2.2.20 (R19 twin, class A): "back on <version>" only when the half-way record is really gone (the next start would redo it)
+  if (Test-Path -LiteralPath $journal) { throw ('Going back did not finish: version ' + $cur.previous + ' is back, but its half-way record could not be cleared. The next time the Toolkit opens it finishes going back and says so.') }
   return [string]$cur.previous
 }
 # 2.2.15 (R8): writes a journal with a plain write + one move (no Copy-TkAtomicFile), flushed to disk, before any swap
@@ -424,11 +472,14 @@ function Get-TkShortSerial([string]$serial) {
 
 # 2.2.7 (Codex file-by-file F07): the camera list Find cameras wrote IN THIS RUN - only when it finished (exit 0) and out\latest.json
 # is newer than the moment it started. Anything else is the previous scan (maybe another site's) and is not used.
-function Test-TkFreshScan([string]$camResetDir, $code, [datetime]$startedUtc) {
+function Test-TkFreshScan([string]$camResetDir, $code, [datetime]$startedUtc, $stampBefore = $null) {
   if ($null -eq $code -or [int]$code -ne 0) { return $false }
   $f = Join-Path $camResetDir 'out\latest.json'; if (-not (Test-Path -LiteralPath $f)) { $f = Join-Path (Join-Path $camResetDir 'out') 'latest.json' }
   if (-not (Test-Path -LiteralPath $f)) { return $false }
-  if ((Get-Item -LiteralPath $f).LastWriteTimeUtc -lt $startedUtc.AddSeconds(-1)) { return $false }
+  # 2.2.20 (Codex 2.2.19 R16 twin, class D): the list must be written by THIS scan: written after the start (no tolerance) and, when
+  # the window noted the file before the scan, changed since then (the same file and time as before = the previous scan's list)
+  if ((Get-Item -LiteralPath $f).LastWriteTimeUtc -lt $startedUtc) { return $false }
+  if ($null -ne $stampBefore) { $now = Get-TkFileStamp $f; if (-not $now -or $now -eq '?' -or $now -eq [string]$stampBefore) { return $false } }
   # 2.2.18 (sweep C): a fresh list that cannot be read (half written, damaged) is NOT a scan that found nothing: the scan did not work
   $l = Read-TkJson $f
   return [bool]($l -and $l.PSObject.Properties['devices'])
@@ -540,10 +591,12 @@ function Get-TkLastFix([string]$fixDir) {
   return [pscustomobject]@{ Folder = $d.FullName; File = (Join-Path $d.FullName 'rollback.json'); When = $d.LastWriteTime; Undone = (Test-Path (Join-Path $d.FullName 'undone.txt')) }
 }
 
-function Get-TkNewRunDir([string]$fixDir, [string]$mode, [datetime]$since) {
+function Get-TkNewRunDir([string]$fixDir, [string]$mode, [datetime]$since, $before = $null) {
   $runs = Join-Path $fixDir 'runs'
   if (-not (Test-Path $runs)) { return $null }
-  return (Get-ChildItem $runs -Directory -Filter ($mode + '-*') -ErrorAction SilentlyContinue | Where-Object { $_.CreationTime -ge $since.AddSeconds(-3) } | Sort-Object Name -Descending | Select-Object -First 1)
+  # 2.2.20 (Codex 2.2.19 R16 twin, class D): a run folder that was already there when this run started is never this run's (2.2.19
+  # took any folder made up to 3 s before the start); with no "before" list only a folder made after the start counts
+  return (Get-ChildItem $runs -Directory -Filter ($mode + '-*') -ErrorAction SilentlyContinue | Where-Object { $_.CreationTime -ge $since -and ($null -eq $before -or (Test-TkNewSince $_ $before)) } | Sort-Object Name -Descending | Select-Object -First 1)
 }
 
 function ConvertFrom-TkFixLog([string[]]$lines) {
@@ -667,10 +720,11 @@ function Get-TkSnapshotDevices([string]$path) {
   }
   return $out.ToArray()
 }
-function Get-TkNewestSnapshot([string]$fixDir, [datetime]$since) {
+function Get-TkNewestSnapshot([string]$fixDir, [datetime]$since, $before = $null) {
   $d = Join-Path $fixDir 'snapshots'
   if (-not (Test-Path $d)) { return $null }
-  return (Get-ChildItem $d -Filter 'FixNVR snapshot*.json' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $since.AddSeconds(-5) } | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+  # 2.2.20 (R16 twin): written after the start (no 5 s tolerance) and new or changed since the start's list of the folder
+  return (Get-ChildItem $d -Filter 'FixNVR snapshot*.json' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $since -and ($null -eq $before -or (Test-TkNewSince $_ $before)) } | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
 }
 # the server's answer -> lines for the results pane: @{ t = text; k = red | ok | warn | plain }; red ones go at the top
 function Format-TkScanAnswer($r, [string]$site) {

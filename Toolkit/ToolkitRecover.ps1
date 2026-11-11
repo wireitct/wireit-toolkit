@@ -50,19 +50,28 @@ function Invoke-TkStartupRecovery([string]$toolkitDir) {
   $backV = [string]$j.from
   $vRebuilt = $false
   try {
-    if (Test-Path -LiteralPath $vp) { Copy-TkAtomicFile $vp $vjPath }
+    # 2.2.20 (Codex 2.2.19 R17, startup twin, class D): the saved record must name EXACTLY the version put back (the journal's from),
+    # checked BEFORE it is copied and again after; anything else keeps the journal (the block) and the start says so
+    if (-not ($backV -match '^\d+(\.\d+){1,3}$')) { throw 'the update record does not name the version to put back' }
+    if (Test-Path -LiteralPath $vp) {
+      $pvr = $null; try { $pvr = [IO.File]::ReadAllText($vp) | ConvertFrom-Json -ErrorAction Stop } catch {}
+      if (-not $pvr -or [string]$pvr.version -ne $backV) { throw ('the saved version record is not version ' + $backV) }
+      Copy-TkAtomicFile $vp $vjPath
+    }
     elseif ($backV -match '^\d+(\.\d+){1,3}$') {
       $vt = $vjPath + '.' + [guid]::NewGuid().ToString('N') + '.vtmp'
       try { [IO.File]::WriteAllText($vt, ('{ "version": "' + $backV + '", "previous": "", "note": "rebuilt from the update record at start-up (the saved version record was missing)" }')); Copy-TkAtomicFile $vt $vjPath } finally { Remove-Item -LiteralPath $vt -Force -ErrorAction SilentlyContinue }
       $vRebuilt = $true
     } else { throw 'no saved version record and no version in the update record' }
     $vr = $null; try { $vr = [IO.File]::ReadAllText($vjPath) | ConvertFrom-Json -ErrorAction Stop } catch {}
-    if (-not $vr -or -not [string]$vr.version -or ($vRebuilt -and [string]$vr.version -ne $backV)) { throw 'the version record does not read back as the version put back' }
+    if (-not $vr -or [string]$vr.version -ne $backV) { throw 'the version record does not read back as the version put back' }
   } catch { $bad += 'version.json' }
   # 2.2.15 (Codex 2.2.14 R8): a "Go back" (kind = undo) that stopped half-way is FINISHED the same way: every saved old file back,
   # the update's added files removed, the old version number back, and the version we left is not re-installed on its own
   if ($bad.Count) { throw ('An earlier ' + $(if ($isUndo) { 'Go back' } else { 'update' }) + ' could not be put back: ' + ($bad -join ', ') + '. Run the Toolkit installer again.') }
   Remove-Item -LiteralPath $journal -Force -ErrorAction Stop
+  # 2.2.20 (R19 twin, class A): finished only when the half-way record is really gone
+  if (Test-Path -LiteralPath $journal) { throw ('An earlier ' + $(if ($isUndo) { 'Go back' } else { 'update' }) + ' was put back, but its half-way record could not be cleared. Run the Toolkit installer again.') }
   if ($isUndo) {
     # 2.2.16: back/left name the versions; a 2.2.15 journal (no back) had to = the version put back
     $back = ''; if ($j.PSObject.Properties['back'] -and [string]$j.back) { $back = [string]$j.back } else { $back = [string]$j.to }

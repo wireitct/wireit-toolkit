@@ -87,7 +87,7 @@ function Invoke-RnOp([string]$op, $a = @{}) {
     'isadmin' { try { return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { return $false } }
     'list' {
       $out = @()
-      foreach ($n in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+      foreach ($n in @(Get-NetAdapter -Physical -ErrorAction Stop)) {   # 2.2.20 (class C): a list that fails is not "no adapter"
         if ([string]$n.InterfaceDescription -match '(?i)bluetooth|virtual|vpn|tap-|wan miniport') { continue }
         $wifi = ([string]$n.NdisPhysicalMedium -eq '9' -or [string]$n.NdisPhysicalMedium -match '802\.11|Native' -or [string]$n.InterfaceDescription -match '(?i)wi-?fi|wireless|802\.11|wlan')
         $out += [pscustomobject]@{ name = [string]$n.Name; ifIndex = [int]$n.ifIndex; desc = [string]$n.InterfaceDescription; disabled = ([string]$n.Status -eq 'Disabled' -or [string]$n.AdminStatus -eq 'Down'); connected = ([string]$n.MediaConnectionState -eq 'Connected' -or [string]$n.Status -eq 'Up'); wifi = [bool]$wifi; guid = [string]$n.InterfaceGuid }
@@ -401,47 +401,181 @@ function Get-RnOwnStatic($ad, $st, $journals) {
   return [pscustomobject]@{ ips = $ips; gws = $gws; text = (($ips -join ', ') + $(if ($gws.Count) { ' (gateway ' + ($gws -join ', ') + ')' } else { ' (no gateway)' })) }
 }
 
+# 2.2.20 (Codex 2.2.19 R08, Restore Network twin, class E): every Toolkit record Restore Network reads is checked for its full
+# shape AND the TYPE of every value before anything in it is used (a "dhcp":"false" string is NOT false, it is damaged). Fix NVR's
+# record (version 2: temps = list of { ip; ifIndex }; pc = { coexistence_before; firewall_rule; cleanup_task; ifIndex; alias; guid;
+# dhcp; ip; gw }) and Fix this site's (version 2: before = { ifIndex; name; guid; dhcp; coexist; addrs; gw }; coexistChanged; temps).
+# '' = usable, else the reason in plain words. A damaged record is quarantined (kept aside as .unreadable-<time>.json, which Fix NVR
+# and Fix this site read as their durable block) and no change is made to this PC's network (see Get-RnJournalBlock).
+function Test-RnIpv4([string]$s) { $p = [Net.IPAddress]::None; return ($s -match '^\d{1,3}(\.\d{1,3}){3}$' -and [Net.IPAddress]::TryParse($s, [ref]$p)) }
+function Test-RnJsonInt($v) {
+  if ($null -eq $v -or $v -is [bool]) { return $false }
+  if ($v -is [string]) { return ($v -match '^\d{1,9}$') }
+  if ($v -is [int] -or $v -is [long] -or $v -is [int16] -or $v -is [byte]) { return ([long]$v -ge 0) }
+  return $false
+}
+function Test-RnOptIpv4($v) { return ($null -eq $v -or ($v -is [string] -and (-not $v -or (Test-RnIpv4 $v)))) }
+function Test-RnOptString($v) { return ($null -eq $v -or $v -is [string]) }
+function Get-RnClassicJournalProblem($o) {
+  if ($o -isnot [pscustomobject]) { return 'it is not a record Fix NVR writes' }
+  foreach ($k in 'version', 'temps', 'pc') { if (-not $o.PSObject.Properties[$k]) { return ('it has no "' + $k + '"') } }
+  if (-not (Test-RnJsonInt $o.version) -or [int]$o.version -ne 2) { return ('its version (' + [string]$o.version + ') is not one this Toolkit knows') }
+  $pc = $o.pc
+  if ($pc -isnot [pscustomobject]) { return 'its PC part is missing' }
+  foreach ($k in 'coexistence_before', 'firewall_rule', 'cleanup_task', 'ifIndex', 'alias', 'dhcp', 'ip', 'gw') { if (-not $pc.PSObject.Properties[$k]) { return ('its PC part has no "' + $k + '"') } }
+  if ($pc.firewall_rule -isnot [bool]) { return 'its firewall_rule is not true/false' }
+  if ($pc.cleanup_task -isnot [bool]) { return 'its cleanup_task is not true/false' }
+  if ($null -ne $pc.dhcp -and $pc.dhcp -isnot [bool]) { return 'its DHCP setting is not true/false' }
+  if ($null -ne $pc.ifIndex -and -not (Test-RnJsonInt $pc.ifIndex)) { return ('its adapter number ("' + [string]$pc.ifIndex + '") is not a number') }
+  if ($null -ne $pc.coexistence_before -and ($pc.coexistence_before -isnot [string] -or ([string]$pc.coexistence_before).ToLower() -notin @('enabled', 'disabled'))) { return 'its coexistence setting is not readable' }
+  if (-not (Test-RnOptString $pc.alias)) { return 'its adapter name is not text' }
+  if ($pc.PSObject.Properties['guid'] -and -not (Test-RnOptString $pc.guid)) { return 'its adapter ID is not text' }
+  if (-not (Test-RnOptIpv4 $pc.ip)) { return 'its old address is not a valid IP' }
+  if (-not (Test-RnOptIpv4 $pc.gw)) { return 'its old router address is not a valid IP' }
+  if ($null -ne $o.temps -and $o.temps -isnot [array] -and $o.temps -isnot [pscustomobject]) { return 'its address list is not a list' }
+  $tl = @($o.temps | Where-Object { $null -ne $_ })
+  foreach ($t in $tl) {
+    if ($t -isnot [pscustomobject] -or -not $t.PSObject.Properties['ip'] -or -not (Test-RnIpv4 ([string]$t.ip))) { return 'an address in it is not a valid IP' }
+    $tix = $(if ($t.PSObject.Properties['ifIndex']) { $t.ifIndex } else { $null })
+    if ($null -ne $tix -and -not (Test-RnJsonInt $tix)) { return ('the adapter number of ' + [string]$t.ip + ' is not a number') }
+    if ($null -eq $tix -and $null -eq $pc.ifIndex) { return ('it does not say which adapter ' + [string]$t.ip + ' is on') }
+    if ($null -ne $tix -and $null -ne $pc.ifIndex -and [int]$tix -ne [int]$pc.ifIndex) { return ('the address ' + [string]$t.ip + ' is on another adapter than the one it saved') }
+  }
+  # 2.2.20 (R03): a record of a change must name the adapter it changed (number AND name or ID) and say what it was before
+  $changed = ($tl.Count -or $null -ne $pc.coexistence_before -or $null -ne $pc.ifIndex)
+  if ($changed) {
+    if ($null -eq $pc.ifIndex) { return 'it changed this PC but does not say which adapter' }
+    $gid = $(if ($pc.PSObject.Properties['guid']) { [string]$pc.guid } else { '' })
+    if (-not [string]$pc.alias -and -not $gid) { return 'it does not name the adapter it changed (no name, no ID)' }
+    if ($pc.dhcp -isnot [bool]) { return 'it does not say whether the adapter was automatic (DHCP) before' }
+  }
+  return ''
+}
+function Get-RnSiteJournalProblem($tj) {
+  if ($null -eq $tj) { return 'it is empty' }
+  if ($tj -is [array]) { return 'it is the old 2.2.0 list form, which does not name the adapter it changed' }
+  if ($tj -isnot [pscustomobject]) { return 'it is not a record Fix this site writes' }
+  if (-not $tj.PSObject.Properties['version']) { return 'it has no version (an old form that does not name the adapter it changed)' }
+  if (-not (Test-RnJsonInt $tj.version) -or [int]$tj.version -ne 2) { return ('its version (' + [string]$tj.version + ') is not one this Toolkit knows') }
+  foreach ($k in @('before', 'coexistChanged', 'temps')) { if (-not $tj.PSObject.Properties[$k]) { return ('it is missing ' + $k) } }
+  if ($tj.coexistChanged -isnot [bool]) { return 'its coexistChanged is not true/false' }
+  if ($null -ne $tj.temps -and $tj.temps -isnot [array] -and $tj.temps -isnot [pscustomobject]) { return 'its list of temporary addresses is not a list' }
+  $tl = @($tj.temps | Where-Object { $null -ne $_ })
+  $b = $tj.before
+  # a record written before any change (no adapter yet, nothing added) is a real empty record
+  if ($null -eq $b -or $b -isnot [pscustomobject]) { return 'it does not say how the adapter was before' }
+  foreach ($k in @('ifIndex', 'name', 'dhcp', 'coexist', 'addrs', 'gw')) { if (-not $b.PSObject.Properties[$k]) { return ('it is missing before.' + $k) } }
+  if (-not (Test-RnJsonInt $b.ifIndex)) { return 'its adapter number is not a number' }
+  if ($b.name -isnot [string] -or -not $b.name) { return 'it does not name the adapter' }
+  if ($b.PSObject.Properties['guid'] -and -not (Test-RnOptString $b.guid)) { return 'its adapter ID is not text' }
+  if ($b.dhcp -isnot [bool]) { return 'its DHCP setting is not true/false' }
+  if ($b.coexist -isnot [string] -or ([string]$b.coexist).ToLower() -notin @('enabled', 'disabled', 'unknown')) { return 'its coexistence setting is not readable' }
+  if ($null -ne $b.addrs -and $b.addrs -isnot [array] -and $b.addrs -isnot [pscustomobject]) { return 'its list of the adapter''s own addresses is not a list' }
+  foreach ($x in @($b.addrs | Where-Object { $null -ne $_ })) {
+    if ($x -isnot [pscustomobject] -or -not (Test-RnIpv4 ([string]$x.ip))) { return 'one of its own addresses is not a valid IP' }
+    if ($x.PSObject.Properties['prefix'] -and $null -ne $x.prefix -and (-not (Test-RnJsonInt $x.prefix) -or [int]$x.prefix -gt 32)) { return ('the prefix of ' + [string]$x.ip + ' is not 0-32') }
+  }
+  foreach ($g in @($b.gw)) { if ($null -ne $g -and ($g -isnot [string] -or ($g -and -not (Test-RnIpv4 $g)))) { return 'one of its routers is not a valid IP' } }
+  if (-not $b.dhcp -and -not @(@($b.addrs) | Where-Object { $_ }).Count) { return 'it says the adapter had a fixed setup but lists no address' }
+  foreach ($t in $tl) {
+    if ($t -isnot [pscustomobject] -or -not (Test-RnIpv4 ([string]$t.ip)) -or -not $t.PSObject.Properties['ifIndex'] -or -not (Test-RnJsonInt $t.ifIndex)) { return 'a temporary address in it has no valid IP or adapter number' }
+    if ([int]$t.ifIndex -ne [int]$b.ifIndex) { return ('the temporary address ' + [string]$t.ip + ' is on another adapter than the one it saved') }
+  }
+  return ''
+}
+# Fix NVR / Fix this site kept an unreadable record aside (or wrote down that one is unsolved): the earlier changes are not known
+function Get-RnQuarantined {
+  $l = @()
+  foreach ($f in @($script:RnFixSiteState, $FixNvrState)) {
+    if (-not $f) { continue }
+    $dir = Split-Path -Parent $f; $base = [IO.Path]::GetFileNameWithoutExtension($f)
+    if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { continue }
+    $items = $null; try { $items = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction Stop) } catch { $l += ('the folder ' + $dir + ' could not be listed'); continue }
+    foreach ($x in $items) { if ($x.Name -like ($base + '.unreadable-*.json') -or $x.Name -eq ($base + '.recovery-needed.json')) { $l += $x.Name } }
+  }
+  return $l
+}
 function Get-RnJournals {
   $j = @()
   foreach ($f in @($script:RnFixSiteState, $FixNvrState)) {
     if (-not $f -or -not (Test-Path -LiteralPath $f)) { continue }
-    $o = $null; $bad = ''; try { $o = [IO.File]::ReadAllText($f) | ConvertFrom-Json -ErrorAction Stop } catch { $bad = 'could not be read' }
+    $isSite = ($f -eq $script:RnFixSiteState)
+    $o = $null; $bad = ''; $raw = ''
+    try { $raw = [IO.File]::ReadAllText($f) } catch { $bad = 'could not be read' }
+    if (-not $bad) { if (-not $raw.Trim()) { $bad = 'is empty' } else { try { $o = ConvertFrom-Json -InputObject $raw -ErrorAction Stop } catch { $bad = 'could not be read' } } }
+    if (-not $bad) {
+      $why = $(if ($isSite) { Get-RnSiteJournalProblem $o } else { Get-RnClassicJournalProblem $o })
+      if ($why) { $bad = ('is damaged (' + $why + ')') }
+    }
     $temps = @(); $ix = -1; $co = ''; $dhb = $null; $nm = ''; $gd = ''
-    if ($o) {
-      if ($o.PSObject.Properties['temps']) { $temps = @($o.temps | Where-Object { $_ -and $_.ip }) } else { $temps = @($o | Where-Object { $_ -and $_.ip }) }
-      if ($o.PSObject.Properties['before'] -and $o.before) { $ix = [int]$o.before.ifIndex; $co = [string]$o.before.coexist; if ($o.before.PSObject.Properties['dhcp'] -and $null -ne $o.before.dhcp) { $dhb = [bool]$o.before.dhcp }; if ($o.before.PSObject.Properties['name']) { $nm = [string]$o.before.name }; if ($o.before.PSObject.Properties['guid']) { $gd = [string]$o.before.guid } }
-      # 2.2.12 (P1-3): Fix NVR's record names its adapter and whether it was automatic (DHCP) before Fix NVR touched it
-      if ($o.PSObject.Properties['pc'] -and $o.pc) { if ($ix -lt 0 -and $o.pc.PSObject.Properties['ifIndex'] -and $null -ne $o.pc.ifIndex) { $ix = [int]$o.pc.ifIndex }; if ($null -eq $dhb -and $o.pc.PSObject.Properties['dhcp'] -and $null -ne $o.pc.dhcp -and $null -ne $o.pc.ifIndex) { $dhb = [bool]$o.pc.dhcp }; if (-not $nm -and $o.pc.PSObject.Properties['name']) { $nm = [string]$o.pc.name } }
-      if ($o.PSObject.Properties['pc'] -and $o.pc -and $o.pc.PSObject.Properties['coexistence_before'] -and $o.pc.coexistence_before) { $co = $(if ([string]$o.pc.coexistence_before -match '(?i)enabled') { 'enabled' } else { 'disabled' }) }
-      if ($ix -lt 0 -and $temps.Count) { $ix = [int]$temps[0].ifIndex }
-      # 2.2.19 (Codex 2.2.18 F09 twin): a record that reads but holds none of the Toolkit's record fields ({} included), or lists
-      # temporary addresses / an adapter's old settings without saying which adapter, is damaged - not "nothing changed". (A Fix NVR
-      # record from before any adapter change - no addresses, no adapter yet - is a real empty record.)
-      $shape = ($o -is [array]) -or [bool]$o.PSObject.Properties['temps'] -or [bool]$o.PSObject.Properties['before'] -or [bool]$o.PSObject.Properties['pc']
-      if (-not $shape) { $bad = 'is damaged (it holds none of the Toolkit''s record fields)' }
-      elseif ($ix -lt 0 -and ($temps.Count -or ($o.PSObject.Properties['before'] -and $o.before))) { $bad = 'is damaged (it does not say which adapter it changed)' }
-    } elseif (-not $bad) { $bad = 'is empty' }
+    # nothing of a damaged record is used: no adapter, no addresses, no before-state
+    if (-not $bad) {
+      $temps = @($o.temps | Where-Object { $_ -and $_.ip })
+      if ($isSite) {
+        $b = $o.before
+        if ($b) { $ix = [int]$b.ifIndex; $nm = [string]$b.name; if ($b.PSObject.Properties['guid']) { $gd = [string]$b.guid }; $dhb = [bool]$b.dhcp; $co = ConvertTo-RnCoexist $b.coexist }
+      } else {
+        # 2.2.20 (Codex 2.2.19 R03): Fix NVR writes pc.alias and pc.guid (2.2.19 read pc.name and never the ID, so the record matched
+        # an adapter by its number alone)
+        $pc = $o.pc
+        if ($null -ne $pc.ifIndex) { $ix = [int]$pc.ifIndex; $nm = [string]$pc.alias; if ($pc.PSObject.Properties['guid']) { $gd = [string]$pc.guid }; $dhb = [bool]$pc.dhcp }
+        if ($null -ne $pc.coexistence_before) { $co = ConvertTo-RnCoexist $pc.coexistence_before }
+      }
+    }
     $j += [pscustomobject]@{ file = $f; readable = (-not $bad); bad = $bad; ifIndex = $ix; name = $nm; guid = $gd; coexist = $co; dhcpBefore = $dhb; ips = @($temps | ForEach-Object { [string]$_.ip }) }
   }
   return $j
+}
+# 2.2.20 (R08 twin, class E): '' = the Toolkit's records may be used; else why NO change may be made to this PC's network. A damaged
+# record is kept aside here (renamed .unreadable-<time>.json, the durable block Fix NVR / Fix this site clear only after their own
+# checked recovery); one that could not be renamed stays where it is and blocks the same way at every run.
+function Get-RnJournalBlock($journals) {
+  $why = @()
+  foreach ($jr in @($journals | Where-Object { -not $_.readable })) {
+    $kept = Split-Path -Leaf $jr.file
+    $to = $jr.file -replace '\.json$', ('.unreadable-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')
+    try { Move-Item -LiteralPath $jr.file -Destination $to -Force -ErrorAction Stop; if ((Test-Path -LiteralPath $to) -and -not (Test-Path -LiteralPath $jr.file)) { $kept = Split-Path -Leaf $to } } catch {}
+    $why += ('the Toolkit''s record ' + (Split-Path -Leaf $jr.file) + ' ' + $jr.bad + ' (kept as ' + $kept + ')')
+  }
+  foreach ($q in @(Get-RnQuarantined)) { if (-not @($why | Where-Object { $_ -like ('*' + $q + '*') }).Count) { $why += ('an earlier record of this PC''s network could not be read (kept as ' + $q + ')') } }
+  if (-not $why.Count) { return '' }
+  return (($why -join '; ') + ', so it is not known what that run changed on this PC')
 }
 # 2.2.19 (Codex 2.2.18 F05 twin): a record belongs to this adapter only when its number AND (when it names one) its adapter
 # name / ID match - another adapter that took the number is not the one the record changed
 # 2.2.19 (Codex 2.2.18 F05 twin): the chosen adapter read again - the one at its number with the SAME ID (name when no ID was
 # read). $null = not found again (gone, or its number now belongs to another adapter, or the list could not be read)
+# 2.2.20 (Codex 2.2.19 R03, class B): an adapter ID that was read is REQUIRED again - an adapter whose ID is now missing is not
+# proof of the same adapter (2.2.19 fell back to the name). The name read at the start must match too.
+function Test-RnSameGuid([string]$a, [string]$b) { return ([bool]$a -and [bool]$b -and $a.Trim('{}').ToLower() -eq $b.Trim('{}').ToLower()) }
 function Get-RnAdapterAgain($ad) {
+  if (-not $ad) { return $null }
   $l = $null; try { $l = @(Invoke-RnOp 'list') } catch { return $null }
   foreach ($x in @($l | Where-Object { $_ -and $_.ifIndex -eq $ad.ifIndex })) {
-    if ($ad.guid -and $x.guid) { if (([string]$x.guid).Trim('{}').ToLower() -eq ([string]$ad.guid).Trim('{}').ToLower()) { return $x } }
-    elseif ([string]$x.name -eq [string]$ad.name) { return $x }
+    if ([string]$ad.guid -and -not (Test-RnSameGuid ([string]$x.guid) ([string]$ad.guid))) { continue }
+    if ([string]$ad.name -and [string]$x.name -ne [string]$ad.name) { continue }
+    if (-not [string]$ad.guid -and -not [string]$ad.name) { continue }
+    return $x
   }
   return $null
 }
+# 2.2.20 (R03): a record belongs to this adapter only when its number matches AND every identity it saved (ID, name) is matched by a
+# value read now - a saved ID with no current ID is a MISMATCH, never a fall-back to the name; a record that names no adapter at all
+# matches none (its addresses are never taken for the Toolkit's on an adapter it did not name)
 function Test-RnJournalFor($j, $ad) {
-  if (-not $j -or -not $ad -or $j.ifIndex -ne $ad.ifIndex) { return $false }
-  if ($j.guid -and $ad.guid -and ([string]$j.guid).Trim('{}').ToLower() -ne ([string]$ad.guid).Trim('{}').ToLower()) { return $false }
-  if ($j.name -and $ad.name -and [string]$j.name -ne [string]$ad.name) { return $false }
+  if (-not $j -or -not $ad -or $j.ifIndex -lt 0 -or $j.ifIndex -ne $ad.ifIndex) { return $false }
+  if (-not [string]$j.guid -and -not [string]$j.name) { return $false }
+  if ([string]$j.guid -and -not (Test-RnSameGuid ([string]$ad.guid) ([string]$j.guid))) { return $false }
+  if ([string]$j.name -and [string]$ad.name -ne [string]$j.name) { return $false }
   return $true
+}
+# 2.2.20 (class B): a state read used to plan or to certify the result is bracketed by two identity checks of the same adapter;
+# $null = it could not be shown to be this adapter's (Get-RnReadProblem then says NOT CHECKED)
+function Read-RnStateFor($ad) {
+  if (-not (Get-RnAdapterAgain $ad)) { return $null }
+  $s = Invoke-RnOp 'state' @{ ifIndex = $ad.ifIndex; guid = $ad.guid }
+  if (-not (Get-RnAdapterAgain $ad)) { return $null }
+  return $s
 }
 # 2.2.19 (Codex 2.2.18 F18): '' when this state read is complete, else what could not be read
 function Get-RnReadProblem($st) {
@@ -555,10 +689,17 @@ function Select-RnAdapter($ads, $journals) {
 
 function Move-RnJournals($ad, $journals) {
   # the adapter checked back to normal: the Toolkit's records for THIS adapter are done (kept, renamed, never deleted)
+  # 2.2.20 (Codex 2.2.19 R19/R20 class A twin): the rename is checked (new name there, old name gone) before it is said; a record
+  # that could not be closed is returned as a problem (the run is then not DONE: the next Fix NVR / Fix this site would act on it)
+  $probs = @()
   foreach ($j in @($journals | Where-Object { (Test-RnJournalFor $_ $ad) -and $_.readable })) {
     $to = $j.file -replace '\.json$', ('.restored-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')
-    try { Move-Item -LiteralPath $j.file -Destination $to -Force; Rn-Say ('  the Toolkit''s record ' + (Split-Path -Leaf $j.file) + ' is done (kept as ' + (Split-Path -Leaf $to) + ')') } catch {}
+    $err = ''
+    try { Move-Item -LiteralPath $j.file -Destination $to -Force -ErrorAction Stop } catch { $err = $_.Exception.Message }
+    if (-not $err -and (Test-Path -LiteralPath $to) -and -not (Test-Path -LiteralPath $j.file)) { Rn-Say ('  the Toolkit''s record ' + (Split-Path -Leaf $j.file) + ' is done (kept as ' + (Split-Path -Leaf $to) + ')') }
+    else { $probs += ('the Toolkit''s record ' + (Split-Path -Leaf $j.file) + ' could not be marked done' + $(if ($err) { ' (' + $err + ')' } else { '' }) + ' - the next Fix NVR / Fix this site would act on it again') }
   }
+  return $probs
 }
 
 # ================================ main ================================
@@ -598,7 +739,16 @@ function Invoke-RestoreNetwork {
     return 2
   }
   if (-not $Elevated) { Rn-Say ('Adapter: ' + $ad.name + ' (' + $ad.desc + ')') }
-  $st = Invoke-RnOp 'state' @{ ifIndex = $ad.ifIndex; guid = $ad.guid }
+  # 2.2.20 (Codex 2.2.19 R08 twin, class E): a damaged Toolkit record (or one Fix NVR / Fix this site already kept aside as unreadable)
+  # means what an earlier run changed is not known: it is kept aside and NOTHING on this PC's network is changed
+  $blk = Get-RnJournalBlock $journals
+  if ($blk) {
+    Rn-Say ('NOT CHECKED: ' + $blk + '. Nothing was changed on this PC''s network.') 'Red'
+    Rn-Say 'FAILED - Run again after this: restart this PC, start the tool that made the record (Fix this site or Fix NVR) once - it checks every adapter and clears the record - then run Restore Network again.' 'Red'
+    $rb = Write-RnReceipt ('FAILED - NOT CHECKED, nothing changed (' + $blk + ')') $ad; if ($rb) { Rn-Say ('Receipt: ' + $rb) }
+    return 6
+  }
+  $st = Read-RnStateFor $ad
   # 2.2.19 (Codex 2.2.18 F18/F08 twin): settings that cannot be fully read are not planned from (a failed DHCP read is not "DHCP
   # off", a failed address read is not "no fixed address") and their before-copy would be incomplete: nothing is changed
   $rp0 = Get-RnReadProblem $st
@@ -631,8 +781,7 @@ function Invoke-RestoreNetwork {
           if (-not ($w0 -and $w0.connected)) {
             $pz = Start-RnPause $admin0; if (-not $pz.ok) { $failed0 += ('WifiWatch could not be paused (' + $pz.why + ')') }
             try { [void](Invoke-RnOp 'reconnect' @{ ifIndex = $ad.ifIndex; name = $ad.name; wifi = $true }); Say-RnWifiJoined $ad } catch { Rn-Say ('  reconnect did not work: ' + $_.Exception.Message) 'Yellow' }
-            $ad3 = Get-RnAdapterAgain $ad; if ($ad3) { $ad = $ad3 }
-            $st = Invoke-RnOp 'state' @{ ifIndex = $ad.ifIndex; guid = $ad.guid }
+            $ad3 = Get-RnAdapterAgain $ad; if ($ad3) { $ad = $ad3; $st = Read-RnStateFor $ad } else { $st = $null }   # 2.2.20 (class B): not found again = NOT CHECKED
           }
         }
         $v = Get-RnVerdict $ad $st $journals $failed0 $keep
@@ -670,9 +819,12 @@ function Invoke-RestoreNetwork {
     if (-not $pz.ok) { $failed += ('WifiWatch could not be paused (' + $pz.why + ')') }
     if ($pz.needed) {
       # a WifiWatch run that was stopped may have left things half-way (the adapter off): read the adapter again
-      $adR = Get-RnAdapterAgain $ad; if ($adR) { $ad = $adR }
-      $st = Invoke-RnOp 'state' @{ ifIndex = $ad.ifIndex; guid = $ad.guid }; $plan = @(Get-RnPlan $ad $st $journals $keep)
-      $rp1 = Get-RnReadProblem $st; if ($rp1) { $failed += ('NOT CHECKED: ' + $rp1 + ' - nothing was changed'); $plan = @() }
+      # 2.2.20 (class B): the adapter must be found again by its ID and name; the plan is made only from a complete read of it
+      $st = $null; $adR = Get-RnAdapterAgain $ad; if ($adR) { $ad = $adR; $st = Read-RnStateFor $ad }
+      $rp1 = Get-RnReadProblem $st
+      if (-not $adR) { $failed += ('NOT CHECKED: the adapter "' + $ad.name + '" could not be found again (its number may now belong to another adapter) - nothing was changed'); $plan = @() }
+      elseif ($rp1) { $failed += ('NOT CHECKED: ' + $rp1 + ' - nothing was changed'); $plan = @() }
+      else { $plan = @(Get-RnPlan $ad $st $journals $keep) }
     }
     Rn-Say 'Putting it back:'
     # the adapter on and DHCP first, so the PC can get an address even if a later step fails
@@ -689,12 +841,16 @@ function Invoke-RestoreNetwork {
       } catch { $failed += ($s.what + ': ' + $_.Exception.Message); Rn-Say ('  NOT DONE: ' + $s.what + ' (' + $_.Exception.Message + ')') 'Red' }
     }
     # reconnect, then wait for the router's address
-    $ad2 = Get-RnAdapterAgain $ad; if ($ad2) { $ad = $ad2 }
-    try { $rc = Invoke-RnOp 'reconnect' @{ ifIndex = $ad.ifIndex; name = $ad.name; wifi = $ad.wifi }; if ($ad.wifi) { Say-RnWifiJoined $ad } elseif (-not $keep) { Rn-Changed 'asked the router for a new address' } } catch { Rn-Say ('  reconnect did not work: ' + $_.Exception.Message) 'Yellow' }
+    # 2.2.20 (class B): the reconnect (a change) and every read that certifies the result need the same adapter, found again by ID + name
+    $ad2 = Get-RnAdapterAgain $ad
+    if ($ad2) { $ad = $ad2
+      try { $rc = Invoke-RnOp 'reconnect' @{ ifIndex = $ad.ifIndex; name = $ad.name; wifi = $ad.wifi }; if ($ad.wifi) { Say-RnWifiJoined $ad } elseif (-not $keep) { Rn-Changed 'asked the router for a new address' } } catch { Rn-Say ('  reconnect did not work: ' + $_.Exception.Message) 'Yellow' }
+    } else { $failed += ('NOT CHECKED: the adapter "' + $ad.name + '" could not be found again (its number may now belong to another adapter), so it was not asked to reconnect and its result is not known') }
     $st2 = $null
     for ($w = 0; $w -le [Math]::Max(0, $WaitSeconds); $w += 2) {
-      $ad3 = Get-RnAdapterAgain $ad; if ($ad3) { $ad = $ad3 }
-      $st2 = Invoke-RnOp 'state' @{ ifIndex = $ad.ifIndex; guid = $ad.guid }
+      $ad3 = Get-RnAdapterAgain $ad; if (-not $ad3) { $st2 = $null; break }
+      $ad = $ad3; $st2 = Read-RnStateFor $ad
+      if (-not $st2) { break }
       if ($keep -or (Get-RnLease $st2)) { break }
       if ((-not $ad.connected) -and $w -ge 10) { break }
       [void](Invoke-RnOp 'sleep' @{ s = 2 })
@@ -713,7 +869,11 @@ function Get-RnVerdict($ad, $st, $journals, $failed, [bool]$keep) {
   $lease = Get-RnLease $st
   if (-not $bad.Count -and $ad.connected -and -not $lease -and -not $keep) { $bad += 'no address from the router yet (DHCP did not answer)' }
   $on = $null
-  if (-not $bad.Count) { $on = Wait-RnOnline $ad }
+  if (-not $bad.Count) {
+    $on = Wait-RnOnline $ad
+    # 2.2.20 (class B): the online answer certifies THIS adapter only if it is still the same one after the check
+    if (-not (Get-RnAdapterAgain $ad)) { $bad += ('NOT CHECKED: the adapter "' + $ad.name + '" could not be found again after the connection check, so the result is not known'); $on = $null }
+  }
   return [pscustomobject]@{ bad = $bad; on = $on; checked = [bool](-not $bad.Count) }
 }
 
@@ -751,6 +911,8 @@ function Get-RnRestoreLines($ad) {
 function Complete-RnRun($ad, $v, $journals, $failed = @(), [bool]$keep = $false) {
   # the end: say DONE or FAILED - Run again / NOT FIXED, write the receipt. A step that failed (also: WifiWatch not paused / not back on) is never DONE
   $bad = @($v.bad) + @($failed | Where-Object { $_ })
+  # 2.2.20 (class A): the Toolkit's records for this adapter are closed (and checked) BEFORE any DONE / NOT FIXED is said
+  if (-not $bad.Count -and @($journals | Where-Object { Test-RnJournalFor $_ $ad }).Count) { $bad += @(Move-RnJournals $ad $journals) }
   if ($bad.Count) {
     Rn-Say ''
     foreach ($b in $bad) { Rn-Say ('  still wrong: ' + $b) 'Red' }
@@ -760,7 +922,6 @@ function Complete-RnRun($ad, $v, $journals, $failed = @(), [bool]$keep = $false)
     if ($r) { Rn-Say ('Receipt: ' + $r) }
     return 6
   }
-  if (@($journals | Where-Object { Test-RnJournalFor $_ $ad }).Count) { Move-RnJournals $ad $journals }
   # 2.2.11 round 2: the settings are normal; DONE only when the PC is REALLY online on this adapter (2.2.12: the web, through it)
   $on = $v.on
   $net = $(if ($ad.wifi -and $on -and $on.ssid) { 'Wi-Fi "' + $on.ssid + '", ' } else { '' })
