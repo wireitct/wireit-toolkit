@@ -345,7 +345,7 @@ function Export-HikRequests($Devices, [string]$OutDir, $State, [string]$StatePat
     # 2.2.19 (Codex 2.2.18 F17, class E): a new export voids every earlier reply of this device. That is written down BEFORE the device
     # is asked (exportStartedAt), so a run that stops (or cannot save) after the export never imports an older reply as if it still fit.
     # No save = no export.
-    Add-HikExportIntent $State $dev
+    [void](Add-HikExportIntent $State $dev)
     if (-not (Save-HikStateOk $StatePath $State)) { Hk-Say (Get-HikNotSavedStop ('Asking ' + $dev.model + ' ' + $dev.ip + ' for a request file')) 'Red'; break }
     $e = Request-HikResetExport $dev
     if (-not $e.ok) { Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': could not read its request code - ' + $e.error) 'Yellow'; if ($cur) { Set-HikStateField $cur 'note' $e.error }; continue }
@@ -751,7 +751,7 @@ function Invoke-HikResetStage {
   # password is checked at the address it has NOW. 2.2.18 checked the saved address: another camera that moved onto it and took the site
   # password made the selected camera "fixed". Not found = NOT CHECKED (it stays pending; nothing is checked at the old address).
   # "importing" = an import was started but its result was never saved (F17): same check, and the file is never sent again on its own.
-  foreach ($d in @(& $forMine $state | Where-Object { $_.status -in @('imported', 'importing') })) {
+  foreach ($d in @(& $forMine $state | Where-Object { $_.status -eq 'imported' -or $_.status -eq 'importing' })) {
     $live = Find-HikLiveDevice $d $devs
     if (-not $live) { Hk-Say ('  ' + $d.model + ' (serial ' + [string]$d.serial + '): the unlock file was imported earlier, but the device is not seen in this scan - the site password is NOT CHECKED.') 'Yellow'; continue }
     $ipNow = [string]$live.ip
