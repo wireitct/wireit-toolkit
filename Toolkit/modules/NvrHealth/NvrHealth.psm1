@@ -616,8 +616,11 @@ function Hik-Storage($t) {
   $hdds = @()
   foreach ($h in (XFind $x 'hdd')) {
     $id = XText $h 'id'
-    $capN = [double]0; $freeN = [double]0; [void][double]::TryParse((XText $h 'capacity'), [ref]$capN); [void][double]::TryParse((XText $h 'freeSpace'), [ref]$freeN)
-    $o = [pscustomobject]@{ id = $id; status = (XText $h 'status'); capMB = $capN; freeMB = $freeN; property = (XText $h 'property'); smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null }
+    # 2.2.20 (Codex 2.2.19 R15 twin, class C): a capacity / free space that is not a real number = this drive is UNKNOWN
+    # (sizeKnown = $false, reported NOT CHECKED), never a healthy drive of 0 GB
+    $capV = ConvertTo-NhSize (XText $h 'capacity'); $freeV = ConvertTo-NhSize (XText $h 'freeSpace'); $known = ($null -ne $capV -and $null -ne $freeV)
+    $capN = $(if ($null -ne $capV) { $capV } else { 0 }); $freeN = $(if ($null -ne $freeV) { $freeV } else { 0 })
+    $o = [pscustomobject]@{ id = $id; status = (XText $h 'status'); sizeKnown = $known; capMB = $capN; freeMB = $freeN; property = (XText $h 'property'); smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null }
     if ($id) {
       $s = Http -Ip $t.ip -Path ('/ISAPI/ContentMgmt/Storage/hdd/' + $id + '/SMARTTest/status') -Credential $t.cred -Port $t.port
       $sx = Xml $s.body
@@ -630,7 +633,7 @@ function Hik-Storage($t) {
     }
     $hdds += $o
   }
-  $nas = @(); foreach ($n in (XFind $x 'nas')) { $nas += [pscustomobject]@{ id = ('NAS ' + (XText $n 'id')); status = (XText $n 'status'); capMB = [double]('0' + (XText $n 'capacity')); freeMB = [double]('0' + (XText $n 'freeSpace')); property = ''; smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null } }
+  $nas = @(); foreach ($n in (XFind $x 'nas')) { $ncV = ConvertTo-NhSize (XText $n 'capacity'); $nfV = ConvertTo-NhSize (XText $n 'freeSpace'); $nas += [pscustomobject]@{ id = ('NAS ' + (XText $n 'id')); status = (XText $n 'status'); sizeKnown = ($null -ne $ncV -and $null -ne $nfV); capMB = $(if ($null -ne $ncV) { $ncV } else { 0 }); freeMB = $(if ($null -ne $nfV) { $nfV } else { 0 }); property = ''; smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null } }
   return @{ ok = $true; why = ''; disks = @($hdds + $nas) }
 }
 function Hik-Recording($t) {
@@ -853,19 +856,45 @@ function Dw-ReadJson($t, [string]$path) {
   if ($null -eq $j) { return @{ ok = $false; j = $null; empty = $false; why = 'the answer was empty' } }
   return @{ ok = $true; j = $j; empty = $false; why = '' }
 }
+# 2.2.20 (Codex 2.2.19 R15, class C): a size read from a recorder is a number ONLY when it parses as a finite, non-negative
+# number (invariant culture); anything else (missing, "unreadable", NaN, negative) is $null = UNKNOWN, never 0
+function ConvertTo-NhSize($v) {
+  if ($null -eq $v) { return $null }
+  if ($v -is [bool]) { return $null }
+  $s = ([string]$v).Trim(); if (-not $s) { return $null }
+  $n = [double]0
+  if (-not [double]::TryParse($s, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$n)) { return $null }
+  if ([double]::IsNaN($n) -or [double]::IsInfinity($n) -or $n -lt 0) { return $null }
+  return $n
+}
+# 2.2.20 (R15): why a DW storage row is NOT a storage row ('' = it is one): an identity (url / path / storageId) and a total size and
+# free space that are real numbers. Both DW endpoints use it, so one unreadable number is "storage NOT CHECKED", never a healthy 0.
+function Get-DwStorageRowWhy($s) {
+  if (-not $s -or -not ($s -is [psobject]) -or $s -is [string] -or $s -is [ValueType]) { return 'a row is not a storage' }
+  $idv = ''; foreach ($k in @('url', 'path', 'storageId')) { if ($s.PSObject.Properties[$k] -and ([string]$s.$k).Trim()) { $idv = [string]$s.$k; break } }
+  if (-not $idv) { return 'a storage row has no address' }
+  if (-not $s.PSObject.Properties['totalSpace'] -or $null -eq (ConvertTo-NhSize $s.totalSpace)) { return ('the total size of ' + $idv + ' is not a number') }
+  if (-not $s.PSObject.Properties['freeSpace'] -or $null -eq (ConvertTo-NhSize $s.freeSpace)) { return ('the free space of ' + $idv + ' is not a number') }
+  return ''
+}
 function Dw-StorageRow($s, [string]$id) {
   # 2.2.19 (class C): "ok" only when DW says isOnline = true; no / unknown isOnline = status unknown (NOT CHECKED), not healthy
   $on = $(if ($s.PSObject.Properties['isOnline']) { [string]$s.isOnline } else { '' })
-  $capN = [double]0; $freeN = [double]0; [void][double]::TryParse([string]$s.totalSpace, [ref]$capN); [void][double]::TryParse([string]$s.freeSpace, [ref]$freeN)
-  return [pscustomobject]@{ id = $id; status = $(if ($on -match '^(?i)false$') { 'offline' } elseif ($on -match '^(?i)true$') { 'ok' } else { 'unknown' }); capMB = $capN / 1MB; freeMB = $freeN / 1MB; property = $(if ($s.isBackup) { 'backup' } elseif ($s.isUsedForWriting -eq $false) { 'not used' } else { 'RW' }); smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null }
+  # 2.2.20 (R15): sizes that are not real numbers make the row UNKNOWN (sizeKnown = $false), never "healthy, 0 GB"
+  $capV = ConvertTo-NhSize $s.totalSpace; $freeV = ConvertTo-NhSize $s.freeSpace; $known = ($null -ne $capV -and $null -ne $freeV)
+  $capN = $(if ($null -ne $capV) { $capV } else { 0 }); $freeN = $(if ($null -ne $freeV) { $freeV } else { 0 })
+  return [pscustomobject]@{ id = $id; status = $(if (-not $known) { 'unknown' } elseif ($on -match '^(?i)false$') { 'offline' } elseif ($on -match '^(?i)true$') { 'ok' } else { 'unknown' }); sizeKnown = $known; capMB = $capN / 1MB; freeMB = $freeN / 1MB; property = $(if ($s.isBackup) { 'backup' } elseif ($s.isUsedForWriting -eq $false) { 'not used' } else { 'RW' }); smartOk = $null; smartAll = ''; tempC = $null; powerOnDays = $null }
 }
 function Dw-Storage($t) {
   # 2.2.18 (Codex F6): @{ ok; why; disks }. A failed / unreadable storage answer (both DW endpoints) is "storage NOT CHECKED",
   # never "No hard drive found"; only a real storage list with no storage in it (ok, 0 disks) may say "no hard drive".
-  $out = @(); $v3 = Dw-ReadJson $t '/rest/v3/servers/this/storages/*/status'; $v3List = $false
+  $out = @(); $v3 = Dw-ReadJson $t '/rest/v3/servers/this/storages/*/status'; $v3List = $false; $v3Why = ''
   if ($v3.ok -and $v3.empty) { $v3List = $true }
   elseif ($v3.ok) {
-    $items = @($v3.j); $bad = @($items | Where-Object { -not $_ -or $null -eq $_.PSObject.Properties['totalSpace'] -or $null -eq $_.totalSpace })
+    # 2.2.20 (Codex 2.2.19 R15, class C): the v3 list counts only when EVERY row is a storage row (an address and real numbers for
+    # the total and free size) - the same rule as the old endpoint. 2.2.19 checked only that totalSpace was there.
+    $items = @($v3.j); $bad = @($items | Where-Object { [bool](Get-DwStorageRowWhy $_) })
+    if ($bad.Count) { $v3Why = Get-DwStorageRowWhy $bad[0] }
     if (-not $bad.Count) { $v3List = $true; foreach ($s in $items) { $out += Dw-StorageRow $s ([string]$(if ($s.url) { $s.url } else { $s.path })) } }
   }
   if ($out.Count) { return @{ ok = $true; why = ''; disks = $out } }
@@ -880,7 +909,7 @@ function Dw-Storage($t) {
     if ($errV -ne '0' -and $errV -ne '') { $oldWhy = 'DW answered with error ' + $errV }
     elseif ($null -ne $rows -and -not ($rows -is [array])) { $rows = @($rows) }
     if (-not $oldWhy) {
-      $badO = @(@($rows) | Where-Object { $n0 = [double]0; -not $_ -or -not ($_ -is [psobject]) -or $null -eq $_.PSObject.Properties['totalSpace'] -or -not [double]::TryParse([string]$_.totalSpace, [ref]$n0) -or -not ([string]$_.url -or [string]$_.storageId) })
+      $badO = @(@($rows) | Where-Object { [bool](Get-DwStorageRowWhy $_) })   # 2.2.20 (R15): the same row rule as v3 (free space too)
       if ($badO.Count) { $oldWhy = 'a row in DW''s storage answer is not a storage (' + $badO.Count + ' of ' + @($rows).Count + ')' }
       else {
         foreach ($s in @($rows)) { $out += Dw-StorageRow $s ([string]$(if ($s.url) { $s.url } else { $s.storageId })) }
@@ -889,7 +918,7 @@ function Dw-Storage($t) {
     }
   }
   if ($v3List) { return @{ ok = $true; why = ''; disks = @() } }   # a real, empty storage list
-  return @{ ok = $false; why = $(if ($oldWhy) { $oldWhy } elseif (-not $v3.ok) { $v3.why } else { 'the answer was not a storage list' }); disks = @() }
+  return @{ ok = $false; why = $(if ($oldWhy) { $oldWhy } elseif ($v3Why) { $v3Why } elseif (-not $v3.ok) { $v3.why } else { 'the answer was not a storage list' }); disks = @() }
 }
 function Dw-ParseSched($d) {
   # 2.2.14 (Codex 2.2.13 F6/F9): only an explicit true/false recording flag is known; anything else = $null (UNKNOWN, never "on")
@@ -1087,6 +1116,9 @@ function Get-RecordingStatus {
   elseif (-not $disks.Count) { Bad 'No hard drive found. This recorder is NOT saving footage.'; $problems.Add('no hard drive') }
   $capT = 0.0; $freeT = 0.0
   foreach ($d in $disks) {
+    # 2.2.20 (Codex 2.2.19 R15, class C): a drive whose size / free space was not a real number is NOT CHECKED - never "healthy",
+    # never counted in the totals (a 0 GB drive would hide the others' fill level)
+    if ($d.PSObject.Properties['sizeKnown'] -and $d.sizeKnown -eq $false) { Warn ('Drive ' + $d.id + ' - its size / free space could NOT be read, so this drive is NOT CHECKED. Look at the recorder''s Storage page.'); $problems.Add('drive ' + $d.id + ' size NOT CHECKED'); continue }
     $capT += $d.capMB; $freeT += $d.freeMB
     $line = 'Drive ' + $d.id + ': ' + [math]::Round($d.capMB / 1024) + ' GB'
     $st = ([string]$d.status).ToLower()
@@ -1104,8 +1136,9 @@ function Get-RecordingStatus {
     }
   }
   $filling = $false; $pending = $false
-  $maxCap = ($disks | Measure-Object -Property capMB -Maximum).Maximum
-  $big = @($disks | Where-Object { $_.capMB -ge 0.1 * $maxCap })   # a small system drive next to the media drives does not count
+  $sized = @($disks | Where-Object { -not ($_.PSObject.Properties['sizeKnown'] -and $_.sizeKnown -eq $false) })   # 2.2.20 (R15)
+  $maxCap = ($sized | Measure-Object -Property capMB -Maximum).Maximum
+  $big = @($sized | Where-Object { $_.capMB -ge 0.1 * $maxCap })   # a small system drive next to the media drives does not count
   $bigCap = ($big | Measure-Object -Property capMB -Sum).Sum; $bigFree = ($big | Measure-Object -Property freeMB -Sum).Sum
   if ($bigCap -gt 0) { $filling = (($bigFree / $bigCap) -gt $(if ($t.vendor -eq 'DW') { 0.12 } else { 0.03 })) }   # DW keeps ~10% free on purpose
   if ($capT -gt 0) { Info ('Total ' + [math]::Round($capT / 1024) + ' GB, ' + [math]::Round(100 * ($capT - $freeT) / $capT) + '% used.') }
@@ -1316,8 +1349,17 @@ function Hik-NtpPlan($t, [string]$server) {
   if ($needTz) { $ch += ('time zone -> US Eastern with daylight saving (was ' + $(if ($h.tz -and $h.tz.raw) { $h.tz.raw } else { 'unknown' }) + ')') }
   return @{ ok = $true; changes = $ch; needNtp = $needNtp; needMode = $needMode; needTz = $needTz; h = $h; first = $first }
 }
-function Hik-NtpApply($t, [string]$server, $plan) {
-  $h = $plan.h
+# 2.2.20 (Codex 2.2.19 R21 class twin, class B): -first = the device identity read with the plan. When given, the device is
+# identified AGAIN right before EACH of the (up to two) writes and around the read that certifies the result; a different /
+# unreadable device = STOP (nothing more written; what was already written is said).
+function Get-NhNtpIdStop($t, $first, [string]$step, [bool]$wrote) {
+  if (-not $first) { return '' }
+  $s = Test-NhSameDevice $t $first
+  if ($s.ok) { return '' }
+  return ('STOPPED before ' + $step + ': ' + $s.why + $(if ($wrote) { ' - the time-server setting WAS already sent, NOT confirmed' } else { ' - nothing was changed' }))
+}
+function Hik-NtpApply($t, [string]$server, $plan, $first = $null) {
+  $h = $plan.h; $wrote = $false; $unclear = ''
   Log ('BEFORE /ISAPI/System/time: ' + $h.raw); Log ('BEFORE /ISAPI/System/time/ntpServers: ' + $h.ntpRaw)
   if ($plan.needNtp) {
     $id = $(if ($plan.first -and $plan.first.id) { $plan.first.id } else { '1' })
@@ -1327,22 +1369,33 @@ function Hik-NtpApply($t, [string]$server, $plan) {
     XSetText $nx 'addressingFormatType' $(if ($isIp) { 'ipaddress' } else { 'hostname' })
     if ($isIp) { XSetText $nx 'ipAddress' $server } else { XSetText $nx 'hostName' $server }
     XSetText $nx 'portNo' '123'; XSetText $nx 'synchronizeInterval' ([string]$script:Opt.NtpIntervalMin)
+    $stop = Get-NhNtpIdStop $t $first 'the time-server write' $false; if ($stop) { return @{ ok = $false; why = $stop } }
     $r = Http -Ip $t.ip -Method 'PUT' -Path ('/ISAPI/System/time/ntpServers/' + $id) -Body $nx.OuterXml -Credential $t.cred -Port $t.port
-    if (-not (Hik-Ok $r)) { return @{ ok = $false; why = ('it refused the time-server setting (HTTP ' + $r.code + ')') } }
+    # 2.2.20 (class C/F): only an explicit no is "refused"; a lost / unclear answer is NOT confirmed - no further write, read back
+    $wa = Get-HikWriteAnswer $r
+    if ($wa -eq 'refused') { return @{ ok = $false; why = ('it refused the time-server setting (HTTP ' + $r.code + ')') } }
+    $wrote = $true
+    if ($r.code -ne 200) { $unclear = 'its answer to the time-server setting was ' + $(if ([int]$r.code -le 0) { 'lost' } else { 'HTTP ' + $r.code }) }
   }
-  if ($plan.needMode -or $plan.needTz) {
+  if (-not $unclear -and ($plan.needMode -or $plan.needTz)) {
     $tx = Xml $h.raw
     XSetText $tx 'timeMode' 'NTP'
     XSetText $tx 'timeZone' ([string]$script:Opt.HikTimeZone)
     foreach ($n in @(XFind $tx 'localTime')) { [void]$n.ParentNode.RemoveChild($n) }
+    $stop = Get-NhNtpIdStop $t $first 'the time-mode / time-zone write' $wrote; if ($stop) { return @{ ok = $false; why = $stop } }
     $r = Http -Ip $t.ip -Method 'PUT' -Path '/ISAPI/System/time' -Body $tx.OuterXml -Credential $t.cred -Port $t.port
-    if (-not (Hik-Ok $r)) { return @{ ok = $false; why = ('it refused the time-mode / time-zone setting (HTTP ' + $r.code + ')') } }
+    $wa = Get-HikWriteAnswer $r
+    if ($wa -eq 'refused') { return @{ ok = $false; why = ('it refused the time-mode / time-zone setting (HTTP ' + $r.code + ')' + $(if ($wrote) { ' - the time-server setting was already sent' } else { '' })) } }
+    $wrote = $true
+    if ($r.code -ne 200) { $unclear = 'its answer to the time-mode / time-zone setting was ' + $(if ([int]$r.code -le 0) { 'lost' } else { 'HTTP ' + $r.code }) }
   }
+  $stop = Get-NhNtpIdStop $t $first 'the read-back' $wrote; if ($stop) { return @{ ok = $false; why = $stop } }
   $after = Hik-Time $t
   Log ('AFTER /ISAPI/System/time: ' + $(if ($after) { $after.raw } else { '(unreadable)' })); Log ('AFTER ntpServers: ' + $(if ($after) { $after.ntpRaw } else { '' }))
   $still = Hik-NtpPlan $t $server
-  if (-not $still.ok) { return @{ ok = $false; why = 'saved, but its time settings could not be read back to check them' } }   # 2.2.3 (Codex #41)
-  if ($still.changes.Count) { return @{ ok = $false; why = ('saved, but it still reads back wrong: ' + ($still.changes -join '; ')) } }
+  if (-not $still.ok) { return @{ ok = $false; why = 'saved, but its time settings could not be read back to check them' + $(if ($unclear) { ' (' + $unclear + ')' } else { '' }) } }   # 2.2.3 (Codex #41)
+  if ($still.changes.Count) { return @{ ok = $false; why = ('saved, but it still reads back wrong: ' + ($still.changes -join '; ') + $(if ($unclear) { ' (' + $unclear + ')' } else { '' })) } }
+  $stop = Get-NhNtpIdStop $t $first 'certifying the read-back' $wrote; if ($stop) { return @{ ok = $false; why = $stop } }
   return @{ ok = $true }
 }
 function Onvif-NtpPlan($t, [string]$server) {
@@ -1359,24 +1412,29 @@ function Onvif-NtpPlan($t, [string]$server) {
   if ($needTz) { $ch += ('time zone -> US Eastern with daylight saving (was ' + $(if ($o.tz -and $o.tz.raw) { $o.tz.raw } else { 'unknown' }) + $(if (-not $o.dst) { ', DST off' } else { '' }) + ')') }
   return @{ ok = $true; changes = $ch; needNtp = $needNtp; needMode = $needMode; needTz = $needTz; o = $o }
 }
-function Onvif-NtpApply($t, [string]$server, $plan) {
-  $o = $plan.o
+function Onvif-NtpApply($t, [string]$server, $plan, $first = $null) {
+  $o = $plan.o; $wrote = $false
   Log ('BEFORE (ONVIF) mode=' + $o.mode + ' dst=' + $o.dst + ' tz=' + $(if ($o.tz) { $o.tz.raw } else { '' }) + ' ntp=' + (@($o.ntp | ForEach-Object { $_.host }) -join ','))
   if ($plan.needNtp) {
     $isIp = $server -match '^\d+\.\d+\.\d+\.\d+$'
     $man = $(if ($isIp) { '<x:NTPManual><tt:Type>IPv4</tt:Type><tt:IPv4Address>' + $server + '</tt:IPv4Address></x:NTPManual>' } else { '<x:NTPManual><tt:Type>DNS</tt:Type><tt:DNSname>' + $server + '</tt:DNSname></x:NTPManual>' })
+    $stop = Get-NhNtpIdStop $t $first 'the time-server write' $false; if ($stop) { return @{ ok = $false; why = $stop } }
     $r = Onvif-Call $t '/onvif/device_service' ('<x:SetNTP><x:FromDHCP>false</x:FromDHCP>' + $man + '</x:SetNTP>') $script:NsDev
-    if ($r.code -ne 200) { return @{ ok = $false; why = ('it refused the time-server setting (HTTP ' + $r.code + ')') } }
+    if ($r.code -ne 200) { return @{ ok = $false; why = $(if ([int]$r.code -le 0 -or [int]$r.code -ge 500) { 'its answer to the time-server setting was ' + $(if ([int]$r.code -le 0) { 'lost' } else { 'HTTP ' + $r.code }) + ' - NOT confirmed whether it took it' } else { 'it refused the time-server setting (HTTP ' + $r.code + ')' }) } }
+    $wrote = $true
   }
   if ($plan.needMode -or $plan.needTz) {
+    $stop = Get-NhNtpIdStop $t $first 'the time-mode / time-zone write' $wrote; if ($stop) { return @{ ok = $false; why = $stop } }
     $r = Onvif-Call $t '/onvif/device_service' ('<x:SetSystemDateAndTime><x:DateTimeType>NTP</x:DateTimeType><x:DaylightSavings>true</x:DaylightSavings><x:TimeZone><tt:TZ>' + $script:Opt.PosixTimeZone + '</tt:TZ></x:TimeZone></x:SetSystemDateAndTime>') $script:NsDev
-    if ($r.code -ne 200) { return @{ ok = $false; why = ('it refused the time-mode / time-zone setting (HTTP ' + $r.code + ')') } }
+    if ($r.code -ne 200) { return @{ ok = $false; why = $(if ([int]$r.code -le 0 -or [int]$r.code -ge 500) { 'its answer to the time-mode / time-zone setting was ' + $(if ([int]$r.code -le 0) { 'lost' } else { 'HTTP ' + $r.code }) + ' - NOT confirmed whether it took it' } else { 'it refused the time-mode / time-zone setting (HTTP ' + $r.code + ')' }) + $(if ($wrote) { ' (the time-server setting was already sent)' } else { '' }) } }
   }
+  $stop = Get-NhNtpIdStop $t $first 'the read-back' $wrote; if ($stop) { return @{ ok = $false; why = $stop } }
   $a = Onvif-Time $t
   Log ('AFTER (ONVIF) ' + $(if ($a) { 'mode=' + $a.mode + ' dst=' + $a.dst + ' tz=' + $a.tz.raw + ' ntp=' + (@($a.ntp | ForEach-Object { $_.host }) -join ',') } else { '(unreadable)' }))
   $still = Onvif-NtpPlan $t $server
   if (-not $still.ok) { return @{ ok = $false; why = 'saved, but its time settings could not be read back to check them' } }   # 2.2.3 (Codex #41)
   if ($still.changes.Count) { return @{ ok = $false; why = ('saved, but it still reads back wrong: ' + ($still.changes -join '; ')) } }
+  $stop = Get-NhNtpIdStop $t $first 'certifying the read-back' $wrote; if ($stop) { return @{ ok = $false; why = $stop } }
   return @{ ok = $true }
 }
 function Set-NtpTime {
@@ -1429,7 +1487,7 @@ function Set-NtpTime {
     $plan2 = $(if ($isHik) { Hik-NtpPlan $tt $NtpServer } else { Onvif-NtpPlan $tt $NtpServer })
     if (-not $plan2.ok -or (($plan2.changes -join '; ') -cne ($plan.changes -join '; '))) { $why2 = $(if (-not $plan2.ok) { $plan2.why } else { 'its time settings changed while waiting for the OK' }); Bad ($x.label + ': ' + $why2 + '. Nothing changed.'); $failed++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = ('failed: ' + $why2); changes = $plan.changes; id = $idW }; continue }
     $plan = $plan2
-    $w = $(if ($isHik) { Hik-NtpApply $tt $NtpServer $plan } else { Onvif-NtpApply $tt $NtpServer $plan })
+    $w = $(if ($isHik) { Hik-NtpApply $tt $NtpServer $plan $idA } else { Onvif-NtpApply $tt $NtpServer $plan $idA })   # 2.2.20: identity before each write
     if ($w.ok) { Ok ($x.label + ': time settings saved and read back correctly.'); $changedN++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = 'changed'; changes = $plan.changes; id = $idW } }
     else { Bad ($x.label + ': ' + $w.why + '.'); $failed++; $rows += [pscustomobject]@{ target = $x.label; ip = $tt.ip; result = ('failed: ' + $w.why); changes = $plan.changes; id = $idW } }
   }

@@ -34,6 +34,18 @@ $run = Join-Path $RunsDir ('Nvr' + $Mode + '-' + (Get-Date -Format 'yyyyMMdd-HHm
 New-Item -ItemType Directory -Force -Path $run | Out-Null
 $log = Join-Path $run 'log.txt'
 function Say2([string]$s, [string]$color = '') { if ($color) { Write-Host $s -ForegroundColor $color } else { Write-Host $s }; [void](Add-TkLine $log ((Get-Date -Format 'HH:mm:ss') + ' SAY ' + $s)) }
+# 2.2.20 (class A twin of Codex 2.2.19 R20/R16, sweep): the result file the Toolkit window reads is saved with a TERMINATING write and
+# READ BACK (the same mode, address and code); a result that could not be saved is said in this window and the exit code is never 0
+# (2.2.19 wrote it with an unchecked Set-Content, so a failed write left the window to show an older run's result as this one).
+function Save-NcResult([hashtable]$h) {
+  $p = Join-Path $run 'result.json'
+  try {
+    Set-Content -LiteralPath $p -Value ($h | ConvertTo-Json) -Encoding UTF8 -ErrorAction Stop
+    $back = (Get-Content -LiteralPath $p -Raw -ErrorAction Stop) | ConvertFrom-Json -ErrorAction Stop
+    if ([string]$back.mode -cne [string]$h.mode -or [string]$back.ip -cne [string]$h.ip -or [string]$back.code -cne [string]$h.code) { throw 'the saved result does not read back the same' }
+    return $true
+  } catch { Write-Host ('PROBLEM This run''s result could NOT be saved (' + $_.Exception.Message + '). Do not trust the result shown in the Toolkit window for this run; run it again.') -ForegroundColor Red; return $false }
+}
 function Done([int]$code) {
   if ($CloseAfter -gt 0) { Write-Host ''; Write-Host ('Done. The results are in the Toolkit window. This window closes in ' + $CloseAfter + ' seconds.'); Start-Sleep -Seconds $CloseAfter }
   exit $code
@@ -104,7 +116,7 @@ if ($Mode -eq 'Doctor') {
     if (@($r.fixes).Count) { $code = 4 }
   } catch { Say2 ('PROBLEM ' + $_.Exception.Message) 'Red'; $code = 1 }
   finally { try { [void](Close-NvrSessions) } catch {} }   # 1.4: always log out of DW
-  Set-Content -Path (Join-Path $run 'result.json') -Value (@{ mode = $Mode; ip = $Ip; code = $code } | ConvertTo-Json)
+  if (-not (Save-NcResult @{ mode = $Mode; ip = $Ip; code = $code }) -and $code -eq 0) { $code = 1 }
   Done $code
 }
 if ($Mode -in @('Recording', 'Site') -and $Days -le 0) {
@@ -122,7 +134,7 @@ else {
 }
 $noLogin = (-not $cred -or -not $cred.GetNetworkCredential().Password)
 if ($noLogin) {
-  if ($Mode -eq 'FixClock') { Say2 'No password typed - nothing was sent and nothing was changed.' 'Yellow'; Set-Content -Path (Join-Path $run 'result.json') -Value (@{ mode = $Mode; ip = $Ip; code = 0; skipped = $true; finished = (Get-Date -Format s) } | ConvertTo-Json); Done 0 }
+  if ($Mode -eq 'FixClock') { Say2 'No password typed - nothing was sent and nothing was changed.' 'Yellow'; if (Save-NcResult @{ mode = $Mode; ip = $Ip; code = 0; skipped = $true; finished = (Get-Date -Format s) }) { Done 0 } else { Done 1 } }
   Say2 'Recorder login skipped (no password typed) - nothing was sent to the recorder login. Parts that need it show NOT CHECKED.' 'Yellow'
 }
 $common = @{ Ip = $Ip; Vendor = $Vendor; Credential = $cred; Port = $Port }
@@ -214,5 +226,5 @@ if ($Mode -eq 'Site') {
   # 2.2.16 (Codex 2.2.15 F6): only "still filling" left (nothing red, nothing NOT CHECKED) = exit 3, anything else not ok = 4
   if ($code -eq 0 -and -not $chk.ok) { if ($chk.pending -and -not @($chk.lines | Where-Object { $_.k -eq 'red' }).Count -and -not @($chk.page.notChecked).Count) { $code = 3 } else { $code = 4 } }
 }
-Set-Content -Path (Join-Path $run 'result.json') -Value (@{ mode = $Mode; ip = $Ip; site = $Site; days = $Days; code = $code; finished = (Get-Date -Format s) } | ConvertTo-Json)
+if (-not (Save-NcResult @{ mode = $Mode; ip = $Ip; site = $Site; days = $Days; code = $code; finished = (Get-Date -Format s) }) -and $code -eq 0) { $code = 1 }
 Done $code
