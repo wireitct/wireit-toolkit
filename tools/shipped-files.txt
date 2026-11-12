@@ -83,6 +83,7 @@ Toolkit/tests/Test-Fix2220Nvr.ps1
 Toolkit/tests/Test-Fix2220Reset.ps1
 Toolkit/tests/Test-Fix2220Site.ps1
 Toolkit/tests/Test-Fix2220Twins.ps1
+Toolkit/tests/Test-Fix2221.ps1
 Toolkit/tests/Test-Fix223.ps1
 Toolkit/tests/Test-Fix224.ps1
 Toolkit/tests/Test-Fix225.ps1
@@ -97,6 +98,7 @@ Toolkit/tests/Test-Ps51Static.ps1
 Toolkit/tests/Test-Repro2214.ps1
 Toolkit/tests/Test-Repro2215.ps1
 Toolkit/tests/Test-Repro2219.ps1
+Toolkit/tests/Test-Repro2220.ps1
 Toolkit/tests/Test-Review225.ps1
 Toolkit/tests/Test-Toolkit.ps1
 Toolkit/tests/TestPython.ps1
@@ -161,6 +163,12 @@ Toolkit/tests/repro-2.2.19/reproduce-restore.ps1
 Toolkit/tests/repro-2.2.19/reproduce-safety.ps1
 Toolkit/tests/repro-2.2.19/reproduce-update-journal.ps1
 Toolkit/tests/repro-2.2.19/reproduce.ps1
+Toolkit/tests/repro-2.2.20/reproduce-classic-legacy-adapter.ps1
+Toolkit/tests/repro-2.2.20/reproduce-extra-review.ps1
+Toolkit/tests/repro-2.2.20/reproduce-nvr-diagnostics.ps1
+Toolkit/tests/repro-2.2.20/reproduce-persistence.ps1
+Toolkit/tests/repro-2.2.20/reproduce-reset-request-swap.ps1
+Toolkit/tests/repro-2.2.20/reproduce-static-and-netcheck.ps1
 Toolkit/tests/review225/scenarios.py
 Toolkit/wireit-logo.png
 Toolkit/wireit.ico
