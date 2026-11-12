@@ -41,89 +41,90 @@ $netCore = '(?i)\[(System\.)?Convert\]::(To|From)HexString|::HashData\s*\(|\b(Re
 # Get-Findings checks the file, then every here-string in it that parses as PowerShell without an error (a code block, not prose), and
 # the here-strings inside those (3 levels). A finding inside one names the file line of the here-string and the line inside it.
 function Get-Findings([string]$file, [string]$rule) {
+  # the helpers live INSIDE Get-Findings, so a caller that loads only this function (Codex's repro does) gets the whole scanner
+  function Get-HereStringFindings($ast, [string]$where, [string]$rule, [int]$depth) {
+    if ($depth -gt 3) { return }
+    $hs = @($ast.FindAll({ param($x) ($x -is [Management.Automation.Language.StringConstantExpressionAst] -and [string]$x.StringConstantType -match 'HereString') -or ($x -is [Management.Automation.Language.ExpandableStringExpressionAst] -and [string]$x.StringConstantType -match 'HereString') }, $true))
+    foreach ($h in $hs) {
+      $txt = [string]$h.Value; if (-not $txt.Trim()) { continue }
+      $t2 = $null; $e2 = $null
+      $a2 = [Management.Automation.Language.Parser]::ParseInput($txt, [ref]$t2, [ref]$e2)
+      if (@($e2 | Where-Object { $_ }).Count) { continue }   # not code (prose, XML, a template): not scanned
+      $w2 = ($where + ':' + $h.Extent.StartLineNumber + ' (inside a here-string)')
+      foreach ($o in @(Get-FindingsAst $a2 $e2 $w2 $rule '')) { $o }
+      foreach ($o in @(Get-HereStringFindings $a2 $w2 $rule ($depth + 1))) { $o }
+    }
+  }
+  function Get-FindingsAst($ast, $err, [string]$rel, [string]$rule, [string]$file) {
+    $out = @()
+    switch ($rule) {
+      'parse' { foreach ($e in @($err)) { if ($e) { $out += ('{0}:{1} {2}' -f $rel, $e.Extent.StartLineNumber, $e.Message) } } }
+      'ternary' { foreach ($a in $ast.FindAll({ param($x) $x.GetType().Name -eq 'TernaryExpressionAst' }, $true)) { $out += ('{0}:{1} {2}' -f $rel, $a.Extent.StartLineNumber, $a.Extent.Text) } }
+      'chain' { foreach ($a in $ast.FindAll({ param($x) $x.GetType().Name -eq 'PipelineChainAst' }, $true)) { $out += ('{0}:{1} {2}' -f $rel, $a.Extent.StartLineNumber, $a.Extent.Text) } }
+      'coalesce' {
+        foreach ($a in $ast.FindAll({ param($x) ($x -is [Management.Automation.Language.BinaryExpressionAst] -and [string]$x.Operator -eq 'QuestionQuestion') -or ($x -is [Management.Automation.Language.AssignmentStatementAst] -and [string]$x.Operator -eq 'QuestionQuestionEquals') }, $true)) { $out += ('{0}:{1} {2}' -f $rel, $a.Extent.StartLineNumber, $a.Extent.Text) }
+      }
+      'nullcond' {
+        foreach ($a in $ast.FindAll({ param($x) $p = $x.PSObject.Properties['NullConditional']; ($p -and $p.Value) }, $true)) { $out += ('{0}:{1} {2}' -f $rel, $a.Extent.StartLineNumber, $a.Extent.Text) }
+      }
+      'clean' {
+        foreach ($a in $ast.FindAll({ param($x) $x -is [Management.Automation.Language.ScriptBlockAst] }, $true)) { $p = $a.PSObject.Properties['CleanBlock']; if ($p -and $p.Value) { $out += ('{0}:{1} clean block' -f $rel, $a.Extent.StartLineNumber) } }
+      }
+      'params' {
+        foreach ($c in $ast.FindAll({ param($x) $x -is [Management.Automation.Language.CommandAst] }, $true)) {
+          $n = $c.GetCommandName(); if (-not $n) { continue }
+          foreach ($r in $paramRules) {
+            if ($n -ne $r.cmd) { continue }
+            foreach ($e in $c.CommandElements) {
+              if ($e -is [Management.Automation.Language.CommandParameterAst]) {
+                foreach ($p in $r.p) { if ($p -ieq $e.ParameterName) { $out += ('{0}:{1} {2} -{3}' -f $rel, $c.Extent.StartLineNumber, $n, $e.ParameterName) } }
+              }
+            }
+          }
+          if ($n -eq 'Join-Path') {
+            $pos = @($c.CommandElements | Select-Object -Skip 1 | Where-Object { $_ -isnot [Management.Automation.Language.CommandParameterAst] })
+            $named = @($c.CommandElements | Where-Object { $_ -is [Management.Automation.Language.CommandParameterAst] })
+            if ($pos.Count -ge 3 -or ($pos.Count -ge 2 -and $named.Count -eq 0 -and $false)) { $out += ('{0}:{1} Join-Path with 3+ positional paths' -f $rel, $c.Extent.StartLineNumber) }
+          }
+          foreach ($e in $c.CommandElements) {
+            if ($e -is [Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq 'Encoding' -and $e.Argument) { }
+          }
+          $i = 0; $els = @($c.CommandElements)
+          for ($i = 0; $i -lt $els.Count; $i++) {
+            $e = $els[$i]
+            if ($e -is [Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq 'Encoding') {
+              $v = $(if ($e.Argument) { $e.Argument.Extent.Text } elseif ($i + 1 -lt $els.Count) { $els[$i + 1].Extent.Text } else { '' })
+              if ($v -match "(?i)^['""]?utf8(NoBOM|BOM)['""]?$") { $out += ('{0}:{1} -Encoding {2}' -f $rel, $c.Extent.StartLineNumber, $v) }
+            }
+          }
+        }
+      }
+      'cmds' { foreach ($c in $ast.FindAll({ param($x) $x -is [Management.Automation.Language.CommandAst] }, $true)) { $n = $c.GetCommandName(); if ($n -and ($ps7Cmds -contains $n)) { $out += ('{0}:{1} {2}' -f $rel, $c.Extent.StartLineNumber, $n) } } }
+      'netcore' {
+        # only code tokens: comments are skipped (a comment that names an API is not a call)
+        $code = @($ast.FindAll({ param($x) $x -is [Management.Automation.Language.InvokeMemberExpressionAst] -or $x -is [Management.Automation.Language.MemberExpressionAst] -or $x -is [Management.Automation.Language.TypeExpressionAst] }, $true))
+        foreach ($a in $code) { if ($a.Extent.Text -match $netCore) { $out += ('{0}:{1} {2}' -f $rel, $a.Extent.StartLineNumber, $a.Extent.Text) } }
+        $out = @($out | Select-Object -Unique)
+      }
+      'requires' {
+        $sr = $ast.ScriptRequirements
+        if ($sr -and $sr.RequiredPSVersion -and $sr.RequiredPSVersion.Major -ge 6) { $out += ('{0} #requires -Version {1}' -f $rel, $sr.RequiredPSVersion) }
+        if ($sr -and $sr.RequiredPSEditions -and ($sr.RequiredPSEditions -contains 'Core') -and -not ($sr.RequiredPSEditions -contains 'Desktop')) { $out += ('{0} #requires -PSEdition Core' -f $rel) }
+        foreach ($a in $ast.FindAll({ param($x) $x -is [Management.Automation.Language.VariableExpressionAst] -and $x.VariablePath.UserPath -eq 'PSStyle' }, $true)) { $out += ('{0}:{1} $PSStyle' -f $rel, $a.Extent.StartLineNumber) }
+      }
+      'encoding' {
+        $b = [IO.File]::ReadAllBytes($file)
+        $bom = ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)
+        if (-not $bom) { $first = -1; for ($k = 0; $k -lt $b.Length; $k++) { if ($b[$k] -gt 127) { $first = $k; break } }; if ($first -ge 0) { $line = 1; for ($k = 0; $k -lt $first; $k++) { if ($b[$k] -eq 10) { $line++ } }; $out += ('{0}:{1} non-ASCII byte without a UTF-8 BOM' -f $rel, $line) } }
+      }
+    }
+    foreach ($o in $out) { $o }
+  }
   $tok = $null; $err = $null
   $ast = [Management.Automation.Language.Parser]::ParseFile($file, [ref]$tok, [ref]$err)
   foreach ($o in @(Get-FindingsAst $ast $err $file $rule $file)) { $o }
   if ($rule -eq 'encoding') { return }
   foreach ($o in @(Get-HereStringFindings $ast $file $rule 1)) { $o }
-}
-function Get-HereStringFindings($ast, [string]$where, [string]$rule, [int]$depth) {
-  if ($depth -gt 3) { return }
-  $hs = @($ast.FindAll({ param($x) ($x -is [Management.Automation.Language.StringConstantExpressionAst] -and [string]$x.StringConstantType -match 'HereString') -or ($x -is [Management.Automation.Language.ExpandableStringExpressionAst] -and [string]$x.StringConstantType -match 'HereString') }, $true))
-  foreach ($h in $hs) {
-    $txt = [string]$h.Value; if (-not $txt.Trim()) { continue }
-    $t2 = $null; $e2 = $null
-    $a2 = [Management.Automation.Language.Parser]::ParseInput($txt, [ref]$t2, [ref]$e2)
-    if (@($e2 | Where-Object { $_ }).Count) { continue }   # not code (prose, XML, a template): not scanned
-    $w2 = ($where + ':' + $h.Extent.StartLineNumber + ' (inside a here-string)')
-    foreach ($o in @(Get-FindingsAst $a2 $e2 $w2 $rule '')) { $o }
-    foreach ($o in @(Get-HereStringFindings $a2 $w2 $rule ($depth + 1))) { $o }
-  }
-}
-function Get-FindingsAst($ast, $err, [string]$rel, [string]$rule, [string]$file) {
-  $out = @()
-  switch ($rule) {
-    'parse' { foreach ($e in @($err)) { if ($e) { $out += ('{0}:{1} {2}' -f $rel, $e.Extent.StartLineNumber, $e.Message) } } }
-    'ternary' { foreach ($a in $ast.FindAll({ param($x) $x.GetType().Name -eq 'TernaryExpressionAst' }, $true)) { $out += ('{0}:{1} {2}' -f $rel, $a.Extent.StartLineNumber, $a.Extent.Text) } }
-    'chain' { foreach ($a in $ast.FindAll({ param($x) $x.GetType().Name -eq 'PipelineChainAst' }, $true)) { $out += ('{0}:{1} {2}' -f $rel, $a.Extent.StartLineNumber, $a.Extent.Text) } }
-    'coalesce' {
-      foreach ($a in $ast.FindAll({ param($x) ($x -is [Management.Automation.Language.BinaryExpressionAst] -and [string]$x.Operator -eq 'QuestionQuestion') -or ($x -is [Management.Automation.Language.AssignmentStatementAst] -and [string]$x.Operator -eq 'QuestionQuestionEquals') }, $true)) { $out += ('{0}:{1} {2}' -f $rel, $a.Extent.StartLineNumber, $a.Extent.Text) }
-    }
-    'nullcond' {
-      foreach ($a in $ast.FindAll({ param($x) $p = $x.PSObject.Properties['NullConditional']; ($p -and $p.Value) }, $true)) { $out += ('{0}:{1} {2}' -f $rel, $a.Extent.StartLineNumber, $a.Extent.Text) }
-    }
-    'clean' {
-      foreach ($a in $ast.FindAll({ param($x) $x -is [Management.Automation.Language.ScriptBlockAst] }, $true)) { $p = $a.PSObject.Properties['CleanBlock']; if ($p -and $p.Value) { $out += ('{0}:{1} clean block' -f $rel, $a.Extent.StartLineNumber) } }
-    }
-    'params' {
-      foreach ($c in $ast.FindAll({ param($x) $x -is [Management.Automation.Language.CommandAst] }, $true)) {
-        $n = $c.GetCommandName(); if (-not $n) { continue }
-        foreach ($r in $paramRules) {
-          if ($n -ne $r.cmd) { continue }
-          foreach ($e in $c.CommandElements) {
-            if ($e -is [Management.Automation.Language.CommandParameterAst]) {
-              foreach ($p in $r.p) { if ($p -ieq $e.ParameterName) { $out += ('{0}:{1} {2} -{3}' -f $rel, $c.Extent.StartLineNumber, $n, $e.ParameterName) } }
-            }
-          }
-        }
-        if ($n -eq 'Join-Path') {
-          $pos = @($c.CommandElements | Select-Object -Skip 1 | Where-Object { $_ -isnot [Management.Automation.Language.CommandParameterAst] })
-          $named = @($c.CommandElements | Where-Object { $_ -is [Management.Automation.Language.CommandParameterAst] })
-          if ($pos.Count -ge 3 -or ($pos.Count -ge 2 -and $named.Count -eq 0 -and $false)) { $out += ('{0}:{1} Join-Path with 3+ positional paths' -f $rel, $c.Extent.StartLineNumber) }
-        }
-        foreach ($e in $c.CommandElements) {
-          if ($e -is [Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq 'Encoding' -and $e.Argument) { }
-        }
-        $i = 0; $els = @($c.CommandElements)
-        for ($i = 0; $i -lt $els.Count; $i++) {
-          $e = $els[$i]
-          if ($e -is [Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq 'Encoding') {
-            $v = $(if ($e.Argument) { $e.Argument.Extent.Text } elseif ($i + 1 -lt $els.Count) { $els[$i + 1].Extent.Text } else { '' })
-            if ($v -match "(?i)^['""]?utf8(NoBOM|BOM)['""]?$") { $out += ('{0}:{1} -Encoding {2}' -f $rel, $c.Extent.StartLineNumber, $v) }
-          }
-        }
-      }
-    }
-    'cmds' { foreach ($c in $ast.FindAll({ param($x) $x -is [Management.Automation.Language.CommandAst] }, $true)) { $n = $c.GetCommandName(); if ($n -and ($ps7Cmds -contains $n)) { $out += ('{0}:{1} {2}' -f $rel, $c.Extent.StartLineNumber, $n) } } }
-    'netcore' {
-      # only code tokens: comments are skipped (a comment that names an API is not a call)
-      $code = @($ast.FindAll({ param($x) $x -is [Management.Automation.Language.InvokeMemberExpressionAst] -or $x -is [Management.Automation.Language.MemberExpressionAst] -or $x -is [Management.Automation.Language.TypeExpressionAst] }, $true))
-      foreach ($a in $code) { if ($a.Extent.Text -match $netCore) { $out += ('{0}:{1} {2}' -f $rel, $a.Extent.StartLineNumber, $a.Extent.Text) } }
-      $out = @($out | Select-Object -Unique)
-    }
-    'requires' {
-      $sr = $ast.ScriptRequirements
-      if ($sr -and $sr.RequiredPSVersion -and $sr.RequiredPSVersion.Major -ge 6) { $out += ('{0} #requires -Version {1}' -f $rel, $sr.RequiredPSVersion) }
-      if ($sr -and $sr.RequiredPSEditions -and ($sr.RequiredPSEditions -contains 'Core') -and -not ($sr.RequiredPSEditions -contains 'Desktop')) { $out += ('{0} #requires -PSEdition Core' -f $rel) }
-      foreach ($a in $ast.FindAll({ param($x) $x -is [Management.Automation.Language.VariableExpressionAst] -and $x.VariablePath.UserPath -eq 'PSStyle' }, $true)) { $out += ('{0}:{1} $PSStyle' -f $rel, $a.Extent.StartLineNumber) }
-    }
-    'encoding' {
-      $b = [IO.File]::ReadAllBytes($file)
-      $bom = ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)
-      if (-not $bom) { $first = -1; for ($k = 0; $k -lt $b.Length; $k++) { if ($b[$k] -gt 127) { $first = $k; break } }; if ($first -ge 0) { $line = 1; for ($k = 0; $k -lt $first; $k++) { if ($b[$k] -eq 10) { $line++ } }; $out += ('{0}:{1} non-ASCII byte without a UTF-8 BOM' -f $rel, $line) } }
-    }
-  }
-  foreach ($o in $out) { $o }
 }
 $rules = [ordered]@{
   parse = 'every file parses'; ternary = 'no ternary ?: (PS7)'; chain = 'no && / || pipeline chains (PS7)'; coalesce = 'no ?? / ??= (PS7)'
