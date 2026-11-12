@@ -449,7 +449,7 @@ if ($Mode -eq 'Rollback') {
       elseif ($diff.Count) {
         $idS = & $camIdNow $ip $cr
         if ($idS) { $res += [pscustomobject]@{ text = ('settings NOT put back: ' + $idS); ok = $false } }
-        else { $w = Set-FsStream $ip $c.brand $cr $cur $diff; $okS = [bool]$w.ok
+        else { $w = Set-FsStream $ip $c.brand $cr $cur $diff ([string]$c.mac) $camSer 'the undo file'; $okS = [bool]$w.ok
           # 2.2.3 (Codex #20): settings count as back only when the camera reads them back as they were
           if ($okS) { $rd = Get-FsStream $ip $c.brand $cr; $okS = [bool]($rd -and -not @(Get-FsSettingsDiff $rd $want).Count -and -not @(& $extra $rd).Count) }
           $res += [pscustomobject]@{ text = 'settings back'; ok = $okS }; if ($okS) { & $markDone ($ck + '|settings') } }
@@ -480,7 +480,7 @@ if ($Mode -eq 'Rollback') {
       elseif ($dst.state -ne 'free') { $res += [pscustomobject]@{ text = ('address NOT put back to ' + $nb.ip + ': ' + $(if ($dst.state -eq 'self') { 'this camera answers there too (two addresses?) - check it by hand' } else { $dst.why + ' - nothing was moved (both would drop off the network); free that address or move it back by hand' })); ok = $false } }
       else {
         $w = Set-FsNet $ip $c.brand $cr $net ([string]$nb.ip) ([string]$nb.mask) ([string]$nb.gw) ([string]$nb.dns1) ([string]$nb.dns2) -Dhcp:([bool]$nbDhcp)
-        if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $ip $c.brand $cr) }
+        if ($w.ok -and $w.reboot) { [void](Restart-FsDeviceChecked $ip $c.brand $cr ([string]$c.mac) $camSer 'this camera' 'the undo file') }   # 2.2.21 (F02)
         if ($nbDhcp) {
           # 2.2.19 (Codex 2.2.18 F13): DHCP on is back only when the camera is FOUND again by its MAC and reads back DHCP on. An
           # acknowledged write, or a camera not found again, is NOT CHECKED: the step is not marked done and Undo stays incomplete.
@@ -629,7 +629,7 @@ if ($Mode -eq 'Rollback') {
       if ($dst.state -ne 'free') { Say ('  NVR ' + $n.target + ': NOT moved back to ' + $n.old.ip + ' - ' + $(if ($dst.state -eq 'self') { 'that NVR answers there too (two addresses?)' } else { $dst.why }) + '. Nothing was moved (both would drop off the network); free that address or move it back by hand ' + $script:FsBad) 'Red'; $bad++; continue }
     }
     $w = Set-FsNet ([string]$n.target) 'Hikvision' $cr $net ([string]$n.old.ip) ([string]$n.old.mask) ([string]$n.old.gw) ([string]$n.old.dns1) ([string]$n.old.dns2) -Dhcp:([bool]$oldDhcp)
-    if ($w.ok -and $w.reboot) { [void](Restart-FsDevice ([string]$n.target) 'Hikvision' $cr) }
+    if ($w.ok -and $w.reboot) { [void](Restart-FsDeviceChecked ([string]$n.target) 'Hikvision' $cr ([string]$n.mac) $nser 'that NVR' 'the undo file') }   # 2.2.21 (F02)
     $nmN = ''; $backN = $false; $where = [string]$n.old.ip
     if ($oldDhcp) {
       # 2.2.19 (Codex 2.2.18 F13): DHCP on is back only when the NVR is FOUND again by its MAC and reads back DHCP on; an acknowledged
@@ -1049,7 +1049,7 @@ foreach ($n in @($plan.nvrs | Where-Object { $_.steps -contains 'move' })) {
   if ($fwN2) { & $nvrFail ('NOT moved: ' + $fwN2 + '. Nothing was changed - scan again'); continue }
   if ($n.target -ne $n.ip -and -not (Test-FsIpFree $n.target)) { & $nvrFail ('NOT moved: ' + $(if ($script:FsIpFreeWhy) { $script:FsIpFreeWhy } else { $n.target + ' started answering on the network just now (another device took it)' }) + '. Nothing was changed - run it again'); continue }
   $w = Set-FsNet $n.ip 'Hikvision' $cr $net $n.target $devNet.mask $devNet.gw
-  if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $n.ip 'Hikvision' $cr) }
+  if ($w.ok -and $w.reboot) { [void](Restart-FsDeviceChecked $n.ip 'Hikvision' $cr ([string]$n.mac) '' 'the NVR the scan found' 'the scan') }   # 2.2.21 (F02)
   $answers = $w.ok -and (Wait-FsDevice $n.target 'Hikvision' $nvrPw[$n.ip] ([int]$opts.rebootWaitSec))
   # 2.2.19 (F03): the recorder that answers on the new address must be the scanned one (fresh MAC) before it counts as moved
   if ($answers) { $fwN3 = Get-FsFwdNvrBlock $n.target (Fs-Cred $nvrPw[$n.ip]) ([string]$n.mac) ''; if ($fwN3) { $answers = $false; $w = [pscustomobject]@{ ok = $true; reboot = $false; idWhy = $fwN3 } } }
@@ -1252,8 +1252,9 @@ foreach ($c in $ordered) {
       if ($unkF) { & $step ('settings NOT CHECKED: the camera did not report its ' + $unkF + ', so it is not known whether they are right - nothing changed') $false }
       elseif ($diff.Count -and -not (& $camGate 'settings change')) { $stop = $true }
       elseif ($diff.Count) {
-        $w = Set-FsStream $ip $c.brand $cr $cur $diff
-        if (-not $w.ok) { & $step ((Format-FsSettingsDiff $diff) + ' - the camera refused the settings') $false }
+        $w = Set-FsStream $ip $c.brand $cr $cur $diff ([string]$c.mac) $camSerF 'the scan'
+        if (-not $w.ok -and $w.PSObject.Properties['why'] -and $w.why) { & $step ('settings NOT done: ' + $w.why + ' - camera left as it is') $false; $stop = $true }
+        elseif (-not $w.ok) { & $step ((Format-FsSettingsDiff $diff) + ' - the camera refused the settings') $false }
         elseif ($w.reboot) { $needReboot = $true; $streamCheck = $diff }
         else { $mis = @(Get-FsStreamMismatch (Get-FsStream $ip $c.brand $cr) $diff); if ($mis.Count) { & $step ('settings NOT confirmed: ' + ($mis -join '; ')) $false } else { & $step (Format-FsSettingsDiff $diff) $true } }
       } else { & $step 'settings already right' $true }
@@ -1283,7 +1284,7 @@ foreach ($c in $ordered) {
         if ($mvOk -and $t -ne $ip -and -not (Test-FsIpFree $t)) { & $step ('NOT moved: ' + $(if ($script:FsIpFreeWhy) { $script:FsIpFreeWhy } else { (Get-FsShort $t) + ' started answering on the network just now (another device took it)' }) + ' - camera left on ' + (Get-FsShort $ip)) $false; $mvOk = $false }
         if (-not $mvOk) { $rbc.ip_target = ''; Save-Rb; $stop = $true; $w = [pscustomobject]@{ ok = $false; reboot = $false; skipped = $true } }
         else { $w = Set-FsNet $ip $c.brand $cr $net $t $devNet.mask $devNet.gw }
-        if ($w.ok -and $w.reboot) { [void](Restart-FsDevice $ip $c.brand $cr) }
+        if ($w.ok -and $w.reboot) { [void](Restart-FsDeviceChecked $ip $c.brand $cr ([string]$c.mac) $camSerF 'the camera the scan found' 'the scan') }   # 2.2.21 (F02)
         $back = $w.ok -and (Wait-FsDevice $t $c.brand $pw ([int]$opts.moveWaitSec))
         if (-not $back -and $w.ok -and $t -ne $ip) {
           # 2.1.0 (3 Hewlett, cam .7 stayed on its old address): the new address was accepted but the camera did not move.
@@ -1291,7 +1292,7 @@ foreach ($c in $ordered) {
           $st0 = Test-FsLogin $ip $c.brand $pw
           if ($st0 -eq 'ok') {
             Say ('    still answering on ' + (Get-FsShort $ip) + ' - restarting it once so the new address takes') 'Yellow'
-            [void](Restart-FsDevice $ip $c.brand $cr)
+            [void](Restart-FsDeviceChecked $ip $c.brand $cr ([string]$c.mac) $camSerF 'the camera the scan found' 'the scan')   # 2.2.21 (F02)
             $back = Wait-FsDevice $t $c.brand $pw ([int]$opts.rebootWaitSec)
           }
         }

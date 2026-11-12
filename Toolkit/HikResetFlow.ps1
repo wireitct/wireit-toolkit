@@ -30,7 +30,10 @@ function Read-HikState([string]$Path) {
     $o = $null; $why = ''
     try { $raw = [IO.File]::ReadAllText($Path); if (-not ([string]$raw).Trim()) { $why = 'the file is empty' } else { $o = $raw | ConvertFrom-Json -ErrorAction Stop } } catch { $why = $_.Exception.Message }
     if ($o -and $o.PSObject.Properties['devices']) {
-      $o.devices = @($o.devices | Where-Object { $null -ne $_ }); if ($o.PSObject.Properties['exports']) { $o.exports = @($o.exports | Where-Object { $null -ne $_ }) } else { $o | Add-Member -NotePropertyName exports -NotePropertyValue @() -Force }
+      # 2.2.21 (Codex 2.2.20 F11, class E): a null device list or a null row is DAMAGED history, not "no devices": it is kept and goes to
+      # the quarantine below as an unnamed entry (which blocks every device until sorted out). Only a real empty list [] is empty.
+      # 2.2.20 dropped them here, before the check, so the reset took them for no history and exported again.
+      $o.devices = @($o.devices); if ($o.PSObject.Properties['exports']) { $o.exports = @($o.exports | Where-Object { $null -ne $_ }) } else { $o | Add-Member -NotePropertyName exports -NotePropertyValue @() -Force }
       # 2.2.20 (Codex 2.2.19 class E, second pass): every device row is TYPE-checked before any reset step uses it. A row with a field of
       # the wrong type (a "2" string for a count, a status this tool never writes, a time that is not a time) is QUARANTINED: taken out of
       # the device list, kept in the record under "quarantined" (so it is never lost or overwritten), a copy of the file as it was read is
@@ -500,9 +503,11 @@ function Export-HikRequests($Devices, [string]$OutDir, $State, [string]$StatePat
     if (-not $e.ok) { $why = $e.error } else { $f = Save-HikResetFile $dev $e $OutDir; if (-not $f) { $why = 'its answer had no request code - no file saved' } }
     if (-not $f) {
       Hk-Say ('  ' + $dev.model + ' ' + $dev.ip + ': could not read its request code - ' + $why) 'Yellow'
-      # no file: the state before stands (an earlier reply is still void: the intent says an export was started); a reserved
-      # reboot-retry stays used for this start-up of the camera (the device may have made a code whose answer was lost)
-      if ($res.isNew) { Undo-HikExportReservation $State $res } else { Set-HikStateField $row 'status' ([string]$row.exportPrevStatus); Set-HikStateField $row 'note' ('export: ' + $why) }
+      # 2.2.21 (Codex 2.2.20 F09, class F): no file = the outcome is UNKNOWN (the device may have made a code whose answer was lost, and a
+      # second export would void it). The reservation STAYS as "exporting" for this start-up of the camera - a first export too (2.2.20
+      # removed a new row, so the next run asked the same boot again). The next run settles it (Resolve-HikUnfinishedExport): the file
+      # if it turns up, else NOT asked again until the camera has restarted. The reserved reboot-retry stays used.
+      Set-HikStateField $row 'note' ('export answer not received (' + $why + '): not asked again until the camera restarts')
       if (-not (Save-HikStateOk $StatePath $State)) { Hk-Say (Get-HikNotSavedStop 'Asking the next device for a request file') 'Red'; break }
       continue
     }
@@ -550,6 +555,43 @@ function Test-HikRequestFileInForce($D) {
   return ''
 }
 
+# 2.2.21 (Codex F18): read the request file ONCE, check those bytes against this record (ends with the serial, export id = first 12 hex of
+# their SHA-256), and write them to a private read-only copy that is what gets attached. Returns @{ why; path; sha; dir } ('' why = good).
+function New-HikFrozenRequest($D) {
+  $o = [pscustomobject]@{ why = ''; path = ''; sha = ''; dir = '' }
+  $file = [string]$D.requestFile
+  if (-not $file -or -not (Test-Path -LiteralPath $file)) { $o.why = 'request file missing'; return $o }
+  $bytes = $null; try { $bytes = [IO.File]::ReadAllBytes($file) } catch { $o.why = ('the request file could not be read (' + $_.Exception.Message + ')'); return $o }
+  $txt = ''; try { $txt = (New-Object IO.StreamReader((New-Object IO.MemoryStream(,$bytes)), $true)).ReadToEnd().Trim() } catch { $txt = '' }
+  if (-not [string]$D.serial -or -not $txt.EndsWith([string]$D.serial)) { $o.why = 'the request file does not end with this device''s serial'; return $o }
+  $sha = Get-HikBytesSha $bytes
+  $eid = $(if ($D.PSObject.Properties['exportId']) { [string]$D.exportId } else { '' })
+  if ($eid -and $sha.Substring(0, 12) -ne $eid) { $o.why = ('the request file changed since it was made (it is not export ' + $eid + ' any more): another export or an edit replaced it'); return $o }
+  try {
+    $o.dir = Join-Path ([IO.Path]::GetTempPath()) ('WireIt-HikSend-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $o.dir -ErrorAction Stop | Out-Null
+    $o.path = Join-Path $o.dir (Split-Path -Leaf $file)
+    [IO.File]::WriteAllBytes($o.path, $bytes)
+    try { (Get-Item -LiteralPath $o.path).IsReadOnly = $true } catch {}
+    if ((Get-HikBytesSha ([IO.File]::ReadAllBytes($o.path))) -ne $sha) { throw 'the copy does not read back the same' }
+  } catch { $o.why = ('a checked copy of the request file could not be made (' + $_.Exception.Message + ')'); return $o }
+  $o.sha = $sha
+  return $o
+}
+# '' = the frozen copy is still the checked bytes AND the original file still holds them; otherwise why not
+function Test-HikFrozenStill($F, $D) {
+  $a = ''; try { $a = Get-HikBytesSha ([IO.File]::ReadAllBytes([string]$F.path)) } catch { return 'the checked copy of the request file could not be read again' }
+  if ($a -ne [string]$F.sha) { return 'the checked copy of the request file changed' }
+  $b = ''; try { $b = Get-HikBytesSha ([IO.File]::ReadAllBytes([string]$D.requestFile)) } catch { return 'the request file could not be read again after the form was filled' }
+  if ($b -ne [string]$F.sha) { return 'the request file changed while the form was being filled (another export or an edit replaced it)' }
+  return ''
+}
+function Remove-HikFrozenRequest($F) {
+  if (-not $F -or -not [string]$F.dir) { return }
+  try { if ([string]$F.path -and (Test-Path -LiteralPath $F.path)) { (Get-Item -LiteralPath $F.path).IsReadOnly = $false } } catch {}
+  try { Remove-Item -Recurse -Force -LiteralPath $F.dir -ErrorAction SilentlyContinue } catch {}
+}
+
 # ---------------- 2. Hikvision's page ----------------
 function Submit-HikRequests($State, [string]$StatePath, $Form, [int]$PerDeviceTimeoutSec = 900, $Only = $null) {
   # 2.2.1 (review H7): $Only = the serials this run may act on (the approved targets); an old saved device outside it is left alone
@@ -566,30 +608,45 @@ function Submit-HikRequests($State, [string]$StatePath, $Form, [int]$PerDeviceTi
     if (([datetime]$d.validUntil) -lt (Get-Date)) { Set-HikStateField $d 'status' 'expired'; Set-HikStateField $d 'note' 'older than 48 hours - export again'; Save-HikState $StatePath $State; Hk-Say ($d.model + ' ' + $d.ip + ': the request file is older than 48 hours - it needs a new export.') 'Yellow'; continue }
     Hk-Say ''
     Hk-Say ('[' + $n + '/' + $todo.Count + '] ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + ', form serial ' + $d.shortSerial + ')') 'Cyan'
-    $ok = $false
+    $ok = $false; $fz = $null
     if ($exe) {
       $s = Start-HikBrowserSession $script:PortalUrl
       if ($s) {
         try {
           if (-not (Wait-PortalForm $s 60)) { Hk-Say 'Hikvision''s page did not load the form. Check the internet on this PC.' 'Yellow' }
           else {
-            $r = Fill-HikPortalForm $s $Form $d $d.requestFile
+            # 2.2.21 (Codex F18): the file attached is a frozen copy of bytes checked against this record NOW (after the page wait), and the
+            # original must still be those bytes after the form is filled; otherwise nothing is left for Submit (the window is closed)
+            $fz = New-HikFrozenRequest $d
+            $fzWhy = [string]$fz.why
+            if (-not $fzWhy) { $r = Fill-HikPortalForm $s $Form $d $fz.path; $fzWhy = Test-HikFrozenStill $fz $d }
+            if ($fzWhy) { Set-HikStateField $d 'note' $fzWhy; Hk-Say ('  ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + '): NOT sent to Hikvision - ' + $fzWhy + '. The browser window is closed. Export it again (one new request file).') 'Red' }
+            else {
             $bad = @(Test-PortalFilled $r $d)
             if ($bad.Count) { Hk-Say ('  Form filled, but check: ' + ($bad -join '; ')) 'Yellow' } else { Hk-Say ('  Form filled in: ' + $Form.firstName + ' ' + $Form.lastName + ', ' + $Form.company + ', ' + $Form.email + ', serial ' + $d.shortSerial + ', file attached.') 'Green' }
             Hk-Say '  YOUR STEP: type the picture code in the browser window and press Submit; if Hikvision shows a slider, slide it. (These are there to tell a person from a program, so the Toolkit leaves them to you.)' 'Cyan'
             $res = Wait-PortalSubmitted $s $PerDeviceTimeoutSec $null ({ $f = @(Restore-PortalFields $s $Form $d); if ($f.Count) { Hk-Say ('  (the page cleared ' + ($f -join ', ') + ' - filled again)') } }.GetNewClosure())
             if ($res -eq 'submitted') { $ok = $true; Set-HikStateField $d 'status' 'submitted'; Set-HikStateField $d 'submittedAt' (Get-Date -Format 's'); Hk-Say ('  Hikvision accepted it. The reply goes to ' + $Form.email) 'Green' }
             else { foreach ($l in @(Get-HikSubmitNextSteps $d $res $PerDeviceTimeoutSec)) { Hk-Say $l 'Yellow' } }
+            }
           }
-        } finally { Stop-HikBrowserSession $s }
+        } finally { Stop-HikBrowserSession $s; if ($fz) { Remove-HikFrozenRequest $fz }; $fz = $null }
       } else { Hk-Say '  Could not open the browser window.' 'Yellow' }
     }
     if (-not $ok -and -not $exe) {
       # no Chrome/Edge: open the page in whatever browser is default, with the values on screen (copy + paste)
-      Hk-Say ('  No Chrome or Edge found. Opening the page in your browser. Fill it with: ' + $Form.firstName + ' ' + $Form.lastName + ' / ' + $Form.email + ' / ' + $Form.company + ' / ' + $Form.state + ' / ' + $Form.zip + ' / ' + $Form.businessType + ' / serial ' + $d.shortSerial + ' / model ' + $d.model + ' / file ' + $d.requestFile) 'Yellow'
+      # 2.2.21 (Codex F18 twin): the person attaches a frozen, checked copy, and it must still be this record's bytes when they say "sent"
+      $fz = New-HikFrozenRequest $d
+      if ($fz.why) { Set-HikStateField $d 'note' ([string]$fz.why); Hk-Say ('  ' + $d.model + ' ' + $d.ip + ' (serial ' + $d.serial + '): NOT sent to Hikvision - ' + $fz.why + '. Export it again (one new request file).') 'Red' }
+      else {
+      Hk-Say ('  No Chrome or Edge found. Opening the page in your browser. Fill it with: ' + $Form.firstName + ' ' + $Form.lastName + ' / ' + $Form.email + ' / ' + $Form.company + ' / ' + $Form.state + ' / ' + $Form.zip + ' / ' + $Form.businessType + ' / serial ' + $d.shortSerial + ' / model ' + $d.model + ' / file ' + $fz.path) 'Yellow'
       try { Start-Process $script:PortalUrl } catch {}
       $a = Hk-Ask '  When Hikvision says it is sent, press Enter (S = skip this one)'
-      if ($a -notmatch '^(?i)s') { $ok = $true; Set-HikStateField $d 'status' 'submitted'; Set-HikStateField $d 'submittedAt' (Get-Date -Format 's') }
+      $fzWhy = Test-HikFrozenStill $fz $d
+      if ($a -notmatch '^(?i)s' -and $fzWhy) { Set-HikStateField $d 'note' $fzWhy; Hk-Say ('  Not marked as sent: ' + $fzWhy + '. If you did submit it, export again before the next try.') 'Red' }
+      elseif ($a -notmatch '^(?i)s') { $ok = $true; Set-HikStateField $d 'status' 'submitted'; Set-HikStateField $d 'submittedAt' (Get-Date -Format 's') }
+      Remove-HikFrozenRequest $fz; $fz = $null
+      }
     }
     # 2.2.19 (class E): a "sent to Hikvision" that cannot be saved stops the loop (the next run would not know this file is at Hikvision)
     if (-not (Save-HikStateOk $StatePath $State)) { if ($ok) { $sent += $d }; Hk-Say (Get-HikNotSavedStop 'Sending the next request file to Hikvision') 'Red'; break }

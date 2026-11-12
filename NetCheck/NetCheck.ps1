@@ -181,7 +181,12 @@ function Get-NcIsapiProblem($r, [string[]]$Roots) {
     if ($sc -ne '1') { return ('the device answered an error (statusCode ' + $(if ($sc) { $sc } else { '?' }) + $(if ($ss) { ' ' + $ss } else { '' }) + $(if ($sub) { ', ' + $sub } else { '' }) + ')') }
   }
   if ($b -match '(?is)<html[\s>]|<!doctype\s+html') { return 'HTTP 200 with a web page (a login page?), not a device answer' }
-  foreach ($root in @($Roots)) { if ($b -match ('(?is)<(?:\w+:)?' + [regex]::Escape($root) + '[\s>/]')) { return '' } }
+  # 2.2.21 (Codex F16): the answer must PARSE as one complete XML document (a cut-off / damaged answer is NOT CHECKED, never "nobody"),
+  # and one of $Roots must be an element of it (a regex on a tag proved only that the tag's first bytes arrived)
+  $x = $null; try { $x = [xml]($b.Trim([char]0xFEFF).Trim()) } catch { $x = $null }
+  if (-not $x -or -not $x.DocumentElement) { return 'HTTP 200 but the answer is not a complete XML document (cut off or damaged)' }
+  if ($x.DocumentElement.LocalName -ceq 'ResponseStatus') { $sc2 = ''; foreach ($n in @($x.DocumentElement.ChildNodes)) { if ($n.LocalName -eq 'statusCode') { $sc2 = ([string]$n.InnerText).Trim() } }; if ($sc2 -ne '1') { return ('the device answered an error (statusCode ' + $(if ($sc2) { $sc2 } else { '?' }) + ')') } }
+  foreach ($root in @($Roots)) { if ($x.DocumentElement.LocalName -eq $root -or @($x.GetElementsByTagName('*') | Where-Object { $_.LocalName -eq $root }).Count) { return '' } }
   return ('HTTP 200 but not the expected ' + (@($Roots) -join ' / ') + ' document')
 }
 # 2.2.19 (sweep2, class C): who pulls video from a device. A failed read is NOT CHECKED, never "nobody".
@@ -202,7 +207,12 @@ function Get-NcStreamsText($ss) {
       if ($sc -ne '1') { return ('the device answered an error (statusCode ' + $(if ($sc) { $sc } else { '?' }) + $(if ($ss) { ' ' + $ss } else { '' }) + $(if ($sub) { ', ' + $sub } else { '' }) + ')') }
     }
     if ($b -match '(?is)<html[\s>]|<!doctype\s+html') { return 'HTTP 200 with a web page (a login page?), not a device answer' }
-    foreach ($root in @($Roots)) { if ($b -match ('(?is)<(?:\w+:)?' + [regex]::Escape($root) + '[\s>/]')) { return '' } }
+    # 2.2.21 (Codex F16): the answer must PARSE as one complete XML document (a cut-off / damaged answer is NOT CHECKED, never "nobody"),
+    # and one of $Roots must be an element of it (a regex on a tag proved only that the tag's first bytes arrived)
+    $x = $null; try { $x = [xml]($b.Trim([char]0xFEFF).Trim()) } catch { $x = $null }
+    if (-not $x -or -not $x.DocumentElement) { return 'HTTP 200 but the answer is not a complete XML document (cut off or damaged)' }
+    if ($x.DocumentElement.LocalName -ceq 'ResponseStatus') { $sc2 = ''; foreach ($n in @($x.DocumentElement.ChildNodes)) { if ($n.LocalName -eq 'statusCode') { $sc2 = ([string]$n.InnerText).Trim() } }; if ($sc2 -ne '1') { return ('the device answered an error (statusCode ' + $(if ($sc2) { $sc2 } else { '?' }) + ')') } }
+    foreach ($root in @($Roots)) { if ($x.DocumentElement.LocalName -eq $root -or @($x.GetElementsByTagName('*') | Where-Object { $_.LocalName -eq $root }).Count) { return '' } }
     return ('HTTP 200 but not the expected ' + (@($Roots) -join ' / ') + ' document')
   }
   if (-not $ss -or [int]$ss.code -ne 200) { return ('NOT CHECKED' + $(if ($ss -and [int]$ss.code) { ' (HTTP ' + $ss.code + ')' } else { '' })) }
@@ -233,7 +243,12 @@ function Read-Logs($base, $ip) {
       if ($sc -ne '1') { return ('the device answered an error (statusCode ' + $(if ($sc) { $sc } else { '?' }) + $(if ($ss) { ' ' + $ss } else { '' }) + $(if ($sub) { ', ' + $sub } else { '' }) + ')') }
     }
     if ($b -match '(?is)<html[\s>]|<!doctype\s+html') { return 'HTTP 200 with a web page (a login page?), not a device answer' }
-    foreach ($root in @($Roots)) { if ($b -match ('(?is)<(?:\w+:)?' + [regex]::Escape($root) + '[\s>/]')) { return '' } }
+    # 2.2.21 (Codex F16): the answer must PARSE as one complete XML document (a cut-off / damaged answer is NOT CHECKED, never "nobody"),
+    # and one of $Roots must be an element of it (a regex on a tag proved only that the tag's first bytes arrived)
+    $x = $null; try { $x = [xml]($b.Trim([char]0xFEFF).Trim()) } catch { $x = $null }
+    if (-not $x -or -not $x.DocumentElement) { return 'HTTP 200 but the answer is not a complete XML document (cut off or damaged)' }
+    if ($x.DocumentElement.LocalName -ceq 'ResponseStatus') { $sc2 = ''; foreach ($n in @($x.DocumentElement.ChildNodes)) { if ($n.LocalName -eq 'statusCode') { $sc2 = ([string]$n.InnerText).Trim() } }; if ($sc2 -ne '1') { return ('the device answered an error (statusCode ' + $(if ($sc2) { $sc2 } else { '?' }) + ')') } }
+    foreach ($root in @($Roots)) { if ($x.DocumentElement.LocalName -eq $root -or @($x.GetElementsByTagName('*') | Where-Object { $_.LocalName -eq $root }).Count) { return '' } }
     return ('HTTP 200 but not the expected ' + (@($Roots) -join ' / ') + ' document')
   }
   $st = (Get-Date).ToUniversalTime().AddDays(-$LogDays).ToString('yyyy-MM-ddTHH:mm:ssZ'); $en = (Get-Date).ToUniversalTime().AddHours(14).ToString('yyyy-MM-ddTHH:mm:ssZ')

@@ -1375,7 +1375,9 @@ function Hik-NtpApply($t, [string]$server, $plan, $first = $null) {
     $wa = Get-HikWriteAnswer $r
     if ($wa -eq 'refused') { return @{ ok = $false; why = ('it refused the time-server setting (HTTP ' + $r.code + ')') } }
     $wrote = $true
-    if ($r.code -ne 200) { $unclear = 'its answer to the time-server setting was ' + $(if ([int]$r.code -le 0) { 'lost' } else { 'HTTP ' + $r.code }) }
+    # 2.2.21 (Codex F13): ANY answer that is not a clear yes (also an HTTP 200 that is not a ResponseStatus: HTML, empty, a login page)
+    # is unclear: the time-mode / time-zone write is NOT sent after it (it could switch NTP on with the old, wrong server)
+    if ($wa -ne 'ok') { $unclear = 'its answer to the time-server setting was ' + $(if ([int]$r.code -le 0) { 'lost' } elseif ([int]$r.code -eq 200) { 'HTTP 200 but not a readable yes' } else { 'HTTP ' + $r.code }) }
   }
   if (-not $unclear -and ($plan.needMode -or $plan.needTz)) {
     $tx = Xml $h.raw
@@ -1387,7 +1389,7 @@ function Hik-NtpApply($t, [string]$server, $plan, $first = $null) {
     $wa = Get-HikWriteAnswer $r
     if ($wa -eq 'refused') { return @{ ok = $false; why = ('it refused the time-mode / time-zone setting (HTTP ' + $r.code + ')' + $(if ($wrote) { ' - the time-server setting was already sent' } else { '' })) } }
     $wrote = $true
-    if ($r.code -ne 200) { $unclear = 'its answer to the time-mode / time-zone setting was ' + $(if ([int]$r.code -le 0) { 'lost' } else { 'HTTP ' + $r.code }) }
+    if ($wa -ne 'ok') { $unclear = 'its answer to the time-mode / time-zone setting was ' + $(if ([int]$r.code -le 0) { 'lost' } elseif ([int]$r.code -eq 200) { 'HTTP 200 but not a readable yes' } else { 'HTTP ' + $r.code }) }
   }
   $stop = Get-NhNtpIdStop $t $first 'the read-back' $wrote; if ($stop) { return @{ ok = $false; why = $stop } }
   $after = Hik-Time $t
@@ -1412,6 +1414,13 @@ function Onvif-NtpPlan($t, [string]$server) {
   if ($needTz) { $ch += ('time zone -> US Eastern with daylight saving (was ' + $(if ($o.tz -and $o.tz.raw) { $o.tz.raw } else { 'unknown' }) + $(if (-not $o.dst) { ', DST off' } else { '' }) + ')') }
   return @{ ok = $true; changes = $ch; needNtp = $needNtp; needMode = $needMode; needTz = $needTz; o = $o }
 }
+# 2.2.21 (Codex F13 twin): $true only for a complete XML SOAP document whose Body holds the named ONVIF response element
+function Test-NhOnvifAnswer($r, [string]$Name) {
+  if ([int]$r.code -ne 200) { return $false }
+  $x = $null; try { $x = [xml]([string]$r.body) } catch { return $false }
+  if (-not $x -or -not $x.DocumentElement -or $x.DocumentElement.LocalName -ne 'Envelope') { return $false }
+  return (@($x.GetElementsByTagName('*') | Where-Object { $_.LocalName -eq $Name }).Count -gt 0)
+}
 function Onvif-NtpApply($t, [string]$server, $plan, $first = $null) {
   $o = $plan.o; $wrote = $false
   Log ('BEFORE (ONVIF) mode=' + $o.mode + ' dst=' + $o.dst + ' tz=' + $(if ($o.tz) { $o.tz.raw } else { '' }) + ' ntp=' + (@($o.ntp | ForEach-Object { $_.host }) -join ','))
@@ -1421,12 +1430,15 @@ function Onvif-NtpApply($t, [string]$server, $plan, $first = $null) {
     $stop = Get-NhNtpIdStop $t $first 'the time-server write' $false; if ($stop) { return @{ ok = $false; why = $stop } }
     $r = Onvif-Call $t '/onvif/device_service' ('<x:SetNTP><x:FromDHCP>false</x:FromDHCP>' + $man + '</x:SetNTP>') $script:NsDev
     if ($r.code -ne 200) { return @{ ok = $false; why = $(if ([int]$r.code -le 0 -or [int]$r.code -ge 500) { 'its answer to the time-server setting was ' + $(if ([int]$r.code -le 0) { 'lost' } else { 'HTTP ' + $r.code }) + ' - NOT confirmed whether it took it' } else { 'it refused the time-server setting (HTTP ' + $r.code + ')' }) } }
+    # 2.2.21 (Codex F13 twin): an HTTP 200 that is not ONVIF's SetNTP answer (HTML, empty, a fault) is NOT a yes: no further write
+    if (-not (Test-NhOnvifAnswer $r 'SetNTPResponse')) { return @{ ok = $false; why = 'its answer to the time-server setting was HTTP 200 but not a readable ONVIF answer - NOT confirmed whether it took it; nothing more was written' } }
     $wrote = $true
   }
   if ($plan.needMode -or $plan.needTz) {
     $stop = Get-NhNtpIdStop $t $first 'the time-mode / time-zone write' $wrote; if ($stop) { return @{ ok = $false; why = $stop } }
     $r = Onvif-Call $t '/onvif/device_service' ('<x:SetSystemDateAndTime><x:DateTimeType>NTP</x:DateTimeType><x:DaylightSavings>true</x:DaylightSavings><x:TimeZone><tt:TZ>' + $script:Opt.PosixTimeZone + '</tt:TZ></x:TimeZone></x:SetSystemDateAndTime>') $script:NsDev
     if ($r.code -ne 200) { return @{ ok = $false; why = $(if ([int]$r.code -le 0 -or [int]$r.code -ge 500) { 'its answer to the time-mode / time-zone setting was ' + $(if ([int]$r.code -le 0) { 'lost' } else { 'HTTP ' + $r.code }) + ' - NOT confirmed whether it took it' } else { 'it refused the time-mode / time-zone setting (HTTP ' + $r.code + ')' }) + $(if ($wrote) { ' (the time-server setting was already sent)' } else { '' }) } }
+    if (-not (Test-NhOnvifAnswer $r 'SetSystemDateAndTimeResponse')) { return @{ ok = $false; why = ('its answer to the time-mode / time-zone setting was HTTP 200 but not a readable ONVIF answer - NOT confirmed whether it took it' + $(if ($wrote) { ' (the time-server setting was already sent)' } else { '' })) } }
   }
   $stop = Get-NhNtpIdStop $t $first 'the read-back' $wrote; if ($stop) { return @{ ok = $false; why = $stop } }
   $a = Onvif-Time $t

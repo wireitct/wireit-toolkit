@@ -733,16 +733,22 @@ function Get-FsNetMismatch([string]$ip, [string]$brand, $cred, $before, [string]
   if ($rd.dhcp -ne $false) { $bad += 'it is still on DHCP (not a fixed address)' }
   if ([string]$rd.ip -ne $wantIp) { $bad += ('address is ' + $rd.ip + ', not ' + $wantIp) }
   if ([string]$rd.mask -ne $mask) { $bad += ('mask is ' + $rd.mask + ', not ' + $mask) }
-  if ($rh -and $gw -and -not [bool]$rh.gw) { $bad += ('router (gateway) is missing from its settings, not ' + $gw) }
-  elseif ([string]$rd.gw -ne $gw) { $bad += ('router (gateway) is ' + $(if ($rd.gw) { $rd.gw } else { 'empty' }) + ', not ' + $(if ($gw) { $gw } else { 'empty' })) }
-  # 2.2.20 (Codex 2.2.19 R09): a DNS asked for is ALWAYS checked (2.2.19 skipped the check when neither reading had one, so a write that
-  # left DNS out "verified"); a DNS missing from the answer is "missing", never equal to an empty one
-  $b1 = ''; $b2 = ''; if ($before) { $b1 = [string]$before.dns1; $b2 = [string]$before.dns2 }
+  # 2.2.21 (Codex 2.2.20 F07, class C): every field is checked, and an EMPTY value matches only when the answer actually CARRIED the
+  # field ($rd.has; an answer that does not say which fields it carried counts a field only when it has a value). 2.2.20 used $rh
+  # before setting it and skipped DNS when both values were empty, so an Undo to an empty gateway/DNS "verified" on an answer that
+  # had none of the three. A field the device never had (the read BEFORE the write said so) and that is asked to stay empty is skipped.
   $rh = $(if ($rd.PSObject.Properties['has']) { $rd.has } else { $null })
-  if ($rh -and ($dns1 -or $b1) -and -not [bool]$rh.dns1) { $bad += ('DNS 1 is missing from its settings, not ' + $(if ($dns1) { $dns1 } else { 'empty' })) }
-  elseif (($dns1 -or $b1 -or [string]$rd.dns1) -and [string]$rd.dns1 -ne $dns1) { $bad += ('DNS 1 is ' + $(if ($rd.dns1) { $rd.dns1 } else { 'empty' }) + ', not ' + $(if ($dns1) { $dns1 } else { 'empty' })) }
-  if ($rh -and ($dns2 -or $b2) -and -not [bool]$rh.dns2) { $bad += ('DNS 2 is missing from its settings, not ' + $(if ($dns2) { $dns2 } else { 'empty' })) }
-  elseif (($dns2 -or $b2 -or [string]$rd.dns2) -and [string]$rd.dns2 -ne $dns2) { $bad += ('DNS 2 is ' + $(if ($rd.dns2) { $rd.dns2 } else { 'empty' }) + ', not ' + $(if ($dns2) { $dns2 } else { 'empty' })) }
+  $bh = $(if ($before -and $before.PSObject.Properties['has']) { $before.has } else { $null })
+  foreach ($f in @(@{ k = 'gw'; want = $gw; word = 'router (gateway)' }, @{ k = 'dns1'; want = $dns1; word = 'DNS 1' }, @{ k = 'dns2'; want = $dns2; word = 'DNS 2' })) {
+    $got = [string]$rd.($f.k)
+    $carried = $(if ($rh) { [bool]$rh.($f.k) } else { [bool]$got })
+    if (-not $carried) {
+      $bhv = $(if ($bh -is [hashtable]) { $(if ($bh.ContainsKey($f.k)) { $bh[$f.k] } else { $null }) } elseif ($bh -and $bh.PSObject.Properties[$f.k]) { $bh.($f.k) } else { $null })
+      if (-not $f.want -and $bhv -eq $false) { continue }   # never had it, stays without it
+      $bad += ($f.word + ' is missing from its settings (not read), not ' + $(if ($f.want) { $f.want } else { 'empty' })); continue
+    }
+    if ($got -ne [string]$f.want) { $bad += ($f.word + ' is ' + $(if ($got) { $got } else { 'empty' }) + ', not ' + $(if ($f.want) { $f.want } else { 'empty' })) }
+  }
   return ($bad -join '; ')
 }
 
@@ -826,11 +832,15 @@ function Get-FsStream([string]$ip, [string]$brand, $cred) {
   if ($cap) { $wn = @(Fs-XFind $cap 'videoResolutionWidth'); if ($wn.Count -and $wn[0].opt) { $mw = [int](@($wn[0].opt -split ',' | ForEach-Object { [int]$_ } | Sort-Object -Descending)[0]) }; $hn = @(Fs-XFind $cap 'videoResolutionHeight'); if ($hn.Count -and $hn[0].opt) { $mh = [int](@($hn[0].opt -split ',' | ForEach-Object { [int]$_ } | Sort-Object -Descending)[0]) } }
   return [pscustomobject]@{ codec = ((Fs-XText $x 'videoCodecType') -replace '^H\.?26', 'H.26'); fps = [int]([int](Fs-XText $x 'maxFrameRate') / 100); width = [int](Fs-XText $x 'videoResolutionWidth'); height = [int](Fs-XText $x 'videoResolutionHeight'); bitrate = [int]$br; gop = [int](Fs-XText $x 'GovLength'); smartCodec = $sc; maxWidth = $mw; maxHeight = $mh; raw = $r.body }
 }
-function Set-FsStream([string]$ip, [string]$brand, $cred, $current, $diff) {
+function Set-FsStream([string]$ip, [string]$brand, $cred, $current, $diff, [string]$wantMac = '', [string]$wantSerial = '', [string]$Src = 'the scan') {
   # applies ONLY the fields in $diff (from Get-FsSettingsDiff). Returns { ok; reboot }
   # 2.2.19 (F19): a field the camera did not report (unknown) is never written; with nothing known to write, nothing is sent
+  # 2.2.21 (Codex 2.2.20 F02, class B): the camera is identified AGAIN (fresh MAC / serial, Get-FsUndoIdentityBlock) right before EACH
+  # write this helper sends - Dahua sends two (SmartEncode, then Encode) and a device swapped after the first must not get the second.
+  # No MAC or serial given = nothing is sent (why). 2.2.20 relied on the caller's single gate before the whole helper.
   $diff = @(@($diff) | Where-Object { $_ -and -not ($_.PSObject.Properties['unknown'] -and $_.unknown) })
   if (-not @($diff).Count) { return [pscustomobject]@{ ok = $true; reboot = $false; sent = $false } }
+  $idGate = { $w0 = [string](Get-FsUndoIdentityBlock $ip $brand $cred $wantMac $wantSerial 'the camera' $Src); return $w0 }
   if ($brand -eq 'Dahua') {
     $p = 'Encode[0].MainFormat[0].Video.'; $kv = @{}; $smart = $null
     foreach ($d in @($diff)) {
@@ -841,10 +851,16 @@ function Set-FsStream([string]$ip, [string]$brand, $cred, $current, $diff) {
         'smartCodec' { $smart = 'false' } 'smartCodecOn' { $smart = 'true' }   # 2.2.7 (F09): Undo turns it back on
       }
     }
-    $ok = $true
-    if ($smart) { $ok = (Fs-DhSet $ip $cred @{ 'SmartEncode[0].Enable' = $smart }) -and $ok }
-    if ($kv.Count) { $ok = (Fs-DhSet $ip $cred $kv) -and $ok }
-    return [pscustomobject]@{ ok = $ok; reboot = $false }
+    $ok = $true; $sentAny = $false
+    if ($smart) {
+      $iw = & $idGate; if ($iw) { return [pscustomobject]@{ ok = $false; reboot = $false; sent = $sentAny; why = ('nothing sent: ' + $iw) } }
+      $ok = (Fs-DhSet $ip $cred @{ 'SmartEncode[0].Enable' = $smart }) -and $ok; $sentAny = $true
+    }
+    if ($kv.Count) {
+      $iw = & $idGate; if ($iw) { return [pscustomobject]@{ ok = $false; reboot = $false; sent = $sentAny; why = ($(if ($sentAny) { 'the smart-codec change was sent, the rest NOT: ' } else { 'nothing sent: ' }) + $iw) } }
+      $ok = (Fs-DhSet $ip $cred $kv) -and $ok; $sentAny = $true
+    }
+    return [pscustomobject]@{ ok = $ok; reboot = $false; sent = $sentAny }
   }
   $x = Fs-XmlDoc $current.raw; if (-not $x) { return [pscustomobject]@{ ok = $false; reboot = $false } }
   foreach ($d in @($diff)) {
@@ -858,10 +874,20 @@ function Set-FsStream([string]$ip, [string]$brand, $cred, $current, $diff) {
       'smartCodecOn' { $n = @(Fs-XFind $x 'SmartCodec'); if ($n.Count) { [void](Fs-XSet $n[0] 'enabled' 'true') } }   # 2.2.7 (F09)
     }
   }
+  $iw = & $idGate; if ($iw) { return [pscustomobject]@{ ok = $false; reboot = $false; sent = $false; why = ('nothing sent: ' + $iw) } }
   $r = Fs-Http -Ip $ip -Method 'PUT' -Path '/ISAPI/Streaming/channels/101' -Body $x.OuterXml -Cred $cred
   return [pscustomobject]@{ ok = (Fs-HikOk $r); reboot = (Fs-HikNeedsReboot $r) }
 }
 
+# 2.2.21 (Codex 2.2.20 F02 twin, class B): a restart sent as the FOLLOW-UP of a network write (the device asked for it, or the new
+# address only applies on restart) is a write too: the device is identified again (fresh MAC / serial) right before it. Unknown or
+# different = no restart sent; returns '' when the restart was sent and accepted, else the reason (logged, shown by the caller's read-back).
+function Restart-FsDeviceChecked([string]$ip, [string]$brand, $cred, [string]$wantMac, [string]$wantSerial, [string]$What = 'the device', [string]$Src = 'the scan') {
+  $w = [string](Get-FsUndoIdentityBlock $ip $brand $cred $wantMac $wantSerial $What $Src)
+  if ($w) { Fs-LogLine ($ip + ': follow-up restart NOT sent: ' + $w); return ('restart not sent: ' + $w) }
+  if (-not (Restart-FsDevice $ip $brand $cred)) { return 'the restart was not accepted' }
+  return ''
+}
 function Restart-FsDevice([string]$ip, [string]$brand, $cred) {
   if ($brand -eq 'Dahua') { $r = Fs-Http -Ip $ip -Path '/cgi-bin/magicBox.cgi?action=reboot' -Cred $cred; return ($r.code -eq 200) }
   $r = Fs-Http -Ip $ip -Method 'PUT' -Path '/ISAPI/System/reboot' -Cred $cred; return (Fs-HikOk $r)
@@ -1129,7 +1155,10 @@ function Invoke-FsNetOp([string]$op, [hashtable]$a) {
       $co = 'unknown'; try { $t = (netsh interface ipv4 show interface ([string]$ix)) -join "`n"; $m = [regex]::Match($t, '(?i)DHCP/Static IP coexistence\s*:\s*(\w+)'); if ($m.Success) { $co = $m.Groups[1].Value.ToLower() } } catch {}
       $ad = @(); try { $ad = @(Get-NetIPAddress -InterfaceIndex $ix -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ ip = [string]$_.IPAddress; prefix = [int]$_.PrefixLength; origin = [string]$_.PrefixOrigin; skip = [bool]$_.SkipAsSource; store = [string]$_.PolicyStore; addrState = [string]$_.AddressState } }) } catch { if (-not (Test-FsNoneFound $_)) { $unread += 'the addresses' } }
       $gw = @(); try { $gw = @(Get-NetRoute -InterfaceIndex $ix -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { [string]$_.NextHop } | Select-Object -Unique) } catch { if (-not (Test-FsNoneFound $_)) { $unread += 'the router (default route)' } }
-      return [pscustomobject]@{ dhcp = ($ipi -and [string]$ipi.Dhcp -eq 'Enabled'); coexist = $co; addrs = $ad; gw = $gw; unread = @($unread) }
+      # 2.2.21 (Codex 2.2.20 F05, Moshe's decision 1): DHCP is known only when Windows says Enabled or Disabled. A missing or other value
+      # ('Unknown', empty) is UNREAD (dhcp = $null, named in unread): 2.2.20 turned it into "fixed address" and could clear the block.
+      $dh = $null; if ($ipi) { $dv = [string]$ipi.Dhcp; if ($dv -eq 'Enabled') { $dh = $true } elseif ($dv -eq 'Disabled') { $dh = $false } elseif (-not ($unread -contains 'the DHCP setting')) { $unread += 'the DHCP setting' } }
+      return [pscustomobject]@{ dhcp = $dh; coexist = $co; addrs = $ad; gw = $gw; unread = @($unread) }
     }
     # 2.2.19 (Codex 2.2.18 F05): which adapter is at this number right now (name + its InterfaceGuid, which never changes); $null = unread
     'ident' { try { $n = @(Get-NetAdapter -InterfaceIndex $ix -ErrorAction Stop)[0]; if (-not $n) { return $null }; return [pscustomobject]@{ name = [string]$n.Name; guid = [string]$n.InterfaceGuid } } catch { return $null } }
@@ -1244,6 +1273,30 @@ function Get-FsNetReadProblem($st) {
   if ($null -eq $st) { return 'this PC''s network settings could not be read back' }
   if ($st.PSObject.Properties['unread'] -and @($st.unread | Where-Object { $_ }).Count) { return ('this PC''s network settings could not be fully read back (' + (@($st.unread | Where-Object { $_ }) -join ', ') + ')') }
   if (-not $st.PSObject.Properties['addrs']) { return 'this PC''s network settings could not be read back (no address list came back)' }
+  # 2.2.21 (Codex 2.2.20 F05): a DHCP value that is not a real true/false is unread, never "fixed address"
+  if (-not $st.PSObject.Properties['dhcp'] -or $st.dhcp -isnot [bool]) { return 'this PC''s network settings could not be fully read back (the DHCP setting)' }
+  return ''
+}
+# 2.2.21 (Codex 2.2.20 F03, class B): a state read that CERTIFIES recovery (a temporary address is gone, the adapter is back) is
+# bracketed by the saved adapter identity: the adapter at the number is identified right before AND right after the read, and the
+# read counts only when both say it is the saved one. 2.2.20 read the state by number alone, so an adapter that took the number
+# after a removal could "verify" with its own settings and the original record was deleted. Returns { state; why }.
+function Get-FsNetStateBracketed($b, [int]$ix) {
+  if (-not $b) { return [pscustomobject]@{ state = $null; why = 'the record does not say which adapter it was, so it cannot be checked' } }
+  $w1 = Get-FsPcAdapterIdProblem $b $ix
+  if ($w1) { return [pscustomobject]@{ state = $null; why = $w1 } }
+  $st = $null; try { $st = Invoke-FsNetOp 'state' @{ ifIndex = $ix } } catch { $st = $null }
+  $w2 = Get-FsPcAdapterIdProblem $b $ix
+  if ($w2) { return [pscustomobject]@{ state = $null; why = $w2 } }
+  return [pscustomobject]@{ state = $st; why = '' }
+}
+# 2.2.21 (Codex 2.2.20 F04, class E): '' when every saved own address is a whole address (a valid IP AND a prefix 1-32), else why
+function Get-FsBeforeAddrProblem($b) {
+  foreach ($ad in @($b.addrs)) {
+    if ($null -eq $ad) { continue }
+    if (-not ($ad -is [pscustomobject] -and (Test-FsIpv4 ([string]$ad.ip)))) { return 'one of its own addresses is not a valid IP' }
+    if (-not $ad.PSObject.Properties['prefix'] -or -not (Test-FsJsonInt $ad.prefix) -or [int]$ad.prefix -lt 1 -or [int]$ad.prefix -gt 32) { return ('its own address ' + [string]$ad.ip + ' has no valid prefix length (1-32)') }
+  }
   return ''
 }
 # 2.2.19 (Codex 2.2.18 F05): '' when the adapter at the saved number is positively the saved one, else why not (plain words).
@@ -1333,7 +1386,12 @@ function Add-FsTempIp([string]$p3, $pc, [string]$stateFile) {
 function Remove-FsOneTempChecked($t, [string]$stateFile) {
   try { [void](Invoke-FsNetFix 'remove' @{ ifIndex = $t.ifIndex; ip = $t.ip }) } catch { Fs-LogLine ('removing temp IP ' + $t.ip + ' failed: ' + $_.Exception.Message) }
   $gone = $false
-  try { $now = Invoke-FsNetOp 'state' @{ ifIndex = $t.ifIndex }; if (-not (Get-FsNetReadProblem $now)) { $gone = -not @(@($now.addrs) | Where-Object { $_ -and [string]$_.ip -eq [string]$t.ip }).Count } } catch { $gone = $false }
+  # 2.2.21 (F03): the read that says "gone" is bracketed by the saved adapter identity (when the record has one)
+  try {
+    if ($script:FsPcBefore) { $br = Get-FsNetStateBracketed $script:FsPcBefore ([int]$t.ifIndex); $now = $br.state; if ($br.why) { Fs-LogLine ('temp IP ' + $t.ip + ': ' + $br.why); $now = $null } }
+    else { $now = Invoke-FsNetOp 'state' @{ ifIndex = $t.ifIndex } }
+    if ($now -and -not (Get-FsNetReadProblem $now)) { $gone = -not @(@($now.addrs) | Where-Object { $_ -and [string]$_.ip -eq [string]$t.ip }).Count }
+  } catch { $gone = $false }
   if ($gone) {
     [void]$script:FsTemps.Remove($t)
     try { Save-FsNetState $stateFile } catch { Fs-LogLine ('the record could not be updated (' + $_.Exception.Message + '); the older copy still lists ' + $t.ip + ' - the clean-up checks it again') }
@@ -1363,12 +1421,16 @@ function Restore-FsPcNet([string]$stateFile) {
   elseif ($b) {
     $coexistAtStart = [bool]$script:FsCoexistChanged
     $idw = Get-FsPcAdapterIdProblem $b $ix
+    $apw = $(if (-not $idw) { Get-FsBeforeAddrProblem $b } else { '' })   # 2.2.21 (F04): the whole saved address before any write
     if ($idw) { $problems += $idw }
+    elseif ($apw) { $problems += ('the record of this PC''s network is damaged: ' + $apw + '; nothing on the adapter was changed') }
     else {
       foreach ($t in @($script:FsTemps)) { try { [void](Invoke-FsNetFix 'remove' @{ ifIndex = $ix; ip = $t.ip }) } catch { $problems += ('the temporary address ' + $t.ip + ' was not taken off: ' + $_.Exception.Message) } }
-      $now = $null; try { $now = Invoke-FsNetOp 'state' @{ ifIndex = $ix } } catch { $problems += ('could not read the network settings back: ' + $_.Exception.Message) }
-      $rp = Get-FsNetReadProblem $now
-      if ($rp) { $problems += ($rp + ', so it is not known whether the temporary addresses are gone; they stay in the record') }
+      # 2.2.21 (F03): bracketed by the saved adapter identity
+      $now = $null; $br = Get-FsNetStateBracketed $b $ix; if ($br.why) { $problems += $br.why } else { $now = $br.state }
+      $rp = $(if ($br.why) { '' } else { Get-FsNetReadProblem $now })
+      if ($br.why) { }
+      elseif ($rp) { $problems += ($rp + ', so it is not known whether the temporary addresses are gone; they stay in the record') }
       else {
         $left = @(); foreach ($t in @($script:FsTemps)) { if (@(@($now.addrs) | Where-Object { $_ -and $_.ip -eq $t.ip }).Count) { $left += $t; $problems += ('the temporary address ' + $t.ip + ' is still on the adapter') } }
         $script:FsTemps.Clear(); foreach ($t in $left) { [void]$script:FsTemps.Add($t) }
@@ -1385,7 +1447,9 @@ function Restore-FsPcNet([string]$stateFile) {
         $chk = $null; $vp = @()
         for ($try = 0; $try -lt [math]::Max(1, [int]$script:FsRestoreChecks); $try++) {
           if ($try -gt 0) { if ($b.dhcp -and $try -eq 1) { try { [void](Invoke-FsNetFix 'renew' @{ ifIndex = $ix; name = [string]$b.name }) } catch {} }; Fs-NetWait }
-          $chk = $null; try { $chk = Invoke-FsNetOp 'state' @{ ifIndex = $ix } } catch { $chk = $null }
+          $chk = $null; $brc = Get-FsNetStateBracketed $b $ix   # 2.2.21 (F03): the certifying read is bracketed by the adapter identity
+          if ($brc.why) { $vp = @($brc.why + ', so it is not known whether its settings are back'); continue }
+          $chk = $brc.state
           $vp = @(Get-FsNetVerifyProblems $b $chk @($left) $coexistAtStart)
           if (-not $vp.Count) { break }
         }
@@ -1397,7 +1461,12 @@ function Restore-FsPcNet([string]$stateFile) {
   $problems = @($problems | Select-Object -Unique)
   if (-not $problems.Count) {
     $script:FsPcBefore = $null; $script:FsCoexistChanged = $false; $script:FsTemps.Clear()
-    if ($stateFile -and (Test-Path -LiteralPath $stateFile)) { try { Remove-Item -LiteralPath $stateFile -Force -ErrorAction Stop } catch { Fs-LogLine ('this PC''s network is back, but its finished record could not be removed (' + $_.Exception.Message + '); the next start checks it again') } }
+    # 2.2.21 (Codex 2.2.20 F19, class A): the finished record must be VERIFIED gone, else this is not "back to normal" (2.2.20 logged the
+    # failed delete and returned ok; the next start then took the record for an unfinished run)
+    if ($stateFile -and (Test-Path -LiteralPath $stateFile)) {
+      $rmWhy = ''; try { Remove-Item -LiteralPath $stateFile -Force -ErrorAction Stop } catch { $rmWhy = $_.Exception.Message }
+      if (Test-Path -LiteralPath $stateFile) { $problems += ('this PC''s network is back, but its finished record could not be removed (' + $(if ($rmWhy) { $rmWhy } else { 'it is still there' }) + '); the next start checks it again') }
+    }
     # 2.2.20 (R01): every part was checked back, so an unfinished copy of the record is stale now (a copy that stays is merged and checked again next start)
     if ($stateFile -and (Test-Path -LiteralPath ($stateFile + '.tmp'))) { try { Remove-Item -LiteralPath ($stateFile + '.tmp') -Force -ErrorAction Stop } catch { Fs-LogLine ('an unfinished copy of the network record could not be removed (' + $_.Exception.Message + '); the next start checks it again') } }
   } else {
@@ -1424,7 +1493,13 @@ function Get-FsNetVerifyProblems($b, $chk, $temps = @(), [bool]$coexist = $false
     $hadAddr = @(@($b.addrs) | Where-Object { $_ -and [string]$_.ip -notlike '169.254.*' }).Count -gt 0
     if ($hadAddr -and -not $own.Count) { $p += 'this PC has no address from DHCP yet' }
   } else {
-    foreach ($ad in @($b.addrs)) { if ($ad -and -not @(@($chk.addrs) | Where-Object { $_ -and $_.ip -eq $ad.ip }).Count) { $p += ('this PC''s address ' + $ad.ip + ' is still missing') } }
+    foreach ($ad in @($b.addrs)) {
+      if (-not $ad) { continue }
+      $m = @(@($chk.addrs) | Where-Object { $_ -and $_.ip -eq $ad.ip })
+      if (-not $m.Count) { $p += ('this PC''s address ' + $ad.ip + ' is still missing') }
+      # 2.2.21 (Codex 2.2.20 F04): the whole address: the prefix must read back as saved too (2.2.20 compared the IP only)
+      elseif (-not @($m | Where-Object { [string]$_.prefix -eq [string]$ad.prefix }).Count) { $p += ('this PC''s address ' + $ad.ip + ' is back with prefix /' + [string]$m[0].prefix + ', not /' + [string]$ad.prefix) }
+    }
   }
   foreach ($g in @($b.gw)) { if ($g -and @($chk.gw) -notcontains $g) { $p += ('this PC''s router ' + $g + ' (default route) is not back') } }
   # 2.2.19 (Codex 2.2.18 F18 twin): a coexistence setting this run changed must read back as it was; unreadable = not known
@@ -1491,6 +1566,7 @@ function Test-FsNetRecoveryVerified($createdUtc) {
     $st = $x.state; $nm = [string]$x.name
     $rp = Get-FsNetReadProblem $st
     if ($rp) { return ('the settings of adapter "' + $nm + '" could not be fully read') }
+    if ($st.dhcp -isnot [bool]) { return ('the DHCP setting of adapter "' + $nm + '" could not be read') }   # 2.2.21 (F05)
     if (@(@($st.addrs) | Where-Object { $_ -and $_.skip -and [string]$_.ip -notlike '169.254.*' }).Count) { return ('a temporary address is still on adapter "' + $nm + '"') }
     $own = @(@($st.addrs) | Where-Object { $_ -and $_.ip -and -not $_.skip -and [string]$_.ip -notlike '169.254.*' })
     if ($st.dhcp) {
@@ -1561,7 +1637,7 @@ function Get-FsNetJournalProblem($tj) {
   if (-not [string]$b.name) { return 'it does not name the adapter' }
   if ($b.dhcp -isnot [bool]) { return 'its DHCP setting is not true/false' }
   if ([string]$b.coexist -notin @('enabled', 'disabled', 'unknown')) { return 'its coexistence setting is not readable' }
-  foreach ($ad in @($b.addrs)) { if ($null -ne $ad -and -not ($ad -is [pscustomobject] -and (Test-FsIpv4 ([string]$ad.ip)))) { return 'one of its own addresses is not a valid IP' } }
+  $apw = Get-FsBeforeAddrProblem $b; if ($apw) { return $apw }   # 2.2.21 (F04): the whole address, prefix included
   foreach ($g in @($b.gw)) { if ($null -ne $g -and [string]$g -and -not (Test-FsIpv4 ([string]$g))) { return 'one of its routers is not a valid IP' } }
   if (-not $b.dhcp -and -not @(@($b.addrs) | Where-Object { $_ }).Count) { return 'it says the adapter had a fixed setup but lists no address' }
   if ($null -ne $tj.temps -and $tj.temps -isnot [array] -and $tj.temps -isnot [pscustomobject]) { return 'its list of temporary addresses is not a list' }

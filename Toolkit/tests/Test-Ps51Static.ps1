@@ -37,11 +37,31 @@ $paramRules = @(
 )
 $ps7Cmds = @('Join-String', 'Get-Error', 'Test-Json', 'ConvertFrom-Markdown', 'Show-Markdown', 'Get-Uptime', 'Remove-Alias', 'Get-MarkdownOption', 'Set-MarkdownOption', 'Remove-Service', 'Clear-RecycleBin')
 $netCore = '(?i)\[(System\.)?Convert\]::(To|From)HexString|::HashData\s*\(|\b(ReadAll(Bytes|Text|Lines)|WriteAll(Bytes|Text|Lines)|AppendAll(Text|Lines))Async\b|\[(System\.)?IO\.Path\]::(GetRelativePath|Join|TrimEndingDirectorySeparator|EndsInDirectorySeparator)\b|\[(System\.)?Math\]::Clamp\b|\[(System\.)?Environment\]::ProcessPath\b|System\.Text\.Json|\[(System\.)?String\]::Create\b|\.Contains\([^)]*StringComparison'
+# 2.2.21 (Codex 2.2.20 test note): code held in a here-string ($SC_CODE in SiteCheck.ps1, run by [scriptblock]::Create) is code too.
+# Get-Findings checks the file, then every here-string in it that parses as PowerShell without an error (a code block, not prose), and
+# the here-strings inside those (3 levels). A finding inside one names the file line of the here-string and the line inside it.
 function Get-Findings([string]$file, [string]$rule) {
-  $out = @()
   $tok = $null; $err = $null
   $ast = [Management.Automation.Language.Parser]::ParseFile($file, [ref]$tok, [ref]$err)
-  $rel = $file
+  foreach ($o in @(Get-FindingsAst $ast $err $file $rule $file)) { $o }
+  if ($rule -eq 'encoding') { return }
+  foreach ($o in @(Get-HereStringFindings $ast $file $rule 1)) { $o }
+}
+function Get-HereStringFindings($ast, [string]$where, [string]$rule, [int]$depth) {
+  if ($depth -gt 3) { return }
+  $hs = @($ast.FindAll({ param($x) ($x -is [Management.Automation.Language.StringConstantExpressionAst] -and [string]$x.StringConstantType -match 'HereString') -or ($x -is [Management.Automation.Language.ExpandableStringExpressionAst] -and [string]$x.StringConstantType -match 'HereString') }, $true))
+  foreach ($h in $hs) {
+    $txt = [string]$h.Value; if (-not $txt.Trim()) { continue }
+    $t2 = $null; $e2 = $null
+    $a2 = [Management.Automation.Language.Parser]::ParseInput($txt, [ref]$t2, [ref]$e2)
+    if (@($e2 | Where-Object { $_ }).Count) { continue }   # not code (prose, XML, a template): not scanned
+    $w2 = ($where + ':' + $h.Extent.StartLineNumber + ' (inside a here-string)')
+    foreach ($o in @(Get-FindingsAst $a2 $e2 $w2 $rule '')) { $o }
+    foreach ($o in @(Get-HereStringFindings $a2 $w2 $rule ($depth + 1))) { $o }
+  }
+}
+function Get-FindingsAst($ast, $err, [string]$rel, [string]$rule, [string]$file) {
+  $out = @()
   switch ($rule) {
     'parse' { foreach ($e in @($err)) { if ($e) { $out += ('{0}:{1} {2}' -f $rel, $e.Extent.StartLineNumber, $e.Message) } } }
     'ternary' { foreach ($a in $ast.FindAll({ param($x) $x.GetType().Name -eq 'TernaryExpressionAst' }, $true)) { $out += ('{0}:{1} {2}' -f $rel, $a.Extent.StartLineNumber, $a.Extent.Text) } }

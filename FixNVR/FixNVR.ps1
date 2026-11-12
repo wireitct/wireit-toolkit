@@ -376,7 +376,12 @@ function Get-FnAdapterIdWhy($pcc, $ifIndex) {
     if (-not $nn) { return ('Windows did not give the name of network adapter number ' + $ifIndex + ', so the tool cannot check it is "' + $sn + '" as recorded') }
     if ($nn -ne $sn) { return ('the network adapter number ' + $ifIndex + ' is now "' + $nn + '", not "' + $sn + '" as recorded') }
   }
-  if (-not $sg) { Log ('adapter ' + $ifIndex + ' checked by name only ("' + $sn + '"): this record has no adapter ID saved') }
+  if (-not $sg) {
+    # 2.2.21 (Codex 2.2.20 F17, Moshe's decision 3): an older record (name only, no ID saved) is still accepted - but only when Windows
+    # positively gives the CURRENT adapter's ID. An adapter whose ID cannot be read now is unreadable = refused, never "the same".
+    if (-not ([string]$a.InterfaceGuid).Trim('{}')) { return ('Windows did not give the ID of network adapter number ' + $ifIndex + ' now, so the tool cannot check it is "' + $sn + '" as recorded') }
+    Log ('adapter ' + $ifIndex + ' checked by name only ("' + $sn + '"): this record has no adapter ID saved; the adapter there has a readable ID now')
+  }
   return ''
 }
 function Restore-PcSettings($pcc, $ifIndex, [ref]$problems) {
@@ -981,6 +986,12 @@ function Hik-SetChannel($nvr, [string]$id, [string]$newIp, [string]$expectIp = '
   if (-not $camIp) { return @{ ok = $false; refused = $true; note = ('channel D' + $id + ': the tool does not know where its camera is now, so it cannot check it - LEFT ALONE, NOT CHECKED') } }
   $cid = Read-FnIdentity $camIp $camMac 'camera' '' $camSerial
   if ($cid.why) { return @{ ok = $false; refused = $true; note = ('channel D' + $id + ' was LEFT ALONE - NOT CHECKED: its camera (' + $(if ($camMac) { $camMac } else { 'serial ' + $camSerial }) + ') could not be confirmed on ' + $camIp + ': ' + $cid.why) } }
+  # 2.2.21 (Codex 2.2.20 F01, class B): the camera check above takes time, and the recorder can be swapped meanwhile. The NVR is
+  # identified AGAIN (its own DeviceInfo: MAC, and serial when saved) right before the PUT that carries the channel and the camera
+  # password, and once more after the read-back that certifies the change. Unknown or different = nothing sent / NOT confirmed.
+  $nMac = $(if ($nvr.PSObject.Properties['id_mac'] -and $nvr.id_mac) { [string]$nvr.id_mac } else { [string]$nvr.mac }); $nSer = [string]$nvr.serial
+  $nw = Get-FnHikStillWhy ([string]$nvr.ip) $nMac $nSer $script:credNvr
+  if ($nw) { return @{ ok = $false; refused = $true; note = ('channel D' + $id + ' was LEFT ALONE - NOTHING SENT: the NVR could not be confirmed again right before the change: ' + $nw) } }
   $sd = XNode $doc.DocumentElement 'sourceInputPortDescriptor'
   XSet $doc 'sourceInputPortDescriptor/ipAddress' $newIp
   $pw = XNode $sd 'password'
@@ -993,7 +1004,26 @@ function Hik-SetChannel($nvr, [string]$id, [string]$newIp, [string]$expectIp = '
   $g2 = Http $nvr.ip 'GET' ('/ISAPI/ContentMgmt/InputProxy/channels/' + $id) '' 'application/xml' $script:credNvr
   $now = ''; if ($g2.code -eq 200) { try { $now = XGet ([xml]$g2.body) 'sourceInputPortDescriptor/ipAddress' } catch { $now = '' } }
   if ($now -ne $newIp) { return @{ ok = $false; note = ($note + ' accepted, but channel D' + $id + ' reads back ' + $(if ($now) { $now } else { '(could not be read)' }) + ', not ' + $newIp + ' - NOT confirmed').Trim() } }
+  $nw2 = Get-FnHikStillWhy ([string]$nvr.ip) $nMac $nSer $script:credNvr
+  if ($nw2) { return @{ ok = $false; note = ($note + ' channel D' + $id + ' reads back ' + $newIp + ', but the NVR could not be confirmed again after that read: ' + $nw2 + ' - NOT confirmed').Trim() } }
   return @{ ok = $true; note = $note }
+}
+# 2.2.21 (Codex 2.2.20 F01, class B): '' = the Hikvision device at $ip is, right now, the one saved ($mac, and $serial when saved), read
+# from its own DeviceInfo document; otherwise the plain reason. One quick read, used right before a write and after a certifying read.
+function Get-FnHikStillWhy([string]$ip, [string]$mac, [string]$serial, $cred) {
+  if (-not $mac -and -not $serial) { return 'the tool has no MAC or serial saved for it' }
+  $d = Http $ip 'GET' '/ISAPI/System/deviceInfo' '' 'application/xml' $cred
+  if ($d.code -ne 200 -or [string]$d.body -notmatch '<(\w+:)?DeviceInfo[\s>/]') { return ('the device at ' + $ip + ' did not give its device information (' + $d.code + ')') }
+  $m = NormMac (XVal $d.body 'macAddress'); $sn = XVal $d.body 'serialNumber'
+  if ($mac) {
+    if (-not $m) { return ('the device at ' + $ip + ' did not say its MAC') }
+    if ($m -ne (NormMac $mac)) { return ('a DIFFERENT device answers at ' + $ip + ' (MAC ' + $m + ', expected ' + (NormMac $mac) + ')') }
+  }
+  if ($serial) {
+    if (-not $sn -and -not $mac) { return ('the device at ' + $ip + ' did not say its serial number') }
+    if ($sn -and $sn -cne $serial) { return ('a DIFFERENT device answers at ' + $ip + ' (serial ' + $sn + ', expected ' + $serial + ')') }
+  }
+  return ''
 }
 function Hik-RebootNow($dev) { $r = Http $dev.ip 'PUT' '/ISAPI/System/reboot' '' 'application/xml' (Cred-For $dev) 15; return (Hik-Ok $r) }
 
@@ -1285,6 +1315,10 @@ function Get-FnNetNow($d) {
     $has = $(if ($d.PSObject.Properties['net_has'] -and $d.net_has -is [hashtable]) { $d.net_has } else { @{ mask = [bool]$o.mask; gw = [bool]$o.gw } })
     if (-not $has.mask -or -not $o.mask) { $o.why = 'its network answer did not give its subnet mask'; return $o }
     if (-not $has.gw) { $o.why = 'its network answer has no gateway field'; return $o }
+    # 2.2.21 (Codex 2.2.20 F06, class C): the DNS fields too. A DNS field the answer did not carry is unknown, not "none": the backup
+    # would keep '' and Undo would clear a DNS that was never read. A record that does not say counts a DNS as carried only with a value.
+    $hasD1 = $(if ($has.ContainsKey('dns1')) { [bool]$has.dns1 } else { [bool]$o.dns1 }); $hasD2 = $(if ($has.ContainsKey('dns2')) { [bool]$has.dns2 } else { [bool]$o.dns2 })
+    if (-not $hasD1 -or -not $hasD2) { $o.why = ('its network answer has no ' + $(if (-not $hasD1) { 'DNS 1' } else { 'DNS 2' }) + ' field, so the tool cannot save what it was'); return $o }
   } elseif ($d.brand -eq 'unv' -and [string]$d.login -eq 'ok' -and $d.kind -eq 'nvr') {
     if ($d.net_read -ne $true -or $d.dns_read -ne $true) { $o.why = 'its network settings could not be read'; return $o }
     $nd = Unv-Data $d.net_json

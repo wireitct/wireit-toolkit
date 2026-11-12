@@ -79,7 +79,25 @@ function Write-FixLimits([string]$stateFile, [hashtable]$h) {
   }
   return $true
 }
+# 2.2.21 (Codex F15): the whole read / check / reserve (or release) of the restart record runs under ONE lock shared by every window on
+# this PC: a lock file next to the record opened with FileShare.None. Another window holding it = this one waits a few seconds, then
+# does NOT restart ("another window is changing the restart record"). $null = could not lock (the caller restarts nothing).
+function Open-FixLimitLock([string]$stateFile, [int]$WaitMs = 3000) {
+  $lp = $stateFile + '.lock'
+  try { $dir = Split-Path -Parent $lp; if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir -WhatIf:$false -Confirm:$false | Out-Null } } catch {}
+  $until = [datetime]::UtcNow.AddMilliseconds($WaitMs)
+  while ($true) {
+    try { return [IO.FileStream]::new($lp, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+    catch { if ([datetime]::UtcNow -ge $until) { Log ('restart record lock not taken: ' + $_.Exception.Message); return $null }; Start-Sleep -Milliseconds 100 }
+  }
+}
 function Fix-LimitReserve([string]$stateFile, [string]$key, [datetime]$now) {
+  if (-not $stateFile) { return @{ ok = $false; why = 'no restart record file was given, so the limit could not be kept' } }
+  $lk = Open-FixLimitLock $stateFile
+  if (-not $lk) { return @{ ok = $false; why = 'another window on this PC is changing the restart record right now (or it could not be locked), so the restart limit cannot be kept - try again in a minute' } }
+  try { return (Fix-LimitReserveLocked $stateFile $key $now) } finally { $lk.Dispose() }
+}
+function Fix-LimitReserveLocked([string]$stateFile, [string]$key, [datetime]$now) {
   # 2.2.19 (Codex 2.2.18 F22, class E): the restart is RESERVED on disk BEFORE the restart is sent. The record is read again (a
   # restart made by another window in the meantime counts), the limit is checked on that fresh read, this restart is added, the
   # record is saved and read back. @{ ok; why }: ok = $false (unreadable record, limit reached, save failed) = NO restart.
@@ -97,6 +115,8 @@ function Fix-LimitRelease([string]$stateFile, [string]$key, [datetime]$now) {
   # 2.2.19: the camera said NO (an explicit refusal): nothing restarted, so the reservation is taken back. If that fails the
   # reservation stays (the safe side: one restart counted that did not happen).
   if (-not $stateFile) { return $false }
+  $lk = Open-FixLimitLock $stateFile; if (-not $lk) { return $false }   # 2.2.21 (F15 twin): under the same lock
+  try {
   $rl = Read-FixLimits $stateFile; if (-not $rl.ok) { return $false }
   $h = $rl.map; $mine = $now.ToString('s')
   $left = @(@($h[$key]) | Where-Object { ([datetime]$_).ToString('s') -ne $mine })
@@ -104,13 +124,17 @@ function Fix-LimitRelease([string]$stateFile, [string]$key, [datetime]$now) {
   $ok = Write-FixLimits $stateFile $h
   if ($ok -and (Read-FixLimits $stateFile).map.ContainsKey($key) -and -not $left.Count) { return $false }
   return $ok
+  } finally { $lk.Dispose() }
 }
 function Fix-LimitAdd([string]$stateFile, [string]$key, [datetime]$now) {
   # kept for older callers: the same reservation (read, check, save, read back); $true only when it was really saved
   if (-not $stateFile) { return $false }
+  $lk = Open-FixLimitLock $stateFile; if (-not $lk) { return $false }   # 2.2.21 (F15 twin): under the same lock
+  try {
   $rl = Read-FixLimits $stateFile; if (-not $rl.ok) { return $false }
   $h = $rl.map; $keep = @(@($h[$key]) | Where-Object { $_ -and ($now - [datetime]$_).TotalDays -lt 2 }); $h[$key] = @($keep + $now)
   return (Write-FixLimits $stateFile $h)
+  } finally { $lk.Dispose() }
 }
 function Dw-Send($t, [string]$method, [string]$path, $obj, [switch]$Secret) {
   return Http -Ip $t.ip -Method $method -Path $path -Body ($obj | ConvertTo-Json -Compress -Depth 5) -ContentType 'application/json' -Headers @{ Authorization = ('Bearer ' + $t.token) } -Port (Dw-Port $t) -Scheme (Dw-Scheme) -NoLogBody:$Secret
@@ -348,14 +372,20 @@ function Invoke-NvrFix {
           return (& $done $false ('Sent to DW, but its camera list could not be read back (' + $ra.why + '), so it is NOT confirmed. Run the Recording check again.'))
         }
         $afterDevices = @($ra.devs)
-        $still = @($off | Where-Object { $id = $_.id; -not @($afterDevices | Where-Object { $_.id -eq $id -and $_.scheduled -eq $true }).Count })
+        # 2.2.21 (Codex F12, class B): the certifying read-back is about the SAME camera that was checked before the write: same DW id,
+        # same address, and the same MAC when DW gave one before. A different camera in that DW entry (address or MAC changed) certifies
+        # nothing - for the cameras this run changed AND for the ones that were already on (the aggregate verdict): NOT confirmed.
+        $sameCam = { param($b, $a) ($null -ne $a) -and ([string]$a.ip -eq [string]$b.ip) -and (-not [string]$b.mac -or [string]$a.mac -eq [string]$b.mac) }
+        $replacedAfter = @($devs | Where-Object { $bd = $_; $a1 = @($afterDevices | Where-Object { $_.id -eq $bd.id }) | Select-Object -First 1; $a1 -and -not (& $sameCam $bd $a1) })
+        $replacedIds = @($replacedAfter | ForEach-Object { $_.id })
+        $still = @($off | Where-Object { $ob = $_; $id = $_.id; $replacedIds -notcontains $id -and -not @($afterDevices | Where-Object { $_.id -eq $id -and $_.scheduled -eq $true -and (& $sameCam $ob $_) }).Count })
         # 2.2.16 (Codex 2.2.15 F5): keep the FIRST camera list through the check. Every camera read before the change must be in the
         # read-back with a known state: missing from the read-back, or still unknown = NOT CHECKED (never green). A camera that was on
         # before and now reads off counts as still off.
         $offIds = @($off | ForEach-Object { $_.id })
         $afterIds = @($afterDevices | ForEach-Object { $_.id })
         $goneAfter = @($devs | Where-Object { $afterIds -notcontains $_.id -and $offIds -notcontains $_.id })
-        $nowOff = @($devs | Where-Object { $id = $_.id; $offIds -notcontains $id -and @($afterDevices | Where-Object { $_.id -eq $id -and $_.scheduled -eq $false }).Count })
+        $nowOff = @($devs | Where-Object { $id = $_.id; $offIds -notcontains $id -and $replacedIds -notcontains $id -and @($afterDevices | Where-Object { $_.id -eq $id -and $_.scheduled -eq $false }).Count })
         $still = @(@($still) + @($nowOff))
         $unknownAfter = @($afterDevices | Where-Object { $null -eq $_.scheduled })
         # 2.2.17 (Codex 2.2.16 re-review): a camera that is NEW in the read-back (not in the first list) with recording OFF keeps the
@@ -364,6 +394,7 @@ function Invoke-NvrFix {
         $newOff = @($afterDevices | Where-Object { $beforeIds -notcontains $_.id -and $_.scheduled -eq $false })
         $unkNote = ''
         if ($goneAfter.Count) { $unkNote += ' ' + (& $unkWords $goneAfter) + ' - in DW''s camera list before the change but NOT in the list read back afterwards: NOT CHECKED.' }
+        if ($replacedAfter.Count) { $unkNote += ' ' + (& $unkWords $replacedAfter) + ' - the DW entry now reads a DIFFERENT camera (its address or MAC changed since it was checked): NOT confirmed. Check which camera is in that DW entry.' }
         if ($newOff.Count) { $unkNote += ' ' + (& $unkWords $newOff) + ' - NEW in DW''s camera list read back (not in the list before the change) with recording OFF: NOT confirmed, not changed by this run.' }
         if ($unknownAfter.Count) { $unkNote += ' Recording could NOT be checked for: ' + (& $unkWords $unknownAfter) + '.' }
         $stillWords = { param($list) (@($list | ForEach-Object { $_.name + ' (' + $_.ip + ')' }) -join ', ') }

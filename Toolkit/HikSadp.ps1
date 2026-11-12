@@ -269,9 +269,8 @@ function Import-HikUnlock($dev, $unlock, [string]$NewPassword, [double]$Seconds 
   $tries = 0; $last = ''; $sent = $false; $thisR = ''
   foreach ($f in $script:SadpImportForms) {
     if ($tries -ge $script:SadpImportMax) { break }
-    # 2.2.20: the old forms are each one firmware generation's import type; a device silently ignores a type it does not know (seen on
-    # the wire and in the test device), so silence to one form is "not this form" and the next is tried. If NO form got any answer the
-    # result is NOT CONFIRMED (sent, no result), never a refusal, and the caller does not import again on its own (class F).
+    # 2.2.20: the old forms are each one firmware generation's import type. 2.2.21 (Codex F10): silence to one form is NOT CONFIRMED and
+    # stops the loop (below); the result is never a refusal, and the caller does not import again on its own (class F).
     $tries++; $sent = $true; $thisR = ''
     $code = $unlock.code; if ($f.withSerial -and $code -notlike ('*' + $dev.serial)) { $code = $code + [string]$dev.serial }
     $p = New-SadpProbe $f.type $dev.mac ([ordered]@{ ($f.codeTag) = $code; Password = $NewPassword })
@@ -284,6 +283,10 @@ function Import-HikUnlock($dev, $unlock, [string]$NewPassword, [double]$Seconds 
       if ($r -match '^(?i)\s*(success|ok|true)\s*$') { return [pscustomobject]@{ ok = $true; result = $r; form = $f.name; tries = $tries; error = ''; sent = $true } }   # 2.2.19 (class C): the whole answer, not a word inside it
       if ($r) { $last = $r; $thisR = $r }
     }
+    # 2.2.21 (Codex F10, class F): silence to a SENT form cannot tell "this firmware does not know this form" from "it worked and the
+    # answer was lost". The next form is NOT sent after it (it could use up the key, and its "failed" would then be recorded as the
+    # device refusing the file): stop, NOT CONFIRMED. Only an answer that says no lets the next form go.
+    if (-not $thisR) { $last = ''; break }
   }
   $why = $(if ($last) { 'the device answered "' + $last + '"' + $(if ($last -match 'denied|fail') { ' (the file is only good for this exact request, for 48 hours, and only if the device has not restarted since)' } else { '' }) } else { 'the device did not answer the import - NOT CONFIRMED (it may have worked)' })
   return [pscustomobject]@{ ok = $false; result = $last; form = ''; tries = $tries; error = $why; sent = $sent }

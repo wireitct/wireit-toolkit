@@ -319,6 +319,11 @@ function Invoke-SiteCheck([string]$Nvr = '', $Cred = $null, [int]$Pings = 20, [s
   foreach ($d in $disc) { if ($d.Ip -and (Test-ScIp $d.Ip)) { foreach ($p in $prefixes) { if ($d.Ip.StartsWith($p + '.')) { [void]$live.Add($d.Ip) } } } }
   if ($Nvr -and (Test-ScIp $Nvr)) { [void]$live.Add($Nvr) }
   foreach ($m in $mine) { [void]$live.Remove($m) }
+  # 2.2.21 (Codex F14, class C): an address the sweep could not send a single ping to, with no ARP / discovery answer either, is NOT
+  # CHECKED (not "nothing there"): kept as sweepNotSent, so the report never gives the all-clear over it and a device seen there last
+  # time is NOT CHECKED now (and stays in the next comparison), never "answered last time but not now"
+  $R.sweepAddrs = $all.Count
+  $R.sweepNotSent = @($all | Where-Object { -not $live.Contains($_) -and $mine -notcontains $_ -and (-not $sweep[$_] -or [int]$sweep[$_].Sent -le 0) })
 
   $nv = $null
   $openNvr = @()
@@ -445,6 +450,7 @@ function Get-ScDiagnosis($R) {
     $now = @{}; foreach ($d in $devs) { if ($d.Ok -gt 0) { $now[[string]$d.Ip] = 1 } }
     # 2.2.20 (class C): a device this run could not even ping is NOT CHECKED, not "gone"
     $nsIps = @{}; foreach ($d in $devs) { if ($d.PSObject.Properties['PingNotSent'] -and $d.PingNotSent) { $nsIps[[string]$d.Ip] = 1 } }
+    foreach ($x in @($R.sweepNotSent | Where-Object { $_ })) { $nsIps[[string]$x] = 1 }   # 2.2.21 (Codex F14)
     foreach ($g in @($R.previous | Where-Object { $nsIps.ContainsKey([string]$_.ip) -and -not $chIps.ContainsKey([string]$_.ip) })) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($g.ip + ' ' + $(if ($g.vendor) { '(' + $g.vendor + ') ' } else { '' }) + 'answered last time (' + $R.previousWhen + ') - NOT CHECKED now: this PC could not send a ping to it.') } }
     $gone = @($R.previous | Where-Object { -not $now.ContainsKey([string]$_.ip) -and -not $nsIps.ContainsKey([string]$_.ip) -and -not $chIps.ContainsKey([string]$_.ip) })
     foreach ($g in $gone) { $find += [pscustomobject]@{ Level = 'warn'; Text = ($g.ip + ' ' + $(if ($g.vendor) { '(' + $g.vendor + ') ' } else { '' }) + 'answered last time (' + $R.previousWhen + ') but not now.') } }
@@ -459,6 +465,9 @@ function Get-ScDiagnosis($R) {
   else { $head = '' + $camsSeen + ' cameras answer on this network.' + $(if ($nvr) { ' Type the NVR password and run again to see exactly which channels are down.' } else { ' Type the NVR address + password to see which channels are down.' }) }
   $bad = @($find | Where-Object { $_.Level -eq 'bad' }).Count; $warn = @($find | Where-Object { $_.Level -eq 'warn' }).Count
   # 2.2.20 (class C): an ARP table that could not be read is a NOT CHECKED (amber), never the all-clear below
+  # 2.2.21 (Codex F14): addresses the sweep could not send a ping to are NOT CHECKED (amber), never the all-clear below
+  $sns = @($R.sweepNotSent | Where-Object { $_ })
+  if ($sns.Count) { $find += [pscustomobject]@{ Level = 'warn'; Text = ('NOT CHECKED: this PC could not send a ping to ' + $sns.Count + ' of ' + $(if ($R.sweepAddrs) { [string]$R.sweepAddrs } else { '?' }) + ' addresses on the network (its own network error), so devices there may be missing from this report - not an all-clear. Check this PC''s network connection and run it again.') }; $warn++ }
   if ($R.Contains('arpRead') -and $R.arpRead -eq $false) { $find += [pscustomobject]@{ Level = 'warn'; Text = 'ARP table NOT CHECKED: this PC''s neighbour table could not be read, so devices that do not answer ping (and duplicate IPs) may be missing - not an all-clear.' }; $warn++ }
   if (-not $find.Count) { $find += [pscustomobject]@{ Level = 'ok'; Text = 'No network problems found: everything that answered did so on every ping.' } }
   return [pscustomobject]@{ Headline = $head; Findings = $find; Bad = $bad; Warn = $warn }
@@ -499,6 +508,7 @@ function Save-ScReport($R, $D, [string]$dir) {
   # is not gone); (class A) last-scan.json feeds the next run's comparison, so it counts as saved only when it reads back as written. A
   # save that fails removes the old one, so the next run compares with nothing rather than with a stale list.
   $nsIps = @{}; foreach ($d in @($R.devices)) { if ($d.PSObject.Properties['PingNotSent'] -and $d.PingNotSent) { $nsIps[[string]$d.Ip] = 1 } }
+  foreach ($x in @($R.sweepNotSent | Where-Object { $_ })) { $nsIps[[string]$x] = 1 }   # 2.2.21 (Codex F14)
   foreach ($g in @($R.previous)) { if ($g -and $nsIps.ContainsKey([string]$g.ip)) { $prev += [ordered]@{ ip = [string]$g.ip; mac = [string]$g.mac; vendor = [string]$g.vendor } } }
   $ls = Join-Path $dir 'last-scan.json'; $lsJson = [string]([ordered]@{ when = $R.started; nets = @(Get-ScNetKeys $R.nets); devices = $prev } | ConvertTo-Json -Depth 4)
   $lsOk = $true; $tmp = $ls + '.tmp'

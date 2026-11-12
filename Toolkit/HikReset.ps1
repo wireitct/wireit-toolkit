@@ -104,7 +104,9 @@ if ($Mode -in @('Run', 'Import')) {
   if (-not $pw -and $Site) { if (-not $SiteSecretsDir) { $SiteSecretsDir = $secDir }; try { $pw = [string](Read-FsSecrets $SiteSecretsDir $Site).password } catch { Hk-Say ('Could not read this PC''s saved site passwords (' + $_.Exception.Message + '). Nothing was changed.') 'Red'; exit 3 }; if (-not $pw) { Hk-Say ('No site password saved on this PC for "' + $Site + '". Make it in Fix this site (Site password... > M) first.') 'Red'; exit 3 } }
   if (@($state.devices | Where-Object { $_.status -eq 'replied' }).Count) {
     if (-not $pw) { $sec = Read-Host 'Type the new password for these devices (hidden)' -AsSecureString; $pw = (New-Object PSCredential('x', $sec)).GetNetworkCredential().Password }
-    $verify = { param($ip, $p) return ((Test-FsLogin $ip 'Hikvision' $p) -eq 'ok') }
+    # 2.2.21 (Codex 2.2.20 F08, class B): "reset done" only when the device that takes the new password is the SAVED one (the record
+    # entry's MAC / serial, fresh read) - the same check Fix this site uses. 2.2.20 took any device that accepted the site password.
+    $verify = { param($ip, $p, $D) return [bool](Test-FsHikResetLogin $ip $p $D) }
     # 2.2.10 (Codex R07): the import is bound to the same device set as the submission (Retry = its own retry serials only)
     [void](Import-HikReplies $state $statePath $pw $verify $Only -OnlySerials $onlySerials)
   }
