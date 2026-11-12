@@ -86,7 +86,7 @@ Run-Safe 'R14 reserve fails' {
   $s = Read-HikState $sp; [void](Export-HikRequests @(New-Dev) (Join-Path $dir 'requests') $s $sp)
   $d = @($s.devices)[0]
   Check ($script:exportWrites -eq 0) 'R14 control: the reservation cannot be saved -> the camera is NOT asked'
-  Check ([string]$d.status -eq 'refused' -and [int]$d.rebootRetries -eq 0) 'R14: a reservation that did not save is taken back in memory (no "exporting" state left for a later save to write)' ('status=' + $d.status + ' retries=' + $d.rebootRetries)
+  Check ([string]$d.status -eq 'refused' -and [int]$d.rebootRetries -eq 0) 'R14 control (passes on 2.2.19 too; renamed in 2.2.21 per Codex note): a reservation that did not save is taken back in memory. Proves only the in-memory undo; the R14 proof is the reserve-before-act check above' ('status=' + $d.status + ' retries=' + $d.rebootRetries)
 }
 Run-Safe 'R14 settle with file' {
   Restore-Orig
@@ -99,7 +99,7 @@ Run-Safe 'R14 settle with file' {
   1..2 | ForEach-Object { $s = Read-HikState $sp; [void](Export-HikRequests @(New-Dev) $reqDir $s $sp) }
   $back = Read-HikState $sp; $d = @($back.devices)[0]
   Check ($script:exportWrites -eq 1) 'R14: an unfinished export whose request file is there is NOT exported again'
-  Check ([string]$d.status -eq 'exported' -and [string]$d.requestFile -and (Test-Path -LiteralPath ([string]$d.requestFile)) -and [int]$d.rebootRetries -eq 1) 'R14: that file is registered as the one in force (status exported, retry still counted)' ('status=' + $d.status + ' file=' + $d.requestFile)
+  Check ($script:exportWrites -eq 1 -and [string]$d.status -eq 'exported' -and [string]$d.requestFile -and (Test-Path -LiteralPath ([string]$d.requestFile)) -and [int]$d.rebootRetries -eq 1) 'R14: the existing file is REUSED without a second export: one export only AND it is registered as the one in force (status exported, retry still counted) (2.2.21: joint check, Codex note: the status part alone passed on 2.2.19)' ('status=' + $d.status + ' file=' + $d.requestFile)
 }
 Run-Safe 'R14 no answer keeps the retry' {
   Restore-Orig
