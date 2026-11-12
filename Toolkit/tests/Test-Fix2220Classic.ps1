@@ -156,28 +156,31 @@ function Http {
   param($ip, $method, $path, $body, $ctype, $cred, $timeout)
   $script:reqs += ($ip + ' ' + $method + ' ' + $path)
   if ($method -eq 'PUT') { $script:chWrites++; $script:chAddr = '192.168.1.50'; return @{ code = 200; body = '<ResponseStatus><statusCode>1</statusCode></ResponseStatus>'; err = '' } }
+  # 2.2.21 (Codex 2.2.20 F01): the NVR is identified again before the channel PUT, so the stand-in NVR (as Read-FnIdentity hands it over:
+  # with its MAC and serial) answers its own DeviceInfo
+  if ($path -eq '/ISAPI/System/deviceInfo' -and $ip -eq '192.168.1.19') { return @{ code = 200; body = '<DeviceInfo><model>DS-7608NI</model><deviceType>NVR</deviceType><macAddress>AA:BB:CC:00:00:19</macAddress><serialNumber>NVR19</serialNumber></DeviceInfo>'; err = '' } }
   if ($path -eq '/ISAPI/System/deviceInfo') { return @{ code = 200; body = ('<DeviceInfo><model>DS-2CD</model><deviceType>IPCamera</deviceType><macAddress>' + $script:camMacAnswer + '</macAddress><serialNumber>CAM9</serialNumber></DeviceInfo>'); err = '' } }
   if ($path -like '/ISAPI/ContentMgmt/InputProxy/channels/*') { return @{ code = 200; body = ('<InputProxyChannel><id>1</id><sourceInputPortDescriptor><ipAddress>' + $script:chAddr + '</ipAddress><userName>admin</userName><password>x</password></sourceInputPortDescriptor></InputProxyChannel>'); err = '' } }
   return @{ code = 404; body = ''; err = '' }
 }
 '@
 Run-Check 'R06 Codex classic-channel-no-camera-identity: no camera identity for the channel -> the channel is LEFT ALONE' ($httpStub + "`n" + @'
-$r = Hik-SetChannel ([pscustomobject]@{ ip = '192.168.1.19' }) '1' '192.168.1.50' '192.168.1.60'
+$r = Hik-SetChannel ([pscustomobject]@{ ip = '192.168.1.19'; mac = 'AA:BB:CC:00:00:19'; serial = 'NVR19' }) '1' '192.168.1.50' '192.168.1.60'
 Say-Result ($script:chWrites -eq 0 -and -not $r.ok) ("writes=$script:chWrites ok=$($r.ok)")
 '@)
 Run-Check 'R06 twin: another live camera (different MAC) now answers at the channel''s camera address -> channel NOT replaced' ($httpStub + "`n" + @'
 $script:camMacAnswer = 'AA:BB:CC:00:00:99'
-$r = Hik-SetChannel ([pscustomobject]@{ ip = '192.168.1.19' }) '1' '192.168.1.50' '192.168.1.60' '192.168.1.60' 'AA-BB-CC-00-00-01' ''
+$r = Hik-SetChannel ([pscustomobject]@{ ip = '192.168.1.19'; mac = 'AA:BB:CC:00:00:19'; serial = 'NVR19' }) '1' '192.168.1.50' '192.168.1.60' '192.168.1.60' 'AA-BB-CC-00-00-01' ''
 Say-Result ($script:chWrites -eq 0 -and -not $r.ok -and $r.refused) ("writes=$script:chWrites ok=$($r.ok) note=$($r.note)")
 '@)
 Run-Check 'R06 twin: the channel''s camera does not answer (moved / gone) -> channel NOT replaced, NOT CHECKED' ($httpStub + "`n" + @'
 function Http { param($ip, $method, $path, $body, $ctype, $cred, $timeout) if ($method -eq 'PUT') { $script:chWrites++ }; if ($path -like '/ISAPI/ContentMgmt/InputProxy/channels/*') { return @{ code = 200; body = '<InputProxyChannel><id>1</id><sourceInputPortDescriptor><ipAddress>192.168.1.60</ipAddress></sourceInputPortDescriptor></InputProxyChannel>'; err = '' } }; return @{ code = 0; body = ''; err = 'timed out' } }
-$r = Hik-SetChannel ([pscustomobject]@{ ip = '192.168.1.19' }) '1' '192.168.1.50' '192.168.1.60' '192.168.1.60' 'AA-BB-CC-00-00-01' ''
+$r = Hik-SetChannel ([pscustomobject]@{ ip = '192.168.1.19'; mac = 'AA:BB:CC:00:00:19'; serial = 'NVR19' }) '1' '192.168.1.50' '192.168.1.60' '192.168.1.60' 'AA-BB-CC-00-00-01' ''
 Say-Result ($script:chWrites -eq 0 -and -not $r.ok -and ([string]$r.note -match 'NOT CHECKED')) ("writes=$script:chWrites note=$($r.note)")
 '@)
 Run-Check 'R06 keeps working: the saved camera (same MAC) is confirmed -> the channel is changed and read back' ($httpStub + "`n" + @'
 $script:camMacAnswer = 'AA:BB:CC:00:00:01'
-$r = Hik-SetChannel ([pscustomobject]@{ ip = '192.168.1.19' }) '1' '192.168.1.50' '192.168.1.60' '192.168.1.60' 'AA-BB-CC-00-00-01' ''
+$r = Hik-SetChannel ([pscustomobject]@{ ip = '192.168.1.19'; mac = 'AA:BB:CC:00:00:19'; serial = 'NVR19' }) '1' '192.168.1.50' '192.168.1.60' '192.168.1.60' 'AA-BB-CC-00-00-01' ''
 Say-Result ($script:chWrites -eq 1 -and $r.ok) ("writes=$script:chWrites ok=$($r.ok) note=$($r.note)")
 '@)
 if ((Src-Has $fnvPath "type = 'nvr-channel'[^\r\n]*cam_mac = ") -and (Src-Has $fnvPath 'Hik-SetChannel \$id\.dev \$st\.channel \$to \$from \(\[string\]\$st\.new_ip\) \$cm \$cs')) { Pass 'R06 (code shape) the channel step saves the camera''s MAC / serial and the step passes them (and its address) to Hik-SetChannel' } else { Fail 'R06 (code shape) the channel step saves the camera''s MAC / serial and the step passes them (and its address) to Hik-SetChannel' 'not found in the source' }
@@ -292,9 +295,11 @@ $d = New-Dev '10.0.0.20' 'AA:BB:CC:00:00:01' 'test'; [void](Hik-Read $d); $n = G
 Say-Result (-not $n.read) ("read=$($n.read) why='$($n.why)'")
 '@)
 Run-Check 'R09 keeps working: a complete Hikvision IPAddress document reads (an empty DNS stays a real "none")' ($hikNet + "`n" + @'
-$script:netDoc = '<IPAddress><addressingType>static</addressingType><ipAddress>10.0.0.20</ipAddress><subnetMask>255.255.255.0</subnetMask><DefaultGateway><ipAddress>10.0.0.1</ipAddress></DefaultGateway><PrimaryDNS><ipAddress></ipAddress></PrimaryDNS></IPAddress>'
+$script:netDoc = '<IPAddress><addressingType>static</addressingType><ipAddress>10.0.0.20</ipAddress><subnetMask>255.255.255.0</subnetMask><DefaultGateway><ipAddress>10.0.0.1</ipAddress></DefaultGateway><PrimaryDNS><ipAddress></ipAddress></PrimaryDNS><SecondaryDNS><ipAddress></ipAddress></SecondaryDNS></IPAddress>'
+# 2.2.21 (Codex 2.2.20 F06): "complete" now means BOTH DNS fields are in the answer (empty is a real none); a document without
+# SecondaryDNS is unknown and is refused (Test-Repro2220 classic-missing-dns)
 $d = New-Dev '10.0.0.20' 'AA:BB:CC:00:00:01' 'test'; [void](Hik-Read $d); $n = Get-FnNetNow $d
-Say-Result ($n.read -and $n.mask -eq '255.255.255.0' -and $n.gw -eq '10.0.0.1' -and $n.dns1 -eq '') ("read=$($n.read) why='$($n.why)'")
+Say-Result ($n.read -and $n.mask -eq '255.255.255.0' -and $n.gw -eq '10.0.0.1' -and $n.dns1 -eq '' -and $n.dns2 -eq '') ("read=$($n.read) why='$($n.why)'")
 '@)
 Run-Check 'R09 twin (ONVIF): a gateway answer with no NetworkGateway element -> read=False' @'
 function Onvif { param($ip, $inner, $cred)
