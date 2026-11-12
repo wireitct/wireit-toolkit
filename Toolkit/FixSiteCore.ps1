@@ -457,7 +457,11 @@ function New-FsPlan($expected, $observed, $opts = $null) {
     elseif ($listMove) { $c.why += ('site list says ' + (Get-FsShort $c.listIp) + ', it is on ' + (Get-FsShort $d.ip)) }
     if ($d.dhcp -and -not $wrongScheme -and -not $outOfBlock -and -not $listMove) { $c.why += 'gets its address from the router (DHCP), will be set fixed' }
     if ($d.activated -eq $false) { $c.why += 'brand new / factory reset (not activated)' }
-    if ($d.answers -eq $false) { $c.why += 'hung - seen on the network but not answering' }
+    # 2.2.21 (garage trial F20): a camera on ANOTHER IP range that does not answer is not "hung": this PC cannot talk to it on that range
+    # (it was found by SADP / discovery). It is not sent to "unplug its cable"; its address is fixed by SADP / the official reset.
+    $offRange = [bool]($wrongScheme -and $d.answers -eq $false)
+    if ($offRange) { $c.why += ('on a different IP range (' + $d.ip + ') - this PC cannot talk to it there; it was found by SADP, so its address is changed by SADP / the official reset, not by unplugging it') }
+    elseif ($d.answers -eq $false) { $c.why += 'hung - seen on the network but not answering' }
     if ($c.nvr -and $d.online -eq $false) { $c.why += ('no video on NVR ch ' + $ch) }
     if ($chLooksAt) { $c.why += ('no video on NVR ch ' + $ch + ' (it looks for ' + (Get-FsShort $chLooksAt) + ')') }
     elseif ($e -and $ch -and -not $d.nvr -and @(Get-FsProp $observed 'nvrs' @()).Count) { $c.why += ('not on the NVR (list says ch ' + $ch + ')') }
@@ -493,7 +497,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
     # password
     $lg = $d.login
     if ($d.activated -eq $false) { $c.steps += 'activate' }
-    elseif ($lg -eq 'unknown' -or $lg -eq 'refused') { $c.why += 'password unknown'; $c.steps += 'reset'; $plan.unknownPw += $c.name }
+    elseif ($lg -eq 'unknown' -or $lg -eq 'refused' -or ($offRange -and $c.brand -eq 'Hikvision' -and -not $lg)) { $c.why += $(if ($offRange -and -not $lg) { 'password could not be tried (other IP range)' } else { 'password unknown' }); $c.steps += 'reset'; $plan.unknownPw += $c.name }   # 2.2.21 (F20): an other-range Hikvision stays in the official reset
     elseif ($lg -eq 'locked') { $c.why += 'locked after wrong passwords (wait 30 min, or official reset)'; $c.steps += 'reset'; $plan.unknownPw += $c.name }
     elseif ($lg -and $lg -ne 'site password') { $c.steps += 'password' }   # a camera being fixed anyway gets the site password
     # settings
@@ -511,7 +515,7 @@ function New-FsPlan($expected, $observed, $opts = $null) {
     # recorder
     $nvrNeeded = ($c.nvr -and ($c.target -or ($c.steps -contains 'password') -or ($c.steps -contains 'reset') -or $d.online -eq $false -or $chLooksAt)) -or ($e -and $ch -and -not $d.nvr -and @(Get-FsProp $observed 'nvrs' @()).Count)
     if ($nvrNeeded) { $c.steps += 'nvr' }
-    if ($d.answers -eq $false) { if ($sw -and $null -ne $port) { $c.steps += 'poe' } else { $c.steps += 'unplug' } }
+    if ($d.answers -eq $false -and -not $offRange) { if ($sw -and $null -ne $port) { $c.steps += 'poe' } else { $c.steps += 'unplug' } }   # 2.2.21 (F20)
     elseif ($c.nvr -and $d.online -eq $false -and -not $c.target -and $c.steps -notcontains 'reset') { $c.steps += 'reboot' }
     if ($c.steps.Count) { $c.steps = @('backup') + @($c.steps) + @('verify'); $c.state = 'fix' } else { $c.state = 'ok'; $plan.healthy += $c.name }
     if ($c.steps -contains 'manual') { $c.state = 'manual' }
@@ -587,10 +591,10 @@ function Get-FsStepWords($c) {
   $w = @()
   foreach ($s in @($c.steps)) {
     switch ($s) {
-      'move' { if ($c.target -ne $c.ip) { $w += ('move ' + $c.ip + ' -> ' + (Get-FsShort $c.target)) } else { $w += 'set its address fixed' } }
+      'move' { if ($c.target -ne $c.ip) { $w += ('move ' + $c.ip + ' -> ' + $c.target) } else { $w += 'set its address fixed' } }   # 2.2.21 (garage trial F21): the full new address, always
       'password' { $w += 'set the site password' }
       'reset' { $w += $(if ($c.brand -eq 'Hikvision') { 'Hikvision''s official password reset, automatic (you only type the page''s picture check)' } else { 'official password reset (one step for you)' }) }
-      'activate' { $w += 'activate with the site password (one step for you)' }
+      'activate' { $w += 'activate it in SADP with the site password (one step for you: the Toolkit copies the password and tells you where to click)' }   # 2.2.21 (garage trial F26): plain words; see the 2.2.21 notes
       'settings' { $w += 'camera settings' }
       'nvr' { if ($c.channel) { $w += ('back on NVR ch ' + $c.channel) } else { $w += 'back on the NVR' } }
       'reboot' { $w += 'restart it' }

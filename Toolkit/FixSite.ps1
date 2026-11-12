@@ -151,9 +151,19 @@ function Say-NetRestore($r) {
 # PC's network was put back, saved on this PC (Toolkit\receipts, or the user's own folder when that one cannot be written).
 function Write-FsReceipt([int]$code, $nr) {
   $res = $(switch ($code) { 0 { 'DONE' } 4 { 'DONE, but some steps did not work (see below)' } 6 { 'FAILED - Run again (this PC''s network is not back to normal)' } 2 { 'stopped before changing anything' } 9 { 'STOPPED HALF-WAY by an error (see the full log). What is listed below was done; run it again or Undo' } default { 'stopped with a problem (code ' + $code + ')' } })
-  $l = @(('WireIt Toolkit ' + $script:FsVersion + ' - Fix this site receipt' + $(if ($Mode -eq 'Rollback') { ' (Undo)' } else { '' })), ('Site: ' + $(if ($siteName) { $siteName } elseif ($Site) { $Site } else { '(none)' })), ('PC: ' + $env:COMPUTERNAME + '   user: ' + $env:USERNAME + '   ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')), ('Result: ' + $res), '', 'Changed on the cameras / NVR:')
   $rs = @(); $rv = Get-Variable -Name results -Scope Script -ErrorAction SilentlyContinue; if ($rv) { $rs = @($rv.Value | Where-Object { $_ }) }
-  if ($rs.Count) { $l += @($rs | ForEach-Object { '  - ' + ([string]$_).Replace([string][char]0x2705, '[OK]').Replace([string][char]0x274C, '[X]') }) } else { $l += '  - nothing' }
+  # 2.2.21 (garage trial F22): the headline counts what was really fixed ("DONE, but some steps did not work" for 0 of 3 fixed was
+  # untrue), and a device with no finished step is listed under "Not done / skipped", never under "Changed".
+  $okMark = [string][char]0x2705
+  $chg = @($rs | Where-Object { ([string]$_).Contains($okMark) }); $notDone = @($rs | Where-Object { -not ([string]$_).Contains($okMark) })
+  if ($code -eq 4) {
+    $okN = 0; $badN = 0; $ov = Get-Variable -Name okCount -Scope Script -ErrorAction SilentlyContinue; if ($ov) { $okN = [int]$ov.Value }; $bv = Get-Variable -Name badCount -Scope Script -ErrorAction SilentlyContinue; if ($bv) { $badN = [int]$bv.Value }
+    $res = $(if ($okN -le 0) { 'NOTHING FIXED (0 of ' + [Math]::Max($badN, $notDone.Count) + ') - see "Not done / skipped" below' } else { 'PARTLY DONE: ' + $okN + ' of ' + ($okN + $badN) + ' fixed - see below' })
+  }
+  $fmt = { param($x) '  - ' + ([string]$x).Replace([string][char]0x2705, '[OK]').Replace([string][char]0x274C, '[X]') }
+  $l = @(('WireIt Toolkit ' + $script:FsVersion + ' - Fix this site receipt' + $(if ($Mode -eq 'Rollback') { ' (Undo)' } else { '' })), ('Site: ' + $(if ($siteName) { $siteName } elseif ($Site) { $Site } else { '(none)' })), ('PC: ' + $env:COMPUTERNAME + '   user: ' + $env:USERNAME + '   ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')), ('Result: ' + $res), '', 'Changed on the cameras / NVR:')
+  if ($chg.Count) { $l += @($chg | ForEach-Object { & $fmt $_ }) } else { $l += '  - nothing' }
+  if ($notDone.Count) { $l += @('', 'Not done / skipped:'); $l += @($notDone | ForEach-Object { & $fmt $_ }) }
   $l += @('', 'This PC''s network:')
   $l += $(if ($nr -and -not $nr.ok) { '  NOT back to normal: ' + (@($nr.problems) -join '; ') + ' - run Restore Network' } elseif ($script:FsPcBefore -or $script:FsCoexistChanged) { '  temporary addresses taken off, adapter back as it was (checked)' } else { '  not changed' })
   if ($runDir) { $l += @('', ('Undo file and full log: ' + $runDir)) }
@@ -817,7 +827,8 @@ if ($Mode -eq 'DryRun') {
   Complete-SitePassword
   # 5. ONE question for the unknown passwords (Moshe Nov 3 5:24 PM: "sometimes I will know")
   $unk = @($observed.devices | Where-Object { $_.kind -eq 'camera' -and $_.login -in @('unknown', 'refused') })
-  if ($unk.Count -and -not $skipCamAsk) {
+  # 2.2.21 (garage trial F25): a look-only (Plan) run asks nothing - it only reports; the question is for a Fix run
+  if ($unk.Count -and -not $skipCamAsk -and $Mode -ne 'Plan') {
     $chNames = @{}; foreach ($nv in @($observed.nvrs)) { foreach ($cc in @($nv.channels)) { if ($cc.ip -and $cc.name) { $chNames[[string]$cc.ip] = [string]$cc.name } } }
     $names = @($unk | ForEach-Object { if ($chNames.ContainsKey([string]$_.ip)) { $chNames[[string]$_.ip] + ' ' + $_.ip } else { $_.ip } })
     $typed = Ask ('Know the password for ' + $(if ($unk.Count -eq 1) { 'this camera' } else { 'these ' + $unk.Count + ' cameras' }) + ' (' + ($names -join ', ') + ')? Type it (hidden), or press Enter to skip - a camera with a problem gets the official reset; one whose video is fine is left alone.') -Secret

@@ -38,6 +38,8 @@ $sum = New-Object System.Collections.Generic.List[string]
 function Say($s) { Write-Host $s; $sum.Add($s) }
 # 2.2.3 (Codex #46): the log goes where this login can write (CamReset\ first, else %LOCALAPPDATA%\WireIt); a log that cannot be written never stops the tool
 function Get-CrLogPath { $p = Join-Path $here 'camreset.log'; try { [IO.File]::AppendAllText($p, ''); return $p } catch { $d = Join-Path $env:LOCALAPPDATA 'WireIt'; if (-not $env:LOCALAPPDATA) { $d = Join-Path ([IO.Path]::GetTempPath()) 'WireIt' }; try { New-Item -ItemType Directory -Force -Path $d | Out-Null } catch {}; return (Join-Path $d 'camreset.log') } }
+function Test-CrLtsModel([string]$model) { return ([string]$model).Trim() -match '^(?i)(LXIP|CMIP|LTN|LXN|LXVR|LTD)[0-9A-Z]' }   # 2.2.21 (F27)
+function Get-CrBrandLabel([string]$brand) { if ($brand -match '^Hikvision \(OEM: (.+)\)$') { return ($Matches[1] + ' (Hikvision-made)') }; return $brand }   # 2.2.21 (F27)
 function Log($s) { try { Add-Content -Path (Get-CrLogPath) -Value ((Get-Date -Format 's') + ' FIND ' + $s) -ErrorAction Stop } catch {} }
 
 # ---- local IPv4 addresses to probe from (skip loopback, link-local, Tailscale 100.64/10, cellular) ----
@@ -111,6 +113,9 @@ function Add-Answer($a, [string]$src = '') {
     $ra = @(); foreach ($f in 'ResetAbility','PasswordResetAbility','PasswordResetModeSecond','SupportSecurityQuestion','SupportHCPlatform','HCPlatformEnable','SupportMailBox','SupportEzvizUnbind','SupportGUID') { $v = XVal $x $f; if ($v) { $ra += ($f + '=' + $v) } }
     $d.ResetAbility = ($ra -join ' ')
     $oem = XVal $x 'OEMInfo'; if ($oem -and $oem -notmatch '(?i)hikvision') { $d.Brand = 'Hikvision (OEM: ' + $oem + ')' }
+# 2.2.21 (garage trial F27): LTS sells Hikvision-made cameras/NVRs (models LXIP*, CMIP*, LTN*, LXN*, LXVR*, LTD*) that often send no OEMInfo; the
+# model says LTS. The brand stays 'Hikvision (OEM: LTS)' (every Hikvision step still applies), and the list shows it as 'LTS (Hikvision-made)'.
+if ($d.Brand -eq 'Hikvision' -and (Test-CrLtsModel ([string]$d.Model))) { $d.Brand = 'Hikvision (OEM: LTS)' }
     Add-Source $d $(if ($src) { $src } else { 'SADP' })
   } elseif ($x -match 'ProbeMatch' -and $x -match 'XAddrs') {         # ONVIF answer
     $xa = (XVal $x 'XAddrs') -split '\s+' | Where-Object { $_ -match '^http' } | Select-Object -First 1
@@ -446,7 +451,7 @@ Say ''
 Say ('Found ' + $rows.Count + ' device(s): ' + @($rows | Where-Object { $_.Brand -like 'Hikvision*' }).Count + ' Hikvision, ' + @($rows | Where-Object { $_.Brand -eq 'Uniview' }).Count + ' Uniview, ' + @($rows | Where-Object { $_.Brand -notlike 'Hikvision*' -and $_.Brand -ne 'Uniview' }).Count + ' other')
 if ($sweepOnlyCount) { Say ('  ' + $sweepOnlyCount + ' of them were found only by the network sweep (the discovery answers missed them).') }
 foreach ($r in $rows) {
-  Say ('- ' + $r.Brand + ' ' + $r.Model + ' | SN ' + $r.Serial + ' | ' + $r.IP + $(if ($r.MAC) { ' | MAC ' + $r.MAC } else { '' }) + $(if ($r.OpenPorts) { ' | ports ' + $r.OpenPorts } else { '' }) + ' | start ' + $r.StartTime + ' | date ' + $r.DeviceDate)
+  Say ('- ' + (Get-CrBrandLabel ([string]$r.Brand)) + ' ' + $r.Model + ' | SN ' + $r.Serial + ' | ' + $r.IP + $(if ($r.MAC) { ' | MAC ' + $r.MAC } else { '' }) + $(if ($r.OpenPorts) { ' | ports ' + $r.OpenPorts } else { '' }) + $(if ([string]$r.StartTime) { ' | start ' + $r.StartTime } else { '' }) + $(if ([string]$r.DeviceDate) { ' | date ' + $r.DeviceDate } else { '' }))   # 2.2.21 (garage trial F24): empty fields are not printed
   Say ('    ' + $r.Status + ' -> ' + $r.NextStep)
   if (-not $r.SameSubnet) { Say ('    Note: camera is on another IP scheme. HiTools still sees it; for its web page give this PC a second address in that range or change the camera IP in HiTools.') }
 }

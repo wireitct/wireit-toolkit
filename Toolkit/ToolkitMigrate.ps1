@@ -22,8 +22,12 @@ function Get-TkSecretLockArgs([string]$dir, [string]$ownerSid) {
 function Get-TkKeyReadArgs([string]$file, [string]$userSid) { return ,[string[]]@($file, '/grant', ('*' + $userSid + ':R'), '/C', '/Q') }
 function Get-TkRealOps {
   return @{
-    taskExists = { param($n) $null = & schtasks.exe /Query /TN $n 2>$null; return ($LASTEXITCODE -eq 0) }
-    taskDelete = { param($n) $null = & schtasks.exe /Delete /TN $n /F 2>$null; return ($LASTEXITCODE -eq 0) }
+    # 2.2.21 (garage trial F23): on Windows PowerShell 5.1 with $ErrorActionPreference Stop, schtasks' own stderr ("ERROR: The system cannot
+    # find the file specified." = no such task) became a terminating error and the installer warned "the 2.2.x clean-up did not run" on
+    # every PC that never had the old task. The query/delete run with Continue for the call only; the exit code decides (a missing task =
+    # nothing to clean, no warning).
+    taskExists = { param($n) $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'; try { $null = & schtasks.exe /Query /TN $n 2>&1 } catch { $global:LASTEXITCODE = 1 } finally { $ErrorActionPreference = $eap }; return ($LASTEXITCODE -eq 0) }
+    taskDelete = { param($n) $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'; try { $null = & schtasks.exe /Delete /TN $n /F 2>&1 } catch { $global:LASTEXITCODE = 1 } finally { $ErrorActionPreference = $eap }; return ($LASTEXITCODE -eq 0) }
     icacls     = { param([string[]]$a) $null = & icacls.exe @a 2>&1; return [int]$LASTEXITCODE }
     isLocked   = { param($p) try { return [bool](Get-Acl -LiteralPath $p).AreAccessRulesProtected } catch { return $null } }   # 2.2.19 (class C): unread = $null, not "not locked"
     adminUsers = { try { return @(Get-LocalGroupMember -SID $script:TkSidAdmins -ErrorAction Stop | Where-Object { $_.ObjectClass -eq 'User' } | ForEach-Object { [string]$_.SID.Value }) } catch { return @() } }

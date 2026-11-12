@@ -84,6 +84,7 @@ Toolkit/tests/Test-Fix2220Reset.ps1
 Toolkit/tests/Test-Fix2220Site.ps1
 Toolkit/tests/Test-Fix2220Twins.ps1
 Toolkit/tests/Test-Fix2221.ps1
+Toolkit/tests/Test-Fix2221Garage.ps1
 Toolkit/tests/Test-Fix223.ps1
 Toolkit/tests/Test-Fix224.ps1
 Toolkit/tests/Test-Fix225.ps1
