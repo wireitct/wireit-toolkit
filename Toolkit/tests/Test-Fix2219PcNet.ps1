@@ -68,7 +68,7 @@ Run 'f05_changed' { Reset; New-Sim @{ swapAt = 1; dhcp = $false }; $script:FsPcB
 Run 'f05_codex' { Reset
   $script:dhcpNow = $false; $script:adapterWrites = @()
   $script:FsPcBefore = [pscustomobject]@{ ifIndex = 5; name = 'Original Ethernet'; dhcp = $true; coexist = 'disabled'; addrs = @([pscustomobject]@{ ip = '10.0.0.105' }); gw = @() }
-  $script:FsNetOps = @{ state = { param($a) return [pscustomobject]@{ name = 'Replacement Wi-Fi'; dhcp = $script:dhcpNow; coexist = 'disabled'; addrs = @([pscustomobject]@{ ip = '192.168.55.105'; skip = $false }); gw = @() } }; dhcp = { param($a) $script:adapterWrites += ('enable DHCP on ifIndex ' + $a.ifIndex); $script:dhcpNow = $true; return $true } }
+  $script:FsNetOps = @{ state = { param($a) return [pscustomobject]@{ name = 'Replacement Wi-Fi'; dhcp = $script:dhcpNow; coexist = 'disabled'; addrs = @([pscustomobject]@{ ip = '192.168.55.105'; prefix = 24; skip = $false }); gw = @() } }; dhcp = { param($a) $script:adapterWrites += ('enable DHCP on ifIndex ' + $a.ifIndex); $script:dhcpNow = $true; return $true } }
   $f = JF 'f05b'; Save-FsNetState $f; $rr = Restore-FsPcNet $f
   [ordered]@{ ok = [bool]$rr.ok; writes = @($script:adapterWrites); journal = (Test-Path -LiteralPath $f) } }
 Run 'f05_identfail' { Reset; New-Sim @{ identFail = $true; dhcp = $false }; $script:FsPcBefore = Before; [void]$script:FsTemps.Add([pscustomobject]@{ p3 = '192.168.0'; ip = '192.168.0.253'; ifIndex = 5 }); $f = JF 'f05c'; Save-FsNetState $f; Res (Restore-FsPcNet $f) $f }
@@ -98,11 +98,11 @@ function Remove-NetIPAddress { param($IPAddress, $InterfaceIndex, $PolicyStore, 
 function netsh { return 'DHCP/Static IP coexistence : disabled' }
 function Get-NetIPAddress { param($InterfaceIndex, $AddressFamily, $ErrorAction, $IPAddress) if ($script:AddrMode -eq 'none') { Write-Error -Message 'No MSFT_NetIPAddress objects found' -Category ObjectNotFound -ErrorAction $ErrorAction; return }; Write-Error 'Adapter address query failed' -ErrorAction $ErrorAction }
 Run 'f08_raw_fail' { Reset; $script:FsNetOps = $null; $script:AddrMode = 'fail'; $script:RouteFail = $false
-  $script:FsPcBefore = [pscustomobject]@{ ifIndex = 5; name = 'Ethernet'; guid = '{0c0c0c0c-1111-2222-3333-444444444444}'; dhcp = $true; coexist = 'disabled'; addrs = @([pscustomobject]@{ ip = '169.254.10.20'; skip = $false }); gw = @() }
+  $script:FsPcBefore = [pscustomobject]@{ ifIndex = 5; name = 'Ethernet'; guid = '{0c0c0c0c-1111-2222-3333-444444444444}'; dhcp = $true; coexist = 'disabled'; addrs = @([pscustomobject]@{ ip = '169.254.10.20'; prefix = 16; skip = $false }); gw = @() }
   [void]$script:FsTemps.Add([pscustomobject]@{ ip = '192.168.0.253'; ifIndex = 5; p3 = '192.168.0' }); $f = JF 'f08b'; Save-FsNetState $f; $rr = Restore-FsPcNet $f
   [ordered]@{ ok = [bool]$rr.ok; journal = (Test-Path -LiteralPath $f); temps = @($script:FsTemps).Count; problems = (@($rr.problems) -join ' | ') } }
 Run 'f08_raw_none' { Reset; $script:FsNetOps = $null; $script:AddrMode = 'none'; $script:RouteFail = $false
-  $script:FsPcBefore = [pscustomobject]@{ ifIndex = 5; name = 'Ethernet'; guid = '{0c0c0c0c-1111-2222-3333-444444444444}'; dhcp = $true; coexist = 'disabled'; addrs = @([pscustomobject]@{ ip = '169.254.10.20'; skip = $false }); gw = @() }
+  $script:FsPcBefore = [pscustomobject]@{ ifIndex = 5; name = 'Ethernet'; guid = '{0c0c0c0c-1111-2222-3333-444444444444}'; dhcp = $true; coexist = 'disabled'; addrs = @([pscustomobject]@{ ip = '169.254.10.20'; prefix = 16; skip = $false }); gw = @() }
   [void]$script:FsTemps.Add([pscustomobject]@{ ip = '192.168.0.253'; ifIndex = 5; p3 = '192.168.0' }); $f = JF 'f08c'; Save-FsNetState $f; $rr = Restore-FsPcNet $f
   [ordered]@{ ok = [bool]$rr.ok; journal = (Test-Path -LiteralPath $f); temps = @($script:FsTemps).Count; problems = (@($rr.problems) -join ' | ') } }
 Run 'f08_reader_route' { Reset; $script:FsNetOps = $null; $script:AddrMode = 'none'; $script:RouteFail = $true; $s = Invoke-FsNetOp 'state' @{ ifIndex = 5 }; [ordered]@{ unread = (@(P $s 'unread') -join ', ') } }
@@ -128,11 +128,11 @@ function Decide([string]$n, [scriptblock]$all) { Reset; New-Sim; $f = JF $n; [IO
   $mk = $f -replace '\.json$', '.recovery-needed.json'; $mj = Get-Content -LiteralPath $mk -Raw | ConvertFrom-Json; $mj.createdUtcTicks = [datetime]::UtcNow.AddHours(-2).Ticks; [IO.File]::WriteAllText($mk, (ConvertTo-Json -InputObject $mj)); foreach ($u in @(Get-ChildItem -LiteralPath (Split-Path -Parent $f) -File | Where-Object { $_.Name -like '*.unreadable-*.json' })) { $u.LastWriteTimeUtc = [datetime]::UtcNow.AddHours(-2) }
   Reset; New-Sim; $script:FsNetOps['boottime'] = { param($a) return [datetime]::UtcNow.AddHours(-1) }; $script:FsNetOps['skipaddrs'] = { param($a) return [pscustomobject]@{ ips = @() } }; $script:FsNetOps['allstate'] = $all
   $rr = Clear-FsLeftoverTemps $f; return [ordered]@{ blocked = [string]$script:FsNetBlocked; cleared = (@(Files $f | Where-Object { $_ -like '*.recovery-cleared-*.json' }).Count -eq 1); marker = (Test-Path -LiteralPath $mk) } }
-Run 'dec_coexist_on' { Decide 'deca' { param($a) [pscustomobject]@{ adapters = @([pscustomobject]@{ name = 'Ethernet'; ifIndex = 5; state = [pscustomobject]@{ dhcp = $true; coexist = 'enabled'; addrs = @([pscustomobject]@{ ip = '192.168.1.105'; skip = $false }); gw = @('192.168.1.1'); unread = @() } }) } } }
+Run 'dec_coexist_on' { Decide 'deca' { param($a) [pscustomobject]@{ adapters = @([pscustomobject]@{ name = 'Ethernet'; ifIndex = 5; state = [pscustomobject]@{ dhcp = $true; coexist = 'enabled'; addrs = @([pscustomobject]@{ ip = '192.168.1.105'; prefix = 24; skip = $false }); gw = @('192.168.1.1'); unread = @() } }) } } }
 Run 'dec_unread' { Decide 'decb' { param($a) return $null } }
 Run 'dec_partial' { Decide 'decc' { param($a) [pscustomobject]@{ adapters = @([pscustomobject]@{ name = 'Ethernet'; ifIndex = 5; state = [pscustomobject]@{ dhcp = $true; coexist = 'disabled'; addrs = @(); gw = @(); unread = @('the addresses') } }) } } }
 Run 'dec_static_none' { Decide 'decd' { param($a) [pscustomobject]@{ adapters = @([pscustomobject]@{ name = 'Ethernet'; ifIndex = 5; state = [pscustomobject]@{ dhcp = $false; coexist = 'disabled'; addrs = @(); gw = @(); unread = @() } }) } } }
-Run 'dec_normal' { Decide 'dece' { param($a) [pscustomobject]@{ adapters = @([pscustomobject]@{ name = 'Ethernet'; ifIndex = 5; state = [pscustomobject]@{ dhcp = $true; coexist = 'disabled'; addrs = @([pscustomobject]@{ ip = '192.168.1.105'; skip = $false }); gw = @('192.168.1.1'); unread = @() } }) } } }
+Run 'dec_normal' { Decide 'dece' { param($a) [pscustomobject]@{ adapters = @([pscustomobject]@{ name = 'Ethernet'; ifIndex = 5; state = [pscustomobject]@{ dhcp = $true; coexist = 'disabled'; addrs = @([pscustomobject]@{ ip = '192.168.1.105'; prefix = 24; skip = $false }); gw = @('192.168.1.1'); unread = @() } }) } } }
 
 # ---------------- F27 ----------------
 $script:tries = 0

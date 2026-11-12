@@ -276,7 +276,8 @@ $w2 = @($script:sim.writes)
 # the PC adapter: the record says ifIndex 5 = "Ethernet", Windows now calls ifIndex 5 "Wi-Fi"
 $script:netsh = New-Object System.Collections.ArrayList
 function netsh { [void]$script:netsh.Add(($args -join ' ')); return 'DHCP/Static IP coexistence : disabled' }
-function Get-NetAdapter { param($InterfaceIndex, $ErrorAction) return [pscustomobject]@{ Name = $env:SIM_ADAPTER; InterfaceIndex = $InterfaceIndex } }
+# 2.2.21 (Codex 2.2.20 F17): an older name-only record is accepted only when Windows gives the adapter's GUID now, so the stand-in gives one
+function Get-NetAdapter { param($InterfaceIndex, $ErrorAction) return [pscustomobject]@{ Name = $env:SIM_ADAPTER; InterfaceIndex = $InterfaceIndex; InterfaceGuid = '{5A5A5A5A-0000-0000-0000-000000000005}' } }
 function Wait-PcRecovered { return '' }
 function Get-NetIPInterface { return [pscustomobject]@{ Dhcp = 'Enabled' } }
 $probs = @(); $env:SIM_ADAPTER = 'Wi-Fi'
