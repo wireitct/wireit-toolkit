@@ -110,7 +110,7 @@ Run-Safe 'R14 no answer keeps the retry' {
   1..2 | ForEach-Object { $s = Read-HikState $sp; [void](Export-HikRequests @(New-Dev) (Join-Path $dir 'requests') $s $sp) }
   $back = Read-HikState $sp; $d = @($back.devices)[0]
   Check ($script:exportWrites -eq 1) 'R14 twin (class F): an export that got no answer does not give the retry back - the same boot is not asked again' ('exports=' + $script:exportWrites)
-  Check ([int]$d.rebootRetries -eq 1 -and [string]$d.status -eq 'refused') 'R14 twin: after the unanswered export the record says refused with retry 1 used' ('status=' + $d.status + ' retries=' + $d.rebootRetries)
+  Check ([int]$d.rebootRetries -eq 1 -and [string]$d.status -eq 'exporting') 'R14 twin: after the unanswered export the record says the export is UNFINISHED (not refused: 2.2.21, Codex 2.2.20 F09 - a lost answer is unknown) with retry 1 used' ('status=' + $d.status + ' retries=' + $d.rebootRetries)
   # control: after a real reboot (new boot time) the next retry is allowed and counted as 2
   $s = Read-HikState $sp; [void](Export-HikRequests @(New-Dev 'BOOT-3') (Join-Path $dir 'requests') $s $sp)
   $back = Read-HikState $sp; $d = @($back.devices)[0]
