@@ -1,8 +1,8 @@
 {
   "version": "2.2.21",
   "released": "2026-11-12",
-  "commit": "12114dbd55845e7209a0b398c0cc3ebe84cec895",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/12114dbd55845e7209a0b398c0cc3ebe84cec895/",
+  "commit": "d2ab81aed441fba89872fa0aace1aa042259979e",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/d2ab81aed441fba89872fa0aace1aa042259979e/",
   "notes": "2.2.21: fixes for the Codex review of 2.2.20 (19 findings F01-F19 + 2 test notes): the device is identified again right before every write and every certifying read-back (channel, stream, reset, recording, reboots); saved addresses and network readings must be complete and actually read; a lost answer is unknown and is never retried or followed by the next step; SiteCheck unsent pings and damaged stream documents are NOT CHECKED; the hourly restart reservation is locked across windows; reset request files are frozen and re-hashed as attached; record removal is checked. FINAL round: Codex re-review optional.",
   "files": [
     {
@@ -652,8 +652,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2218Classic.ps1",
-      "sha256": "b520534d7e2fa84ebaf05b08ebc6e87a4ba7f01585de56b3c512dd8f99d6ff60",
-      "size": 33966
+      "sha256": "0667267251851fd042398e8a0f47f6e38168833e8b7de3488d6c451b71a1c981",
+      "size": 34165
     },
     {
       "path": "Toolkit/tests/Test-Fix2218Nvr.ps1",
@@ -682,8 +682,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2219PcNet.ps1",
-      "sha256": "ea8a5d77b40a4bff31e73892f4dd6a2b53320c64b13b65f38df267d0ab75c7e5",
-      "size": 47286
+      "sha256": "6051c0fc7d4333185942e271b0318b41c75c56ec3b27534d7a57eed37e84a36a",
+      "size": 47351
     },
     {
       "path": "Toolkit/tests/Test-Fix2219Site.ps1",
@@ -707,8 +707,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2220Classic.ps1",
-      "sha256": "1c78199859db15a6248a562d657f36590b4aa6c38c5158ef60c05ca943f88c07",
-      "size": 38924
+      "sha256": "05b87d5464a4744b2ba7a4e5d8ddb2061114b48193779142d7dbb6a4896fcdc4",
+      "size": 39848
     },
     {
       "path": "Toolkit/tests/Test-Fix2220Core.ps1",
@@ -727,8 +727,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix2220Reset.ps1",
-      "sha256": "4205550c91606ff183f278191af035dd541afc5d8b865e60aeaa56615fa2969d",
-      "size": 37923
+      "sha256": "3544062e61407381b0632eb48f8ee04d512a38d31259174a6d867486f6ae8a44",
+      "size": 38009
     },
     {
       "path": "Toolkit/tests/Test-Fix2220Site.ps1",
@@ -747,8 +747,8 @@
     },
     {
       "path": "Toolkit/tests/Test-Fix223.ps1",
-      "sha256": "75ee0e07104dbed062f71ec61f006cdb07e0d4002d523d36fe1264787e9fb6d7",
-      "size": 58087
+      "sha256": "d912ec6efe1762fc85163249aed320bb1ff38c7ceaef94bb3268a8a240b071d0",
+      "size": 58999
     },
     {
       "path": "Toolkit/tests/Test-Fix224.ps1",
@@ -792,8 +792,8 @@
     },
     {
       "path": "Toolkit/tests/Test-HikReset.ps1",
-      "sha256": "0e77350a24cdd8df9a02a7d324571e4424f502735594f8b39d7ce31a622648ca",
-      "size": 38594
+      "sha256": "020ad80689dd402f5d5b658e50b0c14b08c4972480704288ba0d773064cb26e2",
+      "size": 39082
     },
     {
       "path": "Toolkit/tests/Test-Ps51Static.ps1",
