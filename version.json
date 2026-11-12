@@ -1,9 +1,9 @@
 {
   "version": "2.2.21",
   "released": "2026-11-12",
-  "commit": "d2ab81aed441fba89872fa0aace1aa042259979e",
-  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/d2ab81aed441fba89872fa0aace1aa042259979e/",
-  "notes": "2.2.21: fixes for the Codex review of 2.2.20 (19 findings F01-F19 + 2 test notes): the device is identified again right before every write and every certifying read-back (channel, stream, reset, recording, reboots); saved addresses and network readings must be complete and actually read; a lost answer is unknown and is never retried or followed by the next step; SiteCheck unsent pings and damaged stream documents are NOT CHECKED; the hourly restart reservation is locked across windows; reset request files are frozen and re-hashed as attached; record removal is checked. FINAL round: Codex re-review optional.",
+  "commit": "6263477d4eef29a4a2ca07260b57ebafb104c5ed",
+  "base": "https://raw.githubusercontent.com/wireitct/wireit-toolkit/6263477d4eef29a4a2ca07260b57ebafb104c5ed/",
+  "notes": "2.2.21: fixes for the Codex review of 2.2.20 (F01-F19 + 2 test notes) and the office garage trial (F20-F27): the device is identified again right before every write and every certifying read-back; saved addresses and network readings must be complete and actually read; a lost answer is unknown and is never retried or followed by the next step; SiteCheck unsent pings and damaged stream documents are NOT CHECKED; the hourly restart reservation is locked; reset request files are frozen and re-hashed; record removal is checked; clearer plan, receipt and installer wording. FINAL round: Codex re-review optional.",
   "files": [
     {
       "path": "CamReset/Find Cameras.cmd",
@@ -12,8 +12,8 @@
     },
     {
       "path": "CamReset/Find-Cameras.ps1",
-      "sha256": "d719a885392b7ca891e4db334c3ddd6d350f97d357a55950980b8ed43bdef36d",
-      "size": 42157
+      "sha256": "f4a13267e12752f9d8b71657e04cba1186721f8cf4b04ee9d17bf11a68da11d4",
+      "size": 43053
     },
     {
       "path": "CamReset/Install-CamReset.ps1",
@@ -82,8 +82,8 @@
     },
     {
       "path": "Toolkit/FixSite.ps1",
-      "sha256": "e27cf69d5bf1c922db0438f7377daf4aaa7818b294452130940a12623eae91ee",
-      "size": 157235
+      "sha256": "a6de72c2521a30347ccce4b48ef5291c5b66c3169655fa0f6062fc20838c7382",
+      "size": 158425
     },
     {
       "path": "Toolkit/FixSiteBw.ps1",
@@ -92,8 +92,8 @@
     },
     {
       "path": "Toolkit/FixSiteCore.ps1",
-      "sha256": "c3cff5275a691b254d07d33ff61ed543e101f595642fe94a0e6739f7ab8d5841",
-      "size": 91612
+      "sha256": "09be32397dcae83ad585447d985d840e6198178697ee2d26b214804b5f6a26f1",
+      "size": 92604
     },
     {
       "path": "Toolkit/FixSiteDevices.ps1",
@@ -746,6 +746,11 @@
       "size": 10922
     },
     {
+      "path": "Toolkit/tests/Test-Fix2221Garage.ps1",
+      "sha256": "411361188680b7bfdf0524effcc8543c276eeac379dcd3bc4bfc8d6e28e25a7f",
+      "size": 9592
+    },
+    {
       "path": "Toolkit/tests/Test-Fix223.ps1",
       "sha256": "d912ec6efe1762fc85163249aed320bb1ff38c7ceaef94bb3268a8a240b071d0",
       "size": 58999
@@ -842,8 +847,8 @@
     },
     {
       "path": "Toolkit/ToolkitMigrate.ps1",
-      "sha256": "5a76588b7fddd1daf251e2f47288d5b8b6399095f50ad370484e149b5265087b",
-      "size": 6854
+      "sha256": "71664a4fbb17ad8e1db4bb27e216c721d9f2b65ea36114f7d6028f4f73ebef4b",
+      "size": 7606
     },
     {
       "path": "Toolkit/ToolkitRecover.ps1",
