@@ -94,10 +94,11 @@ Eq (Fake-State $fk).devices[1].password $PW 'the device now holds the new passwo
 $bad = [pscustomobject]@{ kind = 'file'; code = (New-Code 999); file = '' }
 $r2 = Import-HikUnlock $c2 $bad $PW 1.5
 Check (-not $r2.ok -and $r2.tries -le 3) 'import: a wrong file is refused and tried at most 3 times (no lock-out risk)'
-Check ($r2.error -match 'denied') 'import: the refusal is explained in plain words'
+Check ($r2.error -match 'denied|did not answer') 'import: the refusal is explained in plain words (2.2.21, Codex F10: this fake device ignores the first form, so it is NOT CONFIRMED - "did not answer" - and no second form is sent)'
 $u2 = [pscustomobject]@{ kind = 'file'; code = $devs[2].unlock; file = '' }
 $r3 = Import-HikUnlock $c2 $u2 $PW 2.0
-Check ($r3.ok -and $r3.form -eq 'securityCode') 'import: the second public form is tried when the first is not understood'
+Check (-not $r3.ok -and $r3.tries -eq 1 -and -not $r3.result -and $r3.sent) 'import: a device that does not answer the first form is NOT sent the second (2.2.21, Codex F10: silence may be a lost yes; the next form could use up the key): NOT CONFIRMED, never a refusal' ('ok=' + $r3.ok + ' tries=' + $r3.tries + ' result=' + $r3.result)
+Check ([string](Fake-State $fk).devices[2].password -ne $PW) '...and that device''s password was not changed by a second form'
 Write-Host '1b. SADP real reset (key exchange + AES password + 8-character key)'
 $rd = @{ mac = 'c0-6d-ed-aa-aa-aa'; ip = '192.168.7.5'; mask = '255.255.255.0'; gw = '192.168.7.1'; serial = 'ECI-T44F220220903AAWRK52336999'; model = 'ECI-T44F2'; activated = $true; kind = 'camera'; boot = '2026-11-05 19:09:38'; code = (New-Code 77); unlock = ''; codeTypes = @('exchangecode'); importTypes = @('x'); password = ''; real = $true; realUnlock = 'f8f8e4f4'; layout = 1 }
 $rd2 = @{} + $rd; $rd2.mac = 'c0-6d-ed-aa-aa-bb'; $rd2.serial = 'ECI-T44F220220903AAWRK52336998'; $rd2.layout = 2; $rd2.realUnlock = '6e76566d'

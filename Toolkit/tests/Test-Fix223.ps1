@@ -126,7 +126,7 @@ Check ($fs -match 'reads them back as they were' -and $fs -match '\$okS = \[bool
 # 2.2.20 (Codex 2.2.19 R12): Test-FsLoginIs = the same login check PLUS the saved device's MAC / serial (stricter, never weaker)
 Check ($fs -match "\[void\]\(Set-FsPassword \`$ip \`$c\.brand \`$cr \`$oldPw\); \(Test-FsLogin(Is)? \`$ip \`$c\.brand \`$oldPw.*?\) -eq 'ok'") 'camera password back = the old password logs in'
 Check ($fs -match "\`$ok = \(\(Test-FsLogin(Is)? \`$nip 'Hikvision' \`$oldN.*?\) -eq 'ok'\)") 'NVR password back = the old password logs in'
-Check ($fs -match "Restart-FsDevice \(\[string\]\`$n\.target\)" -and $fs -match "if \(\`$backN\) \{ & \`$markDone \('nvrmove") 'NVR move-back: restart when asked, done only when it answers on its old address'
+Check ($fs -match "Restart-FsDevice(Checked)? \(\[string\]\`$n\.target\)" -and $fs -match "if \(\`$backN\) \{ & \`$markDone \('nvrmove") 'NVR move-back: restart when asked (2.2.21: Restart-FsDeviceChecked, the NVR identified again first - Codex F02 twin), done only when it answers on its old address'
 Write-Host '#8 discovery and repairs stay on the network the tech picked'
 $pcA = [pscustomobject]@{ ip = '192.168.1.105'; prefix = 24 }; $pcB = [pscustomobject]@{ ip = '10.0.5.20'; prefix = 24 }
 $f = @([pscustomobject]@{ ip = '192.168.1.50' }, [pscustomobject]@{ ip = '10.0.5.77' }, [pscustomobject]@{ ip = '192.168.0.64' })
@@ -294,12 +294,20 @@ Eq (Split-Path -Leaf (Find-FsSiteFolder '12 Main St (WI-123)' @($dr))) '12 Main 
 Write-Host '#41 NTP change: unreadable read-back is not success'
 $nm41 = Import-Module (Join-Path $tk 'modules\NvrHealth\NvrHealth.psm1') -Force -PassThru -DisableNameChecking
 $r41 = & $nm41 {
+  # 2.2.21 (Codex 2.2.20 F13): an empty HTTP 200 is no longer a "yes" to SetNTP, so the stand-in answers a real SetNTPResponse to reach the read-back
+  function Onvif-Call { return @{ code = 200; body = '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body><tds:SetNTPResponse xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/></s:Body></s:Envelope>' } }
+  function Onvif-Time { return $null }
+  function Log { }
+  Onvif-NtpApply @{ ip = '10.0.0.41' } 'time.nist.gov' @{ needNtp = $true; needMode = $false; needTz = $false; o = @{ mode = 'Manual'; dst = $true; tz = $null; ntp = @() } }
+}
+Check ($r41 -and -not $r41.ok -and $r41.why -match 'read back') 'reproduction: ONVIF NTP set, read-back unreadable -> NOT ok (2.2.2 said ok)' ('ok=' + $r41.ok + ' why=' + $r41.why)
+$r41b = & $nm41 {
   function Onvif-Call { return @{ code = 200; body = '' } }
   function Onvif-Time { return $null }
   function Log { }
   Onvif-NtpApply @{ ip = '10.0.0.41' } 'time.nist.gov' @{ needNtp = $true; needMode = $false; needTz = $false; o = @{ mode = 'Manual'; dst = $true; tz = $null; ntp = @() } }
 }
-Check ($r41 -and -not $r41.ok -and $r41.why -match 'read back') 'reproduction: ONVIF NTP set, read-back unreadable -> NOT ok (2.2.2 said ok)'
+Check ($r41b -and -not $r41b.ok) '2.2.21 (Codex F13): an EMPTY HTTP 200 to SetNTP is not a yes either -> NOT ok' ('ok=' + $r41b.ok + ' why=' + $r41b.why)
 $r41h = & $nm41 {
   function Http { return @{ code = 200; body = '<ResponseStatus><statusCode>1</statusCode></ResponseStatus>' } }
   function Hik-Time { return $null }
